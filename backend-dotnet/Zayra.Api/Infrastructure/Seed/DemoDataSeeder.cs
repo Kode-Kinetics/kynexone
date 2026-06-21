@@ -27,6 +27,7 @@ public static class DemoDataSeeder
     {
         await SeedPlatformOwnerAsync(db, hasher, logger, ct);
         await SeedPricingConfigAsync(db, logger, ct);
+        await DeactivateDemoTenantsAsync(db, logger, ct);
 
         await SeedTenantAsync(db, hasher, authSeeder, logger, ct, new DemoTenantSpec
         {
@@ -68,6 +69,8 @@ public static class DemoDataSeeder
                 new DemoUserSpec("Auditor",         "Maya Johnson",              "auditor@intelliflow.com"),
             }
         });
+
+        await KsaDemoTenantSeeder.SeedAsync(db, hasher, authSeeder, logger, ct);
 
         await SeedTenantAsync(db, hasher, authSeeder, logger, ct, new DemoTenantSpec
         {
@@ -157,20 +160,21 @@ public static class DemoDataSeeder
         {
             var existingTenant = await db.Tenants.FirstAsync(t => t.Slug == spec.Slug, ct);
 
+            // If a platform admin soft-deleted this demo tenant, respect that decision —
+            // do NOT restore it. Skip all idempotent seeder work for deactivated tenants.
+            if (!existingTenant.IsActive)
+            {
+                logger.LogInformation("DemoDataSeeder: tenant '{Slug}' is deactivated — skipping re-seed.", spec.Slug);
+                return;
+            }
+
             // Ensure any new permissions added since initial seed are propagated to existing roles.
             await authSeeder.EnsureTenantRolesAsync(existingTenant.Id, ct);
 
-            // Restore is_active if a test or admin deactivated the demo tenant
-            if (!existingTenant.IsActive)
-            {
-                existingTenant.IsActive = true;
-                await db.SaveChangesAsync(ct);
-                logger.LogInformation("DemoDataSeeder: restored is_active for '{Slug}'.", spec.Slug);
-            }
-
-            // Update subscription if status/plan drifted
+            // Update subscription if status/plan drifted (only for active tenants)
             var existingSub = await db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == existingTenant.Id, ct);
-            if (existingSub is not null && (existingSub.Status != spec.Status || existingSub.Plan != spec.Plan))
+            if (existingSub is not null && existingSub.Status != "Cancelled"
+                && (existingSub.Status != spec.Status || existingSub.Plan != spec.Plan))
             {
                 existingSub.Status = spec.Status;
                 existingSub.Plan   = spec.Plan;
@@ -978,6 +982,73 @@ public static class DemoDataSeeder
     }
 
     private sealed record DemoUserSpec(string RoleName, string FullName, string Email);
+
+    // ── Deactivate demo tenants ───────────────────────────────────────────────
+    // One-time idempotent cleanup: soft-deletes demo tenants that were seeded
+    // during development and should no longer appear in production.
+    // Respects any tenant whose slug is on the DEACTIVATE_DEMO_SLUGS list.
+    // Set env var DEACTIVATE_DEMO_SLUGS=intelliflow,evostel to trigger.
+    // If the var is absent this method is a no-op.
+
+    private static readonly string[] _demoSlugsToDeactivate =
+        (Environment.GetEnvironmentVariable("DEACTIVATE_DEMO_SLUGS") ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    internal static async Task DeactivateDemoTenantsAsync(
+        ZayraDbContext db,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        if (_demoSlugsToDeactivate.Length == 0) return;
+
+        var slugSet = new HashSet<string>(_demoSlugsToDeactivate, StringComparer.OrdinalIgnoreCase);
+
+        var tenants = await db.Tenants
+            .Where(t => slugSet.Contains(t.Slug) && t.IsActive)
+            .ToListAsync(ct);
+
+        if (tenants.Count == 0)
+        {
+            logger.LogInformation("DemoDataSeeder.DeactivateDemoTenantsAsync: all target slugs already deactivated or not found.");
+            return;
+        }
+
+        foreach (var tenant in tenants)
+        {
+            logger.LogInformation("DemoDataSeeder: deactivating demo tenant '{Slug}' ({Id}).", tenant.Slug, tenant.Id);
+            tenant.IsActive = false;
+
+            // Deactivate users
+            var usersDeactivated = await db.Users
+                .Where(u => u.TenantId == tenant.Id && !u.IsDeleted)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(u => u.IsActive, false)
+                    .SetProperty(u => u.Status, "Deactivated")
+                    .SetProperty(u => u.UpdatedAtUtc, DateTime.UtcNow), ct);
+
+            // Revoke refresh tokens
+            var userIds = await db.Users
+                .Where(u => u.TenantId == tenant.Id)
+                .Select(u => u.Id)
+                .ToListAsync(ct);
+            if (userIds.Count > 0)
+            {
+                await db.RefreshTokens
+                    .Where(t => t.RevokedAtUtc == null && userIds.Contains(t.UserId))
+                    .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), ct);
+            }
+
+            // Cancel subscription
+            var sub = await db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == tenant.Id, ct);
+            if (sub is not null) sub.Status = "Cancelled";
+
+            await db.SaveChangesAsync(ct);
+
+            logger.LogInformation(
+                "DemoDataSeeder: demo tenant '{Slug}' deactivated — {Users} users deactivated, subscription cancelled.",
+                tenant.Slug, usersDeactivated);
+        }
+    }
 
     // ── Pricing config seed ───────────────────────────────────────────────────
 

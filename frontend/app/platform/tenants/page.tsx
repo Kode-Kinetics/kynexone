@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Plus, Search, RefreshCw, Building2, ChevronRight, X,
-  MoreHorizontal, CheckCircle, AlertTriangle, XCircle, Circle, Clock,
+  MoreHorizontal, CheckCircle, AlertTriangle, XCircle, Circle, Clock, Eye, EyeOff,
 } from 'lucide-react';
 import {
   platformApi,
@@ -75,6 +75,7 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  const [showPwd, setShowPwd] = useState(false);
 
   function autoSlug(name: string) {
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -148,9 +149,15 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
             </div>
             <div>
               <label className="block text-xs text-slate-400 mb-1">Temp Password *</label>
-              <input required type="password" value={form.adminPassword} onChange={e => change('adminPassword', e.target.value)}
-                className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60"
-                placeholder="••••••••" />
+              <div className="relative">
+                <input required type={showPwd ? 'text' : 'password'} value={form.adminPassword} onChange={e => change('adminPassword', e.target.value)}
+                  className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 pr-9 text-sm text-white focus:outline-none focus:border-sapphire/60 font-mono"
+                  placeholder="Min 8 characters" />
+                <button type="button" onClick={() => setShowPwd(p => !p)} title={showPwd ? 'Hide password' : 'Show password'}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors">
+                  {showPwd ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </button>
+              </div>
             </div>
           </fieldset>
 
