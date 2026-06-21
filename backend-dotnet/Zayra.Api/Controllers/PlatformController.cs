@@ -815,7 +815,7 @@ public class PlatformController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.AdminPassword) || req.AdminPassword.Length < 10)
             return BadRequest(new { message = "Admin password must be at least 10 characters." });
 
-        if (await _db.Tenants.AsNoTracking().AnyAsync(t => t.Slug == slug, ct))
+        if (await _db.Tenants.AsNoTracking().AnyAsync(t => t.Slug == slug && t.IsActive, ct))
             return Conflict(new { message = $"A tenant with slug '{slug}' already exists." });
 
         var tenant = new Tenant { Name = name, Slug = slug };
@@ -2451,7 +2451,7 @@ public class PlatformController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.AdminPassword) || req.AdminPassword.Length < 10)
             return BadRequest(new { message = "AdminPassword must be at least 10 characters." });
 
-        if (await _db.Tenants.AsNoTracking().AnyAsync(t => t.Slug == slug, ct))
+        if (await _db.Tenants.AsNoTracking().AnyAsync(t => t.Slug == slug && t.IsActive, ct))
             return Conflict(new { message = $"A tenant with slug '{slug}' already exists." });
 
         var tenant = new Tenant { Name = name, Slug = slug };
