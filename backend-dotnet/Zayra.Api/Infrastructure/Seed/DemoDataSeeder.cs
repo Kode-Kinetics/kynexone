@@ -70,6 +70,8 @@ public static class DemoDataSeeder
             }
         });
 
+        await KsaDemoTenantSeeder.SeedAsync(db, hasher, authSeeder, logger, ct);
+
         await SeedTenantAsync(db, hasher, authSeeder, logger, ct, new DemoTenantSpec
         {
             Name         = "Evostel LLC",
