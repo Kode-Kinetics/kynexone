@@ -347,7 +347,7 @@ function OverviewTab({ tenant, onRefresh, onDelete }: { tenant: PlatformTenantDe
             Suspend Tenant
           </button>
         )}
-        <a href={typeof window !== 'undefined' ? window.location.origin : ''}
+        <a href={typeof window !== 'undefined' ? `${window.location.origin}/login?tenant=${tenant.slug}` : ''}
           target="_blank" rel="noopener noreferrer"
           className="flex items-center gap-1.5 text-sm text-slate-400 border border-white/10 hover:border-white/20 px-4 py-2 rounded-lg transition-colors">
           <ExternalLink className="h-3.5 w-3.5" />
@@ -466,7 +466,7 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
 // ── Users Tab ─────────────────────────────────────────────────────────────────
 
 function UsersTab({ tenantId }: { tenantId: string }) {
-  const [admins, setAdmins] = useState<TenantAdminUser[]>([]);
+  const [users, setUsers] = useState<import('@/src/api/platform').TenantUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [impersonating, setImpersonating] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
@@ -475,7 +475,7 @@ function UsersTab({ tenantId }: { tenantId: string }) {
 
   async function load() {
     setLoading(true);
-    try { setAdmins(await platformApi.listAdmins(tenantId)); }
+    try { setUsers(await platformApi.listTenantUsers(tenantId)); }
     finally { setLoading(false); }
   }
 
@@ -483,11 +483,10 @@ function UsersTab({ tenantId }: { tenantId: string }) {
     setImpersonating(userId);
     try {
       const { token } = await platformApi.impersonate(tenantId, userId);
-      // Open tenant app with impersonation token in a new tab
       window.open(`${window.location.origin}/login?impersonate=${token}`, '_blank');
       setMsg({ text: `Impersonating ${email} — new tab opened.`, ok: true });
     } catch {
-      setMsg({ text: 'Impersonation failed. Ensure the user exists.', ok: false });
+      setMsg({ text: 'Impersonation failed.', ok: false });
     } finally { setImpersonating(null); }
   }
 
@@ -500,43 +499,44 @@ function UsersTab({ tenantId }: { tenantId: string }) {
         </div>
       )}
       <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
-        <div className="px-5 py-3 border-b border-white/[0.06]">
-          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Admin Users</p>
+        <div className="px-5 py-3 border-b border-white/[0.06] flex items-center justify-between">
+          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">All Users ({users.length})</p>
+          <Link href={`/platform/tenants/${tenantId}/users`} className="text-[11px] text-sapphire hover:text-blue-300 transition-colors">
+            Manage users →
+          </Link>
         </div>
         {loading ? (
           <div className="flex items-center justify-center py-10">
             <div className="h-4 w-4 animate-spin rounded-full border-2 border-sapphire border-t-transparent" />
           </div>
-        ) : admins.length === 0 ? (
-          <p className="text-sm text-slate-600 text-center py-10">No admin users found.</p>
+        ) : users.length === 0 ? (
+          <p className="text-sm text-slate-600 text-center py-10">No users found.</p>
         ) : (
-          admins.map(u => (
-            <div key={u.id} className="flex items-center gap-4 px-5 py-3 border-b border-white/[0.04] last:border-0">
+          users.map(u => (
+            <div key={u.id} className="flex items-center gap-3 px-5 py-2.5 border-b border-white/[0.04] last:border-0">
               <div className="h-7 w-7 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center shrink-0">
                 <span className="text-[10px] font-bold text-slate-400">{u.fullName?.slice(0, 2).toUpperCase() ?? '??'}</span>
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-white font-medium">{u.fullName}</p>
-                <p className="text-[11px] text-slate-600">{u.email}</p>
+                <p className="text-[11px] text-slate-500">{u.email}</p>
               </div>
-              <span className={`text-[11px] px-1.5 py-0.5 rounded border ${u.isActive ? 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5' : 'text-slate-500 border-white/10 bg-white/5'}`}>
-                {u.status}
+              <span className="text-[10px] text-slate-500 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded">{u.roles?.[0] ?? '—'}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded border ${u.isActive ? 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5' : 'text-slate-500 border-white/10'}`}>
+                {u.isActive ? 'Active' : 'Inactive'}
               </span>
               <button type="button"
                 onClick={() => impersonate(u.id, u.email)}
-                disabled={impersonating === u.id}
-                className="flex items-center gap-1 text-[11px] text-blue-400 border border-blue-500/20 hover:border-blue-500/40 px-2 py-1 rounded transition-colors disabled:opacity-40">
+                disabled={impersonating === u.id || !u.isActive}
+                title="Impersonate"
+                className="flex items-center gap-1 text-[11px] text-blue-400 border border-blue-500/20 hover:border-blue-500/40 px-2 py-1 rounded transition-colors disabled:opacity-30">
                 <UserCog className="h-3 w-3" />
-                {impersonating === u.id ? 'Opening…' : 'Impersonate'}
+                {impersonating === u.id ? '…' : 'Login as'}
               </button>
             </div>
           ))
         )}
       </div>
-      <p className="text-xs text-slate-600">
-        For full user list, password resets, and role management, see{' '}
-        <Link href={`/platform/tenants/${tenantId}/users`} className="text-sapphire hover:text-blue-300">Users page →</Link>
-      </p>
     </div>
   );
 }

@@ -522,7 +522,7 @@ export default function CommandCenter() {
           <div className="p-4 grid grid-cols-2 gap-2">
             <QuickAction icon={Building2} label="New Tenant"       href="/platform/tenants"        accent="blue" />
             <QuickAction icon={CreditCard} label="View Billing"    href="/platform/billing"         accent="emerald" />
-            <QuickAction icon={Zap}        label="Feature Flags"   href="/platform/tenants"         accent="amber" />
+            <QuickAction icon={Zap}        label="Feature Flags"   href="/platform/plans"           accent="amber" />
             <QuickAction icon={TrendingUp} label="AI Usage"        href="/platform/ai-usage"        accent="default" />
           </div>
         </div>

@@ -27,6 +27,7 @@ public static class DemoDataSeeder
     {
         await SeedPlatformOwnerAsync(db, hasher, logger, ct);
         await SeedPricingConfigAsync(db, logger, ct);
+        await FreeInactiveSlugsThatWereNotRenamedAsync(db, logger, ct);
         await DeactivateDemoTenantsAsync(db, logger, ct);
 
         await SeedTenantAsync(db, hasher, authSeeder, logger, ct, new DemoTenantSpec
@@ -994,6 +995,29 @@ public static class DemoDataSeeder
         (Environment.GetEnvironmentVariable("DEACTIVATE_DEMO_SLUGS") ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
+    // One-time fixup: any inactive tenant whose slug doesn't contain "__deleted" had its
+    // slug never freed (created before the slug-freeing delete logic was added). Rename them
+    // now so their slugs become reusable without needing a DB migration.
+    private static async Task FreeInactiveSlugsThatWereNotRenamedAsync(
+        ZayraDbContext db,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var stuck = await db.Tenants
+            .Where(t => !t.IsActive && !t.Slug.Contains("__deleted"))
+            .ToListAsync(ct);
+
+        if (stuck.Count == 0) return;
+
+        foreach (var t in stuck)
+        {
+            var freed = t.Slug;
+            t.Slug = $"{freed}__deleted_{t.Id.ToString("N")[..8]}";
+            logger.LogInformation("DemoDataSeeder: freed slug '{Slug}' for inactive tenant {Id}.", freed, t.Id);
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
     internal static async Task DeactivateDemoTenantsAsync(
         ZayraDbContext db,
         ILogger logger,
@@ -1015,8 +1039,11 @@ public static class DemoDataSeeder
 
         foreach (var tenant in tenants)
         {
-            logger.LogInformation("DemoDataSeeder: deactivating demo tenant '{Slug}' ({Id}).", tenant.Slug, tenant.Id);
+            var originalSlug = tenant.Slug;
+            logger.LogInformation("DemoDataSeeder: deactivating demo tenant '{Slug}' ({Id}).", originalSlug, tenant.Id);
             tenant.IsActive = false;
+            // Free the slug so it can be reused by a new tenant (unique DB index applies to all rows)
+            tenant.Slug = $"{originalSlug}__deleted_{tenant.Id.ToString("N")[..8]}";
 
             // Deactivate users
             var usersDeactivated = await db.Users

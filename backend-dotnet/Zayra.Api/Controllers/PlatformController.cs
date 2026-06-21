@@ -708,7 +708,11 @@ public class PlatformController : ControllerBase
         var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
         if (tenant is null) return NotFound();
 
+        var originalSlug = tenant.Slug;
         tenant.IsActive = false;
+        // Free the slug so it can be reused — the unique DB index covers all rows
+        // including inactive ones, so we rename it to avoid blocking future tenant creation.
+        tenant.Slug = $"{originalSlug}__deleted_{tenantId.ToString("N")[..8]}";
 
         // Deactivate all users in this tenant
         await _db.Users
@@ -739,8 +743,8 @@ public class PlatformController : ControllerBase
             EntityType = "Tenant",
             EntityId = tenantId.ToString(),
             Action = "TenantDeleted",
-            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { tenantName = tenant.Name, slug = tenant.Slug }),
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { initiatedBy = "platform_admin", status = "Deactivated" }),
+            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { tenantName = tenant.Name, slug = originalSlug }),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { initiatedBy = "platform_admin", status = "Deactivated", slugFreed = originalSlug }),
             PerformedByName = "platform_admin",
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
@@ -1518,7 +1522,7 @@ public class PlatformController : ControllerBase
 
     [HttpPut("plans/{planName}/price")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Finance)]
-    public IActionResult UpdatePlanPrice(string planName, [FromBody] UpdatePlanPriceRequest req, CancellationToken ct)
+    public async Task<IActionResult> UpdatePlanPrice(string planName, [FromBody] UpdatePlanPriceRequest req, CancellationToken ct)
     {
         if (!_planDefs.Any(p => p.Name.Equals(planName, StringComparison.OrdinalIgnoreCase)))
             return NotFound(new { message = $"Plan '{planName}' not found." });
@@ -1534,7 +1538,7 @@ public class PlatformController : ControllerBase
             PerformedByName = "platform_admin",
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
-        _ = _db.SaveChangesAsync(ct);
+        await _db.SaveChangesAsync(ct);
         return Ok(new { planName, monthlyPrice = req.MonthlyPrice });
     }
 

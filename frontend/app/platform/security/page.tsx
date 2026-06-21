@@ -52,7 +52,7 @@ export default function SecurityCenterPage() {
       {err ? (
         <div className="px-5 py-4 bg-amber-500/5 border border-amber-500/20 rounded-xl">
           <p className="text-sm text-amber-400">{err}</p>
-          <p className="text-xs text-slate-600 mt-1">Implement the backend endpoint to see real security posture data.</p>
+          <p className="text-xs text-slate-600 mt-1">Check your connection or try refreshing.</p>
         </div>
       ) : (
         <>
