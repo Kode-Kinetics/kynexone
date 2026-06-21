@@ -457,8 +457,6 @@ app.MapGet("/health", async (ZayraDbContext db) =>
 // or via Render pre-deploy job. Set Database__RunMigrationsOnStartup=true ONLY
 // for local dev convenience (it defaults false in Production).
 var isMigrateMode = args.Contains("--migrate");
-var runMigrationsOnStartup = !app.Environment.IsProduction()
-    || string.Equals(app.Configuration["Database:RunMigrationsOnStartup"], "true", StringComparison.OrdinalIgnoreCase);
 
 using (var scope = app.Services.CreateScope())
 {
@@ -469,22 +467,12 @@ using (var scope = app.Services.CreateScope())
     TenantOwnershipBootAssertion.Assert(dbContext);
     ControllerEntityReturnBootAssertion.Assert(dbContext, typeof(Program).Assembly);
 
-    if (isMigrateMode || runMigrationsOnStartup)
-    {
-        // Migrations are FATAL in this path — if they fail, the one-off job exits non-zero
-        // so Render reports the deploy as failed before the web process starts.
-        logger.LogInformation("Running EF Core migrations (TiDbMigrationCommandExecutor — no transaction wrapping)...");
-        await dbContext.Database.MigrateAsync();
-        await MissingTableCreator.EnsureAsync(dbContext, logger);
-        await scope.ServiceProvider.GetRequiredService<IEmployeeModuleSchemaBootstrapper>().EnsureAsync();
-        logger.LogInformation("EF Core migrations complete.");
-    }
-    else
-    {
-        logger.LogInformation(
-            "Production web start — schema migrations skipped. " +
-            "Run 'dotnet Zayra.Api.dll --migrate' to apply pending migrations.");
-    }
+    // Always run migrations on startup — MigrateAsync is a no-op when schema is current.
+    logger.LogInformation("Running EF Core migrations...");
+    await dbContext.Database.MigrateAsync();
+    await MissingTableCreator.EnsureAsync(dbContext, logger);
+    await scope.ServiceProvider.GetRequiredService<IEmployeeModuleSchemaBootstrapper>().EnsureAsync();
+    logger.LogInformation("EF Core migrations complete.");
 
     // Seed data — always non-fatal; logs on failure but never crashes the web process.
     try
