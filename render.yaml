@@ -17,8 +17,8 @@ services:
       # ── REQUIRED SECRETS: set these in the Render dashboard (Environment → Secret Files / Env Vars) ──
       #
       # ConnectionStrings__Default
-      #   TiDB Serverless connection string.
-      #   Format: Server=<host>;Port=4000;Database=zayra;Uid=<user>;Pwd=<pass>;SslMode=Required;AllowPublicKeyRetrieval=True;
+      #   Neon PostgreSQL connection string.
+      #   Format: Host=<host>;Port=5432;Database=zayra;Username=<user>;Password=<pass>;SSL Mode=Require;Trust Server Certificate=true;
       - key: ConnectionStrings__Default
         sync: false
 

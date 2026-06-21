@@ -2,8 +2,8 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
 
 #nullable disable
@@ -18,41 +18,41 @@ namespace Zayra.Api.Migrations
 #pragma warning disable 612, 618
             modelBuilder
                 .HasAnnotation("ProductVersion", "8.0.11")
-                .HasAnnotation("Relational:MaxIdentifierLength", 64);
+                .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
-            MySqlModelBuilderExtensions.AutoIncrementColumns(modelBuilder);
+            NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
             modelBuilder.Entity("Zayra.Api.Domain.Entities.AuditLog", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
                         .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
+                        .HasColumnType("character varying(120)")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EntityId")
                         .HasMaxLength(80)
-                        .HasColumnType("varchar(80)")
+                        .HasColumnType("character varying(80)")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityName")
                         .IsRequired()
                         .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
+                        .HasColumnType("character varying(120)")
                         .HasColumnName("entity_name");
 
                     b.Property<string>("IpAddress")
                         .HasMaxLength(64)
-                        .HasColumnType("varchar(64)")
+                        .HasColumnType("character varying(64)")
                         .HasColumnName("ip_address");
 
                     b.Property<string>("Metadata")
@@ -60,16 +60,16 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("metadata");
 
                     b.Property<Guid?>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("UserAgent")
                         .HasMaxLength(512)
-                        .HasColumnType("varchar(512)")
+                        .HasColumnType("character varying(512)")
                         .HasColumnName("user_agent");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -87,28 +87,28 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<int>("ChunkIndex")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("chunk_index");
 
                     b.Property<string>("Content")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content");
 
                     b.Property<Guid>("DocumentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("document_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("TokenCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("token_count");
 
                     b.HasKey("Id");
@@ -124,34 +124,34 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("CreatedByIp")
                         .HasMaxLength(64)
-                        .HasColumnType("varchar(64)")
+                        .HasColumnType("character varying(64)")
                         .HasColumnName("created_by_ip");
 
                     b.Property<DateTime>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<string>("TokenHash")
                         .IsRequired()
                         .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("token_hash");
 
                     b.Property<DateTime?>("UsedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("used_at_utc");
 
                     b.Property<Guid>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -168,29 +168,29 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Description")
                         .IsRequired()
                         .HasMaxLength(240)
-                        .HasColumnType("varchar(240)")
+                        .HasColumnType("character varying(240)")
                         .HasColumnName("description");
 
                     b.Property<string>("Key")
                         .IsRequired()
                         .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
+                        .HasColumnType("character varying(120)")
                         .HasColumnName("permission_key");
 
                     b.Property<string>("Module")
                         .IsRequired()
                         .HasMaxLength(80)
-                        .HasColumnType("varchar(80)")
+                        .HasColumnType("character varying(80)")
                         .HasColumnName("module");
 
                     b.HasKey("Id");
@@ -205,24 +205,24 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<int>("ChunkCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("chunk_count");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("ErrorMessage")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("error_message");
 
                     b.Property<string>("FileName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_name");
 
                     b.Property<long>("FileSizeBytes")
@@ -230,34 +230,34 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("file_size_bytes");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("MimeType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("mime_type");
 
                     b.Property<string>("OriginalName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("original_name");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UploadedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("uploaded_by_user_id");
 
                     b.HasKey("Id");
@@ -273,44 +273,44 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("CreatedByIp")
                         .HasMaxLength(64)
-                        .HasColumnType("varchar(64)")
+                        .HasColumnType("character varying(64)")
                         .HasColumnName("created_by_ip");
 
                     b.Property<DateTime>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<string>("ReplacedByTokenHash")
                         .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("replaced_by_token_hash");
 
                     b.Property<DateTime?>("RevokedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("revoked_at_utc");
 
                     b.Property<string>("RevokedByIp")
                         .HasMaxLength(64)
-                        .HasColumnType("varchar(64)")
+                        .HasColumnType("character varying(64)")
                         .HasColumnName("revoked_by_ip");
 
                     b.Property<string>("TokenHash")
                         .IsRequired()
                         .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("token_hash");
 
                     b.Property<Guid>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -327,61 +327,61 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<int>("AuthorityLevel")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("authority_level");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Description")
                         .IsRequired()
                         .HasMaxLength(240)
-                        .HasColumnType("varchar(240)")
+                        .HasColumnType("character varying(240)")
                         .HasColumnName("description");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsEditable")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_editable");
 
                     b.Property<bool>("IsSystem")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_system");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(80)
-                        .HasColumnType("varchar(80)")
+                        .HasColumnType("character varying(80)")
                         .HasColumnName("name");
 
                     b.Property<string>("NormalizedName")
                         .IsRequired()
                         .HasMaxLength(80)
-                        .HasColumnType("varchar(80)")
+                        .HasColumnType("character varying(80)")
                         .HasColumnName("normalized_name");
 
                     b.Property<Guid?>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -395,11 +395,11 @@ namespace Zayra.Api.Migrations
             modelBuilder.Entity("Zayra.Api.Domain.Entities.RolePermission", b =>
                 {
                     b.Property<Guid>("RoleId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("role_id");
 
                     b.Property<Guid>("PermissionId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("permission_id");
 
                     b.HasKey("RoleId", "PermissionId");
@@ -413,27 +413,27 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(160)
-                        .HasColumnType("varchar(160)")
+                        .HasColumnType("character varying(160)")
                         .HasColumnName("name");
 
                     b.Property<string>("Slug")
                         .IsRequired()
                         .HasMaxLength(80)
-                        .HasColumnType("varchar(80)")
+                        .HasColumnType("character varying(80)")
                         .HasColumnName("slug");
 
                     b.HasKey("Id");
@@ -448,63 +448,63 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("AllowCrossDeptManager")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_cross_dept_manager");
 
                     b.Property<bool>("AllowCrossLocationManager")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_cross_location_manager");
 
                     b.Property<bool>("AllowDottedLineApproval")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_dotted_line_approval");
 
                     b.Property<bool>("AutoCreateDeptOnImport")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("auto_create_dept_on_import");
 
                     b.Property<bool>("AutoCreateDesignationOnImport")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("auto_create_designation_on_import");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<bool>("RequireCostCenterForPayroll")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("require_cost_center_for_payroll");
 
                     b.Property<bool>("RequireGradeForApprovalPolicy")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("require_grade_for_approval_policy");
 
                     b.Property<bool>("RequireImportPreviewBeforeCommit")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("require_import_preview_before_commit");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<bool>("UseDeptHeadApproval")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("use_dept_head_approval");
 
                     b.Property<bool>("UseHrFinalApproval")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("use_hr_final_approval");
 
                     b.Property<bool>("UseSupervisorBeforeManager")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("use_supervisor_before_manager");
 
                     b.HasKey("Id");
@@ -519,121 +519,121 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AccessMode")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasDefaultValue("FullPortal")
                         .HasColumnName("access_mode");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("email");
 
                     b.Property<int>("FailedLoginCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("failed_login_count");
 
                     b.Property<string>("FullName")
                         .IsRequired()
                         .HasMaxLength(180)
-                        .HasColumnType("varchar(180)")
+                        .HasColumnType("character varying(180)")
                         .HasColumnName("full_name");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsEmailConfirmed")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_email_confirmed");
 
                     b.Property<bool>("IsLocked")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_locked");
 
                     b.Property<DateTime?>("LastLoginAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_login_at_utc");
 
                     b.Property<DateTime?>("LastPasswordChangedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_password_changed_at");
 
                     b.Property<DateTime?>("LockoutEnd")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("lockout_end");
 
                     b.Property<bool>("MFAEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("m_f_a_enabled");
 
                     b.Property<DateTime?>("MfaConfiguredAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("mfa_configured_at_utc");
 
                     b.Property<int>("MfaFailedCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("mfa_failed_count");
 
                     b.Property<DateTime?>("MfaLastVerifiedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("mfa_last_verified_at_utc");
 
                     b.Property<string>("MfaSecretEncrypted")
                         .HasMaxLength(1024)
-                        .HasColumnType("varchar(1024)")
+                        .HasColumnType("character varying(1024)")
                         .HasColumnName("mfa_secret_encrypted");
 
                     b.Property<bool>("MustChangePassword")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("must_change_password");
 
                     b.Property<string>("NormalizedEmail")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("normalized_email");
 
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasMaxLength(512)
-                        .HasColumnType("varchar(512)")
+                        .HasColumnType("character varying(512)")
                         .HasColumnName("password_hash");
 
                     b.Property<string>("PhoneNumber")
                         .IsRequired()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("phone_number");
 
                     b.Property<string>("PreferredLanguage")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(10)
-                        .HasColumnType("varchar(10)")
+                        .HasColumnType("character varying(10)")
                         .HasDefaultValue("en")
                         .HasColumnName("preferred_language");
 
@@ -641,24 +641,24 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasDefaultValue("Active")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Timezone")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(80)
-                        .HasColumnType("varchar(80)")
+                        .HasColumnType("character varying(80)")
                         .HasDefaultValue("UTC")
                         .HasColumnName("timezone");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -676,11 +676,11 @@ namespace Zayra.Api.Migrations
             modelBuilder.Entity("Zayra.Api.Domain.Entities.UserRole", b =>
                 {
                     b.Property<Guid>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.Property<Guid>("RoleId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("role_id");
 
                     b.HasKey("UserId", "RoleId");
@@ -694,7 +694,7 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Answer")
@@ -705,55 +705,55 @@ namespace Zayra.Api.Migrations
                     b.Property<string>("CacheKey")
                         .IsRequired()
                         .HasMaxLength(191)
-                        .HasColumnType("varchar(191)")
+                        .HasColumnType("character varying(191)")
                         .HasColumnName("cache_key");
 
                     b.Property<int>("CompletionTokens")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("completion_tokens");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int?>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<DateTime>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<int>("HitCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("hit_count");
 
                     b.Property<bool>("HumanReviewRequired")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("human_review_required");
 
                     b.Property<string>("IntentClassified")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("intent_classified");
 
                     b.Property<bool>("IsAdvisoryLabelShown")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_advisory_label_shown");
 
                     b.Property<DateTime>("LastHitAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_hit_at_utc");
 
                     b.Property<string>("Model")
                         .IsRequired()
                         .HasMaxLength(100)
-                        .HasColumnType("varchar(100)")
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("model");
 
                     b.Property<string>("Module")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("module");
 
                     b.Property<string>("NormalizedQuery")
@@ -767,37 +767,37 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("permission_signature");
 
                     b.Property<int>("PromptTokens")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("prompt_tokens");
 
                     b.Property<string>("Provider")
                         .IsRequired()
                         .HasMaxLength(50)
-                        .HasColumnType("varchar(50)")
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("provider");
 
                     b.Property<string>("QueryHash")
                         .IsRequired()
                         .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("query_hash");
 
                     b.Property<string>("ResponseStatus")
                         .IsRequired()
                         .HasMaxLength(50)
-                        .HasColumnType("varchar(50)")
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("response_status");
 
                     b.Property<int>("ResponseTimeMs")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("response_time_ms");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("TokensUsed")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("tokens_used");
 
                     b.Property<string>("UserRoleSignature")
@@ -821,37 +821,37 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("BlockedReason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("blocked_reason");
 
                     b.Property<int>("CompletionTokens")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("completion_tokens");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int?>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("HumanReviewRequired")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("human_review_required");
 
                     b.Property<string>("IntentClassified")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("intent_classified");
 
                     b.Property<bool>("IsAdvisoryLabelShown")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_advisory_label_shown");
 
                     b.Property<string>("LoggedPrompt")
@@ -862,18 +862,18 @@ namespace Zayra.Api.Migrations
                     b.Property<string>("Model")
                         .IsRequired()
                         .HasMaxLength(100)
-                        .HasColumnType("varchar(100)")
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("model");
 
                     b.Property<string>("Module")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("module");
 
                     b.Property<string>("PromptHash")
                         .IsRequired()
                         .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("prompt_hash");
 
                     b.Property<string>("PromptSummary")
@@ -882,54 +882,54 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("prompt_summary");
 
                     b.Property<int>("PromptTokens")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("prompt_tokens");
 
                     b.Property<string>("Provider")
                         .IsRequired()
                         .HasMaxLength(50)
-                        .HasColumnType("varchar(50)")
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("provider");
 
                     b.Property<string>("Query")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("query");
 
                     b.Property<string>("Response")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("response");
 
                     b.Property<string>("ResponseStatus")
                         .IsRequired()
                         .HasMaxLength(50)
-                        .HasColumnType("varchar(50)")
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("response_status");
 
                     b.Property<int>("ResponseTimeMs")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("response_time_ms");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("TokensUsed")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("tokens_used");
 
                     b.Property<Guid>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.Property<string>("UserRole")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("user_role");
 
                     b.Property<bool>("WasBlocked")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("was_blocked");
 
                     b.HasKey("Id");
@@ -945,19 +945,19 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("AcknowledgedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("acknowledged_at_utc");
 
                     b.Property<Guid?>("AcknowledgedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("acknowledged_by");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DataJson")
@@ -966,50 +966,50 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("data_json");
 
                     b.Property<int?>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<string>("GeneratedBy")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("generated_by");
 
                     b.Property<string>("InsightType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("insight_type");
 
                     b.Property<bool>("IsAcknowledged")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_acknowledged");
 
                     b.Property<string>("Module")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("module");
 
                     b.Property<string>("Severity")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("severity");
 
                     b.Property<string>("Summary")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("summary");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.HasKey("Id");
@@ -1025,7 +1025,7 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ConfigJson")
@@ -1034,34 +1034,34 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("config_json");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("ModelName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("model_name");
 
                     b.Property<string>("Provider")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("provider");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<string>("UseCase")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("use_case");
 
                     b.HasKey("Id");
@@ -1075,70 +1075,70 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("AIInsightId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("a_i_insight_id");
 
                     b.Property<string>("ActionLabel")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action_label");
 
                     b.Property<string>("ActionRoute")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action_route");
 
                     b.Property<DateTime?>("ActionedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("actioned_at_utc");
 
                     b.Property<Guid?>("ActionedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("actioned_by");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int?>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("IsAdvisoryOnly")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_advisory_only");
 
                     b.Property<string>("Module")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("module");
 
                     b.Property<string>("Priority")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("priority");
 
                     b.Property<string>("RecommendationText")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recommendation_text");
 
                     b.Property<string>("RecommendationType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recommendation_type");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1154,7 +1154,7 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateOnly>("AbsenceDate")
@@ -1163,42 +1163,42 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("AbsenceType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("absence_type");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<bool>("IsRegularized")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_regularized");
 
                     b.Property<string>("PayrollImpact")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payroll_impact");
 
                     b.Property<Guid?>("RegularizationRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("regularization_request_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1212,56 +1212,56 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("AbsenceRecordId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("absence_record_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<string>("HRNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("h_r_notes");
 
                     b.Property<Guid?>("LeaveTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_type_id");
 
                     b.Property<string>("ManagerNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("manager_notes");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<DateTime?>("ReviewedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("reviewed_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1275,54 +1275,54 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_type");
 
                     b.Property<string>("IpAddress")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("ip_address");
 
                     b.Property<string>("NewValuesJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_values_json");
 
                     b.Property<string>("OldValuesJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("old_values_json");
 
                     b.Property<Guid?>("PerformedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("performed_by");
 
                     b.Property<string>("PerformedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performed_by_name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1338,51 +1338,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("AdvanceId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("advance_id");
 
                     b.Property<Guid?>("ApprovedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by");
 
                     b.Property<string>("ApprovedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approved_by_name");
 
                     b.Property<string>("ApproverRole")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_role");
 
                     b.Property<string>("Comments")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("comments");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<int>("StepOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("step_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1396,43 +1396,43 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<Guid>("AdvanceId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("advance_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("NewValuesJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_values_json");
 
                     b.Property<string>("OldValuesJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("old_values_json");
 
                     b.Property<Guid?>("PerformedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("performed_by");
 
                     b.Property<string>("PerformedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performed_by_name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1446,25 +1446,25 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("AdvanceId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("advance_id");
 
                     b.Property<decimal>("AmountDue")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount_due");
 
                     b.Property<decimal>("AmountPaid")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount_paid");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateOnly>("DueDate")
@@ -1472,7 +1472,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("due_date");
 
                     b.Property<int>("InstallmentNumber")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("installment_number");
 
                     b.Property<DateOnly?>("PaidDate")
@@ -1480,16 +1480,16 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("paid_date");
 
                     b.Property<Guid?>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1504,57 +1504,57 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("AllowInstallments")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_installments");
 
                     b.Property<int>("CooldownMonths")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("cooldown_months");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<int>("MaxAdvancesPerYear")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_advances_per_year");
 
                     b.Property<int>("MaxInstallments")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_installments");
 
                     b.Property<decimal>("MaxPercentageOfSalary")
                         .HasPrecision(8, 2)
-                        .HasColumnType("decimal(8,2)")
+                        .HasColumnType("numeric(8,2)")
                         .HasColumnName("max_percentage_of_salary");
 
                     b.Property<int>("MinServiceMonths")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("min_service_months");
 
                     b.Property<string>("PolicyName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("policy_name");
 
                     b.Property<bool>("RequiresApproval")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires_approval");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1568,43 +1568,43 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("ApplicationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("application_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EventType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("event_type");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<string>("PerformedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performed_by_name");
 
                     b.Property<Guid?>("PerformedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("performed_by_user_id");
 
                     b.Property<string>("Stage")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("stage");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1618,61 +1618,61 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AppealReason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("appeal_reason");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeJustification")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_justification");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<string>("HrResponse")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("hr_response");
 
                     b.Property<Guid>("ReviewId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("review_id");
 
                     b.Property<DateTime?>("ReviewedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("reviewed_at");
 
                     b.Property<string>("ReviewedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reviewed_by_name");
 
                     b.Property<Guid?>("ReviewedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("reviewed_by_user_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<DateTime>("SubmittedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("submitted_at");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1688,67 +1688,67 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AdjustedRating")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("adjusted_rating");
 
                     b.Property<decimal>("AdjustedScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("adjusted_score");
 
                     b.Property<string>("AdjustmentReason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("adjustment_reason");
 
                     b.Property<DateTime>("CalibratedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("calibrated_at_utc");
 
                     b.Property<string>("CalibratedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("calibrated_by_name");
 
                     b.Property<Guid?>("CalibratedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("calibrated_by_user_id");
 
                     b.Property<Guid>("CycleId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("cycle_id");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<string>("OriginalRating")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("original_rating");
 
                     b.Property<decimal>("OriginalScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("original_score");
 
                     b.Property<Guid>("ReviewId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("review_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -1764,54 +1764,54 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CompetencyCategory")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("competency_category");
 
                     b.Property<Guid>("CompetencyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("competency_id");
 
                     b.Property<string>("CompetencyName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("competency_name");
 
                     b.Property<string>("ManagerComments")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("manager_comments");
 
                     b.Property<decimal>("ManagerRating")
                         .HasPrecision(4, 2)
-                        .HasColumnType("decimal(4,2)")
+                        .HasColumnType("numeric(4,2)")
                         .HasColumnName("manager_rating");
 
                     b.Property<Guid>("ReviewId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("review_id");
 
                     b.Property<string>("SelfComments")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("self_comments");
 
                     b.Property<decimal>("SelfRating")
                         .HasPrecision(4, 2)
-                        .HasColumnType("decimal(4,2)")
+                        .HasColumnType("numeric(4,2)")
                         .HasColumnName("self_rating");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("Weight")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("weight");
 
                     b.HasKey("Id");
@@ -1826,150 +1826,150 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("AcknowledgedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("acknowledged_at");
 
                     b.Property<decimal>("AttendanceScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("attendance_score");
 
                     b.Property<decimal>("CalibrationAdjustment")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("calibration_adjustment");
 
                     b.Property<string>("CalibrationNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("calibration_notes");
 
                     b.Property<decimal>("CompetencyScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("competency_score");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid>("CycleId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("cycle_id");
 
                     b.Property<string>("CycleName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("cycle_name");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("DesignationTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation_title");
 
                     b.Property<decimal>("DisciplineScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("discipline_score");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<decimal>("FeedbackScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("feedback_score");
 
                     b.Property<string>("FinalRating")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("final_rating");
 
                     b.Property<decimal>("FinalScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("final_score");
 
                     b.Property<string>("HrNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("hr_notes");
 
                     b.Property<bool>("IsAppealed")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_appealed");
 
                     b.Property<decimal>("KpiScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("kpi_score");
 
                     b.Property<string>("ManagerNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("manager_notes");
 
                     b.Property<DateTime?>("ManagerReviewedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("manager_reviewed_at");
 
                     b.Property<decimal>("ProductivityScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("productivity_score");
 
                     b.Property<DateTime?>("PublishedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("published_at");
 
                     b.Property<int?>("ReviewerManagerId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("reviewer_manager_id");
 
                     b.Property<string>("ReviewerManagerName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reviewer_manager_name");
 
                     b.Property<Guid>("ScorecardTemplateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("scorecard_template_id");
 
                     b.Property<string>("SelfAssessmentNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("self_assessment_notes");
 
                     b.Property<DateTime?>("SelfAssessmentSubmittedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("self_assessment_submitted_at");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -1988,40 +1988,40 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Component")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("component");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<decimal>("RawScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("raw_score");
 
                     b.Property<Guid>("ReviewId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("review_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("Weight")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("weight");
 
                     b.Property<decimal>("WeightedScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("weighted_score");
 
                     b.HasKey("Id");
@@ -2035,55 +2035,55 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal?>("AmountLimit")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount_limit");
 
                     b.Property<string>("ApproverRole")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_role");
 
                     b.Property<string>("AuthorityScope")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("authority_scope");
 
                     b.Property<bool>("CanFinalApprove")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("can_final_approve");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("Currency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -2097,37 +2097,37 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("ApprovalRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approval_request_id");
 
                     b.Property<string>("Comments")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("comments");
 
                     b.Property<DateTime>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<Guid?>("DecidedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("decided_by_user_id");
 
                     b.Property<string>("Decision")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("decision");
 
                     b.Property<int>("StepOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("step_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -2143,15 +2143,15 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateOnly>("EndDate")
@@ -2159,22 +2159,22 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("end_date");
 
                     b.Property<int>("FromEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("from_employee_id");
 
                     b.Property<Guid?>("FromUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("from_user_id");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("Scope")
                         .IsRequired()
                         .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
+                        .HasColumnType("character varying(120)")
                         .HasColumnName("scope");
 
                     b.Property<DateOnly>("StartDate")
@@ -2184,19 +2184,19 @@ namespace Zayra.Api.Migrations
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("ToEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("to_employee_id");
 
                     b.Property<Guid?>("ToUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("to_user_id");
 
                     b.HasKey("Id");
@@ -2212,63 +2212,63 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<Guid?>("GradeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("grade_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDefault")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_default");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(180)
-                        .HasColumnType("varchar(180)")
+                        .HasColumnType("character varying(180)")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<string>("WorkflowType")
                         .IsRequired()
                         .HasMaxLength(60)
-                        .HasColumnType("varchar(60)")
+                        .HasColumnType("character varying(60)")
                         .HasColumnName("workflow_type");
 
                     b.HasKey("Id");
@@ -2285,47 +2285,47 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ApproverRole")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_role");
 
                     b.Property<string>("ApproverType")
                         .IsRequired()
                         .HasMaxLength(60)
-                        .HasColumnType("varchar(60)")
+                        .HasColumnType("character varying(60)")
                         .HasColumnName("approver_type");
 
                     b.Property<int?>("EscalationAfterHours")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("escalation_after_hours");
 
                     b.Property<bool>("IsFinalStep")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_final_step");
 
                     b.Property<Guid>("PolicyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("policy_id");
 
                     b.Property<int?>("SpecificEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("specific_employee_id");
 
                     b.Property<string>("StepName")
                         .IsRequired()
                         .HasMaxLength(180)
-                        .HasColumnType("varchar(180)")
+                        .HasColumnType("character varying(180)")
                         .HasColumnName("step_name");
 
                     b.Property<int>("StepOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("step_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -2342,55 +2342,55 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("CompletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("completed_at_utc");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("CurrentStepOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("current_step_order");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
                         .HasMaxLength(80)
-                        .HasColumnType("varchar(80)")
+                        .HasColumnType("character varying(80)")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityName")
                         .IsRequired()
                         .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
+                        .HasColumnType("character varying(120)")
                         .HasColumnName("entity_name");
 
                     b.Property<Guid?>("RequestedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("requested_by_user_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasMaxLength(240)
-                        .HasColumnType("varchar(240)")
+                        .HasColumnType("character varying(240)")
                         .HasColumnName("title");
 
                     b.Property<Guid>("WorkflowId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("workflow_id");
 
                     b.HasKey("Id");
@@ -2404,34 +2404,34 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EntityName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("entity_name");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -2446,46 +2446,46 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ApproverRole")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_role");
 
                     b.Property<string>("ApproverType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_type");
 
                     b.Property<int?>("EscalationAfterHours")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("escalation_after_hours");
 
                     b.Property<bool>("IsFinalStep")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_final_step");
 
                     b.Property<int?>("SpecificEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("specific_employee_id");
 
                     b.Property<string>("StepName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("step_name");
 
                     b.Property<int>("StepOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("step_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid>("WorkflowId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("workflow_id");
 
                     b.HasKey("Id");
@@ -2502,21 +2502,21 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CorrectAnswer")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("correct_answer");
 
                     b.Property<string>("Difficulty")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("difficulty");
 
                     b.Property<int>("Marks")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("marks");
 
                     b.Property<string>("OptionsJson")
@@ -2525,30 +2525,30 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("options_json");
 
                     b.Property<int>("OrderIndex")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("order_index");
 
                     b.Property<string>("QuestionText")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("question_text");
 
                     b.Property<string>("QuestionType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("question_type");
 
                     b.Property<string>("SkillTag")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("skill_tag");
 
                     b.Property<Guid>("TemplateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("template_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -2562,68 +2562,68 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AssessmentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("assessment_type");
 
                     b.Property<string>("Audience")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("audience");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<int>("DurationMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("duration_minutes");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsRandomized")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_randomized");
 
                     b.Property<int>("PassingScore")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("passing_score");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.Property<int>("TotalMarks")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("total_marks");
 
                     b.HasKey("Id");
@@ -2640,11 +2640,11 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DataJson")
@@ -2653,35 +2653,35 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("data_json");
 
                     b.Property<int?>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("InsightType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("insight_type");
 
                     b.Property<bool>("IsAcknowledged")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_acknowledged");
 
                     b.Property<string>("Severity")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("severity");
 
                     b.Property<string>("Summary")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("summary");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.HasKey("Id");
@@ -2695,26 +2695,26 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityName")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_name");
 
                     b.Property<string>("MetadataJson")
@@ -2723,11 +2723,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("metadata_json");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -2741,38 +2741,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ApprovalLevel")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("approval_level");
 
                     b.Property<string>("Comments")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("comments");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<Guid?>("DecidedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("decided_by_user_id");
 
                     b.Property<string>("Decision")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("decision");
 
                     b.Property<Guid>("RegularizationRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("regularization_request_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -2786,96 +2786,96 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Branch")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("branch");
 
                     b.Property<int>("BreakMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("break_minutes");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Department")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department");
 
                     b.Property<int>("EarlyExitMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("early_exit_minutes");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateTime?>("FirstInUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("first_in_utc");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsPayrollLocked")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_payroll_locked");
 
                     b.Property<DateTime?>("LastOutUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_out_utc");
 
                     b.Property<int>("LateMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("late_minutes");
 
                     b.Property<string>("ManualCorrectionStatus")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("manual_correction_status");
 
                     b.Property<bool>("MissingPunch")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("missing_punch");
 
                     b.Property<int>("OvertimeMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("overtime_minutes");
 
                     b.Property<DateTime>("ProcessedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("processed_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("TotalWorkedMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("total_worked_minutes");
 
                     b.Property<int>("UndertimeMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("undertime_minutes");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<DateOnly>("WorkDate")
@@ -2884,7 +2884,7 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("WorkMode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_mode");
 
                     b.HasKey("Id");
@@ -2903,145 +2903,145 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ApiKeyReference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("api_key_reference");
 
                     b.Property<string>("AuthCredentialsJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("auth_credentials_json");
 
                     b.Property<string>("AuthType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("auth_type");
 
                     b.Property<Guid?>("BranchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("CustomHeadersJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("custom_headers_json");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<string>("DeviceName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("device_name");
 
                     b.Property<string>("DeviceParametersJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("device_parameters_json");
 
                     b.Property<string>("DeviceType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("device_type");
 
                     b.Property<string>("EndpointUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("endpoint_url");
 
                     b.Property<string>("ErrorLog")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("error_log");
 
                     b.Property<string>("FieldMappingsJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("field_mappings_json");
 
                     b.Property<string>("IpAddress")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("ip_address");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<DateTime?>("LastSyncAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_sync_at_utc");
 
                     b.Property<string>("LastSyncStatus")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("last_sync_status");
 
                     b.Property<string>("LocationName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("location_name");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<int?>("Port")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("port");
 
                     b.Property<string>("SerialNumber")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("serial_number");
 
                     b.Property<string>("SyncFrequency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("sync_frequency");
 
                     b.Property<string>("SyncMethod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("sync_method");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<string>("Vendor")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("vendor");
 
                     b.HasKey("Id");
@@ -3060,29 +3060,29 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ConnectorCode")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("connector_code");
 
                     b.Property<string>("ConnectorType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("connector_type");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("DeviceId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("device_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("SettingsJson")
@@ -3091,12 +3091,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("settings_json");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Vendor")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("vendor");
 
                     b.HasKey("Id");
@@ -3111,46 +3111,46 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("CompletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("completed_at_utc");
 
                     b.Property<Guid?>("DeviceId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("device_id");
 
                     b.Property<string>("ErrorMessage")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("error_message");
 
                     b.Property<int>("RawEventsProcessed")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("raw_events_processed");
 
                     b.Property<int>("RawEventsReceived")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("raw_events_received");
 
                     b.Property<DateTime>("StartedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("started_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<string>("SyncMethod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("sync_method");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -3164,42 +3164,42 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("DailyRecordId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("daily_record_id");
 
                     b.Property<string>("Details")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("details");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("ExceptionType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("exception_type");
 
                     b.Property<bool>("IsResolved")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_resolved");
 
                     b.Property<string>("Severity")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("severity");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateOnly>("WorkDate")
@@ -3217,50 +3217,50 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("AttendanceLocationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("attendance_location_id");
 
                     b.Property<bool>("ClockInRequiredInside")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("clock_in_required_inside");
 
                     b.Property<bool>("ClockOutRequiredInside")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("clock_out_required_inside");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<decimal>("Latitude")
                         .HasPrecision(10, 7)
-                        .HasColumnType("decimal(10,7)")
+                        .HasColumnType("numeric(10,7)")
                         .HasColumnName("latitude");
 
                     b.Property<decimal>("Longitude")
                         .HasPrecision(10, 7)
-                        .HasColumnType("decimal(10,7)")
+                        .HasColumnType("numeric(10,7)")
                         .HasColumnName("longitude");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<int>("RadiusMeters")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("radius_meters");
 
                     b.Property<bool>("SpoofingRiskCheckEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("spoofing_risk_check_enabled");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -3274,46 +3274,46 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<int>("FailedRows")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("failed_rows");
 
                     b.Property<string>("FileName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_name");
 
                     b.Property<int>("ImportedRows")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("imported_rows");
 
                     b.Property<string>("Source")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("source");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("TotalRows")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("total_rows");
 
                     b.HasKey("Id");
@@ -3327,29 +3327,29 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ErrorMessage")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("error_message");
 
                     b.Property<Guid>("ImportBatchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("import_batch_id");
 
                     b.Property<string>("RawRow")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("raw_row");
 
                     b.Property<int>("RowNumber")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("row_number");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -3363,33 +3363,33 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("BranchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("LocationType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("location_type");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -3403,20 +3403,20 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("LockType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("lock_type");
 
                     b.Property<DateTime>("LockedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("locked_at_utc");
 
                     b.Property<Guid?>("LockedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("locked_by_user_id");
 
                     b.Property<DateOnly>("PeriodEnd")
@@ -3429,11 +3429,11 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -3447,37 +3447,37 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("DailyRecordId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("daily_record_id");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("ImpactType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("impact_type");
 
                     b.Property<int>("Minutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("minutes");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateOnly>("WorkDate")
@@ -3497,82 +3497,82 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<int>("AbsentThresholdMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("absent_threshold_minutes");
 
                     b.Property<bool>("AllowAbsenceToLeaveConversion")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_absence_to_leave_conversion");
 
                     b.Property<Guid?>("BranchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
                     b.Property<int>("BreakMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("break_minutes");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<int>("EarlyExitThresholdMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("early_exit_threshold_minutes");
 
                     b.Property<int>("GraceMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("grace_minutes");
 
                     b.Property<Guid?>("GradeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("grade_id");
 
                     b.Property<int>("HalfDayThresholdMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("half_day_threshold_minutes");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<int>("LateThresholdMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("late_threshold_minutes");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<bool>("RequiresOvertimeApproval")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires_overtime_approval");
 
                     b.Property<string>("RoundingRule")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("rounding_rule");
 
                     b.Property<int>("StandardWorkMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("standard_work_minutes");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -3589,71 +3589,71 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal?>("ConfidenceScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("confidence_score");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<Guid?>("DeviceId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("device_id");
 
                     b.Property<string>("EmployeeCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_code");
 
                     b.Property<int?>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("IpAddress")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("ip_address");
 
                     b.Property<bool>("IsProcessed")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_processed");
 
                     b.Property<decimal?>("Latitude")
                         .HasPrecision(10, 7)
-                        .HasColumnType("decimal(10,7)")
+                        .HasColumnType("numeric(10,7)")
                         .HasColumnName("latitude");
 
                     b.Property<string>("LocationName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("location_name");
 
                     b.Property<decimal?>("Longitude")
                         .HasPrecision(10, 7)
-                        .HasColumnType("decimal(10,7)")
+                        .HasColumnType("numeric(10,7)")
                         .HasColumnName("longitude");
 
                     b.Property<string>("PhotoReference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("photo_reference");
 
                     b.Property<string>("PunchDirection")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("punch_direction");
 
                     b.Property<DateTime>("PunchTimestampUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("punch_timestamp_utc");
 
                     b.Property<string>("RawPayloadJson")
@@ -3663,21 +3663,21 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Source")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("source");
 
                     b.Property<string>("SyncBatchReference")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("sync_batch_reference");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("VerificationMethod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("verification_method");
 
                     b.HasKey("Id");
@@ -3696,41 +3696,41 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<decimal>("OvertimeHours")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("overtime_hours");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(30)
-                        .HasColumnType("varchar(30)")
+                        .HasColumnType("character varying(30)")
                         .HasColumnName("status");
 
                     b.Property<Guid?>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<TimeOnly?>("TimeIn")
-                        .HasColumnType("time(6)")
+                        .HasColumnType("time without time zone")
                         .HasColumnName("time_in");
 
                     b.Property<TimeOnly?>("TimeOut")
-                        .HasColumnType("time(6)")
+                        .HasColumnType("time without time zone")
                         .HasColumnName("time_out");
 
                     b.Property<DateOnly>("WorkDate")
@@ -3751,54 +3751,54 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("PayrollLockChecked")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("payroll_lock_checked");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("RequestType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("request_type");
 
                     b.Property<Guid?>("RequestedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("requested_by_user_id");
 
                     b.Property<DateTime?>("RequestedInUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("requested_in_utc");
 
                     b.Property<DateTime?>("RequestedOutUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("requested_out_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateOnly>("WorkDate")
@@ -3818,20 +3818,20 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("AttendancePolicyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("attendance_policy_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("RuleType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("rule_type");
 
                     b.Property<string>("RuleValueJson")
@@ -3840,7 +3840,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("rule_value_json");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -3854,29 +3854,29 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("FileContent")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_content");
 
                     b.Property<string>("FileName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_name");
 
                     b.Property<Guid>("PaymentBatchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payment_batch_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -3890,51 +3890,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApprovedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by");
 
                     b.Property<string>("ApprovedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approved_by_name");
 
                     b.Property<string>("ApproverRole")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_role");
 
                     b.Property<Guid>("BonusBatchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("bonus_batch_id");
 
                     b.Property<string>("Comments")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("comments");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<int>("StepOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("step_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -3948,52 +3948,52 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<Guid?>("BonusBatchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("bonus_batch_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("EmployeeBonusId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_bonus_id");
 
                     b.Property<string>("EntityType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("entity_type");
 
                     b.Property<string>("NewValuesJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_values_json");
 
                     b.Property<string>("OldValuesJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("old_values_json");
 
                     b.Property<Guid?>("PerformedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("performed_by");
 
                     b.Property<string>("PerformedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performed_by_name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -4007,51 +4007,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("BatchName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("batch_name");
 
                     b.Property<string>("BatchNumber")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("batch_number");
 
                     b.Property<Guid>("BonusTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("bonus_type_id");
 
                     b.Property<string>("BonusTypeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("bonus_type_name");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<int>("EmployeeCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_count");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsLockedByPayroll")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_locked_by_payroll");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<DateOnly>("PaymentDate")
@@ -4060,29 +4060,29 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("PaymentPeriod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payment_period");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TotalAmount")
                         .HasPrecision(16, 2)
-                        .HasColumnType("decimal(16,2)")
+                        .HasColumnType("numeric(16,2)")
                         .HasColumnName("total_amount");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -4099,70 +4099,70 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("ApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("approved_at_utc");
 
                     b.Property<Guid?>("ApprovedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by_user_id");
 
                     b.Property<decimal>("BonusAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("bonus_amount");
 
                     b.Property<string>("BonusType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("bonus_type");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("RecommendedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recommended_by_name");
 
                     b.Property<Guid?>("RecommendedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("recommended_by_user_id");
 
                     b.Property<Guid>("ReviewId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("review_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -4176,106 +4176,106 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CalculationMethod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("calculation_method");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<decimal>("DefaultCalculationValue")
-                        .HasColumnType("decimal(65,30)")
+                        .HasColumnType("numeric")
                         .HasColumnName("default_calculation_value");
 
                     b.Property<string>("Frequency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("frequency");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsIncludedInEosb")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_included_in_eosb");
 
                     b.Property<bool>("IsIncludedInGosiBase")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_included_in_gosi_base");
 
                     b.Property<bool>("IsIncludedInWps")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_included_in_wps");
 
                     b.Property<bool>("IsTaxable")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_taxable");
 
                     b.Property<int>("MinServiceMonths")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("min_service_months");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_ar");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<bool>("ProRataEligibility")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("pro_rata_eligibility");
 
                     b.Property<bool>("RequiresApproval")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires_approval");
 
                     b.Property<decimal>("TaxRate")
-                        .HasColumnType("decimal(65,30)")
+                        .HasColumnType("numeric")
                         .HasColumnName("tax_rate");
 
                     b.Property<string>("TaxRegion")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("tax_region");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -4290,96 +4290,96 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AddressLine1")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("address_line1");
 
                     b.Property<string>("AddressLine2")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("address_line2");
 
                     b.Property<string>("City")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("city");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<Guid>("CompanyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsHeadOffice")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_head_office");
 
                     b.Property<string>("LaborOfficeCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("labor_office_code");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_ar");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("TimeZoneId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("time_zone_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -4398,11 +4398,11 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateOnly>("DetectedDate")
@@ -4410,30 +4410,30 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("detected_date");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("IsAcknowledged")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_acknowledged");
 
                     b.Property<string>("Severity")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("severity");
 
                     b.Property<string>("SignalType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("signal_type");
 
                     b.Property<string>("SignalValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("signal_value");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -4449,89 +4449,89 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("CurrentCompany")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("current_company");
 
                     b.Property<string>("CurrentJobTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("current_job_title");
 
                     b.Property<string>("EducationLevel")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("education_level");
 
                     b.Property<string>("Email")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("email");
 
                     b.Property<string>("FirstName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("first_name");
 
                     b.Property<string>("LastName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("last_name");
 
                     b.Property<string>("LinkedInUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("linked_in_url");
 
                     b.Property<string>("Nationality")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("nationality");
 
                     b.Property<string>("Phone")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("phone");
 
                     b.Property<string>("ResumeUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("resume_url");
 
                     b.Property<string>("Source")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("source");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<string>("Tags")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("tags");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TotalExperienceYears")
                         .HasPrecision(5, 1)
-                        .HasColumnType("decimal(5,1)")
+                        .HasColumnType("numeric(5,1)")
                         .HasColumnName("total_experience_years");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -4548,80 +4548,80 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("CandidateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("candidate_id");
 
                     b.Property<string>("Concerns")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("concerns");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<decimal>("EducationScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("education_score");
 
                     b.Property<decimal>("ExperienceScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("experience_score");
 
                     b.Property<string>("GeneratedBy")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("generated_by");
 
                     b.Property<bool>("IsAdvisoryOnly")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_advisory_only");
 
                     b.Property<Guid?>("JobApplicationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("job_application_id");
 
                     b.Property<Guid?>("JobOpeningId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("job_opening_id");
 
                     b.Property<decimal>("OverallScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("overall_score");
 
                     b.Property<string>("Recommendation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recommendation");
 
                     b.Property<Guid?>("ResumeParseResultId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("resume_parse_result_id");
 
                     b.Property<string>("SkillMatchDetails")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("skill_match_details");
 
                     b.Property<decimal>("SkillMatchScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("skill_match_score");
 
                     b.Property<string>("Strengths")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("strengths");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -4635,40 +4635,40 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("ApplicationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("application_id");
 
                     b.Property<Guid?>("AssignedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("assigned_by_user_id");
 
                     b.Property<Guid>("CandidateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("candidate_id");
 
                     b.Property<DateTime?>("CompletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("completed_at_utc");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateTime?>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<string>("InvitationToken")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("invitation_token");
 
                     b.Property<bool?>("Passed")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("passed");
 
                     b.Property<string>("ResultJson")
@@ -4677,42 +4677,42 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("result_json");
 
                     b.Property<int?>("ScoreObtained")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("score_obtained");
 
                     b.Property<decimal?>("ScorePercentage")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("score_percentage");
 
                     b.Property<DateTime?>("SentAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("sent_at_utc");
 
                     b.Property<DateTime?>("StartedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("started_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TemplateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("template_id");
 
                     b.Property<string>("TemplateName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("template_name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int?>("TotalMarks")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("total_marks");
 
                     b.HasKey("Id");
@@ -4731,25 +4731,25 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApplicationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("application_id");
 
                     b.Property<Guid>("CandidateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("candidate_id");
 
                     b.Property<string>("DocumentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("document_type");
 
                     b.Property<string>("FileName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_name");
 
                     b.Property<long>("FileSizeBytes")
@@ -4758,29 +4758,29 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("FileUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_url");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("MimeType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("mime_type");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UploadedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("uploaded_at_utc");
 
                     b.Property<string>("UploadedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("uploaded_by_name");
 
                     b.HasKey("Id");
@@ -4796,34 +4796,34 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("ApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("approved_at_utc");
 
                     b.Property<string>("ApprovedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approved_by_name");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<decimal>("DaysEarned")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("days_earned");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateOnly?>("ExpiryDate")
@@ -4832,26 +4832,26 @@ namespace Zayra.Api.Migrations
 
                     b.Property<decimal>("HoursWorked")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("hours_worked");
 
                     b.Property<string>("ManagerApprovalNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("manager_approval_notes");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("WorkType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_type");
 
                     b.Property<DateOnly>("WorkedDate")
@@ -4869,32 +4869,32 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("CompOffCreditId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("comp_off_credit_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<decimal>("DaysUsed")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("days_used");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid?>("LeaveRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_request_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -4906,99 +4906,99 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("DefaultCurrency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("default_currency");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<string>("GosiEmployerId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("gosi_employer_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("Jurisdiction")
                         .IsRequired()
                         .HasMaxLength(30)
-                        .HasColumnType("varchar(30)")
+                        .HasColumnType("character varying(30)")
                         .HasColumnName("jurisdiction");
 
                     b.Property<string>("LegalNameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("legal_name_ar");
 
                     b.Property<string>("LegalNameEn")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("legal_name_en");
 
                     b.Property<string>("QiwaEstablishmentId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("qiwa_establishment_id");
 
                     b.Property<string>("RegistrationNumber")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("registration_number");
 
                     b.Property<string>("TaxNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("tax_number");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("TradeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("trade_name");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<string>("WpsEmployerId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("wps_employer_id");
 
                     b.HasKey("Id");
@@ -5016,39 +5016,39 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("BehavioralIndicators")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("behavioral_indicators");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -5062,64 +5062,64 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("AcknowledgedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("acknowledged_at_utc");
 
                     b.Property<Guid?>("AcknowledgedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("acknowledged_by_user_id");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<Guid?>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<DateTime?>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<DateTime>("GeneratedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("generated_at_utc");
 
                     b.Property<string>("InsightType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("insight_type");
 
                     b.Property<bool>("IsAcknowledged")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_acknowledged");
 
                     b.Property<bool>("IsAdvisory")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_advisory");
 
                     b.Property<string>("RecommendedAction")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recommended_action");
 
                     b.Property<string>("Severity")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("severity");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.HasKey("Id");
@@ -5135,30 +5135,30 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_type");
 
                     b.Property<string>("MetadataJson")
@@ -5168,15 +5168,15 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("PerformedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performed_by_name");
 
                     b.Property<Guid?>("PerformedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("performed_by_user_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -5192,33 +5192,33 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("AcknowledgedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("acknowledged_at_utc");
 
                     b.Property<Guid?>("AcknowledgedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("acknowledged_by_user_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DocumentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("document_type");
 
                     b.Property<Guid>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateOnly?>("ExpiryDate")
@@ -5227,24 +5227,24 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ReminderType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("reminder_type");
 
                     b.Property<DateTime?>("ScheduledAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("scheduled_at_utc");
 
                     b.Property<DateTime?>("SentAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("sent_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -5260,43 +5260,43 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApprovalRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approval_request_id");
 
                     b.Property<string>("AssignedToName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("assigned_to_name");
 
                     b.Property<Guid?>("AssignedToUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("assigned_to_user_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DocumentNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("document_number");
 
                     b.Property<string>("DocumentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("document_type");
 
                     b.Property<Guid>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateOnly>("ExpiryDate")
@@ -5305,7 +5305,7 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<DateOnly?>("RenewalDate")
@@ -5314,15 +5314,15 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -5338,51 +5338,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<int>("AlertDaysBeforeExpiry")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("alert_days_before_expiry");
 
                     b.Property<string>("ApplicableTo")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("applicable_to");
 
                     b.Property<string>("ApplicableValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("applicable_value");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid>("DocTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("doc_type_id");
 
                     b.Property<string>("DocTypeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("doc_type_name");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsMandatory")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_mandatory");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -5398,51 +5398,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Content")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<string>("FeedbackType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("feedback_type");
 
                     b.Property<string>("GivenByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("given_by_name");
 
                     b.Property<Guid?>("GivenByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("given_by_user_id");
 
                     b.Property<bool>("IsPrivate")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_private");
 
                     b.Property<Guid?>("LinkedReviewId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("linked_review_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -5458,12 +5458,12 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<string>("ContentHtmlAr")
@@ -5478,56 +5478,56 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ContractType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("contract_type");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("Language")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("language");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_ar");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Variables")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("variables");
 
                     b.Property<int>("Version")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("version");
 
                     b.HasKey("Id");
@@ -5544,57 +5544,57 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<Guid?>("CompanyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -5613,56 +5613,56 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("DataType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("data_type");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<DateTime>("EffectiveFrom")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("effective_from");
 
                     b.Property<DateTime?>("EffectiveTo")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("effective_to");
 
                     b.Property<bool>("IsOverride")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_override");
 
                     b.Property<string>("RuleKey")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("rule_key");
 
                     b.Property<string>("RuleValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("rule_value");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -5676,78 +5676,78 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("BranchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<Guid?>("CostCenterId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("cost_center_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<int?>("ManagerEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("manager_employee_id");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_ar");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<Guid?>("ParentDepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("parent_department_id");
 
                     b.Property<int>("SortOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("sort_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -5768,93 +5768,93 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<Guid?>("GradeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("grade_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsManagerRole")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_manager_role");
 
                     b.Property<bool>("IsSystemDefault")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_system_default");
 
                     b.Property<string>("JobDescription")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("job_description");
 
                     b.Property<string>("JobGrade")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("job_grade");
 
                     b.Property<string>("JobLevel")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("job_level");
 
                     b.Property<int>("LevelRank")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("level_rank");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("TitleAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title_ar");
 
                     b.Property<string>("TitleEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title_en");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -5873,60 +5873,60 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<int>("AlertDaysBeforeExpiry")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("alert_days_before_expiry");
 
                     b.Property<string>("ApplicableCountries")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("applicable_countries");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<bool>("ExpiryRequired")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("expiry_required");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsMandatory")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_mandatory");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_ar");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -5943,12 +5943,12 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("CalculatedAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("calculated_amount");
 
                     b.Property<DateOnly>("CalculationDate")
@@ -5957,11 +5957,11 @@ namespace Zayra.Api.Migrations
 
                     b.Property<decimal>("EligibleSalary")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("eligible_salary");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("RulesSnapshotJson")
@@ -5971,11 +5971,11 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -5989,32 +5989,32 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("Locale")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("locale");
 
                     b.Property<bool>("RtlEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("rtl_enabled");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<string>("WidgetLayoutJson")
@@ -6034,51 +6034,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<DateTime?>("ActivatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("activated_at_utc");
 
                     b.Property<string>("ArabicName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("arabic_name");
 
                     b.Property<string>("AttendancePolicyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("attendance_policy_code");
 
                     b.Property<string>("BankIban")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("bank_iban");
 
                     b.Property<string>("BankName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("bank_name");
 
                     b.Property<string>("Branch")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("branch");
 
                     b.Property<Guid?>("BranchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
                     b.Property<string>("CivilId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("civil_id");
 
                     b.Property<Guid?>("CompanyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
                     b.Property<DateOnly?>("ConfirmationDate")
@@ -6091,7 +6091,7 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ContractReference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("contract_reference");
 
                     b.Property<DateOnly?>("ContractStartDate")
@@ -6100,29 +6100,29 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ContractType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("contract_type");
 
                     b.Property<string>("CostCenter")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("cost_center");
 
                     b.Property<Guid?>("CostCenterId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("cost_center_id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateOnly?>("DateOfBirth")
@@ -6130,170 +6130,170 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("date_of_birth");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<string>("Department")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("department");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<string>("Designation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation");
 
                     b.Property<Guid?>("DesignationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("designation_id");
 
                     b.Property<string>("DisciplinaryRecords")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("disciplinary_records");
 
                     b.Property<string>("EmergencyContactName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("emergency_contact_name");
 
                     b.Property<string>("EmergencyContactPhone")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("emergency_contact_phone");
 
                     b.Property<string>("EmiratesId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("emirates_id");
 
                     b.Property<string>("EmployeeCode")
                         .IsRequired()
                         .HasMaxLength(50)
-                        .HasColumnType("varchar(50)")
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("employee_code");
 
                     b.Property<string>("EmploymentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employment_type");
 
                     b.Property<string>("EnglishName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("english_name");
 
                     b.Property<string>("EstablishmentId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("establishment_id");
 
                     b.Property<string>("FullName")
                         .IsRequired()
                         .HasMaxLength(150)
-                        .HasColumnType("varchar(150)")
+                        .HasColumnType("character varying(150)")
                         .HasColumnName("full_name");
 
                     b.Property<string>("Gender")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("gender");
 
                     b.Property<string>("GosiReference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("gosi_reference");
 
                     b.Property<string>("Grade")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("grade");
 
                     b.Property<Guid?>("GradeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("grade_id");
 
                     b.Property<int?>("HRBusinessPartnerEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("h_r_business_partner_employee_id");
 
                     b.Property<string>("IdNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("id_number");
 
                     b.Property<string>("IdType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("id_type");
 
                     b.Property<string>("IqamaNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("iqama_number");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("JobTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("job_title");
 
                     b.Property<DateTime>("JoiningDate")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("joining_date");
 
                     b.Property<string>("LaborCardNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("labor_card_number");
 
                     b.Property<string>("LeavePolicyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("leave_policy_code");
 
                     b.Property<int?>("ManagerEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("manager_employee_id");
 
                     b.Property<string>("MaritalStatus")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("marital_status");
 
                     b.Property<string>("MedicalInformation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("medical_information");
 
                     b.Property<string>("MuqeemNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("muqeem_number");
 
                     b.Property<string>("Nationality")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("nationality");
 
                     b.Property<int?>("NoticePeriodDays")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("notice_period_days");
 
                     b.Property<string>("OccupationCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("occupation_code");
 
                     b.Property<DateOnly?>("PassportExpiryDate")
@@ -6306,27 +6306,27 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("PassportNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("passport_number");
 
                     b.Property<string>("PayrollProfileCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payroll_profile_code");
 
                     b.Property<string>("PersonalEmail")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("personal_email");
 
                     b.Property<string>("Phone")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("phone");
 
                     b.Property<string>("PreferredName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("preferred_name");
 
                     b.Property<DateOnly?>("ProbationEndDate")
@@ -6339,32 +6339,32 @@ namespace Zayra.Api.Migrations
 
                     b.Property<decimal>("ProfileCompletenessScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("profile_completeness_score");
 
                     b.Property<string>("ProfilePhotoUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("profile_photo_url");
 
                     b.Property<string>("Qid")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("qid");
 
                     b.Property<string>("QiwaContractNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("qiwa_contract_number");
 
                     b.Property<string>("QiwaEmployeeReference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("qiwa_employee_reference");
 
                     b.Property<string>("QiwaSyncStatus")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("qiwa_sync_status");
 
                     b.Property<DateOnly?>("ResidencyIssueDate")
@@ -6373,61 +6373,61 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ResidencyNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("residency_number");
 
                     b.Property<decimal?>("Salary")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("salary");
 
                     b.Property<string>("SaudiOrNonSaudi")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("saudi_or_non_saudi");
 
                     b.Property<int?>("SecondLevelManagerEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("second_level_manager_employee_id");
 
                     b.Property<string>("ShiftPolicyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("shift_policy_code");
 
                     b.Property<string>("SponsorName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("sponsor_name");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<int?>("SupervisorEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("supervisor_employee_id");
 
                     b.Property<Guid?>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("TerminationReason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("termination_reason");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<Guid?>("UserAccountId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_account_id");
 
                     b.Property<DateOnly?>("VisaExpiryDate")
@@ -6436,7 +6436,7 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("VisaFileNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("visa_file_number");
 
                     b.Property<DateOnly?>("VisaIssueDate")
@@ -6445,22 +6445,22 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("VisaNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("visa_number");
 
                     b.Property<string>("WorkEmail")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_email");
 
                     b.Property<string>("WorkLocation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_location");
 
                     b.Property<string>("WorkLocationId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_location_id");
 
                     b.Property<DateOnly?>("WorkPermitIssueDate")
@@ -6469,17 +6469,17 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("WorkPermitNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_permit_number");
 
                     b.Property<string>("WorkPermitReference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_permit_reference");
 
                     b.Property<string>("WpsBankDetails")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("wps_bank_details");
 
                     b.HasKey("Id");
@@ -6500,33 +6500,33 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Answer")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("answer");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("Question")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("question");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -6540,38 +6540,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateTime?>("DueAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("due_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.HasKey("Id");
@@ -6585,38 +6585,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Audience")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("audience");
 
                     b.Property<string>("Body")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("body");
 
                     b.Property<DateTime?>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<DateTime>("PublishedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("published_at_utc");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.HasKey("Id");
@@ -6630,114 +6630,114 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("BasicSalary")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("basic_salary");
 
                     b.Property<decimal>("BonusAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("bonus_amount");
 
                     b.Property<Guid>("BonusBatchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("bonus_batch_id");
 
                     b.Property<Guid>("BonusTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("bonus_type_id");
 
                     b.Property<string>("BonusTypeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("bonus_type_name");
 
                     b.Property<string>("CalculationMethod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("calculation_method");
 
                     b.Property<decimal>("CalculationValue")
                         .HasPrecision(10, 4)
-                        .HasColumnType("decimal(10,4)")
+                        .HasColumnType("numeric(10,4)")
                         .HasColumnName("calculation_value");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("Department")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department");
 
                     b.Property<Guid>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<int?>("EmployeeIntId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_int_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<decimal>("GrossBonusAmount")
-                        .HasColumnType("decimal(65,30)")
+                        .HasColumnType("numeric")
                         .HasColumnName("gross_bonus_amount");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<string>("PaymentPeriod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payment_period");
 
                     b.Property<Guid?>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<string>("TaxRegion")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("tax_region");
 
                     b.Property<decimal>("TaxWithheld")
-                        .HasColumnType("decimal(65,30)")
+                        .HasColumnType("numeric")
                         .HasColumnName("tax_withheld");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -6753,23 +6753,23 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("AppliedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("applied_at_utc");
 
                     b.Property<DateTime?>("ApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("approved_at_utc");
 
                     b.Property<Guid?>("ApprovedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by_user_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateOnly>("EffectiveDate")
@@ -6777,7 +6777,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("effective_date");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("ProposedChangesJson")
@@ -6786,25 +6786,25 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("proposed_changes_json");
 
                     b.Property<Guid?>("RequestedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("requested_by_user_id");
 
                     b.Property<bool>("RequiresApproval")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires_approval");
 
                     b.Property<string>("SensitiveFields")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("sensitive_fields");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -6818,43 +6818,43 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("ChurnProbability")
                         .HasPrecision(4, 3)
-                        .HasColumnType("decimal(4,3)")
+                        .HasColumnType("numeric(4,3)")
                         .HasColumnName("churn_probability");
 
                     b.Property<DateTime>("ComputedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("computed_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<bool>("IsAdvisoryOnly")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_advisory_only");
 
                     b.Property<string>("ModelVersion")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("model_version");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("TimeHorizon")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("time_horizon");
 
                     b.HasKey("Id");
@@ -6868,32 +6868,32 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<DateOnly?>("ExpiryDate")
@@ -6902,29 +6902,29 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("FieldKey")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("field_key");
 
                     b.Property<string>("FieldLabel")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("field_label");
 
                     b.Property<string>("FieldValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("field_value");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsRequired")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_required");
 
                     b.Property<bool>("IsSensitive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_sensitive");
 
                     b.Property<DateOnly?>("IssueDate")
@@ -6932,15 +6932,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("issue_date");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -6957,16 +6957,16 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApprovalRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approval_request_id");
 
                     b.Property<decimal>("BasicSalary")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("basic_salary");
 
                     b.Property<string>("ContentHtmlAr")
@@ -6981,34 +6981,34 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ContractNumber")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("contract_number");
 
                     b.Property<string>("ContractType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("contract_type");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
 
                     b.Property<string>("CurrencyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency_code");
 
                     b.Property<Guid>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateOnly?>("EndDate")
@@ -7017,38 +7017,38 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("FileUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_url");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("Language")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("language");
 
                     b.Property<Guid?>("PreviousVersionId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("previous_version_id");
 
                     b.Property<DateTime?>("SignedByEmployeeAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("signed_by_employee_at_utc");
 
                     b.Property<string>("SignedByEmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("signed_by_employee_name");
 
                     b.Property<DateTime?>("SignedByHrAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("signed_by_hr_at_utc");
 
                     b.Property<string>("SignedByHrName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("signed_by_hr_name");
 
                     b.Property<DateOnly>("StartDate")
@@ -7057,23 +7057,23 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid?>("TemplateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("template_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<int>("Version")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("version");
 
                     b.HasKey("Id");
@@ -7092,7 +7092,7 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateOnly?>("DateOfBirth")
@@ -7100,26 +7100,26 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("date_of_birth");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("FullName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("full_name");
 
                     b.Property<string>("NationalId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("national_id");
 
                     b.Property<string>("Relationship")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("relationship");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateOnly?>("VisaExpiryDate")
@@ -7137,43 +7137,43 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ApprovalStatus")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approval_status");
 
                     b.Property<string>("ContentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content_type");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<string>("DocumentCategory")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("document_category");
 
                     b.Property<string>("DocumentType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("document_type");
 
                     b.Property<Guid?>("DraftId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("draft_id");
 
                     b.Property<int?>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<DateOnly?>("ExpiryDate")
@@ -7182,15 +7182,15 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("FileName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_name");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsRequired")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_required");
 
                     b.Property<DateOnly?>("IssueDate")
@@ -7198,16 +7198,16 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("issue_date");
 
                     b.Property<DateTime?>("LastDownloadedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_downloaded_at_utc");
 
                     b.Property<Guid?>("LastDownloadedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("last_downloaded_by");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<DateOnly?>("RenewalReminderDate")
@@ -7216,31 +7216,31 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("StorageUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("storage_url");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UploadedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("uploaded_at_utc");
 
                     b.Property<Guid?>("UploadedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("uploaded_by");
 
                     b.Property<DateTime?>("VerifiedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("verified_at_utc");
 
                     b.Property<Guid?>("VerifiedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("verified_by");
 
                     b.Property<int>("VersionNumber")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("version_number");
 
                     b.HasKey("Id");
@@ -7258,43 +7258,43 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("DocumentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("document_type");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("Purpose")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("purpose");
 
                     b.Property<string>("RequestType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("request_type");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -7308,42 +7308,42 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ContentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content_type");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<Guid>("EmployeeDocumentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_document_id");
 
                     b.Property<string>("FileName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_name");
 
                     b.Property<string>("StorageUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("storage_url");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("VersionNumber")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("version_number");
 
                     b.HasKey("Id");
@@ -7358,40 +7358,40 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("ActivatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("activated_at_utc");
 
                     b.Property<DateTime?>("ApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("approved_at_utc");
 
                     b.Property<string>("ArabicName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("arabic_name");
 
                     b.Property<string>("BankIban")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("bank_iban");
 
                     b.Property<string>("BankName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("bank_name");
 
                     b.Property<string>("Branch")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("branch");
 
                     b.Property<string>("CivilId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("civil_id");
 
                     b.Property<DateOnly?>("ContractEndDate")
@@ -7404,30 +7404,30 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ContractType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("contract_type");
 
                     b.Property<string>("CostCenter")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("cost_center");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
 
                     b.Property<string>("CurrentStep")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("current_step");
 
                     b.Property<DateOnly?>("DateOfBirth")
@@ -7436,85 +7436,85 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Department")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department");
 
                     b.Property<string>("Designation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation");
 
                     b.Property<string>("EmergencyContactName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("emergency_contact_name");
 
                     b.Property<string>("EmergencyContactPhone")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("emergency_contact_phone");
 
                     b.Property<string>("EmiratesId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("emirates_id");
 
                     b.Property<string>("EnglishName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("english_name");
 
                     b.Property<string>("Gender")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("gender");
 
                     b.Property<string>("GosiReference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("gosi_reference");
 
                     b.Property<string>("Grade")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("grade");
 
                     b.Property<string>("IqamaNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("iqama_number");
 
                     b.Property<DateTime?>("JoiningDate")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("joining_date");
 
                     b.Property<string>("LaborCardNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("labor_card_number");
 
                     b.Property<string>("LeavePolicyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("leave_policy_code");
 
                     b.Property<int?>("ManagerEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("manager_employee_id");
 
                     b.Property<string>("MaritalStatus")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("marital_status");
 
                     b.Property<string>("MuqeemNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("muqeem_number");
 
                     b.Property<string>("Nationality")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("nationality");
 
                     b.Property<DateOnly?>("PassportExpiryDate")
@@ -7527,22 +7527,22 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("PassportNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("passport_number");
 
                     b.Property<string>("PayrollProfileCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payroll_profile_code");
 
                     b.Property<string>("PersonalEmail")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("personal_email");
 
                     b.Property<string>("Phone")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("phone");
 
                     b.Property<DateOnly?>("ProbationEndDate")
@@ -7551,17 +7551,17 @@ namespace Zayra.Api.Migrations
 
                     b.Property<decimal>("ProfileCompletenessScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("profile_completeness_score");
 
                     b.Property<string>("Qid")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("qid");
 
                     b.Property<string>("QiwaContractNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("qiwa_contract_number");
 
                     b.Property<DateOnly?>("ResidencyIssueDate")
@@ -7570,35 +7570,35 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ResidencyNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("residency_number");
 
                     b.Property<decimal?>("Salary")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("salary");
 
                     b.Property<string>("ShiftPolicyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("shift_policy_code");
 
                     b.Property<string>("SponsorName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("sponsor_name");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<DateTime?>("SubmittedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("submitted_at_utc");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateOnly?>("VisaExpiryDate")
@@ -7607,7 +7607,7 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("VisaFileNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("visa_file_number");
 
                     b.Property<DateOnly?>("VisaIssueDate")
@@ -7616,17 +7616,17 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("VisaNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("visa_number");
 
                     b.Property<string>("WorkEmail")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_email");
 
                     b.Property<string>("WorkLocation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_location");
 
                     b.Property<DateOnly?>("WorkPermitIssueDate")
@@ -7635,12 +7635,12 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("WorkPermitNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_permit_number");
 
                     b.Property<string>("WpsBankDetails")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("wps_bank_details");
 
                     b.HasKey("Id");
@@ -7654,47 +7654,47 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("AchievementPct")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("achievement_pct");
 
                     b.Property<decimal>("ActualValue")
                         .HasPrecision(14, 4)
-                        .HasColumnType("decimal(14,4)")
+                        .HasColumnType("numeric(14,4)")
                         .HasColumnName("actual_value");
 
                     b.Property<Guid?>("ApprovedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by_user_id");
 
                     b.Property<decimal>("BaselineValue")
-                        .HasColumnType("decimal(65,30)")
+                        .HasColumnType("numeric")
                         .HasColumnName("baseline_value");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
 
                     b.Property<Guid?>("CycleId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("cycle_id");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<DateOnly?>("DueDate")
@@ -7702,35 +7702,35 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("due_date");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("KpiType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("kpi_type");
 
                     b.Property<bool>("ManagerApproved")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("manager_approved");
 
                     b.Property<string>("MeasurementUnit")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("measurement_unit");
 
                     b.Property<string>("Priority")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("priority");
 
                     b.Property<DateOnly?>("StartDate")
@@ -7739,30 +7739,30 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<decimal>("TargetValue")
                         .HasPrecision(14, 4)
-                        .HasColumnType("decimal(14,4)")
+                        .HasColumnType("numeric(14,4)")
                         .HasColumnName("target_value");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<decimal>("Weight")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("weight");
 
                     b.HasKey("Id");
@@ -7778,19 +7778,19 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApprovedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by_user_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
 
                     b.Property<DateOnly>("EffectiveDate")
@@ -7798,32 +7798,32 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("effective_date");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EventType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("event_type");
 
                     b.Property<string>("FieldName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("field_name");
 
                     b.Property<string>("NewValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_value");
 
                     b.Property<string>("OldValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("old_value");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("SnapshotJson")
@@ -7832,11 +7832,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("snapshot_json");
 
                     b.Property<Guid?>("SupportingDocumentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("supporting_document_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -7850,85 +7850,85 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("AllowManualOverride")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_manual_override");
 
                     b.Property<Guid?>("CompanyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
                     b.Property<string>("CompanyPrefix")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("company_prefix");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<int>("NextSequence")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("next_sequence");
 
                     b.Property<int>("PaddingLength")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("padding_length");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<bool>("UseBranchPrefix")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("use_branch_prefix");
 
                     b.Property<bool>("UseCountryPrefix")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("use_country_prefix");
 
                     b.Property<bool>("UseDepartmentPrefix")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("use_department_prefix");
 
                     b.Property<bool>("UseYear")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("use_year");
 
                     b.HasKey("Id");
@@ -7942,85 +7942,85 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Accrued")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("accrued");
 
                     b.Property<decimal>("CarriedForward")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("carried_forward");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<decimal>("Encashed")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("encashed");
 
                     b.Property<decimal>("Entitled")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("entitled");
 
                     b.Property<decimal>("Expired")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("expired");
 
                     b.Property<Guid>("LeaveTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_type_id");
 
                     b.Property<string>("LeaveTypeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("leave_type_name");
 
                     b.Property<decimal>("ManualAdjustment")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("manual_adjustment");
 
                     b.Property<bool>("NegativeAllowed")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("negative_allowed");
 
                     b.Property<decimal>("Pending")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("pending");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<decimal>("Used")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("used");
 
                     b.Property<int>("Year")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("year");
 
                     b.HasKey("Id");
@@ -8035,24 +8035,24 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("ApprovedAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("approved_amount");
 
                     b.Property<int>("ApprovedInstallments")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("approved_installments");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateOnly?>("DisbursementDate")
@@ -8060,62 +8060,62 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("disbursement_date");
 
                     b.Property<Guid>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<int?>("EmployeeIntId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_int_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<decimal>("InstallmentAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("installment_amount");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsLockedByPayroll")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_locked_by_payroll");
 
                     b.Property<string>("LoanNumber")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("loan_number");
 
                     b.Property<Guid>("LoanTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("loan_type_id");
 
                     b.Property<string>("LoanTypeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("loan_type_name");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<decimal>("OutstandingBalance")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("outstanding_balance");
 
                     b.Property<string>("RejectionReason")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("rejection_reason");
 
                     b.Property<string>("RepaymentFrequency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("repayment_frequency");
 
                     b.Property<DateOnly?>("RepaymentStartDate")
@@ -8124,33 +8124,33 @@ namespace Zayra.Api.Migrations
 
                     b.Property<decimal>("RequestedAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("requested_amount");
 
                     b.Property<int>("RequestedInstallments")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("requested_installments");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TotalRepaid")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("total_repaid");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -8167,42 +8167,42 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("BiometricEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("biometric_enabled");
 
                     b.Property<string>("DeviceIdentifier")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("device_identifier");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<DateTime?>("LastSeenAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_seen_at_utc");
 
                     b.Property<string>("Platform")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("platform");
 
                     b.Property<string>("PushToken")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("push_token");
 
                     b.Property<DateTime>("RegisteredAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("registered_at_utc");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -8217,42 +8217,42 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Body")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("body");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("IsRead")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_read");
 
                     b.Property<string>("NotificationType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notification_type");
 
                     b.Property<DateTime?>("ReadAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("read_at_utc");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.HasKey("Id");
@@ -8268,19 +8268,19 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("EmailEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("email_enabled");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("PushEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("push_enabled");
 
                     b.Property<string>("QuietHoursJson")
@@ -8289,11 +8289,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("quiet_hours_json");
 
                     b.Property<bool>("SmsEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("sms_enabled");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -8308,101 +8308,101 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AccountNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("account_number");
 
                     b.Property<string>("BankName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("bank_name");
 
                     b.Property<string>("BankRoutingCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("bank_routing_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("EosbEligible")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("eosb_eligible");
 
                     b.Property<string>("Iban")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("iban");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("MolId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("mol_id");
 
                     b.Property<string>("PaymentMethod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payment_method");
 
                     b.Property<string>("PayrollGroup")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payroll_group");
 
                     b.Property<string>("SalaryCurrency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("salary_currency");
 
                     b.Property<string>("SalaryStructureReference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("salary_structure_reference");
 
                     b.Property<string>("SocialInsuranceReference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("social_insurance_reference");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<bool>("WpsEligible")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("wps_eligible");
 
                     b.HasKey("Id");
@@ -8417,32 +8417,32 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid>("PayslipId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payslip_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -8456,27 +8456,27 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("AcknowledgedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("acknowledged_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid>("PolicyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("policy_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -8491,36 +8491,36 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("ContainsSensitiveFields")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("contains_sensitive_fields");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<Guid?>("DecidedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("decided_by");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("RequestedChangesJson")
@@ -8530,11 +8530,11 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -8548,62 +8548,62 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("AcknowledgedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("acknowledged_at_utc");
 
                     b.Property<Guid?>("AcknowledgedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("acknowledged_by");
 
                     b.Property<decimal>("BurnoutRiskScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("burnout_risk_score");
 
                     b.Property<decimal>("ChurnRiskScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("churn_risk_score");
 
                     b.Property<DateTime>("ComputedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("computed_at_utc");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<bool>("IsAdvisoryOnly")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_advisory_only");
 
                     b.Property<string>("OverallRiskLevel")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("overall_risk_level");
 
                     b.Property<decimal>("PerformanceDeclineScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("performance_decline_score");
 
                     b.Property<string>("Recommendations")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recommendations");
 
                     b.Property<string>("RiskFactorsJson")
@@ -8612,7 +8612,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("risk_factors_json");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -8628,25 +8628,25 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("BasicSalary")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("basic_salary");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("Currency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency");
 
                     b.Property<DateOnly>("EffectiveDate")
@@ -8654,49 +8654,49 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("effective_date");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<decimal>("FixedDeduction")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("fixed_deduction");
 
                     b.Property<decimal>("FoodAllowance")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("food_allowance");
 
                     b.Property<decimal>("HousingAllowance")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("housing_allowance");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<decimal>("MobileAllowance")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("mobile_allowance");
 
                     b.Property<decimal>("OtherAllowance")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("other_allowance");
 
                     b.Property<Guid>("SalaryStructureId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("salary_structure_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TransportAllowance")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("transport_allowance");
 
                     b.HasKey("Id");
@@ -8710,38 +8710,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("entity_name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -8755,28 +8755,28 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Comment")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("comment");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<int>("Score")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("score");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -8790,15 +8790,15 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ChangedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("changed_by_user_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateOnly>("EffectiveDate")
@@ -8806,26 +8806,26 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("effective_date");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("NewStatus")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_status");
 
                     b.Property<string>("OldStatus")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("old_status");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -8839,34 +8839,34 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("CurrentBranch")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("current_branch");
 
                     b.Property<string>("CurrentDepartment")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("current_department");
 
                     b.Property<string>("CurrentDesignation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("current_designation");
 
                     b.Property<DateTime?>("CurrentManagerApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("current_manager_approved_at_utc");
 
                     b.Property<int?>("CurrentManagerEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("current_manager_employee_id");
 
                     b.Property<DateOnly>("EffectiveDate")
@@ -8874,52 +8874,52 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("effective_date");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<DateTime?>("HrApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("hr_approved_at_utc");
 
                     b.Property<string>("NewBranch")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_branch");
 
                     b.Property<string>("NewDepartment")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_department");
 
                     b.Property<string>("NewDesignation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_designation");
 
                     b.Property<DateTime?>("NewManagerApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("new_manager_approved_at_utc");
 
                     b.Property<int?>("NewManagerEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("new_manager_employee_id");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<Guid?>("RequestedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("requested_by_user_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -8933,90 +8933,90 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AccessMode")
                         .IsRequired()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("access_mode");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<DateTime?>("InvitationAcceptedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("invitation_accepted_at_utc");
 
                     b.Property<DateTime?>("InvitationExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("invitation_expires_at_utc");
 
                     b.Property<string>("InvitationTokenHash")
                         .IsRequired()
                         .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("invitation_token_hash");
 
                     b.Property<DateTime?>("InvitedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("invited_at_utc");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsPrimary")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_primary");
 
                     b.Property<string>("LoginDisabledReason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("login_disabled_reason");
 
                     b.Property<bool>("RequiresPasswordSetup")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires_password_setup");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -9037,61 +9037,61 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Comments")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("comments");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Improvements")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("improvements");
 
                     b.Property<bool>("IsAnonymous")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_anonymous");
 
                     b.Property<Guid>("ReviewId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("review_id");
 
                     b.Property<int>("ReviewerEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("reviewer_employee_id");
 
                     b.Property<string>("ReviewerName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reviewer_name");
 
                     b.Property<string>("ReviewerRole")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reviewer_role");
 
                     b.Property<decimal>("Score")
                         .HasPrecision(4, 2)
-                        .HasColumnType("decimal(4,2)")
+                        .HasColumnType("numeric(4,2)")
                         .HasColumnName("score");
 
                     b.Property<string>("Strengths")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("strengths");
 
                     b.Property<DateTime?>("SubmittedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("submitted_at");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -9105,7 +9105,7 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
@@ -9113,27 +9113,27 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("amount");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("CreditAccount")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("credit_account");
 
                     b.Property<string>("Currency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency");
 
                     b.Property<string>("DebitAccount")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("debit_account");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<DateOnly>("EntryDate")
@@ -9142,47 +9142,47 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("EventType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("event_type");
 
                     b.Property<bool>("IsReversed")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_reversed");
 
                     b.Property<string>("Period")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("period");
 
                     b.Property<Guid?>("PostedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("posted_by");
 
                     b.Property<string>("PostedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("posted_by_name");
 
                     b.Property<Guid?>("ReversalOfEntryId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("reversal_of_entry_id");
 
                     b.Property<Guid>("SourceEntityId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("source_entity_id");
 
                     b.Property<string>("SourceEntityRef")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("source_entity_ref");
 
                     b.Property<string>("SourceModule")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("source_module");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -9198,28 +9198,28 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("ClosedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("closed_at_utc");
 
                     b.Property<Guid?>("ClosedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("closed_by");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateOnly>("EndDate")
@@ -9227,7 +9227,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("end_date");
 
                     b.Property<bool>("IsCurrent")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_current");
 
                     b.Property<DateOnly>("StartDate")
@@ -9236,15 +9236,15 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("Year")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("year");
 
                     b.HasKey("Id");
@@ -9261,98 +9261,98 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<bool>("EmiratesIdRequired")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("emirates_id_required");
 
                     b.Property<bool>("EosbEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("eosb_enabled");
 
                     b.Property<int>("EosbMinYears")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("eosb_min_years");
 
                     b.Property<decimal>("EosbYears1To5Rate")
                         .HasPrecision(8, 2)
-                        .HasColumnType("decimal(8,2)")
+                        .HasColumnType("numeric(8,2)")
                         .HasColumnName("eosb_years1_to5_rate");
 
                     b.Property<decimal>("EosbYearsAbove5Rate")
                         .HasPrecision(8, 2)
-                        .HasColumnType("decimal(8,2)")
+                        .HasColumnType("numeric(8,2)")
                         .HasColumnName("eosb_years_above5_rate");
 
                     b.Property<int>("IqamaAlertDays")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("iqama_alert_days");
 
                     b.Property<bool>("IqamaRequired")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("iqama_required");
 
                     b.Property<bool>("RamadanHoursEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("ramadan_hours_enabled");
 
                     b.Property<int>("RamadanReducedHoursPerDay")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("ramadan_reduced_hours_per_day");
 
                     b.Property<bool>("SifEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("sif_enabled");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<int>("VisaAlertDays")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("visa_alert_days");
 
                     b.Property<bool>("VisaTrackingEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("visa_tracking_enabled");
 
                     b.Property<string>("WeekendDays")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("weekend_days");
 
                     b.Property<string>("WorkWeek")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_week");
 
                     b.Property<string>("WpsAgentId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("wps_agent_id");
 
                     b.Property<bool>("WpsEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("wps_enabled");
 
                     b.Property<string>("WpsMolCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("wps_mol_code");
 
                     b.HasKey("Id");
@@ -9367,38 +9367,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("GoalId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("goal_id");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<string>("UpdatedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("updated_by_name");
 
                     b.Property<Guid?>("UpdatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by_user_id");
 
                     b.Property<decimal>("UpdatedValue")
                         .HasPrecision(14, 4)
-                        .HasColumnType("decimal(14,4)")
+                        .HasColumnType("numeric(14,4)")
                         .HasColumnName("updated_value");
 
                     b.HasKey("Id");
@@ -9412,33 +9412,33 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Branch")
                         .IsRequired()
                         .HasMaxLength(30)
-                        .HasColumnType("varchar(30)")
+                        .HasColumnType("character varying(30)")
                         .HasColumnName("branch");
 
                     b.Property<string>("Classification")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("classification");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
                         .HasMaxLength(5)
-                        .HasColumnType("varchar(5)")
+                        .HasColumnType("character varying(5)")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateOnly>("EffectiveFrom")
@@ -9450,42 +9450,42 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("effective_to");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<decimal?>("MaxContributoryWage")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("max_contributory_wage");
 
                     b.Property<decimal?>("MinContributoryWage")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("min_contributory_wage");
 
                     b.Property<string>("Notes")
                         .HasMaxLength(500)
-                        .HasColumnType("varchar(500)")
+                        .HasColumnType("character varying(500)")
                         .HasColumnName("notes");
 
                     b.Property<string>("Payer")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("payer");
 
                     b.Property<decimal>("Rate")
                         .HasPrecision(7, 4)
-                        .HasColumnType("decimal(7,4)")
+                        .HasColumnType("numeric(7,4)")
                         .HasColumnName("rate");
 
                     b.Property<string>("SourceReference")
                         .HasMaxLength(200)
-                        .HasColumnType("varchar(200)")
+                        .HasColumnType("character varying(200)")
                         .HasColumnName("source_reference");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -9499,62 +9499,62 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Band")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("band");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<int>("Level")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("level");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -9571,56 +9571,56 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("CategoryId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("category_id");
 
                     b.Property<string>("CategoryName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("category_name");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<DateTime>("DueAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("due_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("Priority")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("priority");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<string>("Subject")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("subject");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -9636,34 +9636,34 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ContentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content_type");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("FileName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_name");
 
                     b.Property<Guid>("HRRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("h_r_request_id");
 
                     b.Property<string>("StorageUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("storage_url");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -9677,29 +9677,29 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<int>("DefaultSlaHours")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("default_sla_hours");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -9714,32 +9714,32 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Comment")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("comment");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid>("HRRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("h_r_request_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -9753,28 +9753,28 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("CategoryId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("category_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("Priority")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("priority");
 
                     b.Property<int>("SlaHours")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("sla_hours");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -9788,34 +9788,34 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("ApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("approved_at_utc");
 
                     b.Property<Guid?>("ApprovedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by_user_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<decimal>("CurrentSalary")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("current_salary");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("DesignationTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation_title");
 
                     b.Property<DateOnly>("EffectiveDate")
@@ -9823,54 +9823,54 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("effective_date");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<decimal>("NewSalary")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("new_salary");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("RecommendedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recommended_by_name");
 
                     b.Property<Guid?>("RecommendedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("recommended_by_user_id");
 
                     b.Property<decimal>("RecommendedIncrementAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("recommended_increment_amount");
 
                     b.Property<decimal>("RecommendedIncrementPct")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("recommended_increment_pct");
 
                     b.Property<Guid>("ReviewId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("review_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -9884,81 +9884,81 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("ApplicationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("application_id");
 
                     b.Property<int>("CommunicationScore")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("communication_score");
 
                     b.Property<string>("Concerns")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("concerns");
 
                     b.Property<int>("CultureFitScore")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("culture_fit_score");
 
                     b.Property<Guid>("InterviewScheduleId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("interview_schedule_id");
 
                     b.Property<string>("InterviewerName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("interviewer_name");
 
                     b.Property<string>("InterviewerRole")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("interviewer_role");
 
                     b.Property<Guid?>("InterviewerUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("interviewer_user_id");
 
                     b.Property<int>("LeadershipScore")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("leadership_score");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<int>("OverallScore")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("overall_score");
 
                     b.Property<int>("ProblemSolvingScore")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("problem_solving_score");
 
                     b.Property<string>("Recommendation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recommendation");
 
                     b.Property<string>("Strengths")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("strengths");
 
                     b.Property<DateTime>("SubmittedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("submitted_at_utc");
 
                     b.Property<int>("TechnicalScore")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("technical_score");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -9974,75 +9974,75 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("ApplicationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("application_id");
 
                     b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("completed_at");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("DurationMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("duration_minutes");
 
                     b.Property<string>("FeedbackNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("feedback_notes");
 
                     b.Property<string>("InterviewType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("interview_type");
 
                     b.Property<string>("InterviewerNames")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("interviewer_names");
 
                     b.Property<string>("Location")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("location");
 
                     b.Property<string>("MeetingLink")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("meeting_link");
 
                     b.Property<string>("Mode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("mode");
 
                     b.Property<int?>("OverallRating")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("overall_rating");
 
                     b.Property<string>("Recommendation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recommendation");
 
                     b.Property<DateTime>("ScheduledAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("scheduled_at");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10056,74 +10056,74 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("AppliedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("applied_at_utc");
 
                     b.Property<string>("CandidateEmail")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("candidate_email");
 
                     b.Property<Guid>("CandidateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("candidate_id");
 
                     b.Property<string>("CandidateName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("candidate_name");
 
                     b.Property<DateTime?>("HiredAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("hired_at_utc");
 
                     b.Property<Guid>("JobOpeningId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("job_opening_id");
 
                     b.Property<string>("JobTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("job_title");
 
                     b.Property<decimal?>("OfferedSalary")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("offered_salary");
 
                     b.Property<Guid?>("OnboardingDraftId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("onboarding_draft_id");
 
                     b.Property<string>("RejectionReason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("rejection_reason");
 
                     b.Property<string>("Stage")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("stage");
 
                     b.Property<DateTime?>("StageChangedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("stage_changed_at_utc");
 
                     b.Property<int>("StageOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("stage_order");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10140,112 +10140,112 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AssignedHrName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("assigned_hr_name");
 
                     b.Property<Guid?>("AssignedHrUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("assigned_hr_user_id");
 
                     b.Property<DateTime?>("ClosedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("closed_at_utc");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<Guid?>("DesignationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("designation_id");
 
                     b.Property<string>("DesignationTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation_title");
 
                     b.Property<string>("EmploymentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employment_type");
 
                     b.Property<int>("FilledCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("filled_count");
 
                     b.Property<int>("HeadCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("head_count");
 
                     b.Property<string>("JobCode")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("job_code");
 
                     b.Property<string>("Location")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("location");
 
                     b.Property<DateTime?>("PublishedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("published_at_utc");
 
                     b.Property<string>("Requirements")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("requirements");
 
                     b.Property<Guid?>("RequisitionId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("requisition_id");
 
                     b.Property<string>("Responsibilities")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("responsibilities");
 
                     b.Property<decimal?>("SalaryFrom")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("salary_from");
 
                     b.Property<decimal?>("SalaryTo")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("salary_to");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.HasKey("Id");
@@ -10262,58 +10262,58 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AcknowledgedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("acknowledged_by_name");
 
                     b.Property<string>("AffectedDepartment")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("affected_department");
 
                     b.Property<int?>("AffectedEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("affected_employee_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Data")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("data");
 
                     b.Property<string>("InsightType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("insight_type");
 
                     b.Property<bool>("IsAcknowledged")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_acknowledged");
 
                     b.Property<string>("Severity")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("severity");
 
                     b.Property<string>("Summary")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("summary");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.HasKey("Id");
@@ -10327,42 +10327,42 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("AccrualDays")
                         .HasPrecision(6, 2)
-                        .HasColumnType("decimal(6,2)")
+                        .HasColumnType("numeric(6,2)")
                         .HasColumnName("accrual_days");
 
                     b.Property<string>("AccrualFrequency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("accrual_frequency");
 
                     b.Property<int>("CarryForwardExpiryDays")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("carry_forward_expiry_days");
 
                     b.Property<decimal>("CarryForwardMaxDays")
                         .HasPrecision(6, 2)
-                        .HasColumnType("decimal(6,2)")
+                        .HasColumnType("numeric(6,2)")
                         .HasColumnName("carry_forward_max_days");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<Guid>("LeavePolicyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_policy_id");
 
                     b.Property<bool>("NegativeBalanceAllowed")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("negative_balance_allowed");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10376,51 +10376,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("ActedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("acted_at_utc");
 
                     b.Property<Guid?>("ApproverId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approver_id");
 
                     b.Property<string>("ApproverName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_name");
 
                     b.Property<string>("ApproverRole")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_role");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Decision")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("decision");
 
                     b.Property<Guid>("LeaveRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_request_id");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<int>("StepNumber")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("step_number");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10434,38 +10434,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ContentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content_type");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("FileName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_name");
 
                     b.Property<Guid>("LeaveRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_request_id");
 
                     b.Property<string>("StorageUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("storage_url");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10479,50 +10479,50 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_type");
 
                     b.Property<string>("NewValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_value");
 
                     b.Property<string>("OldValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("old_value");
 
                     b.Property<string>("PerformedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performed_by_name");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10536,62 +10536,62 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("amount");
 
                     b.Property<decimal>("BalanceAfter")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("balance_after");
 
                     b.Property<decimal>("BalanceBefore")
                         .HasPrecision(7, 2)
-                        .HasColumnType("decimal(7,2)")
+                        .HasColumnType("numeric(7,2)")
                         .HasColumnName("balance_before");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid>("LeaveTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_type_id");
 
                     b.Property<string>("PerformedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performed_by_name");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("Reference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reference");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("TransactionType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("transaction_type");
 
                     b.Property<int>("Year")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("year");
 
                     b.HasKey("Id");
@@ -10605,16 +10605,16 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<DateOnly>("EndDate")
@@ -10622,17 +10622,17 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("end_date");
 
                     b.Property<bool>("IsCompanyWide")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_company_wide");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<DateOnly>("StartDate")
@@ -10640,7 +10640,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("start_date");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10654,47 +10654,47 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid>("LeaveRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_request_id");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("ReviewNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("review_notes");
 
                     b.Property<DateTime?>("ReviewedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("reviewed_at_utc");
 
                     b.Property<string>("ReviewedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reviewed_by_name");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10706,34 +10706,34 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("DelegateEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("delegate_employee_id");
 
                     b.Property<string>("DelegateEmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("delegate_employee_name");
 
                     b.Property<string>("DelegationType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("delegation_type");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateOnly>("EndDate")
@@ -10741,12 +10741,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("end_date");
 
                     b.Property<Guid?>("LeaveRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_request_id");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<DateOnly>("StartDate")
@@ -10755,11 +10755,11 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10773,76 +10773,76 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("AmountPerDay")
                         .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
+                        .HasColumnType("numeric(10,2)")
                         .HasColumnName("amount_per_day");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<decimal>("DaysToEncash")
                         .HasPrecision(6, 2)
-                        .HasColumnType("decimal(6,2)")
+                        .HasColumnType("numeric(6,2)")
                         .HasColumnName("days_to_encash");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<string>("HRNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("h_r_notes");
 
                     b.Property<Guid>("LeaveTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_type_id");
 
                     b.Property<string>("LeaveTypeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("leave_type_name");
 
                     b.Property<string>("PayrollNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payroll_notes");
 
                     b.Property<DateTime?>("ProcessedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("processed_at_utc");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TotalAmount")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("total_amount");
 
                     b.Property<int>("Year")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("year");
 
                     b.HasKey("Id");
@@ -10856,19 +10856,19 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid>("LeaveRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_request_id");
 
                     b.Property<DateOnly>("NewEndDate")
@@ -10881,35 +10881,35 @@ namespace Zayra.Api.Migrations
 
                     b.Property<decimal>("NewTotalDays")
                         .HasPrecision(6, 2)
-                        .HasColumnType("decimal(6,2)")
+                        .HasColumnType("numeric(6,2)")
                         .HasColumnName("new_total_days");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("ReviewNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("review_notes");
 
                     b.Property<DateTime?>("ReviewedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("reviewed_at_utc");
 
                     b.Property<string>("ReviewedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reviewed_by_name");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10921,52 +10921,52 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("amount");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<decimal>("Days")
                         .HasPrecision(6, 2)
-                        .HasColumnType("decimal(6,2)")
+                        .HasColumnType("numeric(6,2)")
                         .HasColumnName("days");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("ImpactType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("impact_type");
 
                     b.Property<Guid>("LeaveRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_request_id");
 
                     b.Property<string>("PayPeriod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("pay_period");
 
                     b.Property<DateTime?>("ProcessedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("processed_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -10980,134 +10980,134 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AccrualMethod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("accrual_method");
 
                     b.Property<decimal>("AnnualEntitlementDays")
                         .HasPrecision(6, 2)
-                        .HasColumnType("decimal(6,2)")
+                        .HasColumnType("numeric(6,2)")
                         .HasColumnName("annual_entitlement_days");
 
                     b.Property<bool>("AppliesOnProbation")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("applies_on_probation");
 
                     b.Property<Guid?>("ApprovalWorkflowId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approval_workflow_id");
 
                     b.Property<Guid?>("BranchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
                     b.Property<int>("CarryForwardExpiry")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("carry_forward_expiry");
 
                     b.Property<decimal>("CarryForwardMax")
                         .HasPrecision(6, 2)
-                        .HasColumnType("decimal(6,2)")
+                        .HasColumnType("numeric(6,2)")
                         .HasColumnName("carry_forward_max");
 
                     b.Property<Guid?>("CompanyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
                     b.Property<string>("ContractType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("contract_type");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("EmploymentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employment_type");
 
                     b.Property<bool>("EncashmentAllowed")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("encashment_allowed");
 
                     b.Property<decimal>("EncashmentMaxDays")
                         .HasPrecision(6, 2)
-                        .HasColumnType("decimal(6,2)")
+                        .HasColumnType("numeric(6,2)")
                         .HasColumnName("encashment_max_days");
 
                     b.Property<string>("Gender")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("gender");
 
                     b.Property<string>("Grade")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("grade");
 
                     b.Property<Guid>("LeaveTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_type_id");
 
                     b.Property<decimal>("MaximumDaysPerRequest")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("maximum_days_per_request");
 
                     b.Property<decimal>("MinimumDaysPerRequest")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("minimum_days_per_request");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<int>("NoticeRequiredDays")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("notice_required_days");
 
                     b.Property<string>("PayrollImpact")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payroll_impact");
 
                     b.Property<bool>("PublicHolidaysIncluded")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("public_holidays_included");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<bool>("WeekendsIncluded")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("weekends_included");
 
                     b.HasKey("Id");
@@ -11121,54 +11121,54 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("BranchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
                     b.Property<Guid?>("CompanyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
                     b.Property<string>("ContractType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("contract_type");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<string>("EmploymentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employment_type");
 
                     b.Property<Guid?>("GradeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("grade_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<Guid>("LeavePolicyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_policy_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -11182,62 +11182,62 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AttachmentPath")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("attachment_path");
 
                     b.Property<string>("CancellationReason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("cancellation_reason");
 
                     b.Property<DateTime?>("CancelledAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("cancelled_at_utc");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DayType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("day_type");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<int?>("DelegateEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("delegate_employee_id");
 
                     b.Property<string>("DelegateEmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("delegate_employee_name");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("DesignationTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation_title");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateOnly>("EndDate")
@@ -11246,49 +11246,49 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("HRApprovalNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("h_r_approval_notes");
 
                     b.Property<decimal>("HoursRequested")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("hours_requested");
 
                     b.Property<bool>("IsEmergency")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_emergency");
 
                     b.Property<Guid>("LeaveTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_type_id");
 
                     b.Property<string>("LeaveTypeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("leave_type_name");
 
                     b.Property<string>("ManagerApprovalNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("manager_approval_notes");
 
                     b.Property<string>("PayrollImpact")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payroll_impact");
 
                     b.Property<Guid?>("PolicyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("policy_id");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("RejectionReason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("rejection_reason");
 
                     b.Property<DateOnly?>("ReturnDate")
@@ -11301,20 +11301,20 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<DateTime?>("SubmittedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("submitted_at_utc");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TotalDays")
                         .HasPrecision(6, 2)
-                        .HasColumnType("decimal(6,2)")
+                        .HasColumnType("numeric(6,2)")
                         .HasColumnName("total_days");
 
                     b.HasKey("Id");
@@ -11330,20 +11330,20 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("DayValue")
                         .HasPrecision(4, 2)
-                        .HasColumnType("decimal(4,2)")
+                        .HasColumnType("numeric(4,2)")
                         .HasColumnName("day_value");
 
                     b.Property<bool>("IsPublicHoliday")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_public_holiday");
 
                     b.Property<bool>("IsWeekend")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_weekend");
 
                     b.Property<DateOnly>("LeaveDate")
@@ -11351,11 +11351,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("leave_date");
 
                     b.Property<Guid>("LeaveRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("leave_request_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -11370,72 +11370,72 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<string>("ColorCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("color_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsHalfDayAllowed")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_half_day_allowed");
 
                     b.Property<bool>("IsHourlyAllowed")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_hourly_allowed");
 
                     b.Property<bool>("IsPaid")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_paid");
 
                     b.Property<int>("MaxConsecutiveDays")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_consecutive_days");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_ar");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<bool>("RequiresAttachment")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires_attachment");
 
                     b.Property<bool>("RequiresReason")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires_reason");
 
                     b.Property<int>("SortOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("sort_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -11452,51 +11452,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApprovedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by");
 
                     b.Property<string>("ApprovedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approved_by_name");
 
                     b.Property<string>("ApproverRole")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_role");
 
                     b.Property<string>("Comments")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("comments");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<Guid>("LoanId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("loan_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<int>("StepOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("step_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -11510,43 +11510,43 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid>("LoanId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("loan_id");
 
                     b.Property<string>("NewValuesJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_values_json");
 
                     b.Property<string>("OldValuesJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("old_values_json");
 
                     b.Property<Guid?>("PerformedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("performed_by");
 
                     b.Property<string>("PerformedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performed_by_name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -11560,21 +11560,21 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("AmountDue")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount_due");
 
                     b.Property<decimal>("AmountPaid")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount_paid");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateOnly>("DueDate")
@@ -11582,11 +11582,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("due_date");
 
                     b.Property<int>("InstallmentNumber")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("installment_number");
 
                     b.Property<Guid>("LoanId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("loan_id");
 
                     b.Property<DateOnly?>("PaidDate")
@@ -11594,16 +11594,16 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("paid_date");
 
                     b.Property<Guid?>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -11620,53 +11620,53 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("AllowEarlySettlement")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_early_settlement");
 
                     b.Property<bool>("AllowRescheduling")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_rescheduling");
 
                     b.Property<int>("CooldownMonthsAfterRepayment")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("cooldown_months_after_repayment");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<Guid>("LoanTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("loan_type_id");
 
                     b.Property<int>("MaxConcurrentLoans")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_concurrent_loans");
 
                     b.Property<decimal>("MaxMultiplierOfSalary")
                         .HasPrecision(8, 2)
-                        .HasColumnType("decimal(8,2)")
+                        .HasColumnType("numeric(8,2)")
                         .HasColumnName("max_multiplier_of_salary");
 
                     b.Property<string>("PolicyName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("policy_name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -11680,38 +11680,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApprovedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by");
 
                     b.Property<string>("ApprovedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approved_by_name");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<Guid>("LoanId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("loan_id");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<decimal>("SettlementAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("settlement_amount");
 
                     b.Property<DateOnly>("SettlementDate")
@@ -11720,11 +11720,11 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("SettlementType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("settlement_type");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -11738,73 +11738,73 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<decimal>("InterestRate")
                         .HasPrecision(8, 4)
-                        .HasColumnType("decimal(8,4)")
+                        .HasColumnType("numeric(8,4)")
                         .HasColumnName("interest_rate");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsInterestFree")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_interest_free");
 
                     b.Property<decimal>("MaxAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("max_amount");
 
                     b.Property<int>("MaxInstallments")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_installments");
 
                     b.Property<int>("MinServiceMonths")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("min_service_months");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_ar");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<string>("RepaymentFrequency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("repayment_frequency");
 
                     b.Property<bool>("RequiresApproval")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires_approval");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -11819,94 +11819,94 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AddressLine1")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("address_line1");
 
                     b.Property<string>("AddressLine2")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("address_line2");
 
                     b.Property<Guid?>("BranchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
                     b.Property<string>("City")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("city");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<decimal?>("GeofenceRadiusMeters")
                         .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
+                        .HasColumnType("numeric(10,2)")
                         .HasColumnName("geofence_radius_meters");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<decimal?>("Latitude")
                         .HasPrecision(10, 7)
-                        .HasColumnType("decimal(10,7)")
+                        .HasColumnType("numeric(10,7)")
                         .HasColumnName("latitude");
 
                     b.Property<decimal?>("Longitude")
                         .HasPrecision(10, 7)
-                        .HasColumnType("decimal(10,7)")
+                        .HasColumnType("numeric(10,7)")
                         .HasColumnName("longitude");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_ar");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<string>("PostalCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("postal_code");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -11923,40 +11923,40 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("EmailAttempted")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("email_attempted");
 
                     b.Property<string>("EventType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("event_type");
 
                     b.Property<string>("FailureReason")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("failure_reason");
 
                     b.Property<string>("IpAddress")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("ip_address");
 
                     b.Property<DateTime>("OccurredAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("occurred_at_utc");
 
                     b.Property<Guid?>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("UserAgent")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("user_agent");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -11976,115 +11976,115 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApprovalRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approval_request_id");
 
                     b.Property<DateTime?>("ApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("approved_at_utc");
 
                     b.Property<decimal?>("BudgetFrom")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("budget_from");
 
                     b.Property<decimal?>("BudgetTo")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("budget_to");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<Guid?>("DesignationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("designation_id");
 
                     b.Property<string>("DesignationTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation_title");
 
                     b.Property<string>("EmploymentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employment_type");
 
                     b.Property<int>("HeadCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("head_count");
 
                     b.Property<string>("Justification")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("justification");
 
                     b.Property<int?>("MaxExperienceYears")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_experience_years");
 
                     b.Property<int?>("MinExperienceYears")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("min_experience_years");
 
                     b.Property<string>("Priority")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("priority");
 
                     b.Property<DateTime?>("RejectedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("rejected_at_utc");
 
                     b.Property<string>("RejectionReason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("rejection_reason");
 
                     b.Property<int?>("RequestedByEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("requested_by_employee_id");
 
                     b.Property<string>("RequestedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("requested_by_name");
 
                     b.Property<Guid?>("RequestedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("requested_by_user_id");
 
                     b.Property<string>("RequiredSkills")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("required_skills");
 
                     b.Property<string>("RequisitionNumber")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("requisition_number");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<DateTime?>("SubmittedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("submitted_at_utc");
 
                     b.Property<DateOnly?>("TargetJoiningDate")
@@ -12092,7 +12092,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("target_joining_date");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -12109,64 +12109,64 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("AllowCustomValues")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_custom_values");
 
                     b.Property<string>("Code")
                         .IsRequired()
                         .HasMaxLength(100)
-                        .HasColumnType("varchar(100)")
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsSystemDefined")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_system_defined");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_ar");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -12183,21 +12183,21 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Code")
                         .IsRequired()
                         .HasMaxLength(100)
-                        .HasColumnType("varchar(100)")
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("ExtraJson")
@@ -12205,49 +12205,49 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("extra_json");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDefault")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_default");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsSystemDefined")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_system_defined");
 
                     b.Property<int>("SortOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("sort_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid>("TypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("type_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<string>("ValueAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("value_ar");
 
                     b.Property<string>("ValueEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("value_en");
 
                     b.HasKey("Id");
@@ -12264,43 +12264,43 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("CreatedByIp")
                         .IsRequired()
                         .HasMaxLength(64)
-                        .HasColumnType("varchar(64)")
+                        .HasColumnType("character varying(64)")
                         .HasColumnName("created_by_ip");
 
                     b.Property<DateTime>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<Guid?>("PlatformUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("platform_user_id");
 
                     b.Property<Guid?>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("TokenHash")
                         .IsRequired()
                         .HasMaxLength(128)
-                        .HasColumnType("varchar(128)")
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("token_hash");
 
                     b.Property<DateTime?>("UsedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("used_at_utc");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -12317,52 +12317,52 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Channel")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("channel");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EntityId")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("entity_name");
 
                     b.Property<string>("Message")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("message");
 
                     b.Property<DateTime?>("ReadAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("read_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("title");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -12376,75 +12376,75 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("BodyAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("body_ar");
 
                     b.Property<string>("BodyEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("body_en");
 
                     b.Property<string>("Channel")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("channel");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("EventType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("event_type");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("SubjectAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("subject_ar");
 
                     b.Property<string>("SubjectEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("subject_en");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<string>("Variables")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("variables");
 
                     b.HasKey("Id");
@@ -12461,71 +12461,71 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<int>("CurrentSequence")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("current_sequence");
 
                     b.Property<string>("EntityType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_type");
 
                     b.Property<bool>("IncludeMonth")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("include_month");
 
                     b.Property<bool>("IncludeYear")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("include_year");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<int>("PaddingLength")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("padding_length");
 
                     b.Property<string>("Prefix")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("prefix");
 
                     b.Property<bool>("ResetYearly")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("reset_yearly");
 
                     b.Property<string>("Separator")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("separator");
 
                     b.Property<string>("Suffix")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("suffix");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -12540,55 +12540,55 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("ApplicationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("application_id");
 
                     b.Property<string>("ApproverName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_name");
 
                     b.Property<string>("ApproverRole")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approver_role");
 
                     b.Property<Guid?>("ApproverUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approver_user_id");
 
                     b.Property<string>("Comments")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("comments");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<Guid>("OfferLetterId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("offer_letter_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<int>("StepOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("step_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -12604,25 +12604,25 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("AcceptedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("accepted_at_utc");
 
                     b.Property<Guid>("ApplicationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("application_id");
 
                     b.Property<decimal>("BasicSalary")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("basic_salary");
 
                     b.Property<string>("CandidateName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("candidate_name");
 
                     b.Property<string>("ContentHtml")
@@ -12632,52 +12632,52 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("DeclineReason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("decline_reason");
 
                     b.Property<DateTime?>("DeclinedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("declined_at_utc");
 
                     b.Property<DateTime>("GeneratedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("generated_at_utc");
 
                     b.Property<decimal>("GrossSalary")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("gross_salary");
 
                     b.Property<decimal>("HousingAllowance")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("housing_allowance");
 
                     b.Property<string>("OfferedDepartment")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("offered_department");
 
                     b.Property<string>("OfferedJobTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("offered_job_title");
 
                     b.Property<decimal>("OtherAllowances")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("other_allowances");
 
                     b.Property<int>("ProbationMonths")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("probation_months");
 
                     b.Property<DateTime?>("ResponseDeadline")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("response_deadline");
 
                     b.Property<DateTime?>("SentAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("sent_at_utc");
 
                     b.Property<DateOnly>("StartDate")
@@ -12686,16 +12686,16 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TransportAllowance")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("transport_allowance");
 
                     b.HasKey("Id");
@@ -12709,52 +12709,52 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ApplicableTo")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("applicable_to");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -12771,29 +12771,29 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApplicationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("application_id");
 
                     b.Property<string>("AssignedToName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("assigned_to_name");
 
                     b.Property<Guid?>("AssignedToUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("assigned_to_user_id");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<Guid?>("ChecklistId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("checklist_id");
 
                     b.Property<DateOnly?>("CompletedDate")
@@ -12801,7 +12801,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("completed_date");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateOnly?>("DueDate")
@@ -12809,43 +12809,43 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("due_date");
 
                     b.Property<Guid?>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("IsMandatory")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_mandatory");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<int>("OrderIndex")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("order_index");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<string>("TaskDescription")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("task_description");
 
                     b.Property<string>("TaskTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("task_title");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -12863,43 +12863,43 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("AmountAdjustment")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount_adjustment");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<decimal>("HoursAdjustment")
                         .HasPrecision(8, 2)
-                        .HasColumnType("decimal(8,2)")
+                        .HasColumnType("numeric(8,2)")
                         .HasColumnName("hours_adjustment");
 
                     b.Property<Guid?>("OvertimeRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("overtime_request_id");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -12911,38 +12911,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ApprovalLevel")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approval_level");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<Guid?>("DecidedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("decided_by_user_id");
 
                     b.Property<string>("Decision")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("decision");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<Guid>("OvertimeRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("overtime_request_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -12956,26 +12956,26 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityName")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_name");
 
                     b.Property<string>("MetadataJson")
@@ -12984,11 +12984,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("metadata_json");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -13002,42 +13002,42 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("BudgetAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("budget_amount");
 
                     b.Property<decimal>("ConsumedAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("consumed_amount");
 
                     b.Property<string>("Currency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<int>("Month")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("month");
 
                     b.Property<Guid?>("ProjectId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("project_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("Year")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("year");
 
                     b.HasKey("Id");
@@ -13051,17 +13051,17 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
                     b.Property<decimal>("ApprovedHours")
                         .HasPrecision(8, 2)
-                        .HasColumnType("decimal(8,2)")
+                        .HasColumnType("numeric(8,2)")
                         .HasColumnName("approved_hours");
 
                     b.Property<string>("CalculationJson")
@@ -13070,34 +13070,34 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("calculation_json");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Currency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<decimal>("HourlyRate")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("hourly_rate");
 
                     b.Property<decimal>("Multiplier")
                         .HasPrecision(6, 3)
-                        .HasColumnType("decimal(6,3)")
+                        .HasColumnType("numeric(6,3)")
                         .HasColumnName("multiplier");
 
                     b.Property<Guid>("OvertimeRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("overtime_request_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13111,38 +13111,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("CompOffDays")
                         .HasPrecision(6, 2)
-                        .HasColumnType("decimal(6,2)")
+                        .HasColumnType("numeric(6,2)")
                         .HasColumnName("comp_off_days");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<decimal>("OvertimeHours")
                         .HasPrecision(8, 2)
-                        .HasColumnType("decimal(8,2)")
+                        .HasColumnType("numeric(8,2)")
                         .HasColumnName("overtime_hours");
 
                     b.Property<Guid>("OvertimeRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("overtime_request_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13154,33 +13154,33 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("DayCategory")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("day_category");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<decimal>("Multiplier")
                         .HasPrecision(6, 3)
-                        .HasColumnType("decimal(6,3)")
+                        .HasColumnType("numeric(6,3)")
                         .HasColumnName("multiplier");
 
                     b.Property<Guid>("OvertimePolicyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("overtime_policy_id");
 
                     b.Property<Guid?>("OvertimeTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("overtime_type_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13194,46 +13194,46 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<decimal>("Hours")
                         .HasPrecision(8, 2)
-                        .HasColumnType("decimal(8,2)")
+                        .HasColumnType("numeric(8,2)")
                         .HasColumnName("hours");
 
                     b.Property<Guid>("OvertimeRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("overtime_request_id");
 
                     b.Property<Guid?>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<DateTime?>("ProcessedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("processed_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13247,100 +13247,100 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("AllowCompOffConversion")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_comp_off_conversion");
 
                     b.Property<Guid?>("BranchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
 
                     b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<decimal>("FixedHourlyRate")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("fixed_hourly_rate");
 
                     b.Property<Guid?>("GradeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("grade_id");
 
                     b.Property<string>("HourlyRateBasis")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("hourly_rate_basis");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<int>("MaximumMinutesPerDay")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("maximum_minutes_per_day");
 
                     b.Property<int>("MinimumMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("minimum_minutes");
 
                     b.Property<int>("MonthlyCapMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("monthly_cap_minutes");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<bool>("RamadanReducedHoursPlaceholder")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("ramadan_reduced_hours_placeholder");
 
                     b.Property<bool>("RequiresApproval")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires_approval");
 
                     b.Property<string>("RoundingRule")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("rounding_rule");
 
                     b.Property<int>("StandardMonthlyHours")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("standard_monthly_hours");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13355,79 +13355,79 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<int>("ApprovedMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("approved_minutes");
 
                     b.Property<Guid?>("AttendanceDailyRecordId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("attendance_daily_record_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateTime>("EndTimeUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("end_time_utc");
 
                     b.Property<Guid?>("OvertimePolicyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("overtime_policy_id");
 
                     b.Property<Guid?>("OvertimeTypeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("overtime_type_id");
 
                     b.Property<Guid?>("ProjectId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("project_id");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<int>("RequestedMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("requested_minutes");
 
                     b.Property<string>("Source")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("source");
 
                     b.Property<DateTime>("StartTimeUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("start_time_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateOnly>("WorkDate")
@@ -13447,20 +13447,20 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<Guid>("OvertimePolicyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("overtime_policy_id");
 
                     b.Property<string>("RuleType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("rule_type");
 
                     b.Property<string>("RuleValueJson")
@@ -13469,7 +13469,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("rule_value_json");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13483,30 +13483,30 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13521,7 +13521,7 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateOnly>("CheckInDate")
@@ -13530,33 +13530,33 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("CheckedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("checked_by_name");
 
                     b.Property<Guid?>("CheckedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("checked_by_user_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<string>("Outcome")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("outcome");
 
                     b.Property<Guid>("PipId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("pip_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13570,11 +13570,11 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateOnly>("DateOfBirth")
@@ -13582,12 +13582,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("date_of_birth");
 
                     b.Property<Guid>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateOnly>("ExpiryDate")
@@ -13596,15 +13596,15 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("FileUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_url");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsHeldByCompany")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_held_by_company");
 
                     b.Property<DateOnly>("IssueDate")
@@ -13613,26 +13613,26 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("IssuingCountry")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("issuing_country");
 
                     b.Property<string>("Nationality")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("nationality");
 
                     b.Property<string>("PassportNumber")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("passport_number");
 
                     b.Property<string>("PlaceOfIssue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("place_of_issue");
 
                     b.Property<Guid?>("RenewalId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("renewal_id");
 
                     b.Property<DateOnly?>("ReturnedToEmployeeDate")
@@ -13641,15 +13641,15 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -13667,11 +13667,11 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DataJson")
@@ -13680,56 +13680,56 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("data_json");
 
                     b.Property<int?>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<bool>("IsAdvisoryOnly")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_advisory_only");
 
                     b.Property<bool>("IsResolved")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_resolved");
 
                     b.Property<string>("Message")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("message");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("ResolutionNote")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("resolution_note");
 
                     b.Property<DateTime?>("ResolvedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("resolved_at_utc");
 
                     b.Property<Guid?>("ResolvedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("resolved_by");
 
                     b.Property<string>("Severity")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("severity");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("ValidationType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("validation_type");
 
                     b.HasKey("Id");
@@ -13745,39 +13745,39 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AdjustmentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("adjustment_type");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13791,29 +13791,29 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AllowanceType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("allowance_type");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13825,38 +13825,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ApprovalLevel")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("approval_level");
 
                     b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
 
                     b.Property<Guid?>("DecidedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("decided_by_user_id");
 
                     b.Property<string>("Decision")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("decision");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -13870,26 +13870,26 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityName")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_name");
 
                     b.Property<string>("MetadataJson")
@@ -13898,11 +13898,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("metadata_json");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid?>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -13916,15 +13916,15 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<int>("Month")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("month");
 
                     b.Property<Guid?>("PayrollGroupId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_group_id");
 
                     b.Property<DateOnly>("PeriodEnd")
@@ -13937,15 +13937,15 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("Year")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("year");
 
                     b.HasKey("Id");
@@ -13959,39 +13959,39 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
                     b.Property<string>("ComponentCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("component_code");
 
                     b.Property<string>("ComponentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("component_name");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("Source")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("source");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14005,39 +14005,39 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
                     b.Property<string>("ComponentCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("component_code");
 
                     b.Property<string>("ComponentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("component_name");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("Source")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("source");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14051,34 +14051,34 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Details")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("details");
 
                     b.Property<int?>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("ExceptionType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("exception_type");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14092,30 +14092,30 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<string>("Currency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14130,49 +14130,49 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("BatchNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("batch_number");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Currency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency");
 
                     b.Property<string>("PaymentMethod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payment_method");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TotalAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("total_amount");
 
                     b.Property<string>("WpsStatus")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("wps_status");
 
                     b.HasKey("Id");
@@ -14186,39 +14186,39 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("Iban")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("iban");
 
                     b.Property<Guid>("PaymentBatchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payment_batch_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("WpsReference")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("wps_reference");
 
                     b.HasKey("Id");
@@ -14232,63 +14232,63 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("CompanyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
 
                     b.Property<int>("EmployeeCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_count");
 
                     b.Property<DateTime?>("LockedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("locked_at_utc");
 
                     b.Property<int>("Month")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("month");
 
                     b.Property<DateTime?>("ProcessedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("processed_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TotalDeductions")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("total_deductions");
 
                     b.Property<decimal>("TotalGrossSalary")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("total_gross_salary");
 
                     b.Property<decimal>("TotalNetSalary")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("total_net_salary");
 
                     b.Property<int>("Year")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("year");
 
                     b.HasKey("Id");
@@ -14304,39 +14304,39 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<decimal>("GrossEarnings")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("gross_earnings");
 
                     b.Property<decimal>("NetPay")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("net_pay");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TotalDeductions")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("total_deductions");
 
                     b.HasKey("Id");
@@ -14351,90 +14351,90 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("BasicSalary")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("basic_salary");
 
                     b.Property<decimal>("Deductions")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("deductions");
 
                     b.Property<string>("Department")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department");
 
                     b.Property<string>("EmployeeCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_code");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<decimal>("GrossSalary")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("gross_salary");
 
                     b.Property<decimal>("HousingAllowance")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("housing_allowance");
 
                     b.Property<decimal>("LoanDeductions")
-                        .HasColumnType("decimal(65,30)")
+                        .HasColumnType("numeric")
                         .HasColumnName("loan_deductions");
 
                     b.Property<decimal>("NetSalary")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("net_salary");
 
                     b.Property<decimal>("OtherAllowances")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("other_allowances");
 
                     b.Property<Guid>("RunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("run_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TransportAllowance")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("transport_allowance");
 
                     b.Property<decimal>("YtdDeductions")
-                        .HasColumnType("decimal(65,30)")
+                        .HasColumnType("numeric")
                         .HasColumnName("ytd_deductions");
 
                     b.Property<decimal>("YtdGross")
-                        .HasColumnType("decimal(65,30)")
+                        .HasColumnType("numeric")
                         .HasColumnName("ytd_gross");
 
                     b.Property<decimal>("YtdNet")
-                        .HasColumnType("decimal(65,30)")
+                        .HasColumnType("numeric")
                         .HasColumnName("ytd_net");
 
                     b.HasKey("Id");
@@ -14449,42 +14449,42 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int?>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("IsResolved")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_resolved");
 
                     b.Property<string>("Message")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("message");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("Severity")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("severity");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14498,41 +14498,41 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("IsPublishedToEss")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_published_to_ess");
 
                     b.Property<string>("Language")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("language");
 
                     b.Property<Guid>("PayrollRunId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payroll_run_id");
 
                     b.Property<string>("PayslipNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payslip_number");
 
                     b.Property<DateTime?>("PublishedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("published_at_utc");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14547,30 +14547,30 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
                     b.Property<string>("ComponentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("component_name");
 
                     b.Property<string>("ComponentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("component_type");
 
                     b.Property<Guid>("PayslipId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payslip_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14584,54 +14584,54 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_type");
 
                     b.Property<string>("NewValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_value");
 
                     b.Property<string>("OldValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("old_value");
 
                     b.Property<string>("PerformedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performed_by_name");
 
                     b.Property<Guid?>("PerformedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("performed_by_user_id");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14647,7 +14647,7 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateOnly?>("CalibrationDeadline")
@@ -14655,44 +14655,44 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("calibration_deadline");
 
                     b.Property<DateTime?>("ClosedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("closed_at_utc");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
 
                     b.Property<string>("CycleType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("cycle_type");
 
                     b.Property<Guid?>("DefaultScorecardTemplateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("default_scorecard_template_id");
 
                     b.Property<bool>("Enable360Feedback")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("enable360_feedback");
 
                     b.Property<bool>("EnableCalibration")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("enable_calibration");
 
                     b.Property<bool>("EnableForcedDistribution")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("enable_forced_distribution");
 
                     b.Property<bool>("EnableSelfAssessment")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("enable_self_assessment");
 
                     b.Property<DateTime?>("LaunchedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("launched_at_utc");
 
                     b.Property<DateOnly?>("ManagerReviewDeadline")
@@ -14701,16 +14701,16 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<DateTime?>("PublishedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("published_at_utc");
 
                     b.Property<DateOnly>("ReviewPeriodEnd")
@@ -14727,11 +14727,11 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14745,47 +14745,47 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("CycleId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("cycle_id");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("DesignationTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation_title");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateTime>("EnrolledAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("enrolled_at_utc");
 
                     b.Property<Guid?>("ScorecardTemplateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("scorecard_template_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14802,34 +14802,34 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("ClosedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("closed_at_utc");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("EmployeeComments")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_comments");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateOnly>("EndDate")
@@ -14838,31 +14838,31 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("HrNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("hr_notes");
 
                     b.Property<string>("ImprovementGoals")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("improvement_goals");
 
                     b.Property<string>("InitiatedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("initiated_by_name");
 
                     b.Property<Guid?>("InitiatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("initiated_by_user_id");
 
                     b.Property<string>("ManagerNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("manager_notes");
 
                     b.Property<string>("PerformanceGaps")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performance_gaps");
 
                     b.Property<DateOnly>("StartDate")
@@ -14871,20 +14871,20 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<string>("SupportPlan")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("support_plan");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid?>("TriggerReviewId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("trigger_review_id");
 
                     b.HasKey("Id");
@@ -14898,39 +14898,39 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Color")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("color");
 
                     b.Property<string>("Label")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("label");
 
                     b.Property<decimal>("MaxScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("max_score");
 
                     b.Property<decimal>("MinScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("min_score");
 
                     b.Property<Guid>("ScaleId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("scale_id");
 
                     b.Property<int>("SortOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("sort_order");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14944,28 +14944,28 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<bool>("IsDefault")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_default");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<int>("ScalePoints")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("scale_points");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -14979,95 +14979,95 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("AttendanceWeight")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("attendance_weight");
 
                     b.Property<decimal>("CompetencyWeight")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("competency_weight");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("DesignationTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation_title");
 
                     b.Property<decimal>("DisciplineWeight")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("discipline_weight");
 
                     b.Property<decimal>("FeedbackWeight")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("feedback_weight");
 
                     b.Property<string>("Grade")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("grade");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDefault")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_default");
 
                     b.Property<decimal>("KpiWeight")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("kpi_weight");
 
                     b.Property<decimal>("MinPassingScore")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("min_passing_score");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<decimal>("ProductivityWeight")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("productivity_weight");
 
                     b.Property<string>("RatingLabels")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("rating_labels");
 
                     b.Property<bool>("Requires360Feedback")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires360_feedback");
 
                     b.Property<bool>("RequiresCalibration")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("requires_calibration");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -15081,51 +15081,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("CanSubDelegate")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("can_sub_delegate");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime?>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<Guid?>("GrantedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("granted_by_user_id");
 
                     b.Property<Guid>("GrantorUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("grantor_user_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("PermissionScope")
                         .IsRequired()
                         .HasMaxLength(2000)
-                        .HasColumnType("varchar(2000)")
+                        .HasColumnType("character varying(2000)")
                         .HasColumnName("permission_scope");
 
                     b.Property<string>("Reason")
                         .IsRequired()
                         .HasMaxLength(500)
-                        .HasColumnType("varchar(500)")
+                        .HasColumnType("character varying(500)")
                         .HasColumnName("reason");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -15139,52 +15139,52 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Body")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("body");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("CreatedByEmail")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("created_by_email");
 
                     b.Property<DateTime?>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<DateTime?>("PublishedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("published_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("status");
 
                     b.Property<string>("TargetPlan")
                         .IsRequired()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("target_plan");
 
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("varchar(200)")
+                        .HasColumnType("character varying(200)")
                         .HasColumnName("title");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -15196,65 +15196,65 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Category")
                         .IsRequired()
                         .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
+                        .HasColumnType("character varying(120)")
                         .HasColumnName("category");
 
                     b.Property<string>("ControlId")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("control_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Description")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<string>("EvidenceNote")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("evidence_note");
 
                     b.Property<string>("EvidenceUrl")
                         .HasMaxLength(1000)
-                        .HasColumnType("varchar(1000)")
+                        .HasColumnType("character varying(1000)")
                         .HasColumnName("evidence_url");
 
                     b.Property<string>("Owner")
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("owner");
 
                     b.Property<DateTime?>("ReviewedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("reviewed_at_utc");
 
                     b.Property<Guid?>("ReviewedByPlatformUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("reviewed_by_platform_user_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(30)
-                        .HasColumnType("varchar(30)")
+                        .HasColumnType("character varying(30)")
                         .HasColumnName("status");
 
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasMaxLength(300)
-                        .HasColumnType("varchar(300)")
+                        .HasColumnType("character varying(300)")
                         .HasColumnName("title");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -15269,27 +15269,27 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Key")
                         .IsRequired()
                         .HasMaxLength(100)
-                        .HasColumnType("varchar(100)")
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("key");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedByPlatformUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by_platform_user_id");
 
                     b.Property<string>("Value")
                         .IsRequired()
                         .HasMaxLength(2000)
-                        .HasColumnType("varchar(2000)")
+                        .HasColumnType("character varying(2000)")
                         .HasColumnName("value");
 
                     b.HasKey("Id");
@@ -15304,67 +15304,67 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AssignedTo")
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("assigned_to");
 
                     b.Property<string>("CompanyName")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("varchar(200)")
+                        .HasColumnType("character varying(200)")
                         .HasColumnName("company_name");
 
                     b.Property<string>("ContactEmail")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("contact_email");
 
                     b.Property<string>("ContactName")
                         .IsRequired()
                         .HasMaxLength(180)
-                        .HasColumnType("varchar(180)")
+                        .HasColumnType("character varying(180)")
                         .HasColumnName("contact_name");
 
                     b.Property<Guid?>("ConvertedToTenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("converted_to_tenant_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Message")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("message");
 
                     b.Property<string>("Notes")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<string>("Phone")
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("phone");
 
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(30)
-                        .HasColumnType("varchar(30)")
+                        .HasColumnType("character varying(30)")
                         .HasColumnName("source");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(30)
-                        .HasColumnType("varchar(30)")
+                        .HasColumnType("character varying(30)")
                         .HasColumnName("status");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -15376,63 +15376,63 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AffectedSystems")
                         .HasMaxLength(500)
-                        .HasColumnType("varchar(500)")
+                        .HasColumnType("character varying(500)")
                         .HasColumnName("affected_systems");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedByPlatformUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by_platform_user_id");
 
                     b.Property<string>("Description")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<DateTime>("OccurredAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("occurred_at_utc");
 
                     b.Property<string>("Reporter")
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("reporter");
 
                     b.Property<string>("Resolution")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("resolution");
 
                     b.Property<DateTime?>("ResolvedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("resolved_at_utc");
 
                     b.Property<string>("Severity")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("severity");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(30)
-                        .HasColumnType("varchar(30)")
+                        .HasColumnType("character varying(30)")
                         .HasColumnName("status");
 
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasMaxLength(300)
-                        .HasColumnType("varchar(300)")
+                        .HasColumnType("character varying(300)")
                         .HasColumnName("title");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -15446,57 +15446,57 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("EndedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("ended_at_utc");
 
                     b.Property<DateTime>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<string>("Reason")
                         .IsRequired()
                         .HasMaxLength(500)
-                        .HasColumnType("varchar(500)")
+                        .HasColumnType("character varying(500)")
                         .HasColumnName("reason");
 
                     b.Property<DateTime>("StartedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("started_at_utc");
 
                     b.Property<string>("StartedByEmail")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("started_by_email");
 
                     b.Property<string>("StartedByIp")
                         .IsRequired()
                         .HasMaxLength(64)
-                        .HasColumnType("varchar(64)")
+                        .HasColumnType("character varying(64)")
                         .HasColumnName("started_by_ip");
 
                     b.Property<string>("TargetUserEmail")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("target_user_email");
 
                     b.Property<Guid>("TargetUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("target_user_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("TokenHash")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("token_hash");
 
                     b.HasKey("Id");
@@ -15512,67 +15512,67 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("email");
 
                     b.Property<string>("FullName")
                         .IsRequired()
                         .HasMaxLength(180)
-                        .HasColumnType("varchar(180)")
+                        .HasColumnType("character varying(180)")
                         .HasColumnName("full_name");
 
                     b.Property<bool>("IsActive")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
 
                     b.Property<DateTime?>("LastLoginAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_login_at_utc");
 
                     b.Property<string>("LastLoginIp")
                         .HasMaxLength(64)
-                        .HasColumnType("varchar(64)")
+                        .HasColumnType("character varying(64)")
                         .HasColumnName("last_login_ip");
 
                     b.Property<DateTime?>("MfaConfiguredAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("mfa_configured_at_utc");
 
                     b.Property<bool>("MfaEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("mfa_enabled");
 
                     b.Property<string>("MfaSecretEncrypted")
                         .HasMaxLength(1024)
-                        .HasColumnType("varchar(1024)")
+                        .HasColumnType("character varying(1024)")
                         .HasColumnName("mfa_secret_encrypted");
 
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasMaxLength(512)
-                        .HasColumnType("varchar(512)")
+                        .HasColumnType("character varying(512)")
                         .HasColumnName("password_hash");
 
                     b.Property<string>("Role")
                         .IsRequired()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("role");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -15587,34 +15587,34 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<string>("Key")
                         .HasMaxLength(80)
-                        .HasColumnType("varchar(80)")
+                        .HasColumnType("character varying(80)")
                         .HasColumnName("key");
 
                     b.Property<string>("Group")
                         .IsRequired()
                         .HasMaxLength(50)
-                        .HasColumnType("varchar(50)")
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("group");
 
                     b.Property<string>("Label")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("varchar(200)")
+                        .HasColumnType("character varying(200)")
                         .HasColumnName("label");
 
                     b.Property<string>("Plan")
                         .IsRequired()
                         .HasMaxLength(30)
-                        .HasColumnType("varchar(30)")
+                        .HasColumnType("character varying(30)")
                         .HasColumnName("plan");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<decimal>("Value")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("value");
 
                     b.HasKey("Key");
@@ -15626,46 +15626,46 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<string>("ModuleKey")
                         .HasMaxLength(60)
-                        .HasColumnType("varchar(60)")
+                        .HasColumnType("character varying(60)")
                         .HasColumnName("module_key");
 
                     b.Property<decimal>("AddonPriceMonthly")
                         .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
+                        .HasColumnType("numeric(10,2)")
                         .HasColumnName("addon_price_monthly");
 
                     b.Property<bool>("IncludedInEnterprise")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("included_in_enterprise");
 
                     b.Property<bool>("IncludedInGrowth")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("included_in_growth");
 
                     b.Property<bool>("IncludedInStarter")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("included_in_starter");
 
                     b.Property<bool>("IncludedInTrial")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("included_in_trial");
 
                     b.Property<bool>("IsEnterpriseOnly")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_enterprise_only");
 
                     b.Property<string>("ModuleName")
                         .IsRequired()
                         .HasMaxLength(100)
-                        .HasColumnType("varchar(100)")
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("module_name");
 
                     b.Property<int>("SortOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("sort_order");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("ModuleKey");
@@ -15677,82 +15677,82 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CompanyName")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("varchar(200)")
+                        .HasColumnType("character varying(200)")
                         .HasColumnName("company_name");
 
                     b.Property<string>("ContactEmail")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("varchar(256)")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("contact_email");
 
                     b.Property<string>("ContactName")
                         .IsRequired()
                         .HasMaxLength(180)
-                        .HasColumnType("varchar(180)")
+                        .HasColumnType("character varying(180)")
                         .HasColumnName("contact_name");
 
                     b.Property<Guid?>("ConvertedToTenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("converted_to_tenant_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<decimal>("EstimatedAnnualAmount")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("estimated_annual_amount");
 
                     b.Property<decimal>("EstimatedMonthlyAmount")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("estimated_monthly_amount");
 
                     b.Property<bool>("NeedsArabic")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("needs_arabic");
 
                     b.Property<string>("Notes")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<int>("NumAdminUsers")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("num_admin_users");
 
                     b.Property<int>("NumBranches")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("num_branches");
 
                     b.Property<int>("NumCompanies")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("num_companies");
 
                     b.Property<int>("NumCountries")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("num_countries");
 
                     b.Property<int>("NumEmployees")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("num_employees");
 
                     b.Property<string>("OrgType")
                         .IsRequired()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("org_type");
 
                     b.Property<string>("Phone")
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("phone");
 
                     b.Property<string>("SelectedModulesJson")
@@ -15763,11 +15763,11 @@ namespace Zayra.Api.Migrations
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("status");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -15783,72 +15783,72 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApprovedByHrUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by_hr_user_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("DesignationTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation_title");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateTime?>("HrApprovedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("hr_approved_at");
 
                     b.Property<string>("HrDecision")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("hr_decision");
 
                     b.Property<string>("HrNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("hr_notes");
 
                     b.Property<string>("ManagerNotes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("manager_notes");
 
                     b.Property<string>("ManagerRecommendation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("manager_recommendation");
 
                     b.Property<DateTime?>("ManagerReviewedAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("manager_reviewed_at");
 
                     b.Property<decimal>("OverallRating")
                         .HasPrecision(4, 2)
-                        .HasColumnType("decimal(4,2)")
+                        .HasColumnType("numeric(4,2)")
                         .HasColumnName("overall_rating");
 
                     b.Property<string>("PerformanceSummary")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performance_summary");
 
                     b.Property<DateOnly>("ProbationEndDate")
@@ -15865,20 +15865,20 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ReviewedByManagerName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reviewed_by_manager_name");
 
                     b.Property<Guid?>("ReviewedByManagerUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("reviewed_by_manager_user_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -15892,29 +15892,29 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("ApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("approved_at_utc");
 
                     b.Property<Guid?>("ApprovedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approved_by_user_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("CurrentDesignation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("current_designation");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<DateOnly>("EffectiveDate")
@@ -15922,44 +15922,44 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("effective_date");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<string>("ProposedDesignation")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("proposed_designation");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("RecommendedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recommended_by_name");
 
                     b.Property<Guid?>("RecommendedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("recommended_by_user_id");
 
                     b.Property<Guid>("ReviewId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("review_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -15973,15 +15973,15 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("CalendarId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("calendar_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<DateOnly>("Date")
@@ -15990,39 +15990,39 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("HijriDate")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("hijri_date");
 
                     b.Property<string>("HolidayType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("holiday_type");
 
                     b.Property<bool>("IsOptional")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_optional");
 
                     b.Property<bool>("IsRecurring")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_recurring");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_ar");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name_en");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -16036,41 +16036,41 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("BranchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
                     b.Property<int>("CalendarYear")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("calendar_year");
 
                     b.Property<Guid?>("CompanyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -16084,51 +16084,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CachedAccessToken")
                         .IsRequired()
                         .HasMaxLength(4000)
-                        .HasColumnType("varchar(4000)")
+                        .HasColumnType("character varying(4000)")
                         .HasColumnName("cached_access_token");
 
                     b.Property<string>("ClientId")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("varchar(200)")
+                        .HasColumnType("character varying(200)")
                         .HasColumnName("client_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EncryptedClientSecret")
                         .IsRequired()
                         .HasMaxLength(2000)
-                        .HasColumnType("varchar(2000)")
+                        .HasColumnType("character varying(2000)")
                         .HasColumnName("encrypted_client_secret");
 
                     b.Property<string>("Environment")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("environment");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("TokenExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("token_expires_at_utc");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -16143,76 +16143,76 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime?>("CompletedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("completed_at_utc");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("DeadLetterReason")
                         .HasMaxLength(500)
-                        .HasColumnType("varchar(500)")
+                        .HasColumnType("character varying(500)")
                         .HasColumnName("dead_letter_reason");
 
                     b.Property<string>("Direction")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("direction");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("ErrorMessage")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("error_message");
 
                     b.Property<int?>("HttpStatusCode")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("http_status_code");
 
                     b.Property<DateTime?>("LastRetriedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_retried_at_utc");
 
                     b.Property<int>("MaxRetries")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_retries");
 
                     b.Property<string>("RequestPayloadJson")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("request_payload_json");
 
                     b.Property<string>("ResponsePayloadJson")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("response_payload_json");
 
                     b.Property<int>("RetryCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("retry_count");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("TriggerSource")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("trigger_source");
 
                     b.Property<Guid?>("TriggeredBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("triggered_by");
 
                     b.HasKey("Id");
@@ -16226,60 +16226,60 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ConfiguredBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("configured_by");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Environment")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("environment");
 
                     b.Property<string>("EstablishmentId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("establishment_id");
 
                     b.Property<string>("EstablishmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("establishment_name");
 
                     b.Property<DateTime?>("LastCheckedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_checked_at_utc");
 
                     b.Property<DateTime?>("LastConnectedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_connected_at_utc");
 
                     b.Property<string>("LastErrorMessage")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("last_error_message");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("UnifiedOrganisationNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("unified_organisation_number");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -16291,54 +16291,54 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_id");
 
                     b.Property<string>("EntityType")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("entity_type");
 
                     b.Property<string>("IpAddress")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("ip_address");
 
                     b.Property<string>("NewValuesJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("new_values_json");
 
                     b.Property<string>("OldValuesJson")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("old_values_json");
 
                     b.Property<string>("PerformedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("performed_by_name");
 
                     b.Property<Guid?>("PerformedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("performed_by_user_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -16352,28 +16352,28 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("DurationMs")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("duration_ms");
 
                     b.Property<string>("ErrorMessage")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("error_message");
 
                     b.Property<string>("ExportFormat")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("export_format");
 
                     b.Property<string>("FileUrl")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_url");
 
                     b.Property<string>("FiltersJson")
@@ -16383,38 +16383,38 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ReportKey")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("report_key");
 
                     b.Property<string>("ReportName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("report_name");
 
                     b.Property<int>("RowCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("row_count");
 
                     b.Property<Guid?>("RunBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("run_by");
 
                     b.Property<string>("RunByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("run_by_name");
 
                     b.Property<Guid?>("ScheduleId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("schedule_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -16430,30 +16430,30 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("DeliveryMethod")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("delivery_method");
 
                     b.Property<string>("ExportFormat")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("export_format");
 
                     b.Property<string>("FiltersJson")
@@ -16463,50 +16463,50 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Frequency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("frequency");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<DateTime?>("LastRunAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_run_at_utc");
 
                     b.Property<DateTime?>("NextRunAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("next_run_at_utc");
 
                     b.Property<string>("Recipients")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recipients");
 
                     b.Property<string>("ReportKey")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("report_key");
 
                     b.Property<string>("ReportName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("report_name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -16520,57 +16520,57 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<DateTime>("EffectiveFrom")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("effective_from");
 
                     b.Property<DateTime?>("EffectiveTo")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("effective_to");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsPrimary")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_primary");
 
                     b.Property<int>("ManagerEmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("manager_employee_id");
 
                     b.Property<string>("RelationshipType")
                         .IsRequired()
                         .HasMaxLength(40)
-                        .HasColumnType("varchar(40)")
+                        .HasColumnType("character varying(40)")
                         .HasColumnName("relationship_type");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -16586,38 +16586,38 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("CandidateId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("candidate_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("FileName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_name");
 
                     b.Property<Guid?>("JobApplicationId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("job_application_id");
 
                     b.Property<string>("ParseStatus")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("parse_status");
 
                     b.Property<DateTime?>("ParsedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("parsed_at_utc");
 
                     b.Property<string>("ParsedBy")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("parsed_by");
 
                     b.Property<string>("ParsedTextJson")
@@ -16627,16 +16627,16 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("RawText")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("raw_text");
 
                     b.Property<string>("StorageUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("storage_url");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -16652,35 +16652,35 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid>("CompetencyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("competency_id");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<string>("DesignationTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("designation_title");
 
                     b.Property<string>("ExpectedLevel")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("expected_level");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("Weight")
                         .HasPrecision(5, 2)
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("numeric(5,2)")
                         .HasColumnName("weight");
 
                     b.HasKey("Id");
@@ -16694,44 +16694,44 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("EmployeeCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_code");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("Iban")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("iban");
 
                     b.Property<string>("MolId")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("mol_id");
 
                     b.Property<decimal>("NetPay")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("net_pay");
 
                     b.Property<string>("RoutingCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("routing_code");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<Guid>("WPSFileBatchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("wps_file_batch_id");
 
                     b.HasKey("Id");
@@ -16745,69 +16745,69 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AdvanceNumber")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("advance_number");
 
                     b.Property<decimal>("ApprovedAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("approved_amount");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<Guid>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<int?>("EmployeeIntId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_int_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<decimal>("InstallmentAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("installment_amount");
 
                     b.Property<int>("Installments")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("installments");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsLockedByPayroll")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_locked_by_payroll");
 
                     b.Property<decimal>("OutstandingBalance")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("outstanding_balance");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<string>("RejectionReason")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("rejection_reason");
 
                     b.Property<DateOnly?>("RepaymentStartDate")
@@ -16816,34 +16816,34 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("RepaymentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("repayment_type");
 
                     b.Property<decimal>("RequestedAmount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("requested_amount");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TotalRepaid")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("total_repaid");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -16860,53 +16860,53 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
                     b.Property<string>("CalculationType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("calculation_type");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<string>("ComponentType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("component_type");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsTaxable")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_taxable");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<decimal>("Percentage")
                         .HasPrecision(6, 3)
-                        .HasColumnType("decimal(6,3)")
+                        .HasColumnType("numeric(6,3)")
                         .HasColumnName("percentage");
 
                     b.Property<Guid?>("SalaryStructureId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("salary_structure_id");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -16920,29 +16920,29 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("code");
 
                     b.Property<Guid?>("CompanyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("Currency")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency");
 
                     b.Property<DateOnly>("EffectiveDate")
@@ -16950,20 +16950,20 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("effective_date");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -16980,12 +16980,12 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<string>("ColumnsJson")
@@ -16994,16 +16994,16 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("columns_json");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("CreatedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("created_by_name");
 
                     b.Property<string>("FiltersJson")
@@ -17012,29 +17012,29 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("filters_json");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<bool>("IsShared")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_shared");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<string>("ReportKey")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("report_key");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -17050,71 +17050,71 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<bool>("AllowMultipleSessions")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_multiple_sessions");
 
                     b.Property<int>("LockoutDurationMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("lockout_duration_minutes");
 
                     b.Property<int>("MaxFailedLoginAttempts")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_failed_login_attempts");
 
                     b.Property<bool>("MfaRequired")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("mfa_required");
 
                     b.Property<int>("PasswordExpiryDays")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("password_expiry_days");
 
                     b.Property<int>("PasswordHistoryCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("password_history_count");
 
                     b.Property<int>("PasswordMinLength")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("password_min_length");
 
                     b.Property<bool>("PasswordRequireDigit")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("password_require_digit");
 
                     b.Property<bool>("PasswordRequireLowercase")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("password_require_lowercase");
 
                     b.Property<bool>("PasswordRequireSpecial")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("password_require_special");
 
                     b.Property<bool>("PasswordRequireUppercase")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("password_require_uppercase");
 
                     b.Property<int>("RefreshTokenExpiryDays")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("refresh_token_expiry_days");
 
                     b.Property<int>("SessionTimeoutMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("session_timeout_minutes");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -17129,7 +17129,7 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateOnly>("AssignedDate")
@@ -17137,44 +17137,44 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("assigned_date");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeId")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<string>("ShiftCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("shift_code");
 
                     b.Property<string>("ShiftColor")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("shift_color");
 
                     b.Property<Guid>("ShiftDefinitionId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("shift_definition_id");
 
                     b.Property<string>("ShiftName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("shift_name");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -17191,53 +17191,53 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<int>("BreakMinutes")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("break_minutes");
 
                     b.Property<string>("Code")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("code");
 
                     b.Property<string>("Color")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("color");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<TimeOnly>("EndTime")
-                        .HasColumnType("time(6)")
+                        .HasColumnType("time without time zone")
                         .HasColumnName("end_time");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
+                        .HasColumnType("character varying(120)")
                         .HasColumnName("name");
 
                     b.Property<TimeOnly>("StartTime")
-                        .HasColumnType("time(6)")
+                        .HasColumnType("time without time zone")
                         .HasColumnName("start_time");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -17252,61 +17252,61 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
                         .HasMaxLength(5)
-                        .HasColumnType("varchar(5)")
+                        .HasColumnType("character varying(5)")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("DataType")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("data_type");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<DateTime>("EffectiveFrom")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("effective_from");
 
                     b.Property<DateTime?>("EffectiveTo")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("effective_to");
 
                     b.Property<string>("Jurisdiction")
                         .IsRequired()
                         .HasMaxLength(30)
-                        .HasColumnType("varchar(30)")
+                        .HasColumnType("character varying(30)")
                         .HasColumnName("jurisdiction");
 
                     b.Property<string>("RuleKey")
                         .IsRequired()
                         .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
+                        .HasColumnType("character varying(120)")
                         .HasColumnName("rule_key");
 
                     b.Property<string>("RuleValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("rule_value");
 
                     b.Property<Guid?>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
@@ -17321,52 +17321,52 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<string>("DataType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("data_type");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<bool>("IsEncrypted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_encrypted");
 
                     b.Property<bool>("IsReadOnly")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_read_only");
 
                     b.Property<string>("SettingKey")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("setting_key");
 
                     b.Property<string>("SettingValue")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("setting_value");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -17380,23 +17380,23 @@ namespace Zayra.Api.Migrations
             modelBuilder.Entity("Zayra.Api.Models.TenantAiUsage", b =>
                 {
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<int>("YearMonth")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("year_month");
 
                     b.Property<int>("BlockedCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("blocked_count");
 
                     b.Property<DateTime>("LastUpdatedUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_updated_utc");
 
                     b.Property<int>("RequestCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("request_count");
 
                     b.Property<long>("TokensUsed")
@@ -17412,50 +17412,50 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("AccentColor")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("accent_color");
 
                     b.Property<string>("CompanyNameAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("company_name_ar");
 
                     b.Property<string>("CompanyNameEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("company_name_en");
 
                     b.Property<string>("FaviconUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("favicon_url");
 
                     b.Property<string>("LogoUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("logo_url");
 
                     b.Property<string>("PortalTitle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("portal_title");
 
                     b.Property<string>("PrimaryColor")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("primary_color");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -17470,7 +17470,7 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("ConfigJson")
@@ -17479,23 +17479,23 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("FeatureKey")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("feature_key");
 
                     b.Property<bool>("IsEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_enabled");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -17510,31 +17510,31 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("FieldKey")
                         .IsRequired()
                         .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
+                        .HasColumnType("character varying(120)")
                         .HasColumnName("field_key");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<string>("Text")
                         .IsRequired()
                         .HasMaxLength(500)
-                        .HasColumnType("varchar(500)")
+                        .HasColumnType("character varying(500)")
                         .HasColumnName("text");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
@@ -17549,25 +17549,25 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("amount");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("CurrencyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency_code");
 
                     b.Property<DateOnly>("DueDate")
@@ -17580,11 +17580,11 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("InvoiceNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("invoice_number");
 
                     b.Property<string>("Notes")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<DateOnly?>("PaidDate")
@@ -17592,32 +17592,32 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("paid_date");
 
                     b.Property<string>("PaymentMethod")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payment_method");
 
                     b.Property<string>("PaymentReference")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("payment_reference");
 
                     b.Property<string>("PeriodDescription")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("period_description");
 
                     b.Property<string>("RecipientEmail")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("recipient_email");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -17633,61 +17633,61 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<decimal>("DiscountAmount")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("discount_amount");
 
                     b.Property<Guid>("InvoiceId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("invoice_id");
 
                     b.Property<decimal>("LineTotal")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("line_total");
 
                     b.Property<int>("Quantity")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("quantity");
 
                     b.Property<int>("SortOrder")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("sort_order");
 
                     b.Property<decimal>("TaxAmount")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("tax_amount");
 
                     b.Property<decimal>("TaxRate")
                         .HasPrecision(6, 4)
-                        .HasColumnType("decimal(6,4)")
+                        .HasColumnType("numeric(6,4)")
                         .HasColumnName("tax_rate");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("UnitPrice")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("unit_price");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -17703,63 +17703,63 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CalendarSystem")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("calendar_system");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<string>("CurrencyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency_code");
 
                     b.Property<string>("DateFormat")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("date_format");
 
                     b.Property<string>("DefaultLanguage")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("default_language");
 
                     b.Property<string>("DefaultTimezone")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("default_timezone");
 
                     b.Property<bool>("HijriDatesEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("hijri_dates_enabled");
 
                     b.Property<bool>("RtlEnabled")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("rtl_enabled");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<string>("WeekStartDay")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("week_start_day");
 
                     b.Property<string>("WorkWeek")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("work_week");
 
                     b.HasKey("Id");
@@ -17774,63 +17774,63 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<decimal>("Amount")
                         .HasPrecision(12, 2)
-                        .HasColumnType("decimal(12,2)")
+                        .HasColumnType("numeric(12,2)")
                         .HasColumnName("amount");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("CurrencyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency_code");
 
                     b.Property<Guid?>("InvoiceId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("invoice_id");
 
                     b.Property<string>("Method")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("method");
 
                     b.Property<string>("Notes")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<DateTime?>("PaidAt")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("paid_at");
 
                     b.Property<Guid?>("ReceivedByPlatformUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("received_by_platform_user_id");
 
                     b.Property<string>("Reference")
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reference");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -17848,73 +17848,73 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("BillingCycle")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("billing_cycle");
 
                     b.Property<string>("BillingEmail")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("billing_email");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("CurrencyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency_code");
 
                     b.Property<DateTime?>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<int>("MaxAdminUsers")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_admin_users");
 
                     b.Property<int>("MaxCompanies")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_companies");
 
                     b.Property<int>("MaxEmployees")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_employees");
 
                     b.Property<int>("MaxUsers")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("max_users");
 
                     b.Property<decimal>("MonthlyAmount")
                         .HasPrecision(10, 2)
-                        .HasColumnType("decimal(10,2)")
+                        .HasColumnType("numeric(10,2)")
                         .HasColumnName("monthly_amount");
 
                     b.Property<string>("Plan")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("plan");
 
                     b.Property<DateTime>("StartedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("started_at_utc");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -17928,45 +17928,45 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("CompanyId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("Role")
                         .IsRequired()
                         .HasMaxLength(80)
-                        .HasColumnType("varchar(80)")
+                        .HasColumnType("character varying(80)")
                         .HasColumnName("role");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<Guid>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -17987,56 +17987,56 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
                     b.Property<string>("Effect")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("effect");
 
                     b.Property<DateTime?>("ExpiresAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
                     b.Property<string>("PermissionKey")
                         .IsRequired()
                         .HasMaxLength(120)
-                        .HasColumnType("varchar(120)")
+                        .HasColumnType("character varying(120)")
                         .HasColumnName("permission_key");
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("reason");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("updated_by");
 
                     b.Property<Guid>("UserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
@@ -18053,30 +18053,30 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("EmiratesIdNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("emirates_id_number");
 
                     b.Property<Guid>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateOnly>("ExpiryDate")
@@ -18085,16 +18085,16 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("FileUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_url");
 
                     b.Property<string>("IqamaNumber")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("iqama_number");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<DateOnly>("IssueDate")
@@ -18102,35 +18102,35 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("issue_date");
 
                     b.Property<Guid?>("RenewalId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("renewal_id");
 
                     b.Property<string>("Sponsor")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("sponsor");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.Property<string>("VisaNumber")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("visa_number");
 
                     b.Property<string>("VisaType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("visa_type");
 
                     b.HasKey("Id");
@@ -18148,51 +18148,51 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<int>("EmployeeCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("employee_count");
 
                     b.Property<string>("FileHash")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_hash");
 
                     b.Property<string>("FormatVersion")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("format_version");
 
                     b.Property<Guid?>("GeneratedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("generated_by_user_id");
 
                     b.Property<Guid>("PaymentBatchId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("payment_batch_id");
 
                     b.Property<string>("SifFileName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("sif_file_name");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TotalSalaryAmount")
-                        .HasColumnType("decimal(65,30)")
+                        .HasColumnType("numeric")
                         .HasColumnName("total_salary_amount");
 
                     b.HasKey("Id");
@@ -18206,25 +18206,25 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("country_code");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<Guid>("EmployeeId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
                     b.Property<string>("EmployeeName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("employee_name");
 
                     b.Property<DateOnly>("ExpiryDate")
@@ -18233,11 +18233,11 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("FileUrl")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("file_url");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<DateOnly>("IssueDate")
@@ -18246,34 +18246,34 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("IssuingAuthority")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("issuing_authority");
 
                     b.Property<string>("PermitNumber")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("permit_number");
 
                     b.Property<string>("PermitType")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("permit_type");
 
                     b.Property<Guid?>("RenewalId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("renewal_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
@@ -18291,96 +18291,96 @@ namespace Zayra.Api.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
                     b.Property<Guid?>("ApprovalRequestId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("approval_request_id");
 
                     b.Property<DateTime?>("ApprovedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("approved_at_utc");
 
                     b.Property<decimal>("BudgetAllocated")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("budget_allocated");
 
                     b.Property<decimal>("BudgetUtilized")
                         .HasPrecision(14, 2)
-                        .HasColumnType("decimal(14,2)")
+                        .HasColumnType("numeric(14,2)")
                         .HasColumnName("budget_utilized");
 
                     b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
                     b.Property<string>("CreatedByName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("created_by_name");
 
                     b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("created_by_user_id");
 
                     b.Property<string>("CurrencyCode")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("currency_code");
 
                     b.Property<int>("CurrentHeadcount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("current_headcount");
 
                     b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("department_id");
 
                     b.Property<string>("DepartmentName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("department_name");
 
                     b.Property<int>("GapCount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("gap_count");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("tinyint(1)")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
                     b.Property<string>("Notes")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("notes");
 
                     b.Property<string>("PlanCode")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("plan_code");
 
                     b.Property<string>("PlanName")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("plan_name");
 
                     b.Property<int>("PlanYear")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("plan_year");
 
                     b.Property<int>("PlannedHeadcount")
-                        .HasColumnType("int")
+                        .HasColumnType("integer")
                         .HasColumnName("planned_headcount");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("varchar(255)")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<Guid>("TenantId")
-                        .HasColumnType("char(36)")
+                        .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");

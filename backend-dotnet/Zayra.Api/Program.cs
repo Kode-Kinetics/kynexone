@@ -4,7 +4,6 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.OpenApi.Models;
@@ -110,13 +109,11 @@ if (string.IsNullOrWhiteSpace(connectionString))
 {
     if (builder.Environment.IsProduction())
         throw new InvalidOperationException("Missing required env var: ConnectionStrings__Default");
-    connectionString = "server=localhost;port=3306;database=zayra;user=root;password=password";
+    connectionString = "Host=localhost;Port=5432;Database=zayra;Username=postgres;Password=password";
 }
 builder.Services.AddDbContextPool<ZayraDbContext>(options => options
-    .UseMySql(connectionString, ServerVersion.Create(new Version(8, 0, 0), Pomelo.EntityFrameworkCore.MySql.Infrastructure.ServerType.MySql),
-        mySqlOptions => mySqlOptions.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(5), errorNumbersToAdd: null))
-    .ReplaceService<IMigrationsSqlGenerator, Zayra.Api.Infrastructure.Common.TiDbMigrationsSqlGenerator>()
-    .ReplaceService<IMigrationCommandExecutor, Zayra.Api.Infrastructure.Common.TiDbMigrationCommandExecutor>()
+    .UseNpgsql(connectionString,
+        npgsqlOptions => npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null))
     .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)));
 
 builder.Services.AddMemoryCache();
