@@ -501,6 +501,15 @@ using (var scope = app.Services.CreateScope())
     await TrySeedAsync("GosiRuleSeeder",      () => GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger), logger);
     await TrySeedAsync("StatutoryRuleSeeder", () => Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.SeedAsync(dbContext, logger), logger);
 
+    // Deactivate garbage demo tenants and seed one clean KSA tenant.
+    // Idempotent: cleanup is a no-op when already deactivated; seed is a no-op when slug exists.
+    await TrySeedAsync("GarbageDemoCleanup", () => CleanDemoKsaSeeder.DeactivateGarbageDemoTenantsAsync(dbContext, logger), logger);
+    await TrySeedAsync("CleanDemoKsaSeeder", () => CleanDemoKsaSeeder.SeedAsync(
+        dbContext,
+        scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
+        authSeeder,
+        logger), logger);
+
     if (isMigrateMode)
     {
         logger.LogInformation("--migrate mode complete. Exiting.");
