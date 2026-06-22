@@ -16219,7 +16219,7 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "Status");
 
-                    b.ToTable("QiwaSyncLogs");
+                    b.ToTable("QiwaSyncLogs", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.QiwaTenantConnection", b =>
@@ -16284,7 +16284,7 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("QiwaTenantConnections");
+                    b.ToTable("QiwaTenantConnections", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.RecruitmentAuditLog", b =>
