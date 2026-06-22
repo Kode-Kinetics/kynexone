@@ -12,7 +12,7 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20260621210054_InitialPostgres")]
+    [Migration("20260622000818_InitialPostgres")]
     partial class InitialPostgres
     {
         /// <inheritdoc />
@@ -702,7 +702,7 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("Answer")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("answer");
 
                     b.Property<string>("CacheKey")
@@ -761,12 +761,12 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("NormalizedQuery")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("normalized_query");
 
                     b.Property<string>("PermissionSignature")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("permission_signature");
 
                     b.Property<int>("PromptTokens")
@@ -805,7 +805,7 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("UserRoleSignature")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("user_role_signature");
 
                     b.HasKey("Id");
@@ -859,7 +859,7 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("LoggedPrompt")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("logged_prompt");
 
                     b.Property<string>("Model")
@@ -881,7 +881,7 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("PromptSummary")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("prompt_summary");
 
                     b.Property<int>("PromptTokens")
@@ -5471,12 +5471,12 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ContentHtmlAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content_html_ar");
 
                     b.Property<string>("ContentHtmlEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content_html_en");
 
                     b.Property<string>("ContractType")
@@ -6974,12 +6974,12 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ContentHtmlAr")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content_html_ar");
 
                     b.Property<string>("ContentHtmlEn")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content_html_en");
 
                     b.Property<string>("ContractNumber")
@@ -12630,7 +12630,7 @@ namespace Zayra.Api.Migrations
 
                     b.Property<string>("ContentHtml")
                         .IsRequired()
-                        .HasColumnType("longtext")
+                        .HasColumnType("text")
                         .HasColumnName("content_html");
 
                     b.Property<string>("DeclineReason")

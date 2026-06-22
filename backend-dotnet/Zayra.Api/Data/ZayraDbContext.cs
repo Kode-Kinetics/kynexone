@@ -1180,7 +1180,7 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.TransportAllowance).HasPrecision(12, 2);
             entity.Property(x => x.OtherAllowances).HasPrecision(12, 2);
             entity.Property(x => x.GrossSalary).HasPrecision(12, 2);
-            entity.Property(x => x.ContentHtml).HasColumnType("longtext");
+            entity.Property(x => x.ContentHtml).HasColumnType("text");
             entity.HasIndex(x => new { x.TenantId, x.ApplicationId });
         });
 
@@ -1721,8 +1721,8 @@ public class ZayraDbContext : DbContext
         {
             entity.ToTable("ai_hr_query_logs");
             entity.HasKey(x => x.Id);
-            entity.Property(x => x.LoggedPrompt).HasColumnType("longtext");
-            entity.Property(x => x.PromptSummary).HasColumnType("longtext");
+            entity.Property(x => x.LoggedPrompt).HasColumnType("text");
+            entity.Property(x => x.PromptSummary).HasColumnType("text");
             entity.Property(x => x.PromptHash).HasMaxLength(128);
             entity.Property(x => x.Provider).HasMaxLength(50);
             entity.Property(x => x.Model).HasMaxLength(100);
@@ -1735,12 +1735,12 @@ public class ZayraDbContext : DbContext
         {
             entity.ToTable("ai_hr_query_cache");
             entity.HasKey(x => x.Id);
-            entity.Property(x => x.NormalizedQuery).HasColumnType("longtext");
-            entity.Property(x => x.Answer).HasColumnType("longtext");
+            entity.Property(x => x.NormalizedQuery).HasColumnType("text");
+            entity.Property(x => x.Answer).HasColumnType("text");
             entity.Property(x => x.QueryHash).HasMaxLength(128);
             entity.Property(x => x.CacheKey).HasMaxLength(191);
-            entity.Property(x => x.UserRoleSignature).HasColumnType("longtext");
-            entity.Property(x => x.PermissionSignature).HasColumnType("longtext");
+            entity.Property(x => x.UserRoleSignature).HasColumnType("text");
+            entity.Property(x => x.PermissionSignature).HasColumnType("text");
             entity.Property(x => x.Provider).HasMaxLength(50);
             entity.Property(x => x.Model).HasMaxLength(100);
             entity.Property(x => x.ResponseStatus).HasMaxLength(50);
@@ -1993,8 +1993,8 @@ public class ZayraDbContext : DbContext
         {
             entity.ToTable("contract_templates");
             entity.HasKey(x => x.Id);
-            entity.Property(x => x.ContentHtmlEn).HasColumnType("longtext");
-            entity.Property(x => x.ContentHtmlAr).HasColumnType("longtext");
+            entity.Property(x => x.ContentHtmlEn).HasColumnType("text");
+            entity.Property(x => x.ContentHtmlAr).HasColumnType("text");
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.IsActive, x.IsDeleted });
         });
@@ -2004,8 +2004,8 @@ public class ZayraDbContext : DbContext
             entity.ToTable("employee_contracts");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.BasicSalary).HasPrecision(14, 2);
-            entity.Property(x => x.ContentHtmlEn).HasColumnType("longtext");
-            entity.Property(x => x.ContentHtmlAr).HasColumnType("longtext");
+            entity.Property(x => x.ContentHtmlEn).HasColumnType("text");
+            entity.Property(x => x.ContentHtmlAr).HasColumnType("text");
             entity.HasIndex(x => new { x.TenantId, x.ContractNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
