@@ -190,7 +190,8 @@ public class EmployeesController : ControllerBase
             if (!string.IsNullOrWhiteSpace(code) && await _db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == code, ct))
             { skipped++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' already exists."); continue; }
 
-            DateTime.TryParse(row.GetValueOrDefault("JoiningDate", string.Empty), out var jd);
+            DateTime.TryParse(row.GetValueOrDefault("JoiningDate", string.Empty), out var jdRaw);
+            var jd = DateTime.SpecifyKind(jdRaw == default ? DateTime.UtcNow : jdRaw, DateTimeKind.Utc);
             var statusVal = row.GetValueOrDefault("Status", string.Empty).Trim();
             var deptNameRaw = row.GetValueOrDefault("Department", string.Empty).Trim();
             var deptCodeRaw = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim().ToUpperInvariant();
