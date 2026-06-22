@@ -93,7 +93,10 @@ public class EmployeesController : ControllerBase
             "Department", "DepartmentCode", "Designation", "JobTitle", "EmploymentType", "ContractType",
             "Status", "JoiningDate",
             // Hierarchy columns — resolved in Pass 2
-            "ManagerEmployeeCode", "SupervisorEmployeeCode"
+            "ManagerEmployeeCode", "SupervisorEmployeeCode",
+            // Payroll columns — creates EmployeePayrollProfile + EmployeeSalaryStructure on import
+            "BasicSalary", "HousingAllowance", "TransportAllowance", "OtherAllowance",
+            "Currency", "IBAN", "BankName", "MolId"
         };
 
     [HttpGet("export")]
@@ -175,6 +178,7 @@ public class EmployeesController : ControllerBase
         var rowNum = 1;
         // Track employee codes created in this batch for Pass 2 resolution
         var batchCodes = new Dictionary<string, Employee>(StringComparer.OrdinalIgnoreCase);
+        var batchPayroll = new Dictionary<string, (Employee emp, Dictionary<string, string> rowData)>(StringComparer.OrdinalIgnoreCase);
 
         // ── Pass 1: create all employee records ──────────────────────────────────
         foreach (var row in rows)
@@ -228,9 +232,54 @@ public class EmployeesController : ControllerBase
             };
             _db.Employees.Add(employee);
             batchCodes[finalCode] = employee;
+            batchPayroll[finalCode] = (employee, row);
             created++;
         }
         await _db.SaveChangesAsync(ct);
+
+        // ── Pass 1b: payroll profiles + salary structures ────────────────────────
+        int payrollProfilesCreated = 0;
+        foreach (var (_, (emp, rowData)) in batchPayroll)
+        {
+            var ibanRaw = rowData.GetValueOrDefault("IBAN", string.Empty).Trim();
+            var bankNameRaw = rowData.GetValueOrDefault("BankName", string.Empty).Trim();
+            var molIdRaw = rowData.GetValueOrDefault("MolId", string.Empty).Trim();
+            var currencyRaw = rowData.GetValueOrDefault("Currency", string.Empty).Trim();
+            var currency = string.IsNullOrWhiteSpace(currencyRaw) ? "SAR" : currencyRaw.ToUpperInvariant();
+            _ = decimal.TryParse(rowData.GetValueOrDefault("BasicSalary", string.Empty), out var basicSalary);
+            _ = decimal.TryParse(rowData.GetValueOrDefault("HousingAllowance", string.Empty), out var housing);
+            _ = decimal.TryParse(rowData.GetValueOrDefault("TransportAllowance", string.Empty), out var transport);
+            _ = decimal.TryParse(rowData.GetValueOrDefault("OtherAllowance", string.Empty), out var other);
+
+            bool hasPayroll = !string.IsNullOrEmpty(ibanRaw) || !string.IsNullOrEmpty(bankNameRaw) ||
+                              !string.IsNullOrEmpty(molIdRaw) || basicSalary > 0 || housing > 0 || transport > 0 || other > 0;
+            if (!hasPayroll) continue;
+
+            _db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
+            {
+                TenantId = tenantId, EmployeeId = emp.Id,
+                BankName = bankNameRaw, Iban = ibanRaw, SalaryCurrency = currency,
+                MolId = molIdRaw, WpsEligible = true, EosbEligible = true, CreatedBy = GetUserId()
+            });
+
+            if (basicSalary > 0 || housing > 0 || transport > 0 || other > 0)
+            {
+                _db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+                {
+                    TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = Guid.Empty,
+                    BasicSalary = basicSalary, HousingAllowance = housing, TransportAllowance = transport,
+                    OtherAllowance = other, Currency = currency,
+                    EffectiveDate = DateOnly.FromDateTime(emp.JoiningDate), IsActive = true, CreatedBy = GetUserId()
+                });
+                emp.Salary = basicSalary + housing + transport + other;
+                if (!string.IsNullOrEmpty(bankNameRaw)) emp.BankName = bankNameRaw;
+                if (!string.IsNullOrEmpty(ibanRaw)) emp.BankIban = ibanRaw;
+                _db.Employees.Update(emp);
+            }
+            payrollProfilesCreated++;
+        }
+        if (payrollProfilesCreated > 0)
+            await _db.SaveChangesAsync(ct);
 
         // ── Pass 2: resolve manager/supervisor codes → IDs ────────────────────────
         int hierarchyLinked = 0;
@@ -319,7 +368,7 @@ public class EmployeesController : ControllerBase
             await _db.SaveChangesAsync(ct);
 
         var allErrors = errors.Concat(hierarchyErrors).Take(30).ToList();
-        return Ok(new { received = rows.Count, created, skipped, hierarchyLinked, errors = allErrors });
+        return Ok(new { received = rows.Count, created, skipped, hierarchyLinked, payrollProfilesCreated, errors = allErrors });
     }
 
     public record ImportEmployeesRequest(string CsvContent);
@@ -428,6 +477,13 @@ public class EmployeesController : ControllerBase
             var desigCol = row.GetValueOrDefault("Designation", string.Empty).Trim().ToUpperInvariant();
             if (!string.IsNullOrEmpty(desigCol) && !desigByTitle.ContainsKey(desigCol))
                 rowWarnings.Add($"Designation '{row.GetValueOrDefault("Designation", "")}' not found — will be unlinked");
+
+            var ibanPreview = row.GetValueOrDefault("IBAN", string.Empty).Trim();
+            if (!string.IsNullOrEmpty(ibanPreview) && !IsValidIbanFormat(ibanPreview))
+                rowWarnings.Add($"IBAN '{ibanPreview}' format looks invalid — will be stored as-is but may fail WPS validation");
+            var basicSalaryPreview = row.GetValueOrDefault("BasicSalary", string.Empty).Trim();
+            if (!string.IsNullOrEmpty(basicSalaryPreview) && !decimal.TryParse(basicSalaryPreview, out _))
+                rowWarnings.Add($"BasicSalary '{basicSalaryPreview}' is not a valid number — salary will not be imported");
 
             bool hasErrors = rowErrors.Count > 0;
             if (!hasErrors)
@@ -1339,6 +1395,14 @@ public class EmployeesController : ControllerBase
     {
         _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId ?? RequireTenant(), EmployeeId = employee.Id, EventType = eventType, EffectiveDate = effectiveDate, SnapshotJson = JsonSerializer.Serialize(employee), CreatedByUserId = GetUserId() });
         await Task.CompletedTask;
+    }
+
+    private static bool IsValidIbanFormat(string iban)
+    {
+        var s = iban.Replace(" ", "").ToUpperInvariant();
+        return s.Length >= 15 && s.Length <= 34
+            && char.IsLetter(s[0]) && char.IsLetter(s[1])
+            && char.IsDigit(s[2]) && char.IsDigit(s[3]);
     }
 
     private bool CanEditSensitive() => User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.HasClaim("permission", "employees.sensitive");

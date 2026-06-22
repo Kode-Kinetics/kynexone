@@ -72,6 +72,128 @@ public class EmployeeModuleTests
         return tenant.Id;
     }
 
+    // ── Test: Employee CSV import with payroll columns creates PayrollProfile + SalaryStructure ──
+
+    [Fact]
+    public async Task EmployeeImport_WithPayrollColumns_CreatesPayrollProfileAndSalaryStructure()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var ctrl = CreateController(db, tenantId);
+
+        const string csv =
+            "EmployeeCode,FullName,WorkEmail,JoiningDate,BasicSalary,HousingAllowance,TransportAllowance,OtherAllowance,Currency,IBAN,BankName,MolId\n" +
+            "EMP-PAY-001,Ahmad Al-Rashidi,ahmad@test.com,2024-01-15,8000,2000,1000,500,SAR,SA0380000000608010167519,Al Rajhi Bank,MOL-001\n";
+
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+
+        var employee = await db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-PAY-001");
+        Assert.NotNull(employee);
+        Assert.Equal(11500m, employee.Salary);
+        Assert.Equal("Al Rajhi Bank", employee.BankName);
+        Assert.Equal("SA0380000000608010167519", employee.BankIban);
+
+        var profile = await db.EmployeePayrollProfiles.FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == employee.Id);
+        Assert.NotNull(profile);
+        Assert.Equal("SA0380000000608010167519", profile.Iban);
+        Assert.Equal("SAR", profile.SalaryCurrency);
+        Assert.Equal("MOL-001", profile.MolId);
+        Assert.True(profile.WpsEligible);
+        Assert.True(profile.EosbEligible);
+
+        var salary = await db.EmployeeSalaryStructures.FirstOrDefaultAsync(s => s.TenantId == tenantId && s.EmployeeId == employee.Id);
+        Assert.NotNull(salary);
+        Assert.Equal(8000m, salary.BasicSalary);
+        Assert.Equal(2000m, salary.HousingAllowance);
+        Assert.Equal(1000m, salary.TransportAllowance);
+        Assert.Equal(500m, salary.OtherAllowance);
+        Assert.Equal("SAR", salary.Currency);
+        Assert.True(salary.IsActive);
+    }
+
+    // ── Test: Currency defaults to SAR when blank ─────────────────────────────
+
+    [Fact]
+    public async Task EmployeeImport_BlankCurrency_DefaultsToSar()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var ctrl = CreateController(db, tenantId);
+
+        const string csv =
+            "EmployeeCode,FullName,JoiningDate,BasicSalary,Currency\n" +
+            "EMP-CUR-001,Test Employee,2024-01-15,5000,\n";
+
+        await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        var employee = await db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-CUR-001");
+        Assert.NotNull(employee);
+        var profile = await db.EmployeePayrollProfiles.FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == employee.Id);
+        Assert.NotNull(profile);
+        Assert.Equal("SAR", profile.SalaryCurrency);
+        var salaryRec = await db.EmployeeSalaryStructures.FirstOrDefaultAsync(s => s.TenantId == tenantId && s.EmployeeId == employee.Id);
+        Assert.NotNull(salaryRec);
+        Assert.Equal("SAR", salaryRec.Currency);
+    }
+
+    // ── Test: Import preview with invalid IBAN produces warning (not error) ───
+
+    [Fact]
+    public async Task EmployeeImportPreview_InvalidIban_ProducesWarning()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var ctrl = CreateController(db, tenantId);
+
+        const string csv =
+            "EmployeeCode,FullName,JoiningDate,IBAN\n" +
+            "EMP-IBAN-001,Test Employee,2024-01-15,INVALID-IBAN\n";
+
+        var result = await ctrl.ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        // Row is WillCreate (not Error) because IBAN issue is a warning only
+        Assert.Contains("WillCreate", json);
+        Assert.Contains("IBAN", json);
+        Assert.Contains("invalid", json);
+        // No DB records created (preview is dry-run)
+        Assert.Equal(0, await db.EmployeePayrollProfiles.CountAsync());
+    }
+
+    // ── Test: 15-row import on a fresh empty tenant succeeds without pre-setup ─
+
+    [Fact]
+    public async Task EmployeeImport_FreshTenant_15Rows_CreatesAll()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var ctrl = CreateController(db, tenantId);
+
+        var headerLine = "EmployeeCode,FullName,Department,JoiningDate,BasicSalary,Currency";
+        var dataLines = Enumerable.Range(1, 15).Select(i =>
+            $"EMP-{i:D3},Employee {i},Engineering,2024-01-01,{5000 + i * 100},SAR");
+        var csv = string.Join("\n", new[] { headerLine }.Concat(dataLines)) + "\n";
+
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("\"created\":15", json);
+        Assert.Contains("\"skipped\":0", json);
+
+        var empCount = await db.Employees.CountAsync(e => e.TenantId == tenantId && !e.IsDeleted);
+        Assert.Equal(15, empCount);
+        // All 15 should have payroll profiles (salary provided)
+        var profileCount = await db.EmployeePayrollProfiles.CountAsync(p => p.TenantId == tenantId);
+        Assert.Equal(15, profileCount);
+        // All 15 should have salary structures
+        var salaryCount = await db.EmployeeSalaryStructures.CountAsync(s => s.TenantId == tenantId);
+        Assert.Equal(15, salaryCount);
+    }
+
     private static EmployeesController CreateController(ZayraDbContext db, Guid tenantId)
     {
         var controller = new EmployeesController(db, new Pbkdf2PasswordHasher(), new AuditService(db), new FakeDocumentStorage(), new NotificationService(db, new FakeEmailService(), NullLogger<NotificationService>.Instance), new FakeHijriDateService(), new Zayra.Api.Infrastructure.Common.DataScopeService(db), new FakeLetterService());

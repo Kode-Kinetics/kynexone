@@ -413,7 +413,7 @@ export function EmployeesPage() {
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Employee Management</h1>
-          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{total} live employee records from MySQL</p>
+          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{total} employee records</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <ImportExportToolbar
