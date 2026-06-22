@@ -487,10 +487,9 @@ export default function CommandCenter() {
             <Link href="/platform/system-health" className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors">Details →</Link>
           </div>
           <div className="px-4 py-1">
-            <HealthRow label="Database"  status={health?.components.database.status ?? 'unknown'} loading={loading} />
-            <HealthRow label="SMTP"      status={health?.components.smtp.status ?? 'unknown'}     loading={loading} />
-            <HealthRow label="Redis"     status={health?.components.redis.status ?? 'unknown'}    loading={loading} />
-            <HealthRow label="Workers"   status={health?.components.jobs.status ?? 'unknown'}     loading={loading} />
+            <HealthRow label="Database" status={health?.components.database.status ?? 'unknown'} loading={loading} />
+            <HealthRow label="SMTP"     status={health?.components.smtp.status ?? 'unknown'}     loading={loading} />
+            <HealthRow label="Redis"    status={health?.components.redis.status ?? 'unknown'}    loading={loading} />
           </div>
           {!loading && health && (
             <div className="px-4 pt-2 pb-3">

@@ -79,13 +79,23 @@ export function LoginPage() {
   const [totpCode,     setTotpCode]     = useState('');
 
   useEffect(() => {
+    // Platform-admin impersonation: ?impersonate=<tenant-audience-jwt>
+    // The backend already minted a scoped 1-hour token; just store it and redirect.
+    // The token carries TenantAudience, so platform endpoints remain inaccessible.
+    const impersonateToken = searchParams?.get('impersonate');
+    if (impersonateToken) {
+      localStorage.removeItem('zayra_refresh_token');
+      localStorage.setItem('zayra_access_token', impersonateToken);
+      router.replace('/dashboard');
+      return;
+    }
     const wsParam = searchParams?.get('workspace') ?? searchParams?.get('w');
     if (wsParam) { setTenantSlug(wsParam); setTenantLocked(true); return; }
     if (typeof window === 'undefined') return;
     const parts = window.location.hostname.split('.');
     const skip = new Set(['www', 'app', 'admin', 'mail', 'localhost']);
     if (parts.length >= 3 && !skip.has(parts[0])) setTenantSlug(parts[0]);
-  }, [searchParams]);
+  }, [searchParams, router]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault(); setError(''); setLoading(true);

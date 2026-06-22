@@ -164,12 +164,12 @@ public class PlatformHealthTests : PlatformTestBase
     // ── Plans endpoint ─────────────────────────────────────────────────────────
 
     [Fact]
-    public void GetPlans_Returns200WithFourStandardPlans()
+    public async Task GetPlans_Returns200WithFourStandardPlans()
     {
         using var db    = CreateDb();
         var controller  = CreateController(db);
 
-        var result = controller.GetPlans();
+        var result = await controller.GetPlans(CancellationToken.None);
 
         var ok   = result.Should().BeOfType<OkObjectResult>().Subject;
         var json = JsonSerializer.Serialize(ok.Value);
