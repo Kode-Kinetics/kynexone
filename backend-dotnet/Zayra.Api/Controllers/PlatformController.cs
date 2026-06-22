@@ -1278,10 +1278,12 @@ public class PlatformController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(req.Email) && !req.Email.Equals(user.Email, StringComparison.OrdinalIgnoreCase))
         {
-            var emailTaken = await _db.Users.AnyAsync(u => u.Email == req.Email.Trim() && u.Id != userId && !u.IsDeleted, ct);
+            var normalizedNewEmail = Infrastructure.Auth.AuthService.Normalize(req.Email);
+            var emailTaken = await _db.Users.AnyAsync(u => u.NormalizedEmail == normalizedNewEmail && u.Id != userId && !u.IsDeleted, ct);
             if (emailTaken) return BadRequest(new { message = "Email address is already in use by another user." });
             changes["email"] = new System.Text.Json.Nodes.JsonArray(user.Email, req.Email.Trim());
             user.Email = req.Email.Trim();
+            user.NormalizedEmail = normalizedNewEmail;
         }
 
         if (!string.IsNullOrWhiteSpace(req.Status) && req.Status != user.Status)

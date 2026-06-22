@@ -134,7 +134,8 @@ public class TenantAdminController : ControllerBase
 
         if (tenantId is null && !string.IsNullOrWhiteSpace(slug))
         {
-            var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Slug == slug, ct);
+            var normalizedSlug = slug.Trim().ToLowerInvariant();
+            var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Slug == normalizedSlug, ct);
             tenantId = tenant?.Id;
         }
 

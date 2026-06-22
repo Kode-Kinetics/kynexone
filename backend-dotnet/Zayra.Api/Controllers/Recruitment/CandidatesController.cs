@@ -87,7 +87,8 @@ public class CandidatesController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
 
-        var exists = await _db.Candidates.AnyAsync(c => c.TenantId == tenantId && c.Email == req.Email, ct);
+        var normalizedCandidateEmail = req.Email?.Trim().ToLowerInvariant() ?? "";
+        var exists = await _db.Candidates.AnyAsync(c => c.TenantId == tenantId && c.Email == normalizedCandidateEmail, ct);
         if (exists) return Conflict(new { message = "A candidate with this email already exists." });
 
         var c = new Candidate
@@ -95,7 +96,7 @@ public class CandidatesController : ControllerBase
             TenantId = tenantId,
             FirstName = req.FirstName,
             LastName = req.LastName,
-            Email = req.Email,
+            Email = normalizedCandidateEmail,
             Phone = req.Phone,
             CurrentJobTitle = req.CurrentJobTitle,
             CurrentCompany = req.CurrentCompany,

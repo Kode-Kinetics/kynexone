@@ -111,7 +111,7 @@ public class AuthSeeder : IAuthSeeder
                         if (existingSet.Contains(perm.Id)) continue;
                         if (!adminAll) continue; // only patch Admin role here; other roles stay as seeded
                         await _db.Database.ExecuteSqlRawAsync(
-                            "INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES ({0}, {1})",
+                            "INSERT INTO role_permissions (role_id, permission_id) VALUES ({0}, {1}) ON CONFLICT DO NOTHING",
                             role.Id, perm.Id);
                     }
                 }

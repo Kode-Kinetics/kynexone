@@ -6,7 +6,7 @@ import Link from 'next/link';
 import {
   LayoutDashboard, Building2, UserPlus, Users, Shield, CreditCard,
   Zap, Brain, Megaphone, Headphones, Lock, FileCheck, FileText,
-  Activity, Settings, Bell, Search, LogOut, ChevronRight,
+  Activity, Settings, Search, LogOut, ChevronRight,
   MonitorPlay, Menu, X, CheckCircle, AlertTriangle, Circle,
 } from 'lucide-react';
 import { Logo } from '@/src/components/Logo';
@@ -301,15 +301,7 @@ function CommandBar({ onMenuOpen }: { onMenuOpen: () => void }) {
           <span className="text-[11px] font-medium text-emerald-400">Operational</span>
         </div>
 
-        {/* Notifications */}
-        <button
-          type="button"
-          className="relative h-8 w-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-white hover:bg-white/[0.06] transition-colors"
-          title="Notifications — TODO: /api/platform/notifications"
-        >
-          <Bell className="h-4 w-4" />
-          {/* TODO: real count from /api/platform/notifications */}
-        </button>
+        {/* Notifications — endpoint not yet implemented; button hidden until /api/platform/notifications exists */}
       </div>
     </header>
   );

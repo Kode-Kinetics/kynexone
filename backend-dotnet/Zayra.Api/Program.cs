@@ -429,14 +429,14 @@ app.MapControllers();
 app.MapGet("/health", async (ZayraDbContext db) =>
 {
     // Use raw ADO.NET to bypass EF Core's retry execution strategy in the health path.
-    // Retries on a health check amplify load on TiDB serverless; a single fast ping suffices.
+    // Fast single-query ping — avoids EF Core retry amplification on health checks.
     try
     {
         var conn = db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open)
             await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()";
+        cmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema()";
         var tableCount = Convert.ToInt32(await cmd.ExecuteScalarAsync());
         return Results.Ok(new { status = "healthy", utc = DateTime.UtcNow, db = "connected", tables = tableCount });
     }
@@ -472,33 +472,34 @@ using (var scope = app.Services.CreateScope())
     await dbContext.Database.MigrateAsync();
     logger.LogInformation("EF Core migrations complete.");
 
-    // Seed data — always non-fatal; logs on failure but never crashes the web process.
-    try
+    // Seed data — each step is independently non-fatal so one failure never
+    // prevents subsequent seeders from running (GOSI/Statutory rules must run
+    // even when DemoDataSeeder fails, for example).
+    static async Task TrySeedAsync(string name, Func<Task> seed, ILogger log)
     {
-        var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
-        await authSeeder.SeedAsync();
-
-        var seedDemoData =
-            string.Equals(Environment.GetEnvironmentVariable("SEED_DEMO_DATA"), "true", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(app.Configuration["SeedAdmin:SeedDemoData"], "true", StringComparison.OrdinalIgnoreCase);
-
-        logger.LogInformation("Demo data seeding: {State} (environment={Env})",
-            seedDemoData ? "ENABLED" : "DISABLED", app.Environment.EnvironmentName);
-
-        if (seedDemoData)
-            await DemoDataSeeder.SeedAsync(
-                dbContext,
-                scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-                authSeeder,
-                logger);
-
-        await GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger);
-        await Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.SeedAsync(dbContext, logger);
+        try { await seed(); }
+        catch (Exception ex) { log.LogError(ex, "Seeder '{Name}' failed — continuing startup.", name); }
     }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Seed step failed — schema may be missing. Run '--migrate' job first.");
-    }
+
+    var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
+    await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);
+
+    var seedDemoData =
+        string.Equals(Environment.GetEnvironmentVariable("SEED_DEMO_DATA"), "true", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(app.Configuration["SeedAdmin:SeedDemoData"], "true", StringComparison.OrdinalIgnoreCase);
+
+    logger.LogInformation("Demo data seeding: {State} (environment={Env})",
+        seedDemoData ? "ENABLED" : "DISABLED", app.Environment.EnvironmentName);
+
+    if (seedDemoData)
+        await TrySeedAsync("DemoDataSeeder", () => DemoDataSeeder.SeedAsync(
+            dbContext,
+            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
+            authSeeder,
+            logger), logger);
+
+    await TrySeedAsync("GosiRuleSeeder",      () => GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger), logger);
+    await TrySeedAsync("StatutoryRuleSeeder", () => Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.SeedAsync(dbContext, logger), logger);
 
     if (isMigrateMode)
     {
