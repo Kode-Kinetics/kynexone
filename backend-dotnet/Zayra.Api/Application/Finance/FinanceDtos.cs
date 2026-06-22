@@ -133,6 +133,12 @@ public record EmployeeBonusDto(
 /// (the ESS endpoint uses a separate path that passes includeSensitive = true because
 /// the scope filter already constrains to their own EmployeeId).
 /// </summary>
+public record PayrollDeductionLineDto(
+    string Code,
+    string Name,
+    decimal Amount,
+    string Source);
+
 public record PayrollSlipDto(
     Guid Id,
     Guid RunId,
@@ -151,23 +157,33 @@ public record PayrollSlipDto(
     decimal? YtdGross,
     decimal? YtdDeductions,
     decimal? YtdNet,
-    string Status)
+    string Status,
+    // Statutory deduction totals (GOSI/GPSSA/GRSIA employee-side and employer-side).
+    // EmployeeStatutoryTotal is included in Deductions. EmployerStatutoryTotal is NOT.
+    decimal? EmployeeStatutoryTotal,
+    decimal? EmployerStatutoryTotal,
+    IReadOnlyList<PayrollDeductionLineDto>? DeductionLines)
 {
-    public static PayrollSlipDto Project(PayrollSlip s, bool includeSensitive) => new(
+    public static PayrollSlipDto Project(
+        PayrollSlip s, bool includeSensitive,
+        IReadOnlyList<PayrollDeductionLineDto>? lines = null) => new(
         s.Id, s.RunId, s.EmployeeId,
         s.EmployeeCode, s.EmployeeName, s.Department,
-        includeSensitive ? s.BasicSalary        : null,
-        includeSensitive ? s.HousingAllowance   : null,
-        includeSensitive ? s.TransportAllowance : null,
-        includeSensitive ? s.OtherAllowances    : null,
-        includeSensitive ? s.GrossSalary        : null,
-        includeSensitive ? s.Deductions         : null,
-        includeSensitive ? s.LoanDeductions     : null,
-        includeSensitive ? s.NetSalary          : null,
-        includeSensitive ? s.YtdGross           : null,
-        includeSensitive ? s.YtdDeductions      : null,
-        includeSensitive ? s.YtdNet             : null,
-        s.Status);
+        includeSensitive ? s.BasicSalary              : null,
+        includeSensitive ? s.HousingAllowance         : null,
+        includeSensitive ? s.TransportAllowance       : null,
+        includeSensitive ? s.OtherAllowances          : null,
+        includeSensitive ? s.GrossSalary              : null,
+        includeSensitive ? s.Deductions               : null,
+        includeSensitive ? s.LoanDeductions           : null,
+        includeSensitive ? s.NetSalary                : null,
+        includeSensitive ? s.YtdGross                 : null,
+        includeSensitive ? s.YtdDeductions            : null,
+        includeSensitive ? s.YtdNet                   : null,
+        s.Status,
+        includeSensitive ? s.EmployeeStatutoryTotal   : null,
+        includeSensitive ? s.EmployerStatutoryTotal   : null,
+        includeSensitive ? lines                      : null);
 }
 
 // ── EOSB Calculations ─────────────────────────────────────────────────────────

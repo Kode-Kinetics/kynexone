@@ -17,7 +17,9 @@
       "Bash(docker exec *)",
       "Bash(DOTNET_ROOT=/usr/local/share/dotnet /usr/local/share/dotnet/dotnet run --urls \"http://localhost:5117\")",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5117/swagger/v1/swagger.json)",
-      "Bash(/usr/local/share/dotnet/dotnet build *)"
+      "Bash(/usr/local/share/dotnet/dotnet build *)",
+      "Bash(git -C /Users/zackkhan/Downloads/zayra-ai-workforce add backend-dotnet/Zayra.Api/Zayra.Api.csproj backend-dotnet/Zayra.Api/Program.cs backend-dotnet/Zayra.Api/Migrations/ render.yaml)",
+      "Bash(git -C /Users/zackkhan/Downloads/zayra-ai-workforce status --short)"
     ]
   }
 }

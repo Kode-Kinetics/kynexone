@@ -315,6 +315,8 @@ public class PayrollController : ControllerBase
                 GrossSalary = gross + overtimePay + totalBonusNet,
                 Deductions = deductions,
                 NetSalary = netSalary,
+                EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
+                EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
                 YtdGross = ytdGross + gross + overtimePay,
                 YtdDeductions = ytdDeduct + deductions,
@@ -356,6 +358,7 @@ public class PayrollController : ControllerBase
         run.TotalGrossSalary = slips.Sum(s => s.GrossSalary);
         run.TotalDeductions = slips.Sum(s => s.Deductions);
         run.TotalNetSalary = slips.Sum(s => s.NetSalary);
+        run.TotalEmployerStatutoryCost = slips.Sum(s => s.EmployerStatutoryTotal);
         await _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed").ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
         await _db.LeavePayrollImpacts.Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed").ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
         await _db.OvertimePayrollImpacts
@@ -498,7 +501,20 @@ public class PayrollController : ControllerBase
             query = query.Where(s => scope.AllowedEmployeeIds!.Contains(s.EmployeeId));
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(s => s.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
-        return Ok(new PagedResult<PayrollSlipDto>(items.Select(s => PayrollSlipDto.Project(s, true)).ToList(), total, page, pageSize));
+        var employeeIds = items.Select(s => s.EmployeeId).ToList();
+        // Load deduction lines for this page of slips to build the breakdown.
+        var deductionsByEmployee = await _db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == id && employeeIds.Contains(d.EmployeeId))
+            .Select(d => new { d.EmployeeId, d.ComponentCode, d.ComponentName, d.Amount, d.Source })
+            .ToListAsync(cancellationToken);
+        var linesByEmployee = deductionsByEmployee
+            .GroupBy(d => d.EmployeeId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<PayrollDeductionLineDto>)g.Select(d => new PayrollDeductionLineDto(d.ComponentCode, d.ComponentName, d.Amount, d.Source)).ToList());
+        return Ok(new PagedResult<PayrollSlipDto>(
+            items.Select(s => PayrollSlipDto.Project(s, true, linesByEmployee.TryGetValue(s.EmployeeId, out var dl) ? dl : null)).ToList(),
+            total, page, pageSize));
     }
 
     [HttpPost("runs/{id:guid}/validate")]
@@ -1178,7 +1194,7 @@ public class PayrollController : ControllerBase
         if (!scope.IsUnrestricted)
             query = query.Where(x => scope.AllowedEmployeeIds!.Contains(x.EmployeeId));
         var slipList = await query.OrderBy(x => x.EmployeeCode).ToListAsync(cancellationToken);
-        return Ok(slipList.Select(s => PayrollSlipDto.Project(s, true)).ToList());
+        return Ok(slipList.Select(s => PayrollSlipDto.Project(s, true)).ToList()); // no deduction-lines in register export (performance)
     }
 
     [HttpGet("reports/register/export")]

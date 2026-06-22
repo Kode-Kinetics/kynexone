@@ -12,6 +12,8 @@ public class PayrollRun : ITenantOwned
     public decimal TotalGrossSalary { get; set; }
     public decimal TotalDeductions { get; set; }
     public decimal TotalNetSalary { get; set; }
+    // Employer statutory cost (GOSI/GPSSA/GRSIA employer side) — not deducted from employee net.
+    public decimal TotalEmployerStatutoryCost { get; set; }
     public int EmployeeCount { get; set; }
     public Guid? CreatedByUserId { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -36,6 +38,10 @@ public class PayrollSlip : ITenantOwned
     public decimal Deductions { get; set; }
     public decimal NetSalary { get; set; }
     public string Status { get; set; } = "Draft";
+    // Statutory deduction totals — split for reporting without re-querying PayrollDeductions.
+    // EmployeeStatutoryTotal reduces employee net pay; EmployerStatutoryTotal does NOT.
+    public decimal EmployeeStatutoryTotal { get; set; }
+    public decimal EmployerStatutoryTotal { get; set; }
     // Compliance: YTD accumulators (populated during Process, from all prior locked runs in same year)
     public decimal YtdGross { get; set; }
     public decimal YtdDeductions { get; set; }
