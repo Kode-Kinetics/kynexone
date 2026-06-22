@@ -431,7 +431,6 @@ public class PlatformController : ControllerBase
     {
         var tenants = await _db.Tenants
             .AsNoTracking()
-            .Where(t => t.IsActive)
             .OrderBy(t => t.Name)
             .ToListAsync(ct);
 
@@ -1497,10 +1496,6 @@ public class PlatformController : ControllerBase
 
     // ── Plans Catalog ─────────────────────────────────────────────────────────
 
-    // Plan price overrides — platform admin can update via PUT /plans/{name}/price.
-    // Stored in-memory; survives restarts via the system_settings table (key=plan.price.{name}).
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, decimal> _planPriceOverrides = new();
-
     private static readonly (string Name, int MaxUsers, int MaxEmployees, decimal DefaultPrice, string Description)[] _planDefs = new[]
     {
         ("Trial",      3,  10,   0m,   "Free evaluation. No payment required. 10 employees, 3 users, core modules only."),
@@ -1511,13 +1506,19 @@ public class PlatformController : ControllerBase
 
     [HttpGet("plans")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Finance, PlatformRoles.Auditor)]
-    public IActionResult GetPlans()
+    public async Task<IActionResult> GetPlans(CancellationToken ct)
     {
-        var plans = _planDefs.Select(p => new
+        var keys = _planDefs.Select(p => $"plan.price.{p.Name}").ToList();
+        var stored = await _db.PlatformConfigEntries
+            .AsNoTracking()
+            .Where(e => keys.Contains(e.Key))
+            .ToDictionaryAsync(e => e.Key, e => e.Value, ct);
+
+        var plans = _planDefs.Select(p =>
         {
-            p.Name, p.MaxUsers, p.MaxEmployees,
-            MonthlyPrice = _planPriceOverrides.TryGetValue(p.Name, out var ov) ? ov : p.DefaultPrice,
-            p.Description
+            var key = $"plan.price.{p.Name}";
+            var price = stored.TryGetValue(key, out var v) && decimal.TryParse(v, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : p.DefaultPrice;
+            return new { p.Name, p.MaxUsers, p.MaxEmployees, MonthlyPrice = price, p.Description };
         });
         return Ok(plans);
     }
@@ -1530,7 +1531,17 @@ public class PlatformController : ControllerBase
             return NotFound(new { message = $"Plan '{planName}' not found." });
         if (req.MonthlyPrice < 0)
             return BadRequest(new { message = "Price cannot be negative." });
-        _planPriceOverrides[planName] = req.MonthlyPrice;
+
+        var configKey = $"plan.price.{planName}";
+        var entry = await _db.PlatformConfigEntries.FirstOrDefaultAsync(e => e.Key == configKey, ct);
+        if (entry is null)
+            _db.PlatformConfigEntries.Add(new PlatformConfigEntry { Key = configKey, Value = req.MonthlyPrice.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+        else
+        {
+            entry.Value = req.MonthlyPrice.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            entry.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
         _db.AdminAuditLogs.Add(new AdminAuditLog
         {
             EntityType = "PlanConfig",

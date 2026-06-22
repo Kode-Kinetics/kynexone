@@ -433,7 +433,6 @@ export default function TenantsPage() {
   }
 
   const filtered = tenants.filter(t => {
-    if (!t.isActive) return false;
     const q = search.toLowerCase();
     const matchQ = !q || t.name.toLowerCase().includes(q) || t.slug.toLowerCase().includes(q);
     const matchS = statusFilter === 'All' || (t.subscription?.status ?? '').toLowerCase() === statusFilter.toLowerCase();
