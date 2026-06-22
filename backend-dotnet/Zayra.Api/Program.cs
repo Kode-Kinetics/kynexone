@@ -470,8 +470,6 @@ using (var scope = app.Services.CreateScope())
     // Always run migrations on startup — MigrateAsync is a no-op when schema is current.
     logger.LogInformation("Running EF Core migrations...");
     await dbContext.Database.MigrateAsync();
-    await MissingTableCreator.EnsureAsync(dbContext, logger);
-    await scope.ServiceProvider.GetRequiredService<IEmployeeModuleSchemaBootstrapper>().EnsureAsync();
     logger.LogInformation("EF Core migrations complete.");
 
     // Seed data — always non-fatal; logs on failure but never crashes the web process.
