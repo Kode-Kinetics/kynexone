@@ -5,6 +5,8 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     plan: free
+    branch: main
+    autoDeploy: true
     healthCheckPath: /health
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
