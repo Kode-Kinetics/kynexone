@@ -777,6 +777,8 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   const [showCreate, setShowCreate] = useState(false);
   const [createYear, setCreateYear] = useState(new Date().getFullYear());
   const [createMonth, setCreateMonth] = useState(new Date().getMonth() + 1);
+  const [createCompanyId, setCreateCompanyId] = useState('');
+  const [companies, setCompanies] = useState<{ id: string; name: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -784,7 +786,14 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
     setLoading(true);
     payrollApi.listRuns({ pageSize: 50 }).then(r => { setRuns(r.items); setTotal(r.total); }).catch(() => {}).finally(() => setLoading(false));
   };
-  useEffect(load, []);
+  useEffect(() => {
+    load();
+    payrollApi.listCompanies().then(cs => {
+      setCompanies(cs.map(c => ({ id: c.id, name: c.name || c.tradeName })));
+      if (cs.length === 1) setCreateCompanyId(cs[0].id);
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const openSlips = async (run: PayrollRun) => {
     setSelectedRun(run);
@@ -794,7 +803,10 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
 
   const createRun = async () => {
     setSaving(true); setError('');
-    try { await payrollApi.createRun(createYear, createMonth); setShowCreate(false); load(); } catch (e: unknown) {
+    try {
+      await payrollApi.createRun(createYear, createMonth, createCompanyId || undefined);
+      setShowCreate(false); load();
+    } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
       setError(msg ?? 'Failed to create payroll run.');
     } finally { setSaving(false); }
@@ -927,6 +939,14 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                 </select>
               </Field>
             </div>
+            {companies.length > 0 && (
+              <Field label="Company" info="The company whose country pack (GOSI/GPSSA/GRSIA) will be applied. Required for statutory deductions." infoKey="payroll.run_company">
+                <select aria-label="Company" className={sel} value={createCompanyId} onChange={e => setCreateCompanyId(e.target.value)}>
+                  {companies.length > 1 && <option value="">— select company —</option>}
+                  {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </Field>
+            )}
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>Cancel</button>
               <button type="button" className={btn.primary} onClick={createRun} disabled={saving}>{saving ? 'Creating…' : 'Create Run'}</button>

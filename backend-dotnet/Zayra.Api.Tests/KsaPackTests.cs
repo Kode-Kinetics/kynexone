@@ -22,13 +22,16 @@ public class KsaPackTests
     // ── GOSI — Saudi national ─────────────────────────────────────────────────
 
     [Fact]
-    public async Task Gosi_SaudiNational_CalculatesAnnuitiesAndSaned()
+    public async Task Gosi_SaudiNational_CalculatesAnnuitiesAndSanedAndOh()
     {
         // Basic SAR 8,000 + Housing SAR 3,000 → covered wage SAR 11,000
-        // Annuities EE: 11,000 × 9% = SAR 990
-        // Annuities ER: 11,000 × 9% = SAR 990
+        // Annuities EE: 11,000 × 9%    = SAR 990
+        // Annuities ER: 11,000 × 9%    = SAR 990
         // SANED EE:     11,000 × 0.75% = SAR 82.50
         // SANED ER:     11,000 × 0.75% = SAR 82.50
+        // OH ER:        11,000 × 2%    = SAR 220   (employer pays OH for all employees)
+        // EE total: 990 + 82.50 = 1,072.50 (9.75%)
+        // ER total: 990 + 82.50 + 220 = 1,292.50 (11.75%)
         var calc = new KsaDeductionCalculator(StubRules);
         var input = new StatutoryDeductionInput(
             Guid.NewGuid(), Guid.NewGuid(),
@@ -37,13 +40,14 @@ public class KsaPackTests
 
         var result = await calc.CalculateAsync(input);
 
-        Assert.Equal(990m + 82.50m, result.TotalEmployeeDeduction);
-        Assert.Equal(990m + 82.50m, result.TotalEmployerContribution);
-        Assert.Equal(4, result.Lines.Count);
+        Assert.Equal(990m + 82.50m, result.TotalEmployeeDeduction);          // 9.75%
+        Assert.Equal(990m + 82.50m + 220m, result.TotalEmployerContribution); // 11.75%
+        Assert.Equal(5, result.Lines.Count);
         Assert.Contains(result.Lines, l => l.Code == "GOSI-ANN-EE" && l.EmployeeAmount == 990m);
         Assert.Contains(result.Lines, l => l.Code == "GOSI-ANN-ER" && l.EmployerAmount == 990m);
         Assert.Contains(result.Lines, l => l.Code == "GOSI-SANED-EE" && l.EmployeeAmount == 82.50m);
         Assert.Contains(result.Lines, l => l.Code == "GOSI-SANED-ER" && l.EmployerAmount == 82.50m);
+        Assert.Contains(result.Lines, l => l.Code == "GOSI-OH-ER" && l.EmployerAmount == 220m);
     }
 
     [Fact]

@@ -152,8 +152,15 @@ public class PayrollController : ControllerBase
 
         // Resolve company → country pack for statutory deduction.
         // CompanyId on the run determines which CountryCode + Jurisdiction drives GOSI/GPSSA/GRSIA.
-        var company = await _db.Companies.AsNoTracking()
-            .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId, cancellationToken);
+        // If the run has no CompanyId (created without selecting one from the UI), fall back to the
+        // tenant's first active company so the correct pack (KSA/UAE/Qatar) is still applied.
+        var company = run.CompanyId.HasValue
+            ? await _db.Companies.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId.Value, cancellationToken)
+            : await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.IsActive)
+                .OrderBy(c => c.CreatedAtUtc)
+                .FirstOrDefaultAsync(cancellationToken);
         var packCc  = company?.CountryCode  ?? string.Empty;
         var packJur = company?.Jurisdiction ?? string.Empty;
         var deductionCalc = _packResolver.ResolveDeductionCalculator(packCc, packJur);

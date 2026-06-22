@@ -3,8 +3,10 @@ using Zayra.Api.Application.CountryPack;
 namespace Zayra.Api.Infrastructure.CountryPack.Ksa;
 
 // ── KSA GOSI deduction calculator ────────────────────────────────────────────
-// Saudi nationals: Annuities + SANED on covered wage (basic + housing).
-// Non-Saudi:       Occupational Hazard employer contribution only.
+// Saudi nationals: Annuities + SANED + Occupational Hazard (employer only) on covered wage.
+//   Employee: 9% Annuities + 0.75% SANED = 9.75%
+//   Employer: 9% Annuities + 0.75% SANED + 2% OH = 11.75%
+// Non-Saudi: Occupational Hazard employer contribution only (2%).
 // Sources: GOSI Regulation 2016 (Royal Decree M/33); rates VERIFY annually.
 
 public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
@@ -47,13 +49,20 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
             decimal sanedEmp   = Math.Round(coveredWage * sanedRate, 2);
             decimal sanedEr    = Math.Round(coveredWage * sanedRate, 2);
 
+            decimal ohRate = await _rules.GetDecimalAsync(
+                CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                RuleKeys.GosiExpOhRate, eff, null, ct) ?? 0.02m;            // VERIFY: 2% OH (employer pays for all employees)
+
+            decimal ohEr = Math.Round(coveredWage * ohRate, 2);
+
             lines.Add(new("GOSI-ANN-EE", "GOSI Annuities (Employee)",    annuityEmp, 0m));
             lines.Add(new("GOSI-ANN-ER", "GOSI Annuities (Employer)",    0m, annuityEr));
             lines.Add(new("GOSI-SANED-EE", "SANED (Employee)",           sanedEmp, 0m));
             lines.Add(new("GOSI-SANED-ER", "SANED (Employer)",           0m, sanedEr));
+            lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, ohEr));
 
             empTotal = annuityEmp + sanedEmp;
-            erTotal  = annuityEr  + sanedEr;
+            erTotal  = annuityEr  + sanedEr + ohEr;
         }
         else
         {
