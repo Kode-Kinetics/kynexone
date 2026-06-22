@@ -910,7 +910,12 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                           <td className="px-3 py-2.5 text-right text-slate-700 dark:text-slate-300">{fmt(s.basicSalary)}</td>
                           <td className="px-3 py-2.5 text-right font-semibold text-slate-900 dark:text-white">{fmt(s.grossSalary)}</td>
                           <td className="px-3 py-2.5 text-right text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? `(${fmt(s.loanDeductions)})` : '—'}</td>
-                          <td className="px-3 py-2.5 text-right text-rose-500">({fmt(s.deductions)})</td>
+                          <td className="px-3 py-2.5 text-right text-rose-500">
+                            ({fmt(s.deductions)})
+                            {s.employeeStatutoryTotal > 0 && (
+                              <p className="text-[10px] text-rose-400 leading-tight">GOSI {fmt(s.employeeStatutoryTotal)}</p>
+                            )}
+                          </td>
                           <td className="px-3 py-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400">{fmt(s.netSalary)}</td>
                           <td className="px-3 py-2.5 text-right text-xs text-slate-500">{fmt(s.ytdGross)}</td>
                           <td className="px-3 py-2.5 text-right text-xs font-semibold text-slate-700 dark:text-slate-300">{fmt(s.ytdNet)}</td>
@@ -1548,7 +1553,12 @@ function ReportsTab() {
                       <td className="px-3 py-2 text-right text-slate-700 dark:text-slate-300">{fmt(s.otherAllowances)}</td>
                       <td className="px-3 py-2 text-right font-semibold text-slate-900 dark:text-white">{fmt(s.grossSalary)}</td>
                       <td className="px-3 py-2 text-right text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? `(${fmt(s.loanDeductions)})` : '—'}</td>
-                      <td className="px-3 py-2 text-right text-rose-500">({fmt(s.deductions)})</td>
+                      <td className="px-3 py-2 text-right text-rose-500">
+                        ({fmt(s.deductions)})
+                        {s.employeeStatutoryTotal > 0 && (
+                          <p className="text-[10px] text-rose-400 leading-tight">GOSI {fmt(s.employeeStatutoryTotal)}</p>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right font-bold text-emerald-600 dark:text-emerald-400">{fmt(s.netSalary)}</td>
                       <td className="px-3 py-2 text-right text-xs text-slate-500">{fmt(s.ytdGross)}</td>
                       <td className="px-3 py-2 text-right text-xs font-semibold text-slate-700 dark:text-slate-300">{fmt(s.ytdNet)}</td>

@@ -341,13 +341,14 @@ public class PayrollController : ControllerBase
             if (loanEmi > 0) AddDeduction(tenantId, id, e.Id, "LOAN_EMI", "Loan instalment", loanEmi, "Loan");
             if (advEmi > 0) AddDeduction(tenantId, id, e.Id, "ADVANCE_EMI", "Salary advance repayment", advEmi, "Loan");
             // Statutory deduction lines from pack — employee contributions reduce net pay.
-            // Code/Label come from the pack (e.g. "GOSI-ANN-EE"/"GOSI Annuities (Employee)" for KSA,
-            // "GPSSA-EE"/"GPSSA (Employee)" for UAE, "GRSIA-EE"/"GRSIA (Employee)" for Qatar).
+            // Code/Label come from the pack: "GOSI-ANN-EE" / "GOSI Annuities (Employee)" for KSA,
+            // "GPSSA-EE" / "GPSSA (Employee)" for UAE, "GRSIA-EE" / "GRSIA (Employee)" for Qatar.
+            // Employer lines already carry ER-suffixed codes (e.g. "GOSI-ANN-ER", "GOSI-OH-ER") —
+            // the GL router keys on .EndsWith("-ER") to route them to Social Insurance Employer Payable.
             foreach (var line in statutoryResult.Lines.Where(l => l.EmployeeAmount > 0))
                 AddDeduction(tenantId, id, e.Id, line.Code, line.Label, line.EmployeeAmount, "Statutory");
-            // Employer-side contributions tracked for GL/reporting (do NOT reduce employee net pay).
             foreach (var line in statutoryResult.Lines.Where(l => l.EmployerAmount > 0))
-                AddDeduction(tenantId, id, e.Id, line.Code + "-ER", line.Label + " (Employer)", line.EmployerAmount, "Statutory");
+                AddDeduction(tenantId, id, e.Id, line.Code, line.Label, line.EmployerAmount, "Statutory");
             if (overtimePay > gross * 0.35m && gross > 0) _db.PayrollValidationResults.Add(new PayrollValidationResult { TenantId = tenantId, PayrollRunId = id, EmployeeId = e.Id, Severity = "Warning", Code = "UNUSUAL_OVERTIME", Message = "Overtime payout is above 35% of regular gross earnings." });
         }
 

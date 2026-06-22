@@ -121,14 +121,36 @@ public class PayrollGosiZeroRegressionTests : IClassFixture<PostgresFixture>
             "If this is zero the company fallback lookup is still broken.");
         // 13,000 × 9.75% = 1,267.50
         Assert.Equal(13_000m * 0.0975m, saudiSlip.Deductions, precision: 2);
+        // EmployeeStatutoryTotal must equal Deductions (only GOSI here, no loans etc.)
+        Assert.Equal(saudiSlip.Deductions, saudiSlip.EmployeeStatutoryTotal, precision: 2);
+        // Employer GOSI (9% annuity + 0.75% SANED + 2% OH = 11.75%) must be stored but NOT in Deductions
+        // 13,000 × 11.75% = 1,527.50
+        Assert.Equal(13_000m * 0.1175m, saudiSlip.EmployerStatutoryTotal, precision: 2);
 
-        // ── Expat: no employee GOSI ────────────────────────────────────────────
+        // ── Expat: no employee GOSI, but employer OH (2%) is tracked ──────────
         var expatSlip = await db.PayrollSlips
             .FirstAsync(s => s.TenantId == tenantId && s.EmployeeId == expat.Id);
         Assert.Equal(0m, expatSlip.Deductions);
+        Assert.Equal(0m, expatSlip.EmployeeStatutoryTotal);
+        // Expat employer OH = 10,000 × 2% = 200
+        Assert.Equal(10_000m * 0.02m, expatSlip.EmployerStatutoryTotal, precision: 2);
 
         // ── Net = gross − deductions for Saudi ────────────────────────────────
         Assert.Equal(saudiSlip.GrossSalary - saudiSlip.Deductions, saudiSlip.NetSalary, precision: 2);
+
+        // ── PayrollRun totals include employer statutory cost ──────────────────
+        var processedRun = await db.PayrollRuns.FirstAsync(r => r.Id == run.Id);
+        Assert.Equal(saudiSlip.EmployerStatutoryTotal + expatSlip.EmployerStatutoryTotal,
+            processedRun.TotalEmployerStatutoryCost, precision: 2);
+
+        // ── PayrollDeduction lines persisted for breakdown ─────────────────────
+        var saudiLines = await db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == run.Id && d.EmployeeId == saudi.Id && d.Source == "Statutory")
+            .ToListAsync();
+        Assert.NotEmpty(saudiLines);
+        Assert.Contains(saudiLines, l => l.ComponentCode == "GOSI-ANN-EE" && l.Amount > 0);
+        Assert.Contains(saudiLines, l => l.ComponentCode == "GOSI-SANED-EE" && l.Amount > 0);
+        Assert.Contains(saudiLines, l => l.ComponentCode == "GOSI-OH-ER" && l.Amount > 0);
     }
 
     // ── Helper: build PayrollController with KSA pack resolver ────────────────

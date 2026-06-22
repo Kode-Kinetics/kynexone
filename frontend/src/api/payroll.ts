@@ -49,6 +49,7 @@ export interface PayrollRun {
   totalGrossSalary: number;
   totalDeductions: number;
   totalNetSalary: number;
+  totalEmployerStatutoryCost: number;
   employeeCount: number;
   createdAtUtc: string;
   processedAtUtc: string | null;
@@ -70,6 +71,11 @@ export interface PayrollSlip {
   deductions: number;
   netSalary: number;
   status: string;
+  // Statutory deduction totals (GOSI/GPSSA/GRSIA split)
+  employeeStatutoryTotal: number;
+  employerStatutoryTotal: number;
+  // Deduction breakdown lines (code, name, amount, source)
+  deductionLines?: { code: string; name: string; amount: number; source: string }[];
   // Compliance fields (populated during payroll processing)
   loanDeductions: number;
   ytdGross: number;
