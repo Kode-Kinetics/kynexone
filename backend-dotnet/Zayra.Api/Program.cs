@@ -91,6 +91,11 @@ builder.Services.AddControllers(options =>
     options.JsonSerializerOptions.Converters.Add(new Zayra.Api.Infrastructure.Json.EmptyStringNullableGuidConverter());
     options.JsonSerializerOptions.Converters.Add(new Zayra.Api.Infrastructure.Json.EmptyStringNullableDateTimeConverter());
     options.JsonSerializerOptions.Converters.Add(new Zayra.Api.Infrastructure.Json.EmptyStringNullableDateOnlyConverter());
+    // Ensure non-nullable DateTime from JSON bodies always arrives with Kind=Utc.
+    // Npgsql 6+ rejects Kind=Unspecified for timestamptz columns; this converter
+    // treats timezone-free strings as UTC (AssumeUniversal) and converts offset
+    // strings to UTC (AdjustToUniversal), matching the nullable converter above.
+    options.JsonSerializerOptions.Converters.Add(new Zayra.Api.Infrastructure.Json.UtcDateTimeConverter());
     options.JsonSerializerOptions.NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString;
 });
 // CORS: explicit allowlist from config + optional CORS_EXTRA_ORIGINS env var for production deployments

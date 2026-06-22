@@ -1345,7 +1345,7 @@ public class EmployeesController : ControllerBase
                 case "employmentType": employee.EmploymentType = value.GetString() ?? employee.EmploymentType; break;
                 case "joiningDate":
                     if (value.ValueKind == JsonValueKind.String && DateTime.TryParse(value.GetString(), out var joining))
-                        employee.JoiningDate = joining;
+                        employee.JoiningDate = DateTime.SpecifyKind(joining, DateTimeKind.Utc);
                     break;
                 case "department": employee.Department = value.GetString() ?? employee.Department; break;
                 case "designation": employee.Designation = value.GetString() ?? employee.Designation; break;
