@@ -250,9 +250,32 @@ public class CreateRunPoolReuseRegressionTests : IClassFixture<PostgresFixture>
             "Tenant B's company must be found after switching accessor (pool-reuse scenario). " +
             "Failure means _tenantId is no longer resolved lazily — the fix has regressed.");
 
-        // Cross-tenant isolation: tenant B context must NOT see tenant A's company
-        var leak = await db.Companies.AnyAsync(c => c.Id == companyA.Id);
-        Assert.False(leak, "Tenant A's data must not be visible while accessor is set to tenant B.");
+        // ── Isolation: global-filter-only queries must not leak cross-tenant ────────
+        //
+        // The queries below have NO explicit WHERE tenant_id predicate — isolation
+        // is provided SOLELY by the global query filter (_tenantId property).
+        // This proves the leak path is closed, not just that targeted lookups work.
+
+        // Case 1: accessor=tenantB, no explicit predicate → must NOT return company A (tenantA's data)
+        // SQL: SELECT EXISTS (SELECT 1 FROM companies WHERE tenant_id=@tenantB AND NOT is_deleted AND id=@companyAId)
+        // companyA.TenantId=tenantA ≠ tenantB → 0 rows.
+        var leakBseesA = await db.Companies.AnyAsync(c => c.Id == companyA.Id);
+        Assert.False(leakBseesA,
+            "Global filter must exclude company A when accessor=tenantB (no explicit WHERE tenant_id). " +
+            "If true, the global filter is not applying correctly for the current accessor context.");
+
+        // Case 2: switch accessor to tenantA, no explicit predicate → must NOT return company B (tenantB's data)
+        // SQL: SELECT EXISTS (SELECT 1 FROM companies WHERE tenant_id=@tenantA AND NOT is_deleted AND id=@companyBId)
+        // companyB.TenantId=tenantB ≠ tenantA → 0 rows.
+        // This is the scenario the pool-reuse bug enabled before the fix: if _tenantId were still
+        // cached as tenantA after a prior request, a query on a "tenantA context" would apply the
+        // global filter tenant_id=tenantA, hiding tenantB rows — which is correct. But before the
+        // fix, a "tenantB context" might have _tenantId=tenantA (stale), making it see tenantA data.
+        accessor.HttpContext = MakeHttpContext(tenantA);
+        var leakAseesB = await db.Companies.AnyAsync(c => c.Id == companyB.Id);
+        Assert.False(leakAseesB,
+            "Global filter must exclude company B when accessor=tenantA (no explicit WHERE tenant_id). " +
+            "This is the primary isolation proof: accessor determines the filter, not a stale cached value.");
     }
 
     private static HttpContext MakeHttpContext(Guid tenantId)
