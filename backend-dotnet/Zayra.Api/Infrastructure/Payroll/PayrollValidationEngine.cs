@@ -47,7 +47,22 @@ public static class PayrollValidationEngine
                 Severity = "Warning", Code = code, Message = message, CreatedAtUtc = now,
             });
 
-        var isKsa           = string.Equals(ctx.Company?.CountryCode, "SA", StringComparison.OrdinalIgnoreCase);
+        // ── Run-level company/pack guards (must precede per-slip rules) ───────────
+        // These mirror the fail-loud abort in Process(); a second pass here catches
+        // edge cases where the run was created before the guard was added.
+        if (ctx.Company is null)
+            Err("COMPANY_NOT_RESOLVED",
+                "No active company is linked to this payroll run. " +
+                "The statutory deduction pack cannot be resolved without a company. " +
+                "Reprocess the run after linking an active company with a CountryCode.");
+        else if (string.IsNullOrWhiteSpace(ctx.Company.CountryCode))
+            Err("COUNTRY_CODE_MISSING",
+                $"Company '{ctx.Company.LegalNameEn}' (id: {ctx.Company.Id}) has no CountryCode. " +
+                "Set the company country in Setup → Companies then reprocess.");
+
+        // Accept both ISO 3166-1 alpha-2 ("SA") and alpha-3 ("SAU") for KSA — data may use either.
+        var isKsa = string.Equals(ctx.Company?.CountryCode, "SAU", StringComparison.OrdinalIgnoreCase)
+                 || string.Equals(ctx.Company?.CountryCode, "SA",  StringComparison.OrdinalIgnoreCase);
         var companyCurrency = ctx.Company?.DefaultCurrency ?? "SAR";
 
         // ── Indexes ───────────────────────────────────────────────────────────
@@ -230,6 +245,44 @@ public static class PayrollValidationEngine
                     $"Difference: {glImbalance:N2}. The journal will not balance on lock; re-process the run.");
         }
 
+        // ── Rule 10: No attendance or OT data processed for active employee ──────
+        // WARN only — full salary is still paid; payroll can proceed.
+        // Trigger: employee has no AttendanceDailyRecord AND no OT impact in period.
+        // Absence of data may mean attendance was never processed (not "perfect attendance").
+        foreach (var emp in ctx.ActiveEmployees)
+        {
+            var hasAttendance = ctx.AttendanceProcessedEmployeeIds.Contains(emp.Id);
+            var hasOt         = ctx.OvertimeHoursByEmployee.ContainsKey(emp.Id);
+            if (!hasAttendance && !hasOt)
+                Warn("WARN_NO_ATTENDANCE",
+                    $"No attendance or overtime data was processed for employee {emp.EmployeeCode} ({emp.FullName}) " +
+                    $"in {ctx.Run.Year}-{ctx.Run.Month:D2}. Full salary assumed. " +
+                    "Verify attendance processing ran before approving this run.",
+                    emp.Id);
+        }
+
+        // ── Rule 11: OT hours exist but hourly rate cannot be resolved ────────
+        // ERROR — blocks approve/lock; prevents silent zero-pay for approved overtime.
+        // Trigger: employee has approved OT hours but basic salary is zero (rate = 0).
+        foreach (var kvp in ctx.OvertimeHoursByEmployee)
+        {
+            if (kvp.Value <= 0m) continue;
+            var sal   = ctx.SalaryAssignments
+                .Where(x => x.EmployeeId == kvp.Key)
+                .OrderByDescending(x => x.EffectiveDate)
+                .FirstOrDefault();
+            var basic = sal?.BasicSalary ?? 0m;
+            if (basic <= 0m)
+            {
+                empById.TryGetValue(kvp.Key, out var emp2);
+                Err("OT_RATE_UNRESOLVED",
+                    $"Employee {emp2?.EmployeeCode ?? kvp.Key.ToString()} has {kvp.Value:N2} approved " +
+                    "overtime hours but basic salary is zero — hourly rate cannot be computed. " +
+                    "Set basic salary before approving this run.",
+                    kvp.Key);
+            }
+        }
+
         return results;
     }
 
@@ -247,5 +300,19 @@ public sealed record PayrollValidationContext(
     IReadOnlyList<EmployeePayrollProfile>  Profiles,
     IReadOnlyList<PayrollDeduction>        Deductions,
     IReadOnlyList<PayrollEarning>          Earnings,
-    Company?                               Company
-);
+    Company?                               Company)
+{
+    // Set from Process/Validate to enable Rules 10+11.
+    // Default to empty so existing callers that don't supply these are safe.
+
+    /// <summary>Total approved OT hours per employee in this pay period.</summary>
+    public IReadOnlyDictionary<int, decimal> OvertimeHoursByEmployee { get; init; } =
+        new Dictionary<int, decimal>();
+
+    /// <summary>
+    /// Employee IDs that have at least one AttendanceDailyRecord in the pay period.
+    /// An employee absent from this set has never had attendance processed.
+    /// </summary>
+    public IReadOnlySet<int> AttendanceProcessedEmployeeIds { get; init; } =
+        new HashSet<int>();
+}

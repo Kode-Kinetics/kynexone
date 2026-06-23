@@ -25,7 +25,8 @@ namespace Zayra.Api.Tests;
 // real Postgres database so the EF query and deduction math are both exercised.
 
 [Trait("Category", "Integration")]
-public class PayrollGosiZeroRegressionTests : IClassFixture<PostgresFixture>
+[Collection("Integration")]
+public class PayrollGosiZeroRegressionTests
 {
     private readonly PostgresFixture _fx;
     public PayrollGosiZeroRegressionTests(PostgresFixture fx) => _fx = fx;
@@ -162,7 +163,11 @@ public class PayrollGosiZeroRegressionTests : IClassFixture<PostgresFixture>
             .Set("gosi.saudi_employer_rate",            0.09m)
             .Set("gosi.saned_rate",                     0.0075m)
             .Set("gosi.expat_occupational_hazard_rate", 0.02m)
-            .Set("gosi.covered_wage_ceiling_sar",       45_000m);
+            .Set("gosi.covered_wage_ceiling_sar",       45_000m)
+            .Set("ot.standard_multiplier",              1.5m)
+            .Set("ot.standard_monthly_hours",           240m)
+            .Set("lop.monthly_day_divisor",             30m)
+            .Set("lop.standard_work_minutes_per_day",   480m);
 
         var ctrl = new PayrollController(
             db,
@@ -170,7 +175,10 @@ public class PayrollGosiZeroRegressionTests : IClassFixture<PostgresFixture>
             new HttpContextAccessor(),
             new GosiRegressionNotificationStub(),
             new GosiRegressionPackResolver(ruleReader),
-            new GosiRegressionLetterStub());
+            ruleReader,
+            new GosiRegressionLetterStub(),
+            new NullDocumentStorage(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8));
 
         ctrl.ControllerContext = new ControllerContext
         {
@@ -203,7 +211,8 @@ public class PayrollGosiZeroRegressionTests : IClassFixture<PostgresFixture>
 // any regression in the DateTimeKind fix is caught before hitting production.
 
 [Trait("Category", "Integration")]
-public class StatutoryRuleReaderDateTimeKindRegressionTests : IClassFixture<PostgresFixture>
+[Collection("Integration")]
+public class StatutoryRuleReaderDateTimeKindRegressionTests
 {
     private readonly PostgresFixture _fx;
     public StatutoryRuleReaderDateTimeKindRegressionTests(PostgresFixture fx) => _fx = fx;
@@ -276,7 +285,10 @@ public class StatutoryRuleReaderDateTimeKindRegressionTests : IClassFixture<Post
         var resolver = new GosiRegressionPackResolver(reader);
         var ctrl = new PayrollController(
             db, new DataScopeService(db), new HttpContextAccessor(),
-            new GosiRegressionNotificationStub(), resolver, new GosiRegressionLetterStub());
+            new GosiRegressionNotificationStub(), resolver, reader,
+            new GosiRegressionLetterStub(),
+            new NullDocumentStorage(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8));
         ctrl.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext
@@ -306,7 +318,8 @@ public class StatutoryRuleReaderDateTimeKindRegressionTests : IClassFixture<Post
 // reflects the current request even when the DbContext is pool-reused.
 
 [Trait("Category", "Integration")]
-public class CreateRunPoolReuseRegressionTests : IClassFixture<PostgresFixture>
+[Collection("Integration")]
+public class CreateRunPoolReuseRegressionTests
 {
     private readonly PostgresFixture _fx;
     public CreateRunPoolReuseRegressionTests(PostgresFixture fx) => _fx = fx;

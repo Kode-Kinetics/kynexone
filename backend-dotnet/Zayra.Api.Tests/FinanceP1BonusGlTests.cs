@@ -59,8 +59,11 @@ public class FinanceP1BonusGlTests
             new _P1UnrestrictedScope(),
             new _P1HttpAccessor(httpCtx),
             new _P1NullNotifications(),
-            new _P1NullPackResolver(),
-            new _P1NullLetterService());
+            new _KsaPackResolver(),
+            KsaPackFactory.Rules,
+            new _P1NullLetterService(),
+            new _P1NullDocStorage(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(4));
         ctrl.ControllerContext = new ControllerContext { HttpContext = httpCtx };
         return ctrl;
     }
@@ -96,7 +99,10 @@ public class FinanceP1BonusGlTests
             new _P1HttpAccessor(httpCtx),
             new _P1NullNotifications(),
             new _KsaPackResolver(),
-            new _P1NullLetterService());
+            KsaPackFactory.Rules,
+            new _P1NullLetterService(),
+            new _P1NullDocStorage(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(4));
         ctrl.ControllerContext = new ControllerContext { HttpContext = httpCtx };
         return ctrl;
     }
@@ -161,6 +167,7 @@ public class FinanceP1BonusGlTests
 
         var tenantId = Guid.NewGuid();
         var (emp, run, _) = await SeedMinimalRun(db, tenantId);
+        await SeedKsaCompany(db, tenantId, run);
 
         // Seed approved bonus for this employee and period
         var bonusType = new BonusType
@@ -218,12 +225,11 @@ public class FinanceP1BonusGlTests
 
         var tenantId = Guid.NewGuid();
 
-        // Two runs: one with GOSI-included bonus, one with non-included bonus
-        // The NullPackResolver returns zero deductions, so we test by comparing
-        // the GrossSalary on the PayrollSlip (GOSI base calculation doesn't change
-        // net when using DefaultStatutoryDeductionCalculator, but we can verify
-        // the earning lines and the gross salary change correctly).
+        // Two runs: one with GOSI-included bonus, one with non-included bonus.
+        // We test GrossSalary on the PayrollSlip — GOSI base calculation affects the
+        // statutory wage but not the gross earnings total shown on the slip.
         var (emp, runA, _) = await SeedMinimalRun(db, tenantId, 2026, 5);
+        await SeedKsaCompany(db, tenantId, runA);  // runB reuses via tenant fallback
         var empId = emp.Id;
         var tidCopy = tenantId;
 
@@ -385,6 +391,7 @@ public class FinanceP1BonusGlTests
 
         var tenantId = Guid.NewGuid();
         var (emp, run, _) = await SeedMinimalRun(db, tenantId);
+        await SeedKsaCompany(db, tenantId, run);
 
         var bonusType = new BonusType
         {
@@ -632,6 +639,7 @@ public class FinanceP1BonusGlTests
 
         var tenantId = Guid.NewGuid();
         var (empA, run, str) = await SeedMinimalRun(db, tenantId);
+        await SeedKsaCompany(db, tenantId, run);
 
         // Employee B: exists but has NO salary assignment — payroll run will skip them.
         // Terminated — excluded from Process() employees query (Status != "Active").
@@ -803,12 +811,17 @@ public class FinanceP1BonusGlTests
 file static class KsaPackFactory
 {
     // KSA rates matching the seeder defaults — directional, VERIFY annually.
+    // OT/LOP keys also seeded here so Process reads them via IStatutoryRuleReader.
     internal static readonly StubRuleReader Rules = new StubRuleReader()
-        .Set("gosi.saudi_employee_rate",          0.09m)
-        .Set("gosi.saudi_employer_rate",          0.09m)
-        .Set("gosi.saned_rate",                   0.0075m)
+        .Set("gosi.saudi_employee_rate",            0.09m)
+        .Set("gosi.saudi_employer_rate",            0.09m)
+        .Set("gosi.saned_rate",                     0.0075m)
         .Set("gosi.expat_occupational_hazard_rate", 0.02m)
-        .Set("gosi.covered_wage_ceiling_sar",     45_000m);
+        .Set("gosi.covered_wage_ceiling_sar",       45_000m)
+        .Set("ot.standard_multiplier",              1.5m)
+        .Set("ot.standard_monthly_hours",           240m)
+        .Set("lop.monthly_day_divisor",             30m)
+        .Set("lop.standard_work_minutes_per_day",   480m);
 }
 
 file sealed class _P1UnrestrictedScope : Zayra.Api.Application.Common.IDataScopeService
@@ -871,4 +884,12 @@ file sealed class _P1NullLetterService : Zayra.Api.Infrastructure.Documents.Lett
     public Task<byte[]> GenerateAppointmentLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.LetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateExperienceLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.LetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateOfferLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.OfferLetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
+}
+
+file sealed class _P1NullDocStorage : Zayra.Api.Infrastructure.Documents.IDocumentStorage
+{
+    public Task<Zayra.Api.Infrastructure.Documents.StoredDocument> SaveAsync(Guid tenantId, Microsoft.AspNetCore.Http.IFormFile file, CancellationToken ct)
+        => Task.FromResult(new Zayra.Api.Infrastructure.Documents.StoredDocument(file.FileName, file.ContentType, "storage/test", "/tmp/test"));
+    public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
+    public string ResolvePath(string storageUrl) => "/tmp/test";
 }

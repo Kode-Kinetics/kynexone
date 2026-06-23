@@ -64,7 +64,10 @@ public class PayrollModuleTests
             new _HttpAccessor(httpCtx),
             new _NullNotifications(),
             new _NullPackResolver(),
-            new _NullLetterService());
+            new StubRuleReader(),
+            new _NullLetterService(),
+            new NullDocumentStorage(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8));
         ctrl.ControllerContext = new ControllerContext { HttpContext = httpCtx };
         return ctrl;
     }
@@ -698,3 +701,4 @@ file sealed class _NullLetterService : Zayra.Api.Infrastructure.Documents.Letter
     public Task<byte[]> GenerateExperienceLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.LetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateOfferLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.OfferLetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
 }
+

@@ -68,7 +68,7 @@ public class CrossTenantControllerTests
 
     private static EmployeeSelfServiceController EssController(ZayraDbContext db, Guid tenantId, int employeeId)
     {
-        var controller = new EmployeeSelfServiceController(db, new StubLetterService());
+        var controller = new EmployeeSelfServiceController(db, new StubLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8));
         controller.ControllerContext = new ControllerContext { HttpContext = BuildEssHttpContext(tenantId, employeeId) };
         return controller;
     }
@@ -235,7 +235,7 @@ public class CrossTenantControllerTests
         // IHttpContextAccessor used only for IP address logging; null HttpContext is safe.
         // NullPackResolver (zero statutory deductions) is correct for cross-tenant isolation tests —
         // we're checking data ownership, not deduction accuracy.
-        var c = new PayrollController(db, new DataScopeService(db), new HttpContextAccessor(), new StubNotificationService(), new StubPackResolver(), new StubLetterService());
+        var c = new PayrollController(db, new DataScopeService(db), new HttpContextAccessor(), new StubNotificationService(), new StubPackResolver(), new StubRuleReader(), new StubLetterService(), new StubDocumentStorage(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8));
         c.ControllerContext = new ControllerContext { HttpContext = BuildHttpContext(tenantId, "Admin") };
         return c;
     }
@@ -486,6 +486,7 @@ public class CrossTenantControllerTests
     {
         public Task<StoredDocument> SaveAsync(Guid tenantId, IFormFile file, CancellationToken ct) =>
             Task.FromResult(new StoredDocument(file.FileName, file.ContentType, "storage/test", "/tmp/test"));
+        public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
         public string ResolvePath(string storageUrl) => "/tmp/test";
     }
 

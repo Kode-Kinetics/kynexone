@@ -549,7 +549,10 @@ public class PayrollValidationEngineTests
             new _ValHttpAccessor(httpCtx),
             new _ValNullNotifications(),
             new _ValNullPackResolver(),
-            new _ValNullLetterService());
+            new StubRuleReader(),
+            new _ValNullLetterService(),
+            new NullDocumentStorage(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8));
         ctrl.ControllerContext = new ControllerContext { HttpContext = httpCtx };
         return ctrl;
     }
@@ -684,38 +687,91 @@ public class PayrollValidationEngineTests
     [Fact]
     public void TenantIsolation_ValidationResultsAreScopedToTenant()
     {
+        // Use *distinguishable* employee IDs so row-level identity leakage is detectable.
+        // Tenant A: employees with Ids 101, 102 (Saudi, Saudi).
+        // Tenant B: employees with Ids 201, 202 (Expat, Expat).
+        // Any result row that carries an employeeId from the opposite tenant's range is
+        // a row-level contamination, regardless of error code.
         var tidA = Guid.NewGuid();
         var tidB = Guid.NewGuid();
 
-        // Build contexts for two different tenants
-        var runA  = MakeRun(tidA);
-        var empA  = MakeSaudiEmp(tidA);
-        var slipA = MakeSlip(runA.Id, tidA);
-        // Tenant A has a missing IBAN error
-        var ctxA  = new PayrollValidationContext(runA, [slipA], [empA], [], [], [], [], null);
+        // ── Tenant A context — KSA company, Saudi employees, incomplete data ──────
+        // Deliberately incomplete: no salary assignments, no profiles.
+        // Expected errors: MISSING_SALARY_STRUCTURE (empA101, empA102),
+        //                  GOSI_MISSING_FOR_SAUDI  (slip101, slip102),
+        //                  MISSING_IBAN            (slip101, slip102)
+        // Run totals = sum of two slips at defaults (10k/1k/9k each) → 20k/2k/18k.
+        // Matching totals prevents TOTALS_* errors from bleeding into both sets.
+        var runA = new PayrollRun
+        {
+            Id = Guid.NewGuid(), TenantId = tidA, Year = 2026, Month = 6, Status = "Processed",
+            TotalGrossSalary = 20_000m, TotalDeductions = 2_000m, TotalNetSalary = 18_000m,
+        };
+        var companyA = MakeKsaCompany(tidA);
 
-        var runB  = MakeRun(tidB);
-        var empB  = MakeExpatEmp(tidB, 2);
-        var slipB = MakeSlip(runB.Id, tidB, empId: 2);
-        var profB = MakeProfile(tidB, 2);
-        var salB  = MakeSalary(tidB, 2);
-        // Tenant B is clean (no GOSI rules since no company/KSA context)
-        var ctxB  = new PayrollValidationContext(runB, [slipB], [empB], [salB], [profB], [], [], null);
+        var empA101 = new Employee { Id = 101, TenantId = tidA, EmployeeCode = "A101", FullName = "Saudi A1", Nationality = "Saudi",   Status = "Active" };
+        var empA102 = new Employee { Id = 102, TenantId = tidA, EmployeeCode = "A102", FullName = "Saudi A2", Nationality = "Saudi",   Status = "Active" };
+        var slipA101 = MakeSlip(runA.Id, tidA, empId: 101);
+        var slipA102 = MakeSlip(runA.Id, tidA, empId: 102);
+        var ctxA = new PayrollValidationContext(
+            runA, [slipA101, slipA102], [empA101, empA102], [], [], [], [], companyA);
+
+        // ── Tenant B context — no company (COMPANY_NOT_RESOLVED), expat employees ─
+        // Complete salary + profile data so the only error is company_not_resolved.
+        // Run totals also match two slips so no TOTALS_* errors fire here either.
+        var runB  = new PayrollRun
+        {
+            Id = Guid.NewGuid(), TenantId = tidB, Year = 2026, Month = 6, Status = "Processed",
+            TotalGrossSalary = 20_000m, TotalDeductions = 2_000m, TotalNetSalary = 18_000m,
+        };
+        var empB201 = new Employee { Id = 201, TenantId = tidB, EmployeeCode = "B201", FullName = "Expat B1", Nationality = "Egyptian", Status = "Active" };
+        var empB202 = new Employee { Id = 202, TenantId = tidB, EmployeeCode = "B202", FullName = "Expat B2", Nationality = "British",  Status = "Active" };
+        var slipB201 = MakeSlip(runB.Id, tidB, empId: 201);
+        var slipB202 = MakeSlip(runB.Id, tidB, empId: 202);
+        var salB201  = MakeSalary(tidB, 201);
+        var salB202  = MakeSalary(tidB, 202);
+        var profB201 = MakeProfile(tidB, 201);
+        var profB202 = MakeProfile(tidB, 202);
+        var ctxB = new PayrollValidationContext(
+            runB, [slipB201, slipB202], [empB201, empB202],
+            [salB201, salB202], [profB201, profB202], [], [], null);
 
         var resultsA = PayrollValidationEngine.Run(ctxA);
         var resultsB = PayrollValidationEngine.Run(ctxB);
 
-        // All results from tenant A carry tidA
-        resultsA.Should().NotBeEmpty("tenant A has a missing salary / IBAN error");
-        resultsA.Should().OnlyContain(r => r.TenantId == tidA, "engine must stamp tenant A's tenant ID");
+        // ── Row-level scoping: every result row carries the correct TenantId ──────
+        resultsA.Should().NotBeEmpty("tenant A has missing salary / IBAN / GOSI errors");
+        resultsA.Should().OnlyContain(r => r.TenantId == tidA,
+            "every result row produced for Tenant A must be stamped with tidA");
 
-        // Tenant B is clean — its result set must be empty (not contaminated by A's run)
-        resultsB.Should().NotContain(r => r.TenantId == tidA, "tenant A's errors must not appear in tenant B's results");
+        resultsB.Should().NotBeEmpty("tenant B must get COMPANY_NOT_RESOLVED");
+        resultsB.Should().OnlyContain(r => r.TenantId == tidB,
+            "every result row produced for Tenant B must be stamped with tidB — tidA must not appear");
 
-        // None of tenant A's ERROR codes must appear in B's results
+        // ── Row-level scoping: no Tenant-A employee ID appears in Tenant-B results ─
+        var aEmployeeIds = new HashSet<int?> { 101, 102 };
+        resultsB.Should().NotContain(r => aEmployeeIds.Contains(r.EmployeeId),
+            "Tenant A employee IDs (101, 102) must never appear in Tenant B's result rows");
+
+        // ── Row-level scoping: no Tenant-B employee ID appears in Tenant-A results ─
+        var bEmployeeIds = new HashSet<int?> { 201, 202 };
+        resultsA.Should().NotContain(r => bEmployeeIds.Contains(r.EmployeeId),
+            "Tenant B employee IDs (201, 202) must never appear in Tenant A's result rows");
+
+        // ── Cross-run contamination: PayrollRunId is tenant-scoped ───────────────
+        resultsA.Should().OnlyContain(r => r.PayrollRunId == runA.Id,
+            "all Tenant A results must reference runA, not runB");
+        resultsB.Should().OnlyContain(r => r.PayrollRunId == runB.Id,
+            "all Tenant B results must reference runB, not runA");
+
+        // ── Error-code isolation: A's specific codes must not bleed into B ────────
+        // Tenant A errors: MISSING_SALARY_STRUCTURE, GOSI_MISSING_FOR_SAUDI, MISSING_IBAN
+        // Tenant B errors: COMPANY_NOT_RESOLVED
+        // These are disjoint by construction — any overlap is a contamination.
         var aErrorCodes = resultsA.Where(r => r.Severity == "Error").Select(r => r.Code).ToHashSet();
-        resultsB.Should().NotContain(r => aErrorCodes.Contains(r.Code),
-            "validation findings from tenant A must not bleed into tenant B's result set");
+        var bErrorCodes = resultsB.Where(r => r.Severity == "Error").Select(r => r.Code).ToHashSet();
+        aErrorCodes.Should().NotIntersectWith(bErrorCodes,
+            "Tenant A's error codes must not appear in Tenant B's results and vice-versa");
     }
 }
 
@@ -762,3 +818,4 @@ file sealed class _ValNullLetterService : Zayra.Api.Infrastructure.Documents.Let
     public Task<byte[]> GenerateExperienceLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.LetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateOfferLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.OfferLetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
 }
+

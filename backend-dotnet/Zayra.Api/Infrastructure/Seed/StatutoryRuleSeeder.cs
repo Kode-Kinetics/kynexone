@@ -75,6 +75,32 @@ public static class StatutoryRuleSeeder
             "nitaqat.default_target_ratio", "0.35", "decimal", eff16,
             "VERIFY: Nitaqat target ratio varies by sector; 35% is directional — confirm with HRSD"));
 
+        // ── KSA OT / LOP ──────────────────────────────────────────────────────
+        // ⚠️  FLAG FOR SAUDI COMPLIANCE SIGN-OFF — do NOT file payroll against these
+        //     values without sign-off from a licensed KSA labour-law practitioner.
+        // OT multiplier: Art.107 KSA Labour Law (Royal Decree M/51 2005) sets 1.5×
+        //   minimum for overtime on regular working days.  Weekend/holiday rates may
+        //   differ; encode separately per policy if needed.
+        // OT monthly hours: 240h (30d × 8h) is the common contractual basis for KSA
+        //   private-sector employees; actual hours per contract may differ.
+        // LOP day-rate: basic ÷ 30 is widely applied in KSA practice but is not
+        //   explicitly mandated by statute — court precedent varies by case.
+        // Standard work minutes: 480 min (8h/day) — adjust for Ramadan-reduced hours
+        //   or sector-specific shift patterns as required.
+        var eff07 = new DateTime(2005, 9, 27); // KSA Labour Law Royal Decree M/51 effective date
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ot.standard_multiplier", "1.5", "decimal", eff07,
+            "FLAG-COMPLIANCE: OT 1.5× per KSA Labour Law Art.107 — weekend/holiday may differ — VERIFY before filing"));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ot.standard_monthly_hours", "240", "decimal", eff07,
+            "FLAG-COMPLIANCE: 240h/month (30d × 8h) for OT hourly-rate divisor — verify per contract type"));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "lop.monthly_day_divisor", "30", "decimal", eff07,
+            "FLAG-COMPLIANCE: LOP day-rate = basic/30 — KSA common practice, not explicit statute — VERIFY before filing"));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "lop.standard_work_minutes_per_day", "480", "decimal", eff07,
+            "FLAG-COMPLIANCE: 480 min/day (8h) for LOP absent-day count — adjust for Ramadan or sector shift patterns"));
+
         // ── UAE GPSSA ────────────────────────────────────────────────────────
         // Source: Federal Law 7/1999 + Cabinet Resolution 50/2022.
         list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,

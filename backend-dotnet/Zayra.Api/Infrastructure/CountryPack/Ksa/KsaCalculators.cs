@@ -195,6 +195,15 @@ internal static class RuleKeys
     public const string GosiExpOhRate             = "gosi.expat_occupational_hazard_rate";
     // KSA Nationalization
     public const string NitaqatTargetRatio        = "nitaqat.default_target_ratio";
+    // KSA OT / LOP — FLAG FOR SAUDI COMPLIANCE SIGN-OFF before any production filing.
+    // OT multiplier: KSA Labor Law Art.107 mandates 1.5× for regular OT hours.
+    // Weekend/holiday multipliers may differ — encode separately if required.
+    // LOP day-rate: basic ÷ 30 is a common KSA practice but court precedent varies.
+    // GOSI treatment of OT and LOP effect on covered wage — flagged separately in Process.
+    public const string OtStandardMultiplier          = "ot.standard_multiplier";           // FLAG: 1.5 per Art.107 — VERIFY
+    public const string OtStandardMonthlyHours        = "ot.standard_monthly_hours";        // FLAG: 240 (30d × 8h) — depends on contract
+    public const string LopMonthlyDayDivisor          = "lop.monthly_day_divisor";          // FLAG: 30 — common KSA practice, VERIFY
+    public const string LopStandardWorkMinutesPerDay  = "lop.standard_work_minutes_per_day"; // FLAG: 480 (8h) — depends on contract
     // UAE GPSSA
     public const string GpssaNationalEmployeeRate = "gpssa.national_employee_rate";
     public const string GpssaNationalEmployerRate = "gpssa.national_employer_rate";

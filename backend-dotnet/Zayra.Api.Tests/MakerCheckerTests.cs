@@ -51,7 +51,10 @@ public class MakerCheckerTests
             new _MakerHttpAccessor(httpCtx),
             new _MakerNullNotifications(),
             new _MakerNullPackResolver(),
-            new _MakerNullLetterService());
+            new StubRuleReader(),
+            new _MakerNullLetterService(),
+            new _MakerNullDocStorage(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(4));
         ctrl.ControllerContext = new ControllerContext { HttpContext = httpCtx };
         return ctrl;
     }
@@ -224,4 +227,12 @@ file sealed class _MakerNullLetterService : ILetterService
     public Task<byte[]> GenerateAppointmentLetterAsync(LetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateExperienceLetterAsync(LetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateOfferLetterAsync(OfferLetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
+}
+
+file sealed class _MakerNullDocStorage : Zayra.Api.Infrastructure.Documents.IDocumentStorage
+{
+    public Task<Zayra.Api.Infrastructure.Documents.StoredDocument> SaveAsync(Guid tenantId, Microsoft.AspNetCore.Http.IFormFile file, CancellationToken ct)
+        => Task.FromResult(new Zayra.Api.Infrastructure.Documents.StoredDocument(file.FileName, file.ContentType, "storage/test", "/tmp/test"));
+    public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
+    public string ResolvePath(string storageUrl) => "/tmp/test";
 }

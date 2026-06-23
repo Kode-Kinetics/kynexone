@@ -10,6 +10,7 @@ using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Payroll;
@@ -27,17 +28,24 @@ public class PayrollController : ControllerBase
     private readonly IHttpContextAccessor _http;
     private readonly INotificationService _notifications;
     private readonly ICountryPackResolver _packResolver;
+    private readonly IStatutoryRuleReader _ruleReader;
     private readonly ILetterService _letters;
+    private readonly IDocumentStorage _storage;
+    private readonly PdfRenderGate _pdfGate;
 
     public PayrollController(ZayraDbContext db, IDataScopeService scopeService, IHttpContextAccessor http,
-        INotificationService notifications, ICountryPackResolver packResolver, ILetterService letters)
+        INotificationService notifications, ICountryPackResolver packResolver, IStatutoryRuleReader ruleReader,
+        ILetterService letters, IDocumentStorage storage, PdfRenderGate pdfGate)
     {
         _db = db;
         _scopeService = scopeService;
         _http = http;
         _notifications = notifications;
         _packResolver = packResolver;
+        _ruleReader = ruleReader;
         _letters = letters;
+        _storage = storage;
+        _pdfGate = pdfGate;
     }
 
     [HttpGet("salary-structures")]
@@ -167,9 +175,42 @@ public class PayrollController : ControllerBase
                 .Where(c => c.TenantId == tenantId && c.IsActive)
                 .OrderBy(c => c.CreatedAtUtc)
                 .FirstOrDefaultAsync(cancellationToken);
-        var packCc  = company?.CountryCode  ?? string.Empty;
-        var packJur = company?.Jurisdiction ?? string.Empty;
+
+        // P0 FAIL-LOUD GUARD — abort before any payslips are written.
+        // A payroll run must never proceed when the statutory pack cannot be resolved;
+        // silently producing zero-deduction payslips violates GCC labour law.
+        if (company is null)
+            return UnprocessableEntity(new
+            {
+                error   = "company_not_resolved",
+                message = "No active company found for this tenant. Cannot resolve a country pack for statutory deductions. " +
+                          "Create and activate a company with a CountryCode before processing payroll.",
+            });
+        if (string.IsNullOrWhiteSpace(company.CountryCode))
+            return UnprocessableEntity(new
+            {
+                error       = "country_code_missing",
+                message     = $"Company '{company.LegalNameEn}' (id: {company.Id}) has no CountryCode set. " +
+                              "Set the company country in Setup → Companies and retry.",
+                companyId   = company.Id,
+                companyName = company.LegalNameEn,
+            });
+
+        var packCc  = company.CountryCode;
+        var packJur = company.Jurisdiction ?? string.Empty;
         var deductionCalc = _packResolver.ResolveDeductionCalculator(packCc, packJur);
+
+        if (deductionCalc is DefaultStatutoryDeductionCalculator)
+            return UnprocessableEntity(new
+            {
+                error        = "statutory_pack_not_configured",
+                message      = $"No statutory deduction pack is registered for country '{packCc}' / jurisdiction '{packJur}'. " +
+                               "Register a country pack for this jurisdiction before processing payroll. " +
+                               "Payroll run aborted — no payslips written.",
+                countryCode  = packCc,
+                jurisdiction = packJur,
+                companyId    = company.Id,
+            });
 
         // Income tax rate from System Settings (0 if not configured — GCC has no personal income tax by default)
         var taxRateSetting = await _db.SystemSettings.AsNoTracking()
@@ -236,6 +277,36 @@ public class PayrollController : ControllerBase
             .Select(p => (int?)p.StandardMonthlyHours)
             .FirstOrDefaultAsync(cancellationToken) ?? 240;
 
+        // ── OT/LOP statutory rules from country pack config ───────────────────
+        // Read from StatutoryRule table (tenant-overridable).  Fallback defaults are
+        // directional KSA values — FLAG FOR COMPLIANCE SIGN-OFF before production filing.
+        var eff = new DateOnly(run.Year, run.Month, 1);
+        // OT multiplier: KSA Labour Law Art.107 = 1.5× for regular overtime days.
+        // [FLAG-COMPLIANCE-KSA: weekend/holiday OT multipliers may differ — Art.107 baseline only]
+        var otMultiplier = await _ruleReader.GetDecimalAsync(
+            packCc, packJur, "ot.standard_multiplier", eff, tenantId, cancellationToken) ?? 1.5m;
+        // Standard monthly hours for hourly-rate divisor (overrides policy value if configured).
+        var otMonthlyHoursRule = await _ruleReader.GetDecimalAsync(
+            packCc, packJur, "ot.standard_monthly_hours", eff, tenantId, cancellationToken);
+        if (otMonthlyHoursRule.HasValue && otMonthlyHoursRule.Value > 0)
+            standardMonthlyHours = (int)otMonthlyHoursRule.Value;
+        // LOP day-rate divisor: basic ÷ lopDayDivisor per absent day.
+        // [FLAG-COMPLIANCE-KSA: basic/30 is common KSA practice but court precedent varies — VERIFY]
+        var lopDayDivisor = (int)(await _ruleReader.GetDecimalAsync(
+            packCc, packJur, "lop.monthly_day_divisor", eff, tenantId, cancellationToken) ?? 30m);
+        // Standard work minutes per day: used to convert absence minutes to LOP days.
+        // [FLAG-COMPLIANCE-KSA: 480 min (8h); adjust for Ramadan or sector shift patterns]
+        var lopStdMinutesPerDay = (int)(await _ruleReader.GetDecimalAsync(
+            packCc, packJur, "lop.standard_work_minutes_per_day", eff, tenantId, cancellationToken) ?? 480m);
+
+        // ── Attendance: employees who had daily records processed in this period ──
+        // Used in Rule 10 (WARN_NO_ATTENDANCE) to detect employees skipped by attendance system.
+        var attendanceProcessedEmpIds = (await _db.AttendanceDailyRecords.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.WorkDate >= periodStart && r.WorkDate <= periodEnd)
+            .Select(r => r.EmployeeId)
+            .Distinct()
+            .ToListAsync(cancellationToken)).ToHashSet();
+
         var slips = new List<PayrollSlip>();
         foreach (var e in employees)
         {
@@ -246,11 +317,42 @@ public class PayrollController : ControllerBase
             var otherAllowances = (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
             var gross = basic + housing + transport + otherAllowances;
             var fixedDeduction = salary?.FixedDeduction ?? 0m;
-            var hourlyRate = standardMonthlyHours > 0 ? Math.Round(basic / standardMonthlyHours, 2) : 0m;
-            var attendanceDeduction = Math.Round(attendanceImpacts.Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("deduction", StringComparison.OrdinalIgnoreCase)).Sum(x => x.Minutes) / 60m * hourlyRate, 2);
-            var absenceDeduction = Math.Round(attendanceImpacts.Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("Absence", StringComparison.OrdinalIgnoreCase)).Sum(x => x.Minutes) / 60m * hourlyRate, 2);
+            // Hourly rate for short-hours (late/early) deductions and OT base — basic ÷ standardMonthlyHours.
+            var hourlyRate = standardMonthlyHours > 0 ? basic / standardMonthlyHours : 0m;
+
+            // ── Short-hours deduction (late/early) at hourly rate ─────────────
+            var attendanceDeduction = Math.Round(
+                attendanceImpacts
+                    .Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("deduction", StringComparison.OrdinalIgnoreCase))
+                    .Sum(x => x.Minutes) / 60m * hourlyRate, 2);
+
+            // ── LOP (Loss of Pay): absent days at day-rate (basic ÷ lopDayDivisor) ──
+            // [FLAG-COMPLIANCE-KSA: LOP does NOT reduce GOSI covered wage in this implementation.
+            //  Whether unpaid absence reduces the covered wage base is a statutory question
+            //  requiring sign-off before any live payroll filing.]
+            var absenceMinutes = attendanceImpacts
+                .Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("Absence", StringComparison.OrdinalIgnoreCase))
+                .Sum(x => x.Minutes);
+            var lopDays = lopStdMinutesPerDay > 0 && absenceMinutes > 0
+                ? Math.Round((decimal)absenceMinutes / lopStdMinutesPerDay, 4)
+                : 0m;
+            var lopDayRate = lopDayDivisor > 0 && basic > 0 ? basic / lopDayDivisor : 0m;
+            var lopDeduction = Math.Round(lopDays * lopDayRate, 2);
+
             var leaveDeduction = leaveImpacts.Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("Deduction", StringComparison.OrdinalIgnoreCase)).Sum(x => x.Amount);
-            var overtimePay = overtimeImpacts.Where(x => x.EmployeeId == e.Id).Sum(x => x.Amount);
+
+            // ── Overtime pay: approved hours × hourly rate × statutory multiplier ──
+            // Recomputed from OvertimePayrollImpacts.Hours (not .Amount) so the statutory
+            // multiplier from StatutoryRule drives the rate, not the policy-level multiplier
+            // stored at approval time.
+            // [FLAG-COMPLIANCE-KSA: OT is excluded from GOSI covered wage in this implementation.
+            //  Art.107 sets 1.5× for regular OT; weekend/holiday rates may require separate rules.
+            //  Whether OT pay is included in the GOSI covered wage requires sign-off before filing.]
+            var empOtImpacts = overtimeImpacts.Where(x => x.EmployeeId == e.Id).ToList();
+            var otHours = empOtImpacts.Sum(x => x.Hours);
+            var overtimePay = otHours > 0m && hourlyRate > 0m
+                ? Math.Round(otHours * hourlyRate * otMultiplier, 2)
+                : 0m;
             // Tax deduction: apply income tax rate to taxable components only
             decimal taxDeduction = 0m;
             if (incomeTaxRate > 0 && salary is not null)
@@ -293,7 +395,7 @@ public class PayrollController : ControllerBase
             var advEmi     = empAdv.Sum(a => Math.Min(a.InstallmentAmount, a.OutstandingBalance));
             var totalLoanDeduction = Math.Round(loanEmi + advEmi, 2);
 
-            var deductions = fixedDeduction + attendanceDeduction + absenceDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction;
+            var deductions = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction;
             // C3: net salary cannot be negative (GCC labour law); engine Rule 3 will flag this.
             var netSalary = Math.Max(0m, gross + overtimePay + totalBonusNet - deductions);
 
@@ -335,11 +437,20 @@ public class PayrollController : ControllerBase
             if (housing > 0) AddEarning(tenantId, id, e.Id, "HOUSING", "Housing allowance", housing, "Salary");
             if (transport > 0) AddEarning(tenantId, id, e.Id, "TRANSPORT", "Transport allowance", transport, "Salary");
             if (otherAllowances > 0) AddEarning(tenantId, id, e.Id, "OTHER_ALLOWANCES", "Other allowances", otherAllowances, "Salary");
-            if (overtimePay > 0) AddEarning(tenantId, id, e.Id, "OVERTIME", "Approved overtime", overtimePay, "Overtime");
+            if (overtimePay > 0)
+            {
+                var otRateDisplay = Math.Round(hourlyRate * otMultiplier, 2);
+                AddEarning(tenantId, id, e.Id, "OVERTIME",
+                    $"Overtime ({otHours:N2} h × {Math.Round(hourlyRate, 2):N2}/h × {otMultiplier:N2})",
+                    overtimePay, "Overtime");
+            }
             if (fixedDeduction > 0) AddDeduction(tenantId, id, e.Id, "FIXED_DEDUCTION", "Fixed deduction", fixedDeduction, "Salary");
             if (taxDeduction > 0) AddDeduction(tenantId, id, e.Id, "INCOME_TAX", $"Income tax ({incomeTaxRate}%)", taxDeduction, "Tax");
             if (attendanceDeduction > 0) AddDeduction(tenantId, id, e.Id, "ATTENDANCE", "Late/early attendance deduction", attendanceDeduction, "Attendance");
-            if (absenceDeduction > 0) AddDeduction(tenantId, id, e.Id, "ABSENCE", "Absence deduction", absenceDeduction, "Attendance");
+            if (lopDeduction > 0)
+                AddDeduction(tenantId, id, e.Id, "LOP_DEDUCTION",
+                    $"Loss of Pay ({lopDays:N2} d × {Math.Round(lopDayRate, 2):N2}/d)",
+                    lopDeduction, "Attendance");
             if (leaveDeduction > 0) AddDeduction(tenantId, id, e.Id, "LEAVE", "Leave deduction", leaveDeduction, "Leave");
             if (loanEmi > 0) AddDeduction(tenantId, id, e.Id, "LOAN_EMI", "Loan instalment", loanEmi, "Loan");
             if (advEmi > 0) AddDeduction(tenantId, id, e.Id, "ADVANCE_EMI", "Salary advance repayment", advEmi, "Loan");
@@ -380,8 +491,17 @@ public class PayrollController : ControllerBase
         var valEarnings = await _db.PayrollEarnings.AsNoTracking()
             .Where(e => e.TenantId == tenantId && e.PayrollRunId == id).ToListAsync(cancellationToken);
         var valProfiles = payrollProfiles.Values.ToList();
+        // Build period-level OT hours map for Rule 11 (OT_RATE_UNRESOLVED).
+        var otHoursByEmpForValidation = overtimeImpacts
+            .GroupBy(x => x.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Sum(x => x.Hours));
+
         var validationCtx = new PayrollValidationContext(
-            run, slips, employees, salaryAssignments, valProfiles, valDeductions, valEarnings, company);
+            run, slips, employees, salaryAssignments, valProfiles, valDeductions, valEarnings, company)
+        {
+            OvertimeHoursByEmployee      = otHoursByEmpForValidation,
+            AttendanceProcessedEmployeeIds = attendanceProcessedEmpIds,
+        };
         foreach (var r in PayrollValidationEngine.Run(validationCtx))
             _db.PayrollValidationResults.Add(r);
 
@@ -567,7 +687,30 @@ public class PayrollController : ControllerBase
             ? await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId.Value, cancellationToken)
             : await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.IsActive).OrderBy(c => c.CreatedAtUtc).FirstOrDefaultAsync(cancellationToken);
 
-        var ctx     = new PayrollValidationContext(run, slips, employees, salaries, profiles, deductions, earnings, company);
+        // Load OT/attendance data so Rules 10+11 fire correctly on /validate too.
+        var valPeriodStart = new DateOnly(run.Year, run.Month, 1);
+        var valPeriodEnd   = valPeriodStart.AddMonths(1).AddDays(-1);
+        var valOtRequestIds = await _db.OvertimeRequests.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd)
+            .Select(r => r.Id)
+            .ToListAsync(cancellationToken);
+        var valOtImpacts = await _db.OvertimePayrollImpacts.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && valOtRequestIds.Contains(x.OvertimeRequestId))
+            .ToListAsync(cancellationToken);
+        var valAttendanceEmpIds = (await _db.AttendanceDailyRecords.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd)
+            .Select(r => r.EmployeeId)
+            .Distinct()
+            .ToListAsync(cancellationToken)).ToHashSet();
+        var valOtHoursByEmp = valOtImpacts
+            .GroupBy(x => x.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Sum(x => x.Hours));
+
+        var ctx     = new PayrollValidationContext(run, slips, employees, salaries, profiles, deductions, earnings, company)
+        {
+            OvertimeHoursByEmployee        = valOtHoursByEmp,
+            AttendanceProcessedEmployeeIds = valAttendanceEmpIds,
+        };
         var results = PayrollValidationEngine.Run(ctx);
 
         // Replace stored results with fresh engine output.
@@ -661,6 +804,45 @@ public class PayrollController : ControllerBase
         await PayrollAudit("payroll.run.sent_back", "PayrollRun", id.ToString(), new { notes = req.Notes }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         return Ok(run);
+    }
+
+    // ── VoidRun ───────────────────────────────────────────────────────────────────
+    // Soft-delete a payroll run with full audit trail:
+    //   • status → "Voided" (never hard-deleted — financial records are immutable)
+    //   • payslips → "Voided"
+    //   • GL contra-entries written for any already-posted GL (Locked runs)
+    //   • audit-logged with who/when/why
+    //   • partial unique index allows a replacement run to be created for the same period
+    //
+    // RBAC: Admin and Finance Controller only — Finance Controller is the
+    // designated financial-control role, not ordinary payroll processors.
+
+    [HttpPost("runs/{id:guid}/void")]
+    [Authorize(Roles = "Admin,Finance Controller")]
+    public async Task<IActionResult> VoidRun(Guid id, [FromBody] PayrollDecisionRequest req, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(req.Notes))
+            return BadRequest(new
+            {
+                error   = "reason_required",
+                message = "A void reason is required. Voiding a payroll run is an irreversible financial action and must be documented.",
+            });
+
+        var tenantId = GetTenantId();
+        var result   = await new PayrollVoidService(_db).VoidAsync(
+            id, tenantId, GetUserId(), GetUserName(), req.Notes, cancellationToken);
+
+        if (result.IsNotFound)    return NotFound();
+        if (result.IsAlreadyVoid) return Conflict(new { error = "already_voided", message = "This payroll run has already been voided." });
+
+        return Ok(new
+        {
+            runId             = id,
+            period            = result.Period,
+            status            = "Voided",
+            glEntriesReversed = result.GlReversed,
+            reason            = req.Notes,
+        });
     }
 
     [HttpGet("runs/{id:guid}/gl-journal")]
@@ -2254,10 +2436,12 @@ public class PayrollController : ControllerBase
                 try { branding = System.Text.Json.JsonSerializer.Deserialize<PayslipBrandingConfig>(tmpl.BrandingJson, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)); } catch { }
                 if (branding?.LogoStorageUrl is not null)
                 {
-                    var logoAbsPath = _http.HttpContext?.RequestServices
-                        .GetService(typeof(Zayra.Api.Infrastructure.Documents.IDocumentStorage)) is Zayra.Api.Infrastructure.Documents.IDocumentStorage ds
-                        ? ds.ResolvePath(branding.LogoStorageUrl) : null;
-                    if (logoAbsPath is not null) branding = branding with { LogoStorageUrl = logoAbsPath };
+                    try
+                    {
+                        var logoBytes = await _storage.GetBytesAsync(tenantId, branding.LogoStorageUrl, ct);
+                        branding = branding with { LogoBytes = logoBytes };
+                    }
+                    catch { /* non-fatal: logo is optional */ }
                 }
             }
         }
@@ -2279,7 +2463,13 @@ public class PayrollController : ControllerBase
             Branding:      branding
         );
 
-        var pdf = await _letters.GeneratePayslipPdfAsync(data, ct);
+        byte[] pdf;
+        try { pdf = await _pdfGate.RenderAsync(() => _letters.GeneratePayslipPdfAsync(data, ct), ct); }
+        catch (PdfConcurrencyException ex)
+        {
+            Response.Headers["Retry-After"] = "10";
+            return StatusCode(429, new { error = "pdf_render_busy", message = ex.Message });
+        }
 
         await PayrollAudit("payroll.payslip.download", "Payslip", id.ToString(),
             new { employee = slip.EmployeeCode, period = $"{run?.Year}-{run?.Month:00}" }, ct);
@@ -2352,7 +2542,35 @@ public class PayrollController : ControllerBase
                 .FirstOrDefaultAsync(t => t.TenantId == tenantId && t.IsDefault, ct);
         }
 
+        // Pre-load logo bytes for each unique template (one S3/disk fetch per template, not per slip).
+        var logoBytesCache = new Dictionary<Guid, byte[]?>();
+        foreach (var (tmplId, tmpl) in templateCache)
+        {
+            try
+            {
+                var b = System.Text.Json.JsonSerializer.Deserialize<PayslipBrandingConfig>(tmpl.BrandingJson,
+                    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+                if (b?.LogoStorageUrl is not null)
+                    logoBytesCache[tmplId] = await _storage.GetBytesAsync(tenantId, b.LogoStorageUrl, ct);
+            }
+            catch { logoBytesCache[tmplId] = null; }
+        }
+        byte[]? defaultLogoBytes = null;
+        if (defaultTmpl is not null)
+        {
+            try
+            {
+                var b = System.Text.Json.JsonSerializer.Deserialize<PayslipBrandingConfig>(defaultTmpl.BrandingJson,
+                    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+                if (b?.LogoStorageUrl is not null)
+                    defaultLogoBytes = await _storage.GetBytesAsync(tenantId, b.LogoStorageUrl, ct);
+            }
+            catch { /* non-fatal */ }
+        }
+
         using var ms = new System.IO.MemoryStream();
+        try
+        {
         using (var zip = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
         {
             foreach (var payslip in payslips)
@@ -2384,6 +2602,13 @@ public class PayrollController : ControllerBase
                 if (tmpl is not null)
                 {
                     try { branding = System.Text.Json.JsonSerializer.Deserialize<PayslipBrandingConfig>(tmpl.BrandingJson, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)); } catch { }
+                    if (branding is not null)
+                    {
+                        var logoBytes = payslip.PayslipTemplateId.HasValue
+                            ? logoBytesCache.GetValueOrDefault(payslip.PayslipTemplateId.Value)
+                            : defaultLogoBytes;
+                        if (logoBytes is { Length: > 0 }) branding = branding with { LogoBytes = logoBytes };
+                    }
                 }
 
                 var data = new PayslipData(
@@ -2402,12 +2627,18 @@ public class PayrollController : ControllerBase
                     Branding:      branding
                 );
 
-                var pdf = await _letters.GeneratePayslipPdfAsync(data, ct);
+                var pdf = await _pdfGate.RenderAsync(() => _letters.GeneratePayslipPdfAsync(data, ct), ct);
                 var entry = zip.CreateEntry($"payslip-{slip.EmployeeCode}-{period}.pdf",
                     System.IO.Compression.CompressionLevel.Fastest);
                 await using var entryStream = entry.Open();
                 await entryStream.WriteAsync(pdf, ct);
             }
+        }
+        }
+        catch (PdfConcurrencyException ex)
+        {
+            Response.Headers["Retry-After"] = "30";
+            return StatusCode(429, new { error = "pdf_render_busy", message = ex.Message });
         }
 
         await PayrollAudit("payroll.payslip.bulk_download", "PayrollRun", id.ToString(),
