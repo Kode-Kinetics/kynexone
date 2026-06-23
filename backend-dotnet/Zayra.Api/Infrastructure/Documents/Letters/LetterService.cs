@@ -13,13 +13,45 @@ public class LetterService : ILetterService
 
     public Task<byte[]> GeneratePayslipPdfAsync(PayslipData data, CancellationToken cancellationToken = default)
     {
+        var b = data.Branding ?? new();
+        var ar = b.Locale is "ar" or "bilingual";
+
         var monthName = new DateTime(data.PayYear, data.PayMonth, 1).ToString("MMMM yyyy");
-        var earnings = data.Items.Where(i => i.Type == "Earning").ToList();
+        var earnings   = data.Items.Where(i => i.Type == "Earning").ToList();
         var deductions = data.Items.Where(i => i.Type == "Deduction").ToList();
-        var net = data.Items.FirstOrDefault(i => i.Type == "Net");
-        var grossTotal = earnings.Sum(e => e.Amount);
+        var netItem    = data.Items.FirstOrDefault(i => i.Type == "Net");
+        var grossTotal     = earnings.Sum(e => e.Amount);
         var deductionTotal = deductions.Sum(d => d.Amount);
-        var netPay = net?.Amount ?? grossTotal - deductionTotal;
+        var netPay = netItem?.Amount ?? grossTotal - deductionTotal;
+
+        // Parse branding colors to QuestPDF color strings (fallback to defaults on invalid hex)
+        var primaryHex = b.PrimaryColor.TrimStart('#');
+        var accentHex  = b.AccentColor.TrimStart('#');
+        static bool IsValidHex(string hex) => uint.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out _);
+        var primaryColor = (string)(IsValidHex(primaryHex) ? $"#{primaryHex}" : Colors.Blue.Darken3);
+        var accentColor  = (string)(IsValidHex(accentHex)  ? $"#{accentHex}"  : Colors.Blue.Lighten3);
+
+        // Logo bytes (null if not configured or file not found)
+        byte[]? logoBytes = null;
+        if (!string.IsNullOrEmpty(b.LogoStorageUrl) && System.IO.File.Exists(b.LogoStorageUrl))
+        {
+            try { logoBytes = System.IO.File.ReadAllBytes(b.LogoStorageUrl); } catch { /* non-fatal */ }
+        }
+
+        var earningsLabel   = ar ? "المستحقات"   : "EARNINGS";
+        var deductionsLabel = ar ? "الاستقطاعات" : "DEDUCTIONS";
+        var grossLabel      = ar ? "الإجمالي"    : "Gross Total";
+        var deductTotalLbl  = ar ? "إجمالي الاستقطاعات" : "Total Deductions";
+        var netLabel        = ar ? "صافي الراتب"  : "NET PAY";
+        var noDeductLbl     = ar ? "لا توجد استقطاعات" : "No deductions";
+        var empLabel        = ar ? "الموظف"       : "Employee";
+        var codeLabel       = ar ? "الكود"        : "Code";
+        var deptLabel       = ar ? "القسم"        : "Department";
+        var desigLabel      = ar ? "المسمى"       : "Designation";
+        var periodLabel     = ar ? "فترة الراتب"  : "Pay Period";
+        var currencyLabel   = ar ? "العملة"       : "Currency";
+        var payslipLabel    = ar ? "كشف راتب"     : "Payslip";
+        var noLabel         = ar ? "رقم"          : "No";
 
         var doc = Document.Create(container =>
         {
@@ -33,18 +65,28 @@ public class LetterService : ILetterService
                 {
                     col.Item().Row(row =>
                     {
+                        // Logo (if available)
+                        if (logoBytes is { Length: > 0 })
+                            row.ConstantItem(60).Height(40).Image(logoBytes).FitArea();
+
                         row.RelativeItem().Column(c =>
                         {
-                            c.Item().Text(data.CompanyName).FontSize(14).Bold().FontColor(Colors.Blue.Darken3);
-                            c.Item().Text("Payslip").FontSize(11).SemiBold().FontColor(Colors.Grey.Darken1);
+                            c.Item().Text(data.CompanyName).FontSize(14).Bold().FontColor(primaryColor);
+                            if (!string.IsNullOrWhiteSpace(data.CompanyNameAr))
+                                c.Item().Text(data.CompanyNameAr).FontSize(11).FontColor(primaryColor);
+                            if (!string.IsNullOrWhiteSpace(b.HeaderTextEn))
+                                c.Item().Text(b.HeaderTextEn).FontSize(8).FontColor(Colors.Grey.Darken1);
+                            if (ar && !string.IsNullOrWhiteSpace(b.HeaderTextAr))
+                                c.Item().Text(b.HeaderTextAr).FontSize(8).FontColor(Colors.Grey.Darken1);
+                            c.Item().Text(payslipLabel).FontSize(11).SemiBold().FontColor(Colors.Grey.Darken1);
                         });
                         row.ConstantItem(120).AlignRight().Column(c =>
                         {
                             c.Item().Text(monthName).FontSize(11).SemiBold();
-                            c.Item().Text($"No: {data.PayslipNumber}").FontSize(8).FontColor(Colors.Grey.Medium);
+                            c.Item().Text($"{noLabel}: {data.PayslipNumber}").FontSize(8).FontColor(Colors.Grey.Medium);
                         });
                     });
-                    col.Item().PaddingVertical(6).LineHorizontal(1).LineColor(Colors.Blue.Lighten3);
+                    col.Item().PaddingVertical(6).LineHorizontal(1).LineColor(accentColor);
                 });
 
                 page.Content().Column(col =>
@@ -54,18 +96,18 @@ public class LetterService : ILetterService
                     {
                         row.RelativeItem().Column(c =>
                         {
-                            c.Item().Text($"Employee: {data.EmployeeName}").SemiBold();
-                            c.Item().Text($"Code: {data.EmployeeCode}");
+                            c.Item().Text($"{empLabel}: {data.EmployeeName}").SemiBold();
+                            c.Item().Text($"{codeLabel}: {data.EmployeeCode}");
                         });
                         row.RelativeItem().Column(c =>
                         {
-                            c.Item().Text($"Department: {data.Department}");
-                            c.Item().Text($"Designation: {data.Designation}");
+                            c.Item().Text($"{deptLabel}: {data.Department}");
+                            c.Item().Text($"{desigLabel}: {data.Designation}");
                         });
                         row.RelativeItem().Column(c =>
                         {
-                            c.Item().Text($"Pay Period: {monthName}");
-                            c.Item().Text($"Currency: {data.Currency}");
+                            c.Item().Text($"{periodLabel}: {monthName}");
+                            c.Item().Text($"{currencyLabel}: {data.Currency}");
                         });
                     });
 
@@ -74,7 +116,7 @@ public class LetterService : ILetterService
                         // Earnings
                         row.RelativeItem().Column(c =>
                         {
-                            c.Item().Background(Colors.Green.Lighten4).Padding(6).Text("EARNINGS").Bold().FontSize(8);
+                            c.Item().Background(Colors.Green.Lighten4).Padding(6).Text(earningsLabel).Bold().FontSize(8);
                             foreach (var e in earnings)
                                 c.Item().BorderBottom(0.5f).BorderColor(Colors.Grey.Lighten2).Padding(4).Row(r =>
                                 {
@@ -83,7 +125,7 @@ public class LetterService : ILetterService
                                 });
                             c.Item().Background(Colors.Green.Lighten3).Padding(5).Row(r =>
                             {
-                                r.RelativeItem().Text("Gross Total").SemiBold();
+                                r.RelativeItem().Text(grossLabel).SemiBold();
                                 r.ConstantItem(70).AlignRight().Text($"{grossTotal:N2}").SemiBold();
                             });
                         });
@@ -93,9 +135,9 @@ public class LetterService : ILetterService
                         // Deductions
                         row.RelativeItem().Column(c =>
                         {
-                            c.Item().Background(Colors.Red.Lighten4).Padding(6).Text("DEDUCTIONS").Bold().FontSize(8);
+                            c.Item().Background(Colors.Red.Lighten4).Padding(6).Text(deductionsLabel).Bold().FontSize(8);
                             if (deductions.Count == 0)
-                                c.Item().Padding(4).Text("No deductions").FontColor(Colors.Grey.Medium);
+                                c.Item().Padding(4).Text(noDeductLbl).FontColor(Colors.Grey.Medium);
                             foreach (var d in deductions)
                                 c.Item().BorderBottom(0.5f).BorderColor(Colors.Grey.Lighten2).Padding(4).Row(r =>
                                 {
@@ -104,16 +146,16 @@ public class LetterService : ILetterService
                                 });
                             c.Item().Background(Colors.Red.Lighten3).Padding(5).Row(r =>
                             {
-                                r.RelativeItem().Text("Total Deductions").SemiBold();
+                                r.RelativeItem().Text(deductTotalLbl).SemiBold();
                                 r.ConstantItem(70).AlignRight().Text($"{deductionTotal:N2}").SemiBold();
                             });
                         });
                     });
 
                     // Net pay banner
-                    col.Item().PaddingTop(12).Background(Colors.Blue.Darken3).Padding(10).Row(row =>
+                    col.Item().PaddingTop(12).Background(primaryColor).Padding(10).Row(row =>
                     {
-                        row.RelativeItem().Text("NET PAY").FontSize(12).Bold().FontColor(Colors.White);
+                        row.RelativeItem().Text(netLabel).FontSize(12).Bold().FontColor(Colors.White);
                         row.ConstantItem(120).AlignRight().Text($"{data.Currency} {netPay:N2}").FontSize(13).Bold().FontColor(Colors.White);
                     });
 
@@ -122,8 +164,11 @@ public class LetterService : ILetterService
 
                 page.Footer().AlignCenter().Text(t =>
                 {
-                    t.Span("Generated by KynexOne HRMS — ").FontSize(7).FontColor(Colors.Grey.Medium);
-                    t.Span(DateTime.UtcNow.ToString("dd MMM yyyy HH:mm") + " UTC").FontSize(7).FontColor(Colors.Grey.Medium);
+                    var footerText = !string.IsNullOrWhiteSpace(ar ? b.FooterTextAr : b.FooterTextEn)
+                        ? (ar ? b.FooterTextAr : b.FooterTextEn)
+                        : "Generated by Zayra HRMS";
+                    t.Span($"{footerText} — ").FontSize(7).FontColor(Colors.Grey.Medium);
+                    t.Span((data.GeneratedOn ?? DateTime.UtcNow).ToString("dd MMM yyyy HH:mm") + " UTC").FontSize(7).FontColor(Colors.Grey.Medium);
                 });
             });
         });

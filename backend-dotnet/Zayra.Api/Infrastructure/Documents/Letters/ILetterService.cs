@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Payroll;
 namespace Zayra.Api.Infrastructure.Documents.Letters;
 
 public interface ILetterService
@@ -27,7 +28,10 @@ public record PayslipData(
     int PayMonth,
     string Currency,
     IReadOnlyList<PayslipLineItem> Items,
-    string CompanyName
+    string CompanyName,
+    string CompanyNameAr = "",
+    DateTime? GeneratedOn = null,
+    PayslipBrandingConfig? Branding = null
 );
 
 public record LetterData(

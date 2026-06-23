@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260623040911_AddPayslipTemplateDesigner")]
+    partial class AddPayslipTemplateDesigner
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -14263,10 +14266,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("processed_at_utc");
 
-                    b.Property<Guid?>("ProcessedByUserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("processed_by_user_id");
-
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text")
@@ -14304,10 +14303,6 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "CompanyId", "Status");
 
                     b.HasIndex("TenantId", "CompanyId", "Year", "Month");
-
-                    b.HasIndex("TenantId", "Year", "Month")
-                        .IsUnique()
-                        .HasDatabaseName("IX_payroll_runs_tenant_id_year_month");
 
                     b.ToTable("payroll_runs", (string)null);
                 });

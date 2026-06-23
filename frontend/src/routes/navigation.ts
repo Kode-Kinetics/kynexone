@@ -6,6 +6,7 @@ import {
   CalendarCheck,
   ClipboardList,
   Clock3,
+  FileText,
   Gauge,
   Headphones,
   Landmark,
@@ -48,6 +49,7 @@ export const navigationGroups: NavGroup[] = [
     label: 'Finance & Talent',
     items: [
       { label: 'Payroll', icon: WalletCards, path: '/payroll', requiredPermissions: ['payroll.read'], requiredFeatureKey: 'payroll' },
+      { label: 'Payslip Templates', icon: FileText, path: '/payroll/templates', requiredPermissions: ['payroll.read'], requiredFeatureKey: 'payslip_template_designer' },
       { label: 'Loans & Advances', icon: Landmark, path: '/loans', requiredPermissions: ['loans.read', 'loans.write'] },
       { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },
       { label: 'Onboarding', icon: UserPlus, path: '/recruitment/onboarding', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },

@@ -241,7 +241,6 @@ public class PayrollController : ControllerBase
         {
             var salary = salaryAssignments.Where(x => x.EmployeeId == e.Id && x.EffectiveDate <= periodEnd).OrderByDescending(x => x.EffectiveDate).FirstOrDefault();
             var basic = salary?.BasicSalary ?? e.Salary ?? 0m;
-            if (basic <= 0) _db.PayrollValidationResults.Add(new PayrollValidationResult { TenantId = tenantId, PayrollRunId = id, EmployeeId = e.Id, Severity = "Warning", Code = "MISSING_SALARY", Message = "Employee has no active salary structure or salary amount." });
             var housing = salary?.HousingAllowance ?? 0m;
             var transport = salary?.TransportAllowance ?? 0m;
             var otherAllowances = (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
@@ -295,10 +294,8 @@ public class PayrollController : ControllerBase
             var totalLoanDeduction = Math.Round(loanEmi + advEmi, 2);
 
             var deductions = fixedDeduction + attendanceDeduction + absenceDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction;
-            // C3: net salary cannot be negative (GCC labour law)
+            // C3: net salary cannot be negative (GCC labour law); engine Rule 3 will flag this.
             var netSalary = Math.Max(0m, gross + overtimePay + totalBonusNet - deductions);
-            if (gross + overtimePay + totalBonusNet - deductions < 0)
-                _db.PayrollValidationResults.Add(new PayrollValidationResult { TenantId = tenantId, PayrollRunId = id, EmployeeId = e.Id, Severity = "Error", Code = "NEGATIVE_NET", Message = "Calculated net salary is negative. Deductions exceed gross pay plus bonus. Run blocked for this employee." });
 
             // COMPLIANCE: YTD — sum all locked slips for this employee earlier in the same year
             var empYtdSlips = ytdSlips.Where(s => s.EmployeeId == e.Id).ToList();
@@ -355,12 +352,12 @@ public class PayrollController : ControllerBase
                 AddDeduction(tenantId, id, e.Id, line.Code, line.Label, line.EmployeeAmount, "Statutory");
             foreach (var line in statutoryResult.Lines.Where(l => l.EmployerAmount > 0))
                 AddDeduction(tenantId, id, e.Id, line.Code, line.Label, line.EmployerAmount, "Statutory");
-            if (overtimePay > gross * 0.35m && gross > 0) _db.PayrollValidationResults.Add(new PayrollValidationResult { TenantId = tenantId, PayrollRunId = id, EmployeeId = e.Id, Severity = "Warning", Code = "UNUSUAL_OVERTIME", Message = "Overtime payout is above 35% of regular gross earnings." });
         }
 
         _db.PayrollSlips.AddRange(slips);
         run.Status = "Processed";
         run.ProcessedAtUtc = DateTime.UtcNow;
+        run.ProcessedByUserId = GetUserId();
         run.EmployeeCount = slips.Count;
         run.TotalGrossSalary = slips.Sum(s => s.GrossSalary);
         run.TotalDeductions = slips.Sum(s => s.Deductions);
@@ -374,7 +371,19 @@ public class PayrollController : ControllerBase
 
         // COMPLIANCE: Update loan/advance outstanding balances after payroll deduction.
         // Re-load mutable copies for update (AsNoTracking above was read-only).
-        await _db.SaveChangesAsync(cancellationToken); // flush slips first so run Id is persisted
+        await _db.SaveChangesAsync(cancellationToken); // flush slips + deductions first so engine can read them
+
+        // Run centralised validation engine — replaces the old inline result adds.
+        // Results are saved in the second SaveChangesAsync below.
+        var valDeductions = await _db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == id).ToListAsync(cancellationToken);
+        var valEarnings = await _db.PayrollEarnings.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.PayrollRunId == id).ToListAsync(cancellationToken);
+        var valProfiles = payrollProfiles.Values.ToList();
+        var validationCtx = new PayrollValidationContext(
+            run, slips, employees, salaryAssignments, valProfiles, valDeductions, valEarnings, company);
+        foreach (var r in PayrollValidationEngine.Run(validationCtx))
+            _db.PayrollValidationResults.Add(r);
 
         var activeLoansMutable = await _db.EmployeeLoans
             .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && l.OutstandingBalance > 0)
@@ -445,6 +454,20 @@ public class PayrollController : ControllerBase
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
         if (run is null) return NotFound();
         if (run.Status is not ("Processed" or "Approved" or "PendingFinanceReview")) return BadRequest(new { message = "Only processed, pending finance review, or approved runs can be locked." });
+
+        // Block-on-error: any unresolved ERROR-severity validation result blocks locking.
+        var blockingErrors = await _db.PayrollValidationResults.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.Severity == "Error" && !x.IsResolved)
+            .Select(x => new { x.Code, x.Message, x.EmployeeId })
+            .ToListAsync(cancellationToken);
+        if (blockingErrors.Count > 0)
+            return UnprocessableEntity(new
+            {
+                error   = "validation_errors",
+                message = $"Run has {blockingErrors.Count} unresolved validation error(s). " +
+                          "Run /validate and resolve all errors before locking.",
+                errors  = blockingErrors,
+            });
 
         // FINANCE-P1: Persist double-entry GL on lock (idempotent — skip if already posted).
         var period = $"{run.Year}-{run.Month:D2}";
@@ -528,8 +551,39 @@ public class PayrollController : ControllerBase
     public async Task<IActionResult> Validate(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
-        if (!await _db.PayrollRuns.AnyAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken)) return NotFound();
-        return Ok(await _db.PayrollValidationResults.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).OrderByDescending(x => x.Severity).ToListAsync(cancellationToken));
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (run is null) return NotFound();
+        if (run.Status == "Draft")
+            return BadRequest(new { message = "Run must be Processed before it can be validated." });
+
+        // Load all data needed by the engine and re-run from scratch.
+        var slips       = await _db.PayrollSlips.AsNoTracking().Where(s => s.TenantId == tenantId && s.RunId == id).ToListAsync(cancellationToken);
+        var employees   = await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted).ToListAsync(cancellationToken);
+        var salaries    = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive).ToListAsync(cancellationToken);
+        var profiles    = await _db.EmployeePayrollProfiles.AsNoTracking().Where(p => p.TenantId == tenantId && !p.IsDeleted).ToListAsync(cancellationToken);
+        var deductions  = await _db.PayrollDeductions.AsNoTracking().Where(d => d.TenantId == tenantId && d.PayrollRunId == id).ToListAsync(cancellationToken);
+        var earnings    = await _db.PayrollEarnings.AsNoTracking().Where(e => e.TenantId == tenantId && e.PayrollRunId == id).ToListAsync(cancellationToken);
+        var company     = run.CompanyId.HasValue
+            ? await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId.Value, cancellationToken)
+            : await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.IsActive).OrderBy(c => c.CreatedAtUtc).FirstOrDefaultAsync(cancellationToken);
+
+        var ctx     = new PayrollValidationContext(run, slips, employees, salaries, profiles, deductions, earnings, company);
+        var results = PayrollValidationEngine.Run(ctx);
+
+        // Replace stored results with fresh engine output.
+        await _db.PayrollValidationResults
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)
+            .ExecuteDeleteAsync(cancellationToken);
+        foreach (var r in results)
+            _db.PayrollValidationResults.Add(r);
+
+        var errCount  = results.Count(r => r.Severity == "Error");
+        var warnCount = results.Count(r => r.Severity == "Warning");
+        await PayrollAudit("payroll.run.validated", "PayrollRun", id.ToString(),
+            new { errorCount = errCount, warningCount = warnCount }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return Ok(results.OrderByDescending(r => r.Severity).ThenBy(r => r.Code).ToList());
     }
 
     // C1: segregation of duties — Payroll Officer who processes cannot self-approve.
@@ -545,6 +599,25 @@ public class PayrollController : ControllerBase
         if (run is null) return NotFound();
         if (run.Status != "Processed" && run.Status != "PendingFinanceReview")
             return BadRequest(new { message = "Only a Processed or PendingFinanceReview run can be approved." });
+
+        // Block-on-error: any unresolved ERROR-severity validation result blocks approval.
+        var blockingErrors = await _db.PayrollValidationResults.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.Severity == "Error" && !x.IsResolved)
+            .Select(x => new { x.Code, x.Message, x.EmployeeId })
+            .ToListAsync(cancellationToken);
+        if (blockingErrors.Count > 0)
+            return UnprocessableEntity(new
+            {
+                error   = "validation_errors",
+                message = $"Run has {blockingErrors.Count} unresolved validation error(s). " +
+                          "Run /validate and resolve all errors before approving.",
+                errors  = blockingErrors,
+            });
+
+        // Maker-checker: the user who processed the run cannot approve it.
+        var approverId = GetUserId();
+        if (run.ProcessedByUserId.HasValue && run.ProcessedByUserId == approverId)
+            return StatusCode(403, new { error = "maker_checker_violation", message = "The user who processed this run cannot approve it. A different approver is required (maker-checker policy)." });
 
         var isAdmin = User.IsInRole("Admin");
         var isHROrPayroll = User.IsInRole("HR Manager") || User.IsInRole("Payroll Manager");
@@ -674,10 +747,16 @@ public class PayrollController : ControllerBase
         // M2: load itemized earnings and deductions for proper payslip line items
         var earnings = await _db.PayrollEarnings.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
         var deductions = await _db.PayrollDeductions.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
+        // Stamp the current default template version on each generated payslip for immutable history
+        var defaultTemplate = await _db.PayslipTemplates.AsNoTracking()
+            .Where(t => t.TenantId == tenantId && t.IsDefault)
+            .Select(t => (Guid?)t.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
         foreach (var slip in slips)
         {
             if (await _db.Payslips.AnyAsync(x => x.TenantId == tenantId && x.PayrollRunId == id && x.EmployeeId == slip.EmployeeId, cancellationToken)) continue;
-            var payslip = new Payslip { TenantId = tenantId, PayrollRunId = id, EmployeeId = slip.EmployeeId, PayslipNumber = $"PS-{slip.EmployeeCode}-{DateTime.UtcNow:yyyyMMddHHmmss}" };
+            var payslip = new Payslip { TenantId = tenantId, PayrollRunId = id, EmployeeId = slip.EmployeeId, PayslipNumber = $"PS-{slip.EmployeeCode}-{DateTime.UtcNow:yyyyMMddHHmmss}", PayslipTemplateId = defaultTemplate };
             _db.Payslips.Add(payslip);
             foreach (var e in earnings.Where(x => x.EmployeeId == slip.EmployeeId))
                 _db.PayslipComponents.Add(new PayslipComponent { TenantId = tenantId, PayslipId = payslip.Id, ComponentType = "Earning", ComponentName = e.ComponentName, Amount = e.Amount });
@@ -2156,6 +2235,33 @@ public class PayrollController : ControllerBase
 
         items.Add(new("Net Pay", canSeeSalary ? slip.NetSalary : 0m, "Net"));
 
+        // Load the template version that was stamped at generate time, falling back to current default
+        var templateId = payslip.PayslipTemplateId
+            ?? await _db.PayslipTemplates.AsNoTracking()
+                .Where(t => t.TenantId == tenantId && t.IsDefault)
+                .Select(t => (Guid?)t.Id)
+                .FirstOrDefaultAsync(ct);
+
+        PayslipBrandingConfig? branding = null;
+        if (templateId.HasValue)
+        {
+            // IgnoreQueryFilters is intentional: archived payslip templates are soft-deleted but must remain readable for PDF generation.
+            var tmpl = await _db.PayslipTemplates.AsNoTracking()
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(t => t.Id == templateId.Value && t.TenantId == tenantId, ct);
+            if (tmpl is not null)
+            {
+                try { branding = System.Text.Json.JsonSerializer.Deserialize<PayslipBrandingConfig>(tmpl.BrandingJson, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)); } catch { }
+                if (branding?.LogoStorageUrl is not null)
+                {
+                    var logoAbsPath = _http.HttpContext?.RequestServices
+                        .GetService(typeof(Zayra.Api.Infrastructure.Documents.IDocumentStorage)) is Zayra.Api.Infrastructure.Documents.IDocumentStorage ds
+                        ? ds.ResolvePath(branding.LogoStorageUrl) : null;
+                    if (logoAbsPath is not null) branding = branding with { LogoStorageUrl = logoAbsPath };
+                }
+            }
+        }
+
         var generatedOn = DateTime.UtcNow;
         var data = new PayslipData(
             PayslipNumber: payslip.PayslipNumber,
@@ -2169,7 +2275,8 @@ public class PayrollController : ControllerBase
             Items:         items,
             CompanyName:   company?.LegalNameEn ?? string.Empty,
             CompanyNameAr: company?.LegalNameAr ?? string.Empty,
-            GeneratedOn:   generatedOn
+            GeneratedOn:   generatedOn,
+            Branding:      branding
         );
 
         var pdf = await _letters.GeneratePayslipPdfAsync(data, ct);
@@ -2227,6 +2334,24 @@ public class PayrollController : ControllerBase
         var generatedOn = DateTime.UtcNow;
         var period = $"{run.Year}{run.Month:00}";
 
+        // Preload all unique template versions referenced by this run's payslips.
+        // IgnoreQueryFilters is intentional: archived payslip templates are soft-deleted but must remain readable for bulk PDF export.
+        var templateIds = payslips.Where(p => p.PayslipTemplateId.HasValue)
+            .Select(p => p.PayslipTemplateId!.Value).Distinct().ToList();
+        var templateCache = templateIds.Count > 0
+            ? await _db.PayslipTemplates.AsNoTracking().IgnoreQueryFilters()
+                .Where(t => templateIds.Contains(t.Id) && t.TenantId == tenantId)
+                .ToDictionaryAsync(t => t.Id, ct)
+            : new Dictionary<Guid, PayslipTemplate>();
+
+        // Fall back to current default for payslips that have no template stamp
+        PayslipTemplate? defaultTmpl = null;
+        if (payslips.Any(p => !p.PayslipTemplateId.HasValue))
+        {
+            defaultTmpl = await _db.PayslipTemplates.AsNoTracking()
+                .FirstOrDefaultAsync(t => t.TenantId == tenantId && t.IsDefault, ct);
+        }
+
         using var ms = new System.IO.MemoryStream();
         using (var zip = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
         {
@@ -2252,6 +2377,15 @@ public class PayrollController : ControllerBase
                 if (otherDed > 0) items.Add(new("Other Deductions", canSeeSalary ? otherDed : 0m, "Deduction"));
                 items.Add(new("Net Pay", canSeeSalary ? slip.NetSalary : 0m, "Net"));
 
+                var tmpl = payslip.PayslipTemplateId.HasValue
+                    ? templateCache.GetValueOrDefault(payslip.PayslipTemplateId.Value, defaultTmpl!)
+                    : defaultTmpl;
+                PayslipBrandingConfig? branding = null;
+                if (tmpl is not null)
+                {
+                    try { branding = System.Text.Json.JsonSerializer.Deserialize<PayslipBrandingConfig>(tmpl.BrandingJson, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)); } catch { }
+                }
+
                 var data = new PayslipData(
                     PayslipNumber: payslip.PayslipNumber,
                     EmployeeCode:  slip.EmployeeCode,
@@ -2264,7 +2398,8 @@ public class PayrollController : ControllerBase
                     Items:         items,
                     CompanyName:   company?.LegalNameEn ?? string.Empty,
                     CompanyNameAr: company?.LegalNameAr ?? string.Empty,
-                    GeneratedOn:   generatedOn
+                    GeneratedOn:   generatedOn,
+                    Branding:      branding
                 );
 
                 var pdf = await _letters.GeneratePayslipPdfAsync(data, ct);

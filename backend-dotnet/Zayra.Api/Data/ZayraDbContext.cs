@@ -172,6 +172,7 @@ public class ZayraDbContext : DbContext
     public DbSet<PayrollException> PayrollExceptions => Set<PayrollException>();
     public DbSet<Payslip> Payslips => Set<Payslip>();
     public DbSet<PayslipComponent> PayslipComponents => Set<PayslipComponent>();
+    public DbSet<PayslipTemplate> PayslipTemplates => Set<PayslipTemplate>();
     public DbSet<PayrollPaymentBatch> PayrollPaymentBatches => Set<PayrollPaymentBatch>();
     public DbSet<PayrollPaymentRecord> PayrollPaymentRecords => Set<PayrollPaymentRecord>();
     public DbSet<BankTransferFile> BankTransferFiles => Set<BankTransferFile>();
@@ -1072,6 +1073,15 @@ public class ZayraDbContext : DbContext
         modelBuilder.Entity<PayrollValidationResult>(entity => { entity.ToTable("payroll_validation_results"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.Severity }); });
         modelBuilder.Entity<PayrollException>(entity => { entity.ToTable("payroll_exceptions"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.Status }); });
         modelBuilder.Entity<Payslip>(entity => { entity.ToTable("payslips"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
+        modelBuilder.Entity<PayslipTemplate>(entity =>
+        {
+            entity.ToTable("payslip_templates");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Name).HasMaxLength(200);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.HasIndex(x => new { x.TenantId, x.IsDefault });
+            entity.HasIndex(x => new { x.TenantId, x.Name, x.Version });
+        });
         modelBuilder.Entity<PayslipComponent>(entity => { entity.ToTable("payslip_components"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayslipId }); });
         modelBuilder.Entity<PayrollPaymentBatch>(entity => { entity.ToTable("payroll_payment_batches"); entity.HasKey(x => x.Id); entity.Property(x => x.TotalAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId }); });
         modelBuilder.Entity<PayrollPaymentRecord>(entity => { entity.ToTable("payroll_payment_records"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PaymentBatchId, x.EmployeeId }); });
@@ -1095,6 +1105,8 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.TotalNetSalary).HasPrecision(14, 2);
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Year, x.Month });
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }).IsUnique()
+                .HasDatabaseName("IX_payroll_runs_tenant_id_year_month");
         });
 
         modelBuilder.Entity<PayrollSlip>(entity =>

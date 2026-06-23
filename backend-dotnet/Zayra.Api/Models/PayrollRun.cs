@@ -16,6 +16,7 @@ public class PayrollRun : ITenantOwned
     public decimal TotalEmployerStatutoryCost { get; set; }
     public int EmployeeCount { get; set; }
     public Guid? CreatedByUserId { get; set; }
+    public Guid? ProcessedByUserId { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? ProcessedAtUtc { get; set; }
     public DateTime? LockedAtUtc { get; set; }

@@ -16,6 +16,20 @@ export interface DashboardTrend {
   overtimeHours: number;
 }
 
+export interface PayrollTrend {
+  month: string;
+  totalNet: number;
+  employeeCount: number;
+  status: string;
+}
+
+export interface ActivityFeedItem {
+  module: string;
+  action: string;
+  actor: string;
+  occurredAt: string;
+}
+
 export interface ApprovalQueueItem {
   id: string;
   title: string;
@@ -54,12 +68,6 @@ export interface DashboardOverview {
   newJoinersThisMonth: number;
 }
 
-export interface DashboardFull {
-  summary: DashboardSummary;
-  trends: DashboardTrend[];
-  overview: DashboardOverview;
-}
-
 export interface DashboardKpis {
   pendingLeaveRequests: number;
   pendingAttendanceCorrections: number;
@@ -70,11 +78,22 @@ export interface DashboardKpis {
   qiwaEnabled: boolean;
 }
 
+export interface DashboardFull {
+  summary: DashboardSummary;
+  trends: DashboardTrend[];
+  overview: DashboardOverview;
+  payrollTrends: PayrollTrend[];
+  activityFeed: ActivityFeedItem[];
+  kpis: DashboardKpis;
+}
+
 export const dashboardApi = {
-  full: (months = 6) => client.get<DashboardFull>('/api/dashboard/full', { params: { months } }).then((r) => r.data),
+  full: (months = 6) =>
+    client.get<DashboardFull>('/api/dashboard/full', { params: { months } }).then((r) => r.data),
+  // kept for backwards compatibility
   kpis: () => client.get<DashboardKpis>('/api/dashboard/kpis').then((r) => r.data),
-  // kept for any other consumers
   summary: () => client.get<DashboardSummary>('/api/dashboard/summary').then((r) => r.data),
-  trends: (months = 6) => client.get<DashboardTrend[]>('/api/dashboard/trends', { params: { months } }).then((r) => r.data),
+  trends: (months = 6) =>
+    client.get<DashboardTrend[]>('/api/dashboard/trends', { params: { months } }).then((r) => r.data),
   overview: () => client.get<DashboardOverview>('/api/dashboard/overview').then((r) => r.data),
 };

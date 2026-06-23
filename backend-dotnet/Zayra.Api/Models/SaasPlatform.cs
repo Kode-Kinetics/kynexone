@@ -95,8 +95,9 @@ public static class FeatureKeys
     public const string EosbCalc            = "eosb_calc";
     public const string ResumeScreening     = "resume_screening";
     public const string PayrollAiValidation = "payroll_ai_validation";
-    public const string RiskScores          = "risk_scores";
-    public const string HijriCalendar       = "hijri_calendar";
+    public const string RiskScores              = "risk_scores";
+    public const string HijriCalendar           = "hijri_calendar";
+    public const string PayslipTemplateDesigner = "payslip_template_designer";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

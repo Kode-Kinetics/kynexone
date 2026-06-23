@@ -130,6 +130,13 @@ public class FinanceP1BonusGlTests
             BasicSalary = 10_000m, HousingAllowance = 2_000m, TransportAllowance = 1_000m,
             EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true,
         });
+        // Payroll profile required so validation engine does not raise MISSING_IBAN error.
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
+        {
+            TenantId = tenantId, EmployeeId = emp.Id,
+            Iban = "SA4420000001234567891234",  // valid Saudi IBAN (mod-97 = 1)
+            MolId = "MOL-E001", SalaryCurrency = "SAR",
+        });
 
         var run = new PayrollRun
         {

@@ -402,6 +402,9 @@ public class Payslip : ITenantOwned
     public bool IsPublishedToEss { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? PublishedAtUtc { get; set; }
+    // Immutable reference to the PayslipTemplate version used when this payslip was generated.
+    // Null for payslips generated before the template designer was introduced.
+    public Guid? PayslipTemplateId { get; set; }
 }
 
 public class PayslipComponent : ITenantOwned

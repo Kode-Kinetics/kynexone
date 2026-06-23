@@ -379,12 +379,22 @@ export const payrollApi = {
   listPayslips: (runId: string, params: { page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<Payslip>>(`/api/payroll/runs/${runId}/payslips`, { params }).then((r) => r.data),
 
-  downloadSlipPdf: (slipId: string) =>
-    client.get(`/api/payroll/slips/${slipId}/pdf`, { responseType: 'blob' }).then((r) => {
+  downloadSlipPdf: (payslipId: string, filename?: string) =>
+    client.get(`/api/payroll/slips/${payslipId}/pdf`, { responseType: 'blob' }).then((r) => {
       const url = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
       const a = document.createElement('a');
       a.href = url;
-      a.download = `payslip-${slipId}.pdf`;
+      a.download = filename ?? `payslip-${payslipId}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }),
+
+  downloadRunPdfBundle: (runId: string, period: string) =>
+    client.get(`/api/payroll/runs/${runId}/pdf-bundle`, { responseType: 'blob' }).then((r) => {
+      const url = URL.createObjectURL(new Blob([r.data], { type: 'application/zip' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `payslips-${period}.zip`;
       a.click();
       URL.revokeObjectURL(url);
     }),

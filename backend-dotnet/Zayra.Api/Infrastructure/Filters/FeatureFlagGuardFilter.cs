@@ -74,6 +74,7 @@ public class FeatureFlagGuardFilter : IAsyncActionFilter
         ("/api/saudi-compliance",   FeatureKeys.Compliance),
         ("/api/gosi",               FeatureKeys.QiwaIntegration),
         ("/api/wps",                FeatureKeys.WpsExport),
+        ("/api/payslip-templates",  FeatureKeys.PayslipTemplateDesigner),
     };
 
     private static readonly TimeSpan FlagCacheTtl = TimeSpan.FromMinutes(2);

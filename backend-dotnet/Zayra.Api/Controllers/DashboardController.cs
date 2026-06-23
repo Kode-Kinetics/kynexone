@@ -32,26 +32,48 @@ public class DashboardController : ControllerBase
         _scopeService = scopeService;
     }
 
-    // Single consolidated endpoint — replaces three separate calls (summary + trends + overview).
-    // Cached per-tenant for 60 s to absorb repeat loads without hammering MySQL.
+    /// <summary>
+    /// Single aggregation endpoint returning all KPIs, queues, trends, activity feed,
+    /// and role-scoped operational metrics in one call. No request waterfall.
+    ///
+    /// Cached per-tenant for 60 s (non-role-specific parts). Role-scoped KPIs are
+    /// computed fresh per request and appended after cache retrieval.
+    /// </summary>
     [HttpGet("full")]
     public async Task<IActionResult> Full([FromQuery] int months = 6, CancellationToken cancellationToken = default)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null)
-            return Ok(EmptyFull());
+            return Ok(EmptyFull(EmptyKpis(false)));
 
-        var cacheKey = $"dashboard:full:{tenantId}:{months}";
+        var tid = tenantId.Value;
+
+        // ── Tenant-scoped (cached) part ───────────────────────────────────────
+        var cacheKey = $"dashboard:v2:full:{tid}:{months}";
+        DashboardCachedDto? cached = null;
         var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
         if (cachedBytes is not null)
-            return Ok(JsonSerializer.Deserialize<DashboardFullDto>(cachedBytes));
+            cached = JsonSerializer.Deserialize<DashboardCachedDto>(cachedBytes);
 
-        var result = await BuildFull(tenantId.Value, months, cancellationToken);
-        await _cache.SetAsync(cacheKey, JsonSerializer.SerializeToUtf8Bytes(result), CacheOptions, cancellationToken);
-        return Ok(result);
+        if (cached is null)
+        {
+            cached = await BuildCached(tid, months, cancellationToken);
+            await _cache.SetAsync(cacheKey, JsonSerializer.SerializeToUtf8Bytes(cached), CacheOptions, cancellationToken);
+        }
+
+        // ── Role-scoped KPIs (always fresh — caller-specific) ─────────────────
+        var kpis = await BuildKpis(tid, cancellationToken);
+
+        return Ok(new DashboardFullDto(
+            cached.Summary,
+            cached.Trends,
+            cached.Overview,
+            cached.PayrollTrends,
+            cached.ActivityFeed,
+            kpis));
     }
 
-    // ── Kept for backwards-compat with any other consumers ───────────────────
+    // ── Backwards-compat individual endpoints ────────────────────────────────
 
     [HttpGet("summary")]
     public async Task<IActionResult> Summary(CancellationToken cancellationToken)
@@ -105,117 +127,44 @@ public class DashboardController : ControllerBase
         return Ok(result);
     }
 
-    /// <summary>
-    /// Role-scoped operational KPIs. Admin/HR see tenant-wide data;
-    /// Manager/Supervisor see only their team; Employee sees only themselves.
-    /// Not cached because it must reflect the caller's scope, not a shared tenant key.
-    /// </summary>
     [HttpGet("kpis")]
     public async Task<IActionResult> Kpis(CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Ok(EmptyKpis(false));
-
-        var tid = tenantId.Value;
-        var scope = await _scopeService.ResolveAsync(User, tid, ct);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-
-        // Depending on scope, all counts are filtered to the allowed employee set.
-        // unrestricted = Admin/HR: full tenant; restricted = Manager/Supervisor: team; Employee: own.
-        IReadOnlyCollection<int>? scopeIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds;
-
-        // Pending leave requests in scope
-        var leaveQ = _db.LeaveRequests.Where(x => x.TenantId == tid && (x.Status == "Submitted" || x.Status == "Pending"));
-        if (scopeIds is not null) leaveQ = leaveQ.Where(x => scopeIds.Contains(x.EmployeeId));
-        var pendingLeave = await leaveQ.CountAsync(ct);
-
-        // Pending attendance corrections in scope
-        var corrQ = _db.AttendanceRegularizationRequests.Where(x => x.TenantId == tid && x.Status == "Submitted");
-        if (scopeIds is not null) corrQ = corrQ.Where(x => scopeIds.Contains(x.EmployeeId));
-        var pendingCorrections = await corrQ.CountAsync(ct);
-
-        // Attendance exceptions today (Late or Absent) in scope
-        var exceptQ = _db.AttendanceDailyRecords.Where(x => x.TenantId == tid && x.WorkDate == today
-            && (x.Status == "Late" || x.Status == "Absent" || x.LateMinutes > 0));
-        if (scopeIds is not null) exceptQ = exceptQ.Where(x => scopeIds.Contains(x.EmployeeId));
-        var attendanceExceptions = await exceptQ.CountAsync(ct);
-
-        // Expiring documents (next 60 days) in scope — from EmployeeDocuments
-        var expiringSoon = today.AddDays(60);
-        var expiringQ = _db.EmployeeDocuments.Where(x => x.TenantId == tid && !x.IsDeleted
-            && x.ExpiryDate != null && x.ExpiryDate > today && x.ExpiryDate <= expiringSoon);
-        if (scopeIds is not null) expiringQ = expiringQ.Where(x => x.EmployeeId != null && scopeIds.Contains(x.EmployeeId.Value));
-        var expiringDocuments = await expiringQ.CountAsync(ct);
-
-        // Expired documents in scope
-        var expiredQ = _db.EmployeeDocuments.Where(x => x.TenantId == tid && !x.IsDeleted
-            && x.ExpiryDate != null && x.ExpiryDate < today);
-        if (scopeIds is not null) expiredQ = expiredQ.Where(x => x.EmployeeId != null && scopeIds.Contains(x.EmployeeId.Value));
-        var expiredDocuments = await expiredQ.CountAsync(ct);
-
-        // Missing required documents: count employees who are missing at least one required doc type
-        // Required types per Qiwa readiness: Iqama, Work Permit, National ID, Passport
-        var empQ = _db.Employees.Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active");
-        if (scopeIds is not null) empQ = empQ.Where(x => scopeIds.Contains(x.Id));
-        var activeEmployeeIds = await empQ.Select(x => x.Id).ToListAsync(ct);
-
-        int missingDocuments = 0;
-        if (activeEmployeeIds.Count > 0)
-        {
-            // Fetch uploaded non-deleted doc types per employee in one query
-            var uploadedDocs = await _db.EmployeeDocuments
-                .Where(x => x.TenantId == tid && !x.IsDeleted && x.EmployeeId != null && activeEmployeeIds.Contains(x.EmployeeId!.Value))
-                .Select(x => new { x.EmployeeId, x.DocumentType })
-                .ToListAsync(ct);
-            var byEmployee = uploadedDocs.GroupBy(x => x.EmployeeId!.Value)
-                .ToDictionary(g => g.Key, g => g.Select(d => d.DocumentType).ToHashSet(StringComparer.OrdinalIgnoreCase));
-            missingDocuments = activeEmployeeIds.Count(id =>
-                !byEmployee.TryGetValue(id, out var docs) ||
-                QiwaRequiredDocs.Any(req => !docs.Contains(req)));
-        }
-
-        // Qiwa feature flag
-        var qiwaEnabled = await _db.TenantFeatureFlags.AnyAsync(x => x.TenantId == tid && x.FeatureKey == Zayra.Api.Models.FeatureKeys.QiwaIntegration && x.IsEnabled, ct);
-
-        return Ok(new DashboardKpisDto(
-            pendingLeave,
-            pendingCorrections,
-            attendanceExceptions,
-            expiringDocuments,
-            expiredDocuments,
-            missingDocuments,
-            qiwaEnabled));
+        return Ok(await BuildKpis(tenantId.Value, ct));
     }
 
     // ── Private builders ─────────────────────────────────────────────────────
 
-    private async Task<DashboardFullDto> BuildFull(Guid tenantId, int months, CancellationToken ct)
+    /// <summary>
+    /// Builds the cacheable (tenant-scoped, not role-specific) portion of the full payload.
+    /// Runs builders SEQUENTIALLY — EF Core DbContext does not support concurrent async
+    /// operations on the same instance. Running them with Task.WhenAll causes
+    /// "second operation started on context" errors.
+    /// </summary>
+    private async Task<DashboardCachedDto> BuildCached(Guid tenantId, int months, CancellationToken ct)
     {
         months = Math.Clamp(months, 1, 12);
-        var summaryTask  = BuildSummary(tenantId, ct);
-        var trendsTask   = BuildTrends(tenantId, months, ct);
-        var overviewTask = BuildOverview(tenantId, ct);
-        await Task.WhenAll(summaryTask, trendsTask, overviewTask);
-        return new DashboardFullDto(summaryTask.Result, trendsTask.Result, overviewTask.Result);
+        var summary       = await BuildSummary(tenantId, ct);
+        var trends        = await BuildTrends(tenantId, months, ct);
+        var overview      = await BuildOverview(tenantId, ct);
+        var payrollTrends = await BuildPayrollTrends(tenantId, months, ct);
+        var activityFeed  = await BuildActivityFeed(tenantId, ct);
+        return new DashboardCachedDto(summary, trends, overview, payrollTrends, activityFeed);
     }
 
     private async Task<DashboardSummaryDto> BuildSummary(Guid tenantId, CancellationToken ct)
     {
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var monthStart = new DateOnly(today.Year, today.Month, 1);
 
-        // Single query for employee counts instead of two separate CountAsync calls
         var empCounts = await _db.Employees
             .Where(e => e.TenantId == tenantId)
             .GroupBy(_ => 1)
-            .Select(g => new
-            {
-                Total = g.Count(),
-                Active = g.Count(e => e.Status == "Active"),
-            })
+            .Select(g => new { Total = g.Count(), Active = g.Count(e => e.Status == "Active") })
             .FirstOrDefaultAsync(ct);
 
-        // Single query for today's attendance buckets instead of three CountAsync calls
         var todayBuckets = await _db.AttendanceRecords
             .Where(a => a.TenantId == tenantId && a.WorkDate == today)
             .GroupBy(a => a.Status)
@@ -224,9 +173,8 @@ public class DashboardController : ControllerBase
 
         var present = todayBuckets.Where(b => b.Status == "Present").Sum(b => b.Count);
         var onLeave = todayBuckets.Where(b => b.Status == "Leave" || b.Status == "On Leave").Sum(b => b.Count);
-        var absent = todayBuckets.Where(b => b.Status == "Absent").Sum(b => b.Count);
+        var absent  = todayBuckets.Where(b => b.Status == "Absent").Sum(b => b.Count);
 
-        // Two remaining aggregation queries that can't be combined with the above
         var overtimeHours = await _db.AttendanceRecords
             .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today)
             .SumAsync(a => (decimal?)a.OvertimeHours, ct) ?? 0m;
@@ -241,55 +189,46 @@ public class DashboardController : ControllerBase
         return new DashboardSummaryDto(
             empCounts?.Total ?? 0,
             empCounts?.Active ?? 0,
-            present,
-            onLeave,
-            absent,
-            overtimeHours,
-            churnRisk);
+            present, onLeave, absent, overtimeHours, churnRisk);
     }
 
     private async Task<IReadOnlyList<DashboardTrendDto>> BuildTrends(Guid tenantId, int months, CancellationToken ct)
     {
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var firstMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-(months - 1));
 
-        // Push GROUP BY to MySQL instead of pulling every row into app memory
         var grouped = await _db.AttendanceRecords
             .Where(a => a.TenantId == tenantId && a.WorkDate >= firstMonth && a.WorkDate <= today)
             .GroupBy(a => new { a.WorkDate.Year, a.WorkDate.Month })
             .Select(g => new
             {
-                g.Key.Year,
-                g.Key.Month,
-                Total = g.Count(),
+                g.Key.Year, g.Key.Month,
+                Total        = g.Count(),
                 PresentCount = g.Count(a => a.Status == "Present"),
-                OvertimeSum = g.Sum(a => (decimal?)a.OvertimeHours) ?? 0m,
+                OvertimeSum  = g.Sum(a => (decimal?)a.OvertimeHours) ?? 0m,
             })
             .ToListAsync(ct);
 
-        return Enumerable.Range(0, months)
-            .Select(offset =>
-            {
-                var month = firstMonth.AddMonths(offset);
-                var row = grouped.FirstOrDefault(r => r.Year == month.Year && r.Month == month.Month);
-                var attendanceRate = row is { Total: > 0 }
-                    ? Math.Round(row.PresentCount * 100m / row.Total, 1)
-                    : 0m;
-                return new DashboardTrendDto(month.ToString("MMM"), attendanceRate, row?.OvertimeSum ?? 0m);
-            })
-            .ToList();
+        return Enumerable.Range(0, months).Select(offset =>
+        {
+            var month = firstMonth.AddMonths(offset);
+            var row   = grouped.FirstOrDefault(r => r.Year == month.Year && r.Month == month.Month);
+            var rate  = row is { Total: > 0 } ? Math.Round(row.PresentCount * 100m / row.Total, 1) : 0m;
+            return new DashboardTrendDto(month.ToString("MMM"), rate, row?.OvertimeSum ?? 0m);
+        }).ToList();
     }
 
     private async Task<DashboardOverviewDto> BuildOverview(Guid tenantId, CancellationToken ct)
     {
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var monthStart = new DateOnly(today.Year, today.Month, 1);
+        // Use DateTimeKind.Utc to satisfy Npgsql's strict timestamptz mode.
+        var monthStartUtc = monthStart.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
 
-        // Run all independent overview queries concurrently
-        var pendingApprovalsTask = _db.ApprovalRequests
+        var pendingApprovals = await _db.ApprovalRequests
             .CountAsync(a => a.TenantId == tenantId && a.Status == "Pending", ct);
 
-        var approvalQueueTask = _db.ApprovalRequests
+        var approvalQueue = await _db.ApprovalRequests
             .Where(a => a.TenantId == tenantId && a.Status == "Pending")
             .OrderByDescending(a => a.CreatedAtUtc)
             .Take(6)
@@ -300,19 +239,19 @@ public class DashboardController : ControllerBase
                 a.CreatedAtUtc))
             .ToListAsync(ct);
 
-        var latestRunTask = _db.PayrollRuns
+        var latestRun = await _db.PayrollRuns
             .Where(p => p.TenantId == tenantId)
             .OrderByDescending(p => p.Year).ThenByDescending(p => p.Month)
             .FirstOrDefaultAsync(ct);
 
-        var workforceMixTask = _db.Employees
+        var workforceMixRaw = await _db.Employees
             .Where(e => e.TenantId == tenantId && e.Status == "Active")
             .GroupBy(e => e.EmploymentType)
             .Select(g => new { Key = g.Key, Count = g.Count() })
             .OrderByDescending(x => x.Count)
             .ToListAsync(ct);
 
-        var headcountTask = _db.Employees
+        var headcountRaw = await _db.Employees
             .Where(e => e.TenantId == tenantId && e.Status == "Active")
             .GroupBy(e => e.Department)
             .Select(g => new { Key = g.Key, Count = g.Count() })
@@ -320,7 +259,7 @@ public class DashboardController : ControllerBase
             .Take(6)
             .ToListAsync(ct);
 
-        var expiringTask = _db.EmployeeComplianceRecords
+        var expiringRaw = await _db.EmployeeComplianceRecords
             .Where(c => c.TenantId == tenantId && !c.IsDeleted
                 && c.ExpiryDate != null && c.ExpiryDate <= today.AddDays(60))
             .OrderBy(c => c.ExpiryDate)
@@ -328,24 +267,17 @@ public class DashboardController : ControllerBase
             .Select(c => new { c.FieldLabel, c.ExpiryDate })
             .ToListAsync(ct);
 
-        var openLeaveTask = _db.LeaveRequests
+        var openLeave = await _db.LeaveRequests
             .CountAsync(l => l.TenantId == tenantId
                 && l.Status != "Approved" && l.Status != "Rejected"
                 && l.Status != "Cancelled" && l.Status != "Withdrawn" && l.Status != "Draft", ct);
 
-        var newJoinersTask = _db.Employees
-            .CountAsync(e => e.TenantId == tenantId
-                && e.JoiningDate >= monthStart.ToDateTime(TimeOnly.MinValue), ct);
+        // Fixed: DateTimeKind.Utc prevents Npgsql strict-mode timestamp rejection.
+        var newJoiners = await _db.Employees
+            .CountAsync(e => e.TenantId == tenantId && e.JoiningDate >= monthStartUtc, ct);
 
-        await Task.WhenAll(
-            pendingApprovalsTask, approvalQueueTask, latestRunTask,
-            workforceMixTask, headcountTask, expiringTask,
-            openLeaveTask, newJoinersTask);
-
-        // Payroll slip breakdown — depends on latestRun result
         PayrollSummaryDto? payrollSummary = null;
         IReadOnlyList<NamedValueDto> payrollByEntity = Array.Empty<NamedValueDto>();
-        var latestRun = await latestRunTask;
         if (latestRun is not null)
         {
             payrollSummary = new PayrollSummaryDto(
@@ -369,41 +301,155 @@ public class DashboardController : ControllerBase
                 .ToList();
         }
 
-        var workforceMix = (await workforceMixTask)
+        var workforceMix = workforceMixRaw
             .Select(x => new NamedValueDto(string.IsNullOrWhiteSpace(x.Key) ? "Unspecified" : x.Key, x.Count))
             .ToList();
 
-        var headcount = (await headcountTask)
+        var headcount = headcountRaw
             .Select(x => new NamedValueDto(string.IsNullOrWhiteSpace(x.Key) ? "Unassigned" : x.Key, x.Count))
             .ToList();
 
-        var alerts = (await expiringTask).Select(c =>
+        var alerts = expiringRaw.Select(c =>
         {
-            var expiry = c.ExpiryDate!.Value;
+            var expiry   = c.ExpiryDate!.Value;
             var severity = expiry < today ? "Critical" : expiry <= today.AddDays(30) ? "Warning" : "Info";
-            var label = string.IsNullOrWhiteSpace(c.FieldLabel) ? "Document" : c.FieldLabel;
-            var title = expiry < today ? $"{label} expired {expiry:dd MMM}" : $"{label} expires {expiry:dd MMM}";
+            var label    = string.IsNullOrWhiteSpace(c.FieldLabel) ? "Document" : c.FieldLabel;
+            var title    = expiry < today ? $"{label} expired {expiry:dd MMM}" : $"{label} expires {expiry:dd MMM}";
             return new DashboardAlertDto(title, severity);
         }).ToList();
 
         return new DashboardOverviewDto(
-            await pendingApprovalsTask,
-            await approvalQueueTask,
-            payrollSummary,
-            payrollByEntity,
-            workforceMix,
-            headcount,
-            alerts,
-            await openLeaveTask,
-            await newJoinersTask);
+            pendingApprovals, approvalQueue, payrollSummary,
+            payrollByEntity, workforceMix, headcount, alerts, openLeave, newJoiners);
     }
 
-    private static DashboardFullDto EmptyFull() => new(
+    private async Task<IReadOnlyList<PayrollTrendDto>> BuildPayrollTrends(Guid tenantId, int months, CancellationToken ct)
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var minYear  = today.AddMonths(-(months - 1)).Year;
+        var minMonth = today.AddMonths(-(months - 1)).Month;
+
+        var runs = await _db.PayrollRuns
+            .Where(r => r.TenantId == tenantId
+                && (r.Year > minYear || (r.Year == minYear && r.Month >= minMonth)))
+            .Select(r => new { r.Year, r.Month, r.TotalNetSalary, r.EmployeeCount, r.Status })
+            .ToListAsync(ct);
+
+        var firstMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-(months - 1));
+        return Enumerable.Range(0, months).Select(offset =>
+        {
+            var month = firstMonth.AddMonths(offset);
+            // If multiple runs exist for the same period (before the unique constraint), take the latest.
+            var row = runs.Where(r => r.Year == month.Year && r.Month == month.Month)
+                          .OrderByDescending(r => r.TotalNetSalary)
+                          .FirstOrDefault();
+            return new PayrollTrendDto(
+                month.ToString("MMM"),
+                row?.TotalNetSalary ?? 0m,
+                row?.EmployeeCount ?? 0,
+                row?.Status ?? "");
+        }).ToList();
+    }
+
+    private async Task<IReadOnlyList<ActivityFeedItemDto>> BuildActivityFeed(Guid tenantId, CancellationToken ct)
+    {
+        // Sequential queries — same DbContext, cannot run concurrently.
+        var cutoff = DateTime.UtcNow.AddDays(-7);
+
+        var payroll = await _db.PayrollAuditLogs
+            .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff)
+            .OrderByDescending(l => l.CreatedAtUtc)
+            .Take(8)
+            .Select(l => new { Module = "Payroll", l.Action, Actor = "System", l.CreatedAtUtc })
+            .ToListAsync(ct);
+
+        var leave = await _db.LeaveAuditLogs
+            .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff)
+            .OrderByDescending(l => l.CreatedAtUtc)
+            .Take(5)
+            .Select(l => new { Module = "Leave", l.Action, Actor = l.PerformedByName ?? "System", l.CreatedAtUtc })
+            .ToListAsync(ct);
+
+        var attendance = await _db.AttendanceAuditLogs
+            .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff)
+            .OrderByDescending(l => l.CreatedAtUtc)
+            .Take(5)
+            .Select(l => new { Module = "Attendance", l.Action, Actor = "System", l.CreatedAtUtc })
+            .ToListAsync(ct);
+
+        return payroll
+            .Concat(leave)
+            .Concat(attendance)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .Take(15)
+            .Select(x => new ActivityFeedItemDto(x.Module, x.Action, x.Actor, x.CreatedAtUtc))
+            .ToList();
+    }
+
+    private async Task<DashboardKpisDto> BuildKpis(Guid tenantId, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        IReadOnlyCollection<int>? scopeIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds;
+
+        var leaveQ = _db.LeaveRequests.Where(x => x.TenantId == tenantId && (x.Status == "Submitted" || x.Status == "Pending"));
+        if (scopeIds is not null) leaveQ = leaveQ.Where(x => scopeIds.Contains(x.EmployeeId));
+        var pendingLeave = await leaveQ.CountAsync(ct);
+
+        var corrQ = _db.AttendanceRegularizationRequests.Where(x => x.TenantId == tenantId && x.Status == "Submitted");
+        if (scopeIds is not null) corrQ = corrQ.Where(x => scopeIds.Contains(x.EmployeeId));
+        var pendingCorrections = await corrQ.CountAsync(ct);
+
+        var exceptQ = _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && x.WorkDate == today
+            && (x.Status == "Late" || x.Status == "Absent" || x.LateMinutes > 0));
+        if (scopeIds is not null) exceptQ = exceptQ.Where(x => scopeIds.Contains(x.EmployeeId));
+        var attendanceExceptions = await exceptQ.CountAsync(ct);
+
+        var expiringSoon = today.AddDays(60);
+        var expiringQ = _db.EmployeeDocuments.Where(x => x.TenantId == tenantId && !x.IsDeleted
+            && x.ExpiryDate != null && x.ExpiryDate > today && x.ExpiryDate <= expiringSoon);
+        if (scopeIds is not null) expiringQ = expiringQ.Where(x => x.EmployeeId != null && scopeIds.Contains(x.EmployeeId.Value));
+        var expiringDocuments = await expiringQ.CountAsync(ct);
+
+        var expiredQ = _db.EmployeeDocuments.Where(x => x.TenantId == tenantId && !x.IsDeleted
+            && x.ExpiryDate != null && x.ExpiryDate < today);
+        if (scopeIds is not null) expiredQ = expiredQ.Where(x => x.EmployeeId != null && scopeIds.Contains(x.EmployeeId.Value));
+        var expiredDocuments = await expiredQ.CountAsync(ct);
+
+        var empQ = _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted && x.Status == "Active");
+        if (scopeIds is not null) empQ = empQ.Where(x => scopeIds.Contains(x.Id));
+        var activeEmployeeIds = await empQ.Select(x => x.Id).ToListAsync(ct);
+
+        int missingDocuments = 0;
+        if (activeEmployeeIds.Count > 0)
+        {
+            var uploadedDocs = await _db.EmployeeDocuments
+                .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.EmployeeId != null && activeEmployeeIds.Contains(x.EmployeeId!.Value))
+                .Select(x => new { x.EmployeeId, x.DocumentType })
+                .ToListAsync(ct);
+            var byEmployee = uploadedDocs.GroupBy(x => x.EmployeeId!.Value)
+                .ToDictionary(g => g.Key, g => g.Select(d => d.DocumentType).ToHashSet(StringComparer.OrdinalIgnoreCase));
+            missingDocuments = activeEmployeeIds.Count(id =>
+                !byEmployee.TryGetValue(id, out var docs) ||
+                QiwaRequiredDocs.Any(req => !docs.Contains(req)));
+        }
+
+        var qiwaEnabled = await _db.TenantFeatureFlags.AnyAsync(
+            x => x.TenantId == tenantId && x.FeatureKey == Zayra.Api.Models.FeatureKeys.QiwaIntegration && x.IsEnabled, ct);
+
+        return new DashboardKpisDto(pendingLeave, pendingCorrections, attendanceExceptions,
+            expiringDocuments, expiredDocuments, missingDocuments, qiwaEnabled);
+    }
+
+    private static DashboardFullDto EmptyFull(DashboardKpisDto kpis) => new(
         new DashboardSummaryDto(0, 0, 0, 0, 0, 0m, 0),
         Array.Empty<DashboardTrendDto>(),
         new DashboardOverviewDto(0, Array.Empty<ApprovalQueueItemDto>(), null,
             Array.Empty<NamedValueDto>(), Array.Empty<NamedValueDto>(),
-            Array.Empty<NamedValueDto>(), Array.Empty<DashboardAlertDto>(), 0, 0));
+            Array.Empty<NamedValueDto>(), Array.Empty<DashboardAlertDto>(), 0, 0),
+        Array.Empty<PayrollTrendDto>(),
+        Array.Empty<ActivityFeedItemDto>(),
+        kpis);
 
     private static DashboardKpisDto EmptyKpis(bool qiwaEnabled) =>
         new(0, 0, 0, 0, 0, 0, qiwaEnabled);
@@ -414,7 +460,18 @@ public class DashboardController : ControllerBase
 public record DashboardFullDto(
     DashboardSummaryDto Summary,
     IReadOnlyList<DashboardTrendDto> Trends,
-    DashboardOverviewDto Overview);
+    DashboardOverviewDto Overview,
+    IReadOnlyList<PayrollTrendDto> PayrollTrends,
+    IReadOnlyList<ActivityFeedItemDto> ActivityFeed,
+    DashboardKpisDto Kpis);
+
+// Internal: the cached (non-role-specific) portion — not serialized to client.
+internal record DashboardCachedDto(
+    DashboardSummaryDto Summary,
+    IReadOnlyList<DashboardTrendDto> Trends,
+    DashboardOverviewDto Overview,
+    IReadOnlyList<PayrollTrendDto> PayrollTrends,
+    IReadOnlyList<ActivityFeedItemDto> ActivityFeed);
 
 public record DashboardSummaryDto(
     int TotalEmployees,
@@ -429,6 +486,18 @@ public record DashboardTrendDto(
     string Month,
     decimal AttendanceRate,
     decimal OvertimeHours);
+
+public record PayrollTrendDto(
+    string Month,
+    decimal TotalNet,
+    int EmployeeCount,
+    string Status);
+
+public record ActivityFeedItemDto(
+    string Module,
+    string Action,
+    string Actor,
+    DateTime OccurredAt);
 
 public record DashboardOverviewDto(
     int PendingApprovals,
@@ -452,7 +521,6 @@ public record PayrollSummaryDto(
     string Status);
 
 public record NamedValueDto(string Name, decimal Value);
-
 public record DashboardAlertDto(string Title, string Severity);
 
 public record DashboardKpisDto(
