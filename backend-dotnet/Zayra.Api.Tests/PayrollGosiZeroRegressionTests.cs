@@ -188,6 +188,111 @@ public class PayrollGosiZeroRegressionTests : IClassFixture<PostgresFixture>
     }
 }
 
+// ── StatutoryRuleReader DateTimeKind regression ────────────────────────────────
+//
+// Root cause: StatutoryRuleReader.FetchAsync used DateOnly.ToDateTime(TimeOnly.MinValue)
+// which returns DateTimeKind.Unspecified. Npgsql (with default timestamptz behaviour)
+// rejects Unspecified datetimes for 'timestamp with time zone' columns, throwing
+// ArgumentException: "Cannot write DateTime with Kind=Unspecified to PostgreSQL type
+// 'timestamp with time zone', only UTC is supported."
+//
+// Fix: use DateOnly.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc) so the value
+// is always UTC-flagged and accepted by Npgsql.
+//
+// This test exercises Process with the REAL StatutoryRuleReader (not a stub) so that
+// any regression in the DateTimeKind fix is caught before hitting production.
+
+[Trait("Category", "Integration")]
+public class StatutoryRuleReaderDateTimeKindRegressionTests : IClassFixture<PostgresFixture>
+{
+    private readonly PostgresFixture _fx;
+    public StatutoryRuleReaderDateTimeKindRegressionTests(PostgresFixture fx) => _fx = fx;
+
+    [Fact]
+    public async Task Process_WithRealStatutoryRuleReader_DoesNotThrowDateTimeKindException()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+
+        var company = new Company
+        {
+            Id = Guid.NewGuid(), TenantId = tenantId,
+            LegalNameEn = "DateTimeKind Regression Co",
+            CountryCode = "SAU", Jurisdiction = "KSA-mainland",
+            RegistrationNumber = $"DTK-{Guid.NewGuid():N}",
+            DefaultCurrency = "SAR", IsActive = true,
+            CreatedAtUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.Companies.Add(company);
+
+        var emp = new Employee
+        {
+            TenantId = tenantId,
+            EmployeeCode = $"DTK-{Guid.NewGuid():N}",
+            FullName = "DateTimeKind Test Employee",
+            Nationality = "Saudi",
+            Status = "Active",
+            JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.Employees.Add(emp);
+        await db.SaveChangesAsync();
+
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = emp.Id,
+            SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 10_000m, HousingAllowance = 3_000m,
+            EffectiveDate = new DateOnly(2024, 1, 1), IsActive = true,
+        });
+
+        var run = new PayrollRun
+        {
+            TenantId = tenantId, CompanyId = company.Id,
+            Year = 2026, Month = 6,
+            CreatedAtUtc = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.PayrollRuns.Add(run);
+        await db.SaveChangesAsync();
+
+        // Use real StatutoryRuleReader backed by the Postgres container — the table is empty
+        // so all reads return null and the calculator falls back to hardcoded defaults.
+        // The key assertion is that no ArgumentException (DateTimeKind.Unspecified) is thrown.
+        var realRuleReader = new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db);
+        var ctrl = BuildControllerWithRealReader(db, tenantId, realRuleReader);
+
+        var result = await ctrl.Process(run.Id, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(result);
+
+        var slip = await db.PayrollSlips.FirstAsync(s => s.TenantId == tenantId && s.EmployeeId == emp.Id);
+        Assert.True(slip.EmployeeStatutoryTotal > 0,
+            "Saudi employee must have non-zero EE GOSI even when statutory_rules table is empty " +
+            "(calculator falls back to hardcoded 9.75%). If zero, real StatutoryRuleReader or " +
+            "the KSA pack calculator is broken.");
+    }
+
+    private static PayrollController BuildControllerWithRealReader(
+        ZayraDbContext db, Guid tenantId, Zayra.Api.Application.CountryPack.IStatutoryRuleReader reader)
+    {
+        var resolver = new GosiRegressionPackResolver(reader);
+        var ctrl = new PayrollController(
+            db, new DataScopeService(db), new HttpContextAccessor(),
+            new GosiRegressionNotificationStub(), resolver, new GosiRegressionLetterStub());
+        ctrl.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                {
+                    new Claim("tenant_id", tenantId.ToString()),
+                    new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                    new Claim(ClaimTypes.Role, "Admin"),
+                }, "Test"))
+            }
+        };
+        return ctrl;
+    }
+}
+
 // ── DbContextPool tenant-isolation regression ──────────────────────────────────
 //
 // Root cause: AddDbContextPool<ZayraDbContext> reuses instances across requests without

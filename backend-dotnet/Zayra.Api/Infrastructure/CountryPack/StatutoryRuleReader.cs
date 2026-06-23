@@ -29,7 +29,7 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
         string countryCode, string jurisdiction, string ruleKey,
         DateOnly effectiveDate, Guid? tenantId, CancellationToken ct)
     {
-        var cutoff = effectiveDate.ToDateTime(TimeOnly.MinValue);
+        var cutoff = effectiveDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
 
         // IgnoreQueryFilters is intentional: StatutoryRule rows span two scopes — platform defaults
         // (TenantId = null, set by StatutoryRuleSeeder) and tenant overrides (TenantId = tenantId).

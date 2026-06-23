@@ -123,12 +123,6 @@ public class PayrollController : ControllerBase
     [HttpPost("runs/{id:guid}/process")]
     public async Task<IActionResult> Process(Guid id, CancellationToken cancellationToken)
     {
-        try { return await ProcessInternal(id, cancellationToken); }
-        catch (Exception ex) { return StatusCode(500, new { debug_exception = ex.GetType().FullName, debug_message = ex.Message, debug_inner = ex.InnerException?.Message, debug_stack = ex.StackTrace?.Split('\n').Take(10) }); }
-    }
-
-    private async Task<IActionResult> ProcessInternal(Guid id, CancellationToken cancellationToken)
-    {
         var tenantId = GetTenantId();
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
         if (run is null) return NotFound();
