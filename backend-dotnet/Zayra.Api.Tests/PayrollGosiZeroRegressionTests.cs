@@ -188,6 +188,82 @@ public class PayrollGosiZeroRegressionTests : IClassFixture<PostgresFixture>
     }
 }
 
+// ── DbContextPool tenant-isolation regression ──────────────────────────────────
+//
+// Root cause: AddDbContextPool<ZayraDbContext> reuses instances across requests without
+// re-running the constructor.  Before the fix, _tenantId was set once in the constructor
+// from the first request's JWT claim.  On pool reuse by a different tenant the global
+// query filter still carried the stale tenant ID, contradicting the explicit TenantId
+// predicate → 0 rows → "Company not found or not active" (CreateRun line 105).
+//
+// Fix: _tenantId / _actorId are now lazy properties that read IHttpContextAccessor.HttpContext
+// on every access.  IHttpContextAccessor is a singleton backed by AsyncLocal, so it always
+// reflects the current request even when the DbContext is pool-reused.
+
+[Trait("Category", "Integration")]
+public class CreateRunPoolReuseRegressionTests : IClassFixture<PostgresFixture>
+{
+    private readonly PostgresFixture _fx;
+    public CreateRunPoolReuseRegressionTests(PostgresFixture fx) => _fx = fx;
+
+    [Fact]
+    public async Task CompanyLookup_WithSameDbContextInstance_WorksForBothTenants()
+    {
+        // Seed two independent tenants, each with an active SAU company
+        await using var seedDb = _fx.CreateDb();
+        var tenantA = await PostgresFixture.SeedMinimalTenant(seedDb);
+        var tenantB = await PostgresFixture.SeedMinimalTenant(seedDb);
+
+        var companyA = new Company
+        {
+            Id = Guid.NewGuid(), TenantId = tenantA,
+            LegalNameEn = "Company Alpha", CountryCode = "SAU", Jurisdiction = "KSA-mainland",
+            RegistrationNumber = $"A-{Guid.NewGuid():N}", DefaultCurrency = "SAR", IsActive = true,
+            CreatedAtUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        var companyB = new Company
+        {
+            Id = Guid.NewGuid(), TenantId = tenantB,
+            LegalNameEn = "Company Beta", CountryCode = "SAU", Jurisdiction = "KSA-mainland",
+            RegistrationNumber = $"B-{Guid.NewGuid():N}", DefaultCurrency = "SAR", IsActive = true,
+            CreatedAtUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        seedDb.Companies.AddRange(companyA, companyB);
+        await seedDb.SaveChangesAsync();
+
+        // Use a SWITCHABLE accessor on the SAME DbContext instance to simulate DbContextPool
+        // reuse: request A uses the context, returns it to the pool, request B gets it back.
+        // Before the fix, the constructor-cached _tenantId would still be tenant A's value
+        // during request B's lookup, making the global filter contradict the explicit predicate.
+        var accessor = new SwitchableHttpContextAccessor();
+        await using var db = _fx.CreateDbWithAccessor(accessor);
+
+        // Request A
+        accessor.HttpContext = MakeHttpContext(tenantA);
+        var foundA = await db.Companies.AnyAsync(c => c.TenantId == tenantA && c.Id == companyA.Id && c.IsActive);
+        Assert.True(foundA, "Tenant A's company must be found when accessor is set to tenant A.");
+
+        // Simulate pool reuse: same DbContext, different tenant
+        accessor.HttpContext = MakeHttpContext(tenantB);
+        var foundB = await db.Companies.AnyAsync(c => c.TenantId == tenantB && c.Id == companyB.Id && c.IsActive);
+        Assert.True(foundB,
+            "Tenant B's company must be found after switching accessor (pool-reuse scenario). " +
+            "Failure means _tenantId is no longer resolved lazily — the fix has regressed.");
+
+        // Cross-tenant isolation: tenant B context must NOT see tenant A's company
+        var leak = await db.Companies.AnyAsync(c => c.Id == companyA.Id);
+        Assert.False(leak, "Tenant A's data must not be visible while accessor is set to tenant B.");
+    }
+
+    private static HttpContext MakeHttpContext(Guid tenantId)
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.User = new ClaimsPrincipal(new ClaimsIdentity(
+            new[] { new Claim("tenant_id", tenantId.ToString()) }, "Test"));
+        return ctx;
+    }
+}
+
 // ── Test-local helpers ─────────────────────────────────────────────────────────
 
 // Resolver that returns the real KSA deduction calculator for "SAU" and zero
@@ -229,6 +305,13 @@ file sealed class GosiRegressionNotificationStub : INotificationService
     public Task SendEmailAsync(Guid tenantId, string templateCode, string toAddress, string toName,
         Dictionary<string, string> variables, CancellationToken cancellationToken)
         => Task.CompletedTask;
+}
+
+// Allows a single test to simulate DbContextPool reuse by changing the HttpContext
+// mid-test on the same IHttpContextAccessor instance that was injected at construction.
+file sealed class SwitchableHttpContextAccessor : IHttpContextAccessor
+{
+    public HttpContext? HttpContext { get; set; }
 }
 
 file sealed class GosiRegressionLetterStub : Zayra.Api.Infrastructure.Documents.Letters.ILetterService

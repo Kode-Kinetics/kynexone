@@ -43,6 +43,12 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString)
             .Options);
 
+    public ZayraDbContext CreateDbWithAccessor(IHttpContextAccessor accessor) => new(
+        new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(ConnectionString)
+            .Options,
+        accessor);
+
     // Minimal tenant seed required for import tests (role resolver looks up "Employee" role)
     public static async Task<Guid> SeedMinimalTenant(ZayraDbContext db)
     {

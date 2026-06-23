@@ -12,25 +12,43 @@ namespace Zayra.Api.Data;
 public class ZayraDbContext : DbContext
 {
     /// <summary>
-    /// Current request's tenant, resolved from the authenticated user's `tenant_id` claim.
+    /// IHttpContextAccessor is a singleton backed by AsyncLocal, so it always reflects the
+    /// current request's HttpContext even when this DbContext instance is reused from the
+    /// DbContextPool (pool reuse skips the constructor; reading lazily here avoids stale
+    /// per-request values that caused the "Company not found or not active" bug).
+    /// </summary>
+    private readonly IHttpContextAccessor? _httpContextAccessor;
+    private readonly ILogger<ZayraDbContext>? _logger;
+
+    /// <summary>
+    /// Current request's tenant, resolved lazily from the ambient HttpContext.
     /// Null when there is no HTTP context (startup seeding, login/refresh before auth,
     /// background work) — in that case the global tenant query filter is bypassed.
     /// </summary>
-    private readonly Guid? _tenantId;
+    private Guid? _tenantId
+    {
+        get
+        {
+            if (Guid.TryParse(_httpContextAccessor?.HttpContext?.User?.FindFirstValue("tenant_id"), out var tid))
+                return tid;
+            return null;
+        }
+    }
 
     /// <summary>
-    /// Current authenticated user ID. Used by <see cref="SaveChangesAsync"/> to auto-stamp
-    /// CreatedBy / UpdatedBy on every entity mutation, eliminating the need for each service
-    /// to set these fields manually (and preventing audit gaps when they forget to).
+    /// Current authenticated user ID. Resolved lazily so pool-reused contexts stamp the
+    /// correct actor rather than the actor from the context's first-ever request.
     /// </summary>
-    private readonly Guid? _actorId;
-
-    /// <summary>
-    /// Injected only to emit a warning when the context resolves without tenant context
-    /// inside an HTTP request (which would silently bypass the global query filter).
-    /// Null during EF design-time scaffolding — guard checks for null before using.
-    /// </summary>
-    private readonly ILogger<ZayraDbContext>? _logger;
+    private Guid? _actorId
+    {
+        get
+        {
+            var user = _httpContextAccessor?.HttpContext?.User;
+            if (user is null) return null;
+            var sub = user.FindFirstValue(ClaimTypes.NameIdentifier) ?? user.FindFirstValue("sub");
+            return Guid.TryParse(sub, out var uid) ? uid : (Guid?)null;
+        }
+    }
 
     public ZayraDbContext(
         DbContextOptions<ZayraDbContext> options,
@@ -39,33 +57,7 @@ public class ZayraDbContext : DbContext
         : base(options)
     {
         _logger = logger;
-        var httpContext = httpContextAccessor?.HttpContext;
-        var user = httpContext?.User;
-
-        if (user is not null)
-        {
-            if (Guid.TryParse(user.FindFirstValue("tenant_id"), out var tid))
-            {
-                _tenantId = tid;
-            }
-            else if (httpContext is not null)
-            {
-                // We are inside an HTTP request but there is no tenant_id claim.
-                // This is expected for: login, platform admin routes, seeder-triggered HTTP calls.
-                // It is UNEXPECTED for any tenant-scoped endpoint — log a warning so the call
-                // origin can be traced without throwing (seeders and platform routes are legitimate).
-                _logger?.LogWarning(
-                    "ZayraDbContext resolved with no tenant_id claim inside an HTTP request. " +
-                    "The global tenant query filter is BYPASSED for this context. " +
-                    "Path={Path} TraceId={TraceId}",
-                    httpContext.Request.Path,
-                    System.Diagnostics.Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier);
-            }
-
-            var sub = user.FindFirstValue(ClaimTypes.NameIdentifier) ?? user.FindFirstValue("sub");
-            if (Guid.TryParse(sub, out var uid)) _actorId = uid;
-        }
-        // null httpContext → seeder/migration/background — bypass is intentional; no log needed
+        _httpContextAccessor = httpContextAccessor;
     }
 
     /// <summary>
