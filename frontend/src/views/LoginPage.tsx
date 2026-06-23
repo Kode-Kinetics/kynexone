@@ -44,7 +44,7 @@ const ACTIVITY = [
   { name: 'Payroll',  action: 'Run completed',    time: '7:00 AM', dot: 'bg-amber-400'   },
 ];
 
-const PILLS = ['Multi-country Payroll', 'Labour Law Compliance', 'ISO 27001', 'SOC 2 Ready', 'Multi-branch', 'AI-powered'];
+const PILLS = ['Multi-country Payroll', 'Labour Law Compliance', 'RBAC + Audit Logs', 'TOTP MFA', 'Multi-branch', 'AI-powered'];
 
 const NAV_ICONS = [
   { icon: BarChart3,  active: true  },
@@ -408,7 +408,7 @@ export function LoginPage() {
                 </button>
 
                 <div className="mt-8 flex items-center justify-center gap-5 border-t border-slate-100 pt-6 dark:border-white/[0.06]">
-                  {['AES-256 encrypted', 'SOC 2 ready', 'Global data residency'].map(t => (
+                  {['AES-256 at rest · TLS in transit', 'Tenant data isolation', 'Audit-logged'].map(t => (
                     <span key={t} className="text-[10px] font-medium text-slate-300 dark:text-slate-600">{t}</span>
                   ))}
                 </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle, BarChart2, Bot, BookOpen, Building2, Calculator,
   CheckCircle2, ChevronDown, ChevronRight, Download, FileText, Landmark, Layers3,
@@ -771,10 +771,13 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [selectedRun, setSelectedRun] = useState<PayrollRun | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [slips, setSlips] = useState<PayrollSlip[]>([]);
   const [slipsLoading, setSlipsLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  // Monotonic counter: only the response matching the latest fetch ID is applied.
+  // Prevents stale responses from a slow previous fetch overwriting current slips.
+  const slipsFetchSeq = useRef(0);
   const [createYear, setCreateYear] = useState(new Date().getFullYear());
   const [createMonth, setCreateMonth] = useState(new Date().getMonth() + 1);
   const [createCompanyId, setCreateCompanyId] = useState('');
@@ -795,10 +798,19 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const openSlips = async (run: PayrollRun) => {
-    setSelectedRun(run);
+  // Derive selectedRun from the runs list so the header always reflects the
+  // latest server state (e.g. after Process updates totals in setRuns).
+  const selectedRun = runs.find(r => r.id === selectedRunId) ?? null;
+
+  const openSlips = (run: PayrollRun) => {
+    setSelectedRunId(run.id);
+    setSlips([]);
     setSlipsLoading(true);
-    payrollApi.slips(run.id, { pageSize: 200 }).then(r => setSlips(r.items)).catch(() => {}).finally(() => setSlipsLoading(false));
+    const seq = ++slipsFetchSeq.current;
+    payrollApi.slips(run.id, { pageSize: 200 })
+      .then(r => { if (slipsFetchSeq.current === seq) setSlips(r.items); })
+      .catch(() => {})
+      .finally(() => { if (slipsFetchSeq.current === seq) setSlipsLoading(false); });
   };
 
   const createRun = async () => {
@@ -814,12 +826,16 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
 
   const processRun = async (id: string) => {
     const updated = await payrollApi.processRun(id).catch(() => null);
-    if (updated) { setRuns(rs => rs.map(r => r.id === id ? updated : r)); if (selectedRun?.id === id) { setSelectedRun(updated); openSlips(updated); } }
+    if (updated) {
+      setRuns(rs => rs.map(r => r.id === id ? updated : r));
+      // Re-fetch slips for the processed run so the table matches the new totals.
+      if (selectedRunId === id) openSlips(updated);
+    }
   };
 
   const lockRun = async (id: string) => {
     const updated = await payrollApi.lockRun(id).catch(() => null);
-    if (updated) { setRuns(rs => rs.map(r => r.id === id ? updated : r)); if (selectedRun?.id === id) setSelectedRun(updated); }
+    if (updated) setRuns(rs => rs.map(r => r.id === id ? updated : r));
   };
 
   const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1205,6 +1221,7 @@ function PayslipsTab() {
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [downloadingBundle, setDownloadingBundle] = useState(false);
 
   useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
 
@@ -1223,6 +1240,15 @@ function PayslipsTab() {
     setGenerating(false);
   };
 
+  const downloadBundle = async () => {
+    if (!runId) return;
+    const selectedRun = runs.find(r => r.id === runId);
+    const period = selectedRun ? `${selectedRun.year}${String(selectedRun.month).padStart(2, '0')}` : runId;
+    setDownloadingBundle(true);
+    await payrollApi.downloadRunPdfBundle(runId, period).catch(() => {});
+    setDownloadingBundle(false);
+  };
+
   const published = payslips.filter(p => p.isPublishedToEss).length;
 
   return (
@@ -1235,6 +1261,12 @@ function PayslipsTab() {
         {runId && (
           <button type="button" className={btn.primary} onClick={generate} disabled={generating}>
             {generating ? 'Generating…' : 'Generate Payslips'}
+          </button>
+        )}
+        {payslips.length > 0 && (
+          <button type="button" className={btn.ghost} onClick={downloadBundle} disabled={downloadingBundle}>
+            <Download className="h-4 w-4" />
+            {downloadingBundle ? 'Preparing ZIP…' : 'Download All (ZIP)'}
           </button>
         )}
       </div>
@@ -1282,7 +1314,7 @@ function PayslipsTab() {
                       disabled={downloadingId === p.id}
                       onClick={() => {
                         setDownloadingId(p.id);
-                        payrollApi.downloadSlipPdf(p.id).finally(() => setDownloadingId(null));
+                        payrollApi.downloadSlipPdf(p.id, `${p.payslipNumber}.pdf`).finally(() => setDownloadingId(null));
                       }}
                       className="flex items-center gap-1 text-xs text-sapphire hover:text-sapphire/80 disabled:opacity-40"
                     >

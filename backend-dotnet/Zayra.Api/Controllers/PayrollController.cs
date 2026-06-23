@@ -104,8 +104,14 @@ public class PayrollController : ControllerBase
             return BadRequest(new { message = "Year is out of range." });
         if (req.CompanyId.HasValue && !await _db.Companies.AnyAsync(c => c.TenantId == tenantId && c.Id == req.CompanyId.Value && c.IsActive, cancellationToken))
             return BadRequest(new { message = "Company not found or not active." });
-        if (await _db.PayrollRuns.AnyAsync(r => r.TenantId == tenantId && r.CompanyId == req.CompanyId && r.Year == req.Year && r.Month == req.Month, cancellationToken))
-            return Conflict(new { message = $"A payroll run for {req.Year}/{req.Month:D2} already exists{(req.CompanyId.HasValue ? " for this company" : "")}." });
+        // Guard at the period level — one run per (tenant, year, month) regardless of company_id.
+        // A null company_id falls back to the first active company during Process(), so a
+        // null-company run and an explicit-company run for the same period would double-pay.
+        var existing = await _db.PayrollRuns
+            .Where(r => r.TenantId == tenantId && r.Year == req.Year && r.Month == req.Month)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (existing is not null)
+            return Conflict(new { message = $"A payroll run for {req.Year}/{req.Month:D2} already exists.", runId = existing.Id });
 
         var run = new PayrollRun
         {
@@ -2091,63 +2097,190 @@ public class PayrollController : ControllerBase
     }
 
     // ── Admin payslip PDF download ─────────────────────────────────────────────
-    // HR/Finance/Admin can download a PDF for any payslip by slip ID.
-    // Salary figures are included only when the caller has payroll.export permission;
-    // otherwise each monetary line is replaced with "***" to honour masking rules.
+    // id is the Payslip.Id (formal payslip record) — the same ID the payslips table returns.
+    // The endpoint resolves the matching PayrollSlip row via RunId + EmployeeId.
     [HttpGet("slips/{id:guid}/pdf")]
     [Authorize(Roles = "Admin,HR Manager,Finance Approver,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> DownloadSlipPdf(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();
-        var slip = await _db.PayrollSlips.AsNoTracking()
+
+        // Look up the formal payslip record (this is what the UI exposes)
+        var payslip = await _db.Payslips.AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+        if (payslip is null) return NotFound();
+
+        // Derive the computed PayrollSlip row via RunId + EmployeeId
+        var slip = await _db.PayrollSlips.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RunId == payslip.PayrollRunId && x.EmployeeId == payslip.EmployeeId, ct);
         if (slip is null) return NotFound();
 
-        var payslip = await _db.Payslips.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PayrollRunId == slip.RunId && x.EmployeeId == slip.EmployeeId, ct);
-        var components = payslip is not null
-            ? await _db.PayslipComponents.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayslipId == payslip.Id).ToListAsync(ct)
-            : new List<PayslipComponent>();
+        var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == payslip.PayrollRunId, ct);
 
-        var canSeeSalary = HasPermission("payroll.export");
+        var company = run?.CompanyId.HasValue == true
+            ? await _db.Companies.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId!.Value, ct)
+            : await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+                .OrderBy(c => c.CreatedAtUtc).FirstOrDefaultAsync(ct);
 
-        var items = components.Count > 0
-            ? components.Select(c => new PayslipLineItem(c.ComponentName, canSeeSalary ? c.Amount : 0m, c.ComponentType)).ToList()
-            : new List<PayslipLineItem>
-            {
-                new("Basic Salary",       canSeeSalary ? slip.BasicSalary       : 0m, "Earning"),
-                new("Housing Allowance",  canSeeSalary ? slip.HousingAllowance  : 0m, "Earning"),
-                new("Transport Allowance",canSeeSalary ? slip.TransportAllowance: 0m, "Earning"),
-                new("Other Allowances",   canSeeSalary ? slip.OtherAllowances   : 0m, "Earning"),
-                new("Total Deductions",   canSeeSalary ? slip.Deductions        : 0m, "Deduction"),
-                new("Net Pay",            canSeeSalary ? slip.NetSalary         : 0m, "Net"),
-            }.Where(i => i.Amount != 0).ToList();
-
-        var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == slip.RunId, ct);
         var emp = await _db.Employees.AsNoTracking()
             .Select(e => new { e.Id, e.Designation })
             .FirstOrDefaultAsync(e => e.Id == slip.EmployeeId, ct);
-        var tenant = await _db.Tenants.AsNoTracking()
-            .Select(t => new { t.Id, t.Name })
-            .FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+
         var profile = await _db.EmployeePayrollProfiles.AsNoTracking()
             .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == slip.EmployeeId && !p.IsDeleted, ct);
 
+        // Individual statutory EE deduction lines (GOSI-ANN-EE, GOSI-SANED-EE, etc.)
+        var statutoryLines = await _db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == payslip.PayrollRunId
+                        && d.EmployeeId == slip.EmployeeId && d.Source == "Statutory")
+            .Select(d => new { d.ComponentCode, d.ComponentName, d.Amount })
+            .ToListAsync(ct);
+
+        var canSeeSalary = HasPermission("payroll.export");
+
+        // Build items from stored slip fields (no recompute)
+        var items = new List<PayslipLineItem>();
+        if (slip.BasicSalary > 0)        items.Add(new("Basic Salary",        canSeeSalary ? slip.BasicSalary        : 0m, "Earning"));
+        if (slip.HousingAllowance > 0)   items.Add(new("Housing Allowance",   canSeeSalary ? slip.HousingAllowance   : 0m, "Earning"));
+        if (slip.TransportAllowance > 0) items.Add(new("Transport Allowance", canSeeSalary ? slip.TransportAllowance : 0m, "Earning"));
+        if (slip.OtherAllowances > 0)    items.Add(new("Other Allowances",    canSeeSalary ? slip.OtherAllowances    : 0m, "Earning"));
+
+        foreach (var line in statutoryLines.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase) && l.Amount > 0))
+            items.Add(new(line.ComponentName, canSeeSalary ? line.Amount : 0m, "Deduction"));
+
+        // Non-statutory deductions (loans, advances, fixed)
+        var otherDeductions = slip.Deductions - statutoryLines.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase)).Sum(l => l.Amount);
+        if (otherDeductions > 0) items.Add(new("Other Deductions", canSeeSalary ? otherDeductions : 0m, "Deduction"));
+
+        items.Add(new("Net Pay", canSeeSalary ? slip.NetSalary : 0m, "Net"));
+
+        var generatedOn = DateTime.UtcNow;
         var data = new PayslipData(
-            PayslipNumber: payslip?.PayslipNumber ?? $"PS-{slip.EmployeeCode}",
+            PayslipNumber: payslip.PayslipNumber,
             EmployeeCode:  slip.EmployeeCode,
             EmployeeName:  slip.EmployeeName,
             Department:    slip.Department,
             Designation:   emp?.Designation ?? string.Empty,
-            PayYear:       run?.Year  ?? DateTime.UtcNow.Year,
-            PayMonth:      run?.Month ?? DateTime.UtcNow.Month,
-            Currency:      profile?.SalaryCurrency ?? "SAR",
+            PayYear:       run?.Year  ?? generatedOn.Year,
+            PayMonth:      run?.Month ?? generatedOn.Month,
+            Currency:      profile?.SalaryCurrency ?? company?.DefaultCurrency ?? "SAR",
             Items:         items,
-            CompanyName:   tenant?.Name ?? "KynexOne"
+            CompanyName:   company?.LegalNameEn ?? string.Empty,
+            CompanyNameAr: company?.LegalNameAr ?? string.Empty,
+            GeneratedOn:   generatedOn
         );
 
         var pdf = await _letters.GeneratePayslipPdfAsync(data, ct);
+
+        await PayrollAudit("payroll.payslip.download", "Payslip", id.ToString(),
+            new { employee = slip.EmployeeCode, period = $"{run?.Year}-{run?.Month:00}" }, ct);
+        await _db.SaveChangesAsync(ct);
+
         return File(pdf, "application/pdf", $"payslip-{slip.EmployeeCode}-{run?.Year}{run?.Month:00}.pdf");
+    }
+
+    // ── Bulk payslip PDF bundle (ZIP) ──────────────────────────────────────────
+    [HttpGet("runs/{id:guid}/pdf-bundle")]
+    [Authorize(Roles = "Admin,HR Manager,Finance Approver,Payroll Manager,Payroll Officer")]
+    public async Task<IActionResult> DownloadRunPdfBundle(Guid id, CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+
+        var run = await _db.PayrollRuns.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        if (run is null) return NotFound();
+
+        var payslips = await _db.Payslips.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.PayrollRunId == id)
+            .ToListAsync(ct);
+        if (payslips.Count == 0)
+            return NotFound(new { message = "No payslips generated for this run. Use Generate Payslips first." });
+
+        var slips = await _db.PayrollSlips.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.RunId == id)
+            .ToListAsync(ct);
+
+        var company = run.CompanyId.HasValue
+            ? await _db.Companies.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId.Value, ct)
+            : await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+                .OrderBy(c => c.CreatedAtUtc).FirstOrDefaultAsync(ct);
+
+        var allStatutory = await _db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == id && d.Source == "Statutory")
+            .ToListAsync(ct);
+
+        var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && !p.IsDeleted)
+            .Select(p => new { p.EmployeeId, p.SalaryCurrency })
+            .ToListAsync(ct);
+
+        var designations = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId)
+            .Select(e => new { e.Id, e.Designation })
+            .ToListAsync(ct);
+
+        var canSeeSalary = HasPermission("payroll.export");
+        var generatedOn = DateTime.UtcNow;
+        var period = $"{run.Year}{run.Month:00}";
+
+        using var ms = new System.IO.MemoryStream();
+        using (var zip = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+        {
+            foreach (var payslip in payslips)
+            {
+                var slip = slips.FirstOrDefault(s => s.EmployeeId == payslip.EmployeeId);
+                if (slip is null) continue;
+
+                var profile = profiles.FirstOrDefault(p => p.EmployeeId == slip.EmployeeId);
+                var desig = designations.FirstOrDefault(e => e.Id == slip.EmployeeId);
+                var empStatutory = allStatutory.Where(d => d.EmployeeId == slip.EmployeeId).ToList();
+
+                var items = new List<PayslipLineItem>();
+                if (slip.BasicSalary > 0)        items.Add(new("Basic Salary",        canSeeSalary ? slip.BasicSalary        : 0m, "Earning"));
+                if (slip.HousingAllowance > 0)   items.Add(new("Housing Allowance",   canSeeSalary ? slip.HousingAllowance   : 0m, "Earning"));
+                if (slip.TransportAllowance > 0) items.Add(new("Transport Allowance", canSeeSalary ? slip.TransportAllowance : 0m, "Earning"));
+                if (slip.OtherAllowances > 0)    items.Add(new("Other Allowances",    canSeeSalary ? slip.OtherAllowances    : 0m, "Earning"));
+
+                foreach (var line in empStatutory.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase) && l.Amount > 0))
+                    items.Add(new(line.ComponentName, canSeeSalary ? line.Amount : 0m, "Deduction"));
+
+                var otherDed = slip.Deductions - empStatutory.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase)).Sum(l => l.Amount);
+                if (otherDed > 0) items.Add(new("Other Deductions", canSeeSalary ? otherDed : 0m, "Deduction"));
+                items.Add(new("Net Pay", canSeeSalary ? slip.NetSalary : 0m, "Net"));
+
+                var data = new PayslipData(
+                    PayslipNumber: payslip.PayslipNumber,
+                    EmployeeCode:  slip.EmployeeCode,
+                    EmployeeName:  slip.EmployeeName,
+                    Department:    slip.Department,
+                    Designation:   desig?.Designation ?? string.Empty,
+                    PayYear:       run.Year,
+                    PayMonth:      run.Month,
+                    Currency:      profile?.SalaryCurrency ?? company?.DefaultCurrency ?? "SAR",
+                    Items:         items,
+                    CompanyName:   company?.LegalNameEn ?? string.Empty,
+                    CompanyNameAr: company?.LegalNameAr ?? string.Empty,
+                    GeneratedOn:   generatedOn
+                );
+
+                var pdf = await _letters.GeneratePayslipPdfAsync(data, ct);
+                var entry = zip.CreateEntry($"payslip-{slip.EmployeeCode}-{period}.pdf",
+                    System.IO.Compression.CompressionLevel.Fastest);
+                await using var entryStream = entry.Open();
+                await entryStream.WriteAsync(pdf, ct);
+            }
+        }
+
+        await PayrollAudit("payroll.payslip.bulk_download", "PayrollRun", id.ToString(),
+            new { period, count = payslips.Count }, ct);
+        await _db.SaveChangesAsync(ct);
+
+        ms.Position = 0;
+        return File(ms.ToArray(), "application/zip", $"payslips-{period}.zip");
     }
 
     private Guid GetTenantId() => Guid.Parse(User.FindFirstValue("tenant_id")!);
