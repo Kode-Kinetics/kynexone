@@ -203,7 +203,10 @@ public class OvertimeController : ControllerBase
                 OvertimeRequestId = request.Id,
                 EmployeeId = request.EmployeeId,
                 Hours = calc.ApprovedHours,
-                Amount = calc.Amount
+                Amount = calc.Amount,
+                // Persist the multiplier used at approval time so payroll can apply
+                // the correct rate (e.g. 2× for holiday/rest-day) without re-resolving the policy.
+                ApprovedMultiplier = calc.Multiplier,
             });
             await SaveAudit("overtime.request.approved", "OvertimeRequest", request.Id.ToString(), ct);
             await _db.SaveChangesAsync(ct);

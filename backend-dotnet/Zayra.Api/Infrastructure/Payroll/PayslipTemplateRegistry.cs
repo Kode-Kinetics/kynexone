@@ -228,7 +228,12 @@ public record PayslipBrandingConfig(
     string FooterTextAr = "",
     string? LogoStorageUrl = null,
     string Locale = "en"
-);
+)
+{
+    // Logo bytes: prefer pre-loaded bytes (set by controller before calling this service, works for S3/local).
+    // Fall back to reading from a local absolute path (legacy path for local-only deployments).
+    public byte[]? LogoBytes { get; init; }
+};
 
 public record PayslipLayoutConfig(
     string Locale = "en",

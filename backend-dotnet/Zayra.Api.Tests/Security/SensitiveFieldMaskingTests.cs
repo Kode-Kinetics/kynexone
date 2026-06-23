@@ -584,6 +584,8 @@ public class SensitiveFieldMaskingTests
         public Task<StoredDocument> SaveAsync(Guid tenantId, IFormFile file, CancellationToken ct) =>
             Task.FromResult(new StoredDocument(file.FileName, file.ContentType, "storage/test", "/tmp/test"));
         public string ResolvePath(string storageUrl) => "/tmp/test";
+        public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) =>
+            Task.FromResult(Array.Empty<byte>());
     }
 
     private sealed class FakeNotificationService : INotificationService
@@ -600,7 +602,7 @@ public class SensitiveFieldMaskingTests
 
     private static EmployeeSelfServiceController CreateEssController(ZayraDbContext db, Guid tenantId, int employeeId)
     {
-        var controller = new EmployeeSelfServiceController(db, new FakeLetterService());
+        var controller = new EmployeeSelfServiceController(db, new FakeLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1));
         var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
         {
             new Claim("tenant_id", tenantId.ToString()),

@@ -181,6 +181,8 @@ builder.Services.AddScoped<IHijriDateService, HijriDateService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IEmailService, SmtpEmailService>();
 builder.Services.AddScoped<ILetterService, LetterService>();
+var pdfCapacity = builder.Configuration.GetValue("Pdf:MaxConcurrentRenders", 3);
+builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Documents.PdfRenderGate(pdfCapacity));
 builder.Services.AddScoped<IRecruitmentService, RecruitmentService>();
 builder.Services.AddScoped<IPerformanceService, PerformanceService>();
 builder.Services.AddScoped<ILeaveService, LeaveService>();

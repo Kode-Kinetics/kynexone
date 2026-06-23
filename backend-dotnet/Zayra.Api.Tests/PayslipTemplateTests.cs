@@ -435,6 +435,8 @@ file sealed class TemplateFakeDocumentStorage : IDocumentStorage
     public Task<StoredDocument> SaveAsync(Guid tenantId, IFormFile file, CancellationToken ct)
         => Task.FromResult(new StoredDocument(file.FileName, file.ContentType, $"storage/payslip-templates/{tenantId}/{file.FileName}", $"/tmp/{file.FileName}"));
     public string ResolvePath(string storageUrl) => $"/tmp/{storageUrl}";
+    public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) =>
+        Task.FromResult(Array.Empty<byte>());
 }
 
 file sealed class TemplateFakeLetterService : ILetterService

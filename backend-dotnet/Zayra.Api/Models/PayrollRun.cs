@@ -1,7 +1,7 @@
 using Zayra.Api.Domain.Entities;
 namespace Zayra.Api.Models;
 
-public class PayrollRun : ITenantOwned
+public class PayrollRun : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
@@ -20,6 +20,11 @@ public class PayrollRun : ITenantOwned
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? ProcessedAtUtc { get; set; }
     public DateTime? LockedAtUtc { get; set; }
+    // Void tracking — populated only when Status == "Voided".
+    public string? VoidReason { get; set; }
+    public DateTime? VoidedAtUtc { get; set; }
+    public Guid? VoidedByUserId { get; set; }
+    public string? VoidedByName { get; set; }
 }
 
 public class PayrollSlip : ITenantOwned

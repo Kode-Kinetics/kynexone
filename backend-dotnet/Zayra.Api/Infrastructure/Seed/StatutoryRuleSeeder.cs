@@ -55,6 +55,15 @@ public static class StatutoryRuleSeeder
         var eff22 = new DateTime(2022, 1, 1);   // UAE/Qatar post-reform effective date
 
         // ── KSA GOSI ─────────────────────────────────────────────────────────
+        // ⚠️  COMPLIANCE GATE — DO NOT REMOVE ⚠️
+        // The GOSI rates below reference "GOSI Regulation 2016" and may not reflect the current
+        // KSA GOSI rate schedule. Before seeding these rates for any production tenant:
+        //   1. Obtain the current GOSI rate circular from www.gosi.gov.sa
+        //   2. Compare rates against the values below
+        //   3. Get written sign-off from a Saudi-qualified payroll compliance officer
+        //   4. Update the EffectiveFrom date and rates, then re-seed
+        // Current rate values: Saudi Annuities Employee 9%, Employer 9%, SANED 0.75%/0.75%
+        // These have NOT been independently confirmed against any GOSI circular after 2016-06-01.
         // Source: GOSI Regulation 2016 (Royal Decree M/33).  Annuity + SANED.
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "gosi.saudi_employee_rate", "0.09", "decimal", eff16,
@@ -100,6 +109,12 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "lop.standard_work_minutes_per_day", "480", "decimal", eff07,
             "FLAG-COMPLIANCE: 480 min/day (8h) for LOP absent-day count — adjust for Ramadan or sector shift patterns"));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ot.holiday_multiplier", "2.0", "decimal", eff07,
+            "FLAG-COMPLIANCE: Public holiday OT 2× per KSA Labour Law Art.107 — VERIFY before filing"));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ot.restday_multiplier", "2.0", "decimal", eff07,
+            "FLAG-COMPLIANCE: Rest-day (weekend) OT 2× per KSA Labour Law Art.107 — VERIFY before filing"));
 
         // ── UAE GPSSA ────────────────────────────────────────────────────────
         // Source: Federal Law 7/1999 + Cabinet Resolution 50/2022.

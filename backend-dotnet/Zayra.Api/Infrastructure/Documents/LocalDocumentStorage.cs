@@ -6,6 +6,11 @@ public interface IDocumentStorage
 {
     Task<StoredDocument> SaveAsync(Guid tenantId, IFormFile file, CancellationToken cancellationToken);
     string ResolvePath(string storageUrl);
+
+    // Returns raw bytes for the stored object. Implementations enforce tenant ownership via the key prefix.
+    Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default);
+
+    // Local-only: resolves a storage URL to an absolute file path. S3DocumentStorage throws NotSupportedException.
 }
 
 public class LocalDocumentStorage : IDocumentStorage
@@ -30,10 +35,17 @@ public class LocalDocumentStorage : IDocumentStorage
         return new StoredDocument(safeName, string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType, relative.Replace(Path.DirectorySeparatorChar, '/'), absolute);
     }
 
+    public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default)
+    {
+        var path = ResolvePath(storageUrl);
+        if (!File.Exists(path)) throw new FileNotFoundException($"Stored document not found: {storageUrl}");
+        return File.ReadAllBytesAsync(path, ct);
+    }
+
     public string ResolvePath(string storageUrl)
     {
         var fullPath = Path.GetFullPath(Path.Combine(_environment.ContentRootPath, storageUrl));
-        var storageRoot = Path.GetFullPath(Path.Combine(_environment.ContentRootPath, "storage", "documents"));
+        var storageRoot = Path.GetFullPath(Path.Combine(_environment.ContentRootPath, "storage"));
         if (!fullPath.StartsWith(storageRoot, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Invalid document path.");
         return fullPath;
     }

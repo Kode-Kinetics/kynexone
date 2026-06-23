@@ -350,8 +350,11 @@ public class PayrollController : ControllerBase
             //  Whether OT pay is included in the GOSI covered wage requires sign-off before filing.]
             var empOtImpacts = overtimeImpacts.Where(x => x.EmployeeId == e.Id).ToList();
             var otHours = empOtImpacts.Sum(x => x.Hours);
-            var overtimePay = otHours > 0m && hourlyRate > 0m
-                ? Math.Round(otHours * hourlyRate * otMultiplier, 2)
+            // Use per-impact approved multiplier if set (> 0); fall back to statutory standard multiplier.
+            // This supports holiday/rest-day OT at 2× per KSA Art.107 where ApprovedMultiplier = 2.0.
+            var overtimePay = empOtImpacts.Count > 0 && hourlyRate > 0m
+                ? Math.Round(empOtImpacts.Sum(x =>
+                    x.Hours * hourlyRate * (x.ApprovedMultiplier > 0m ? x.ApprovedMultiplier : otMultiplier)), 2)
                 : 0m;
             // Tax deduction: apply income tax rate to taxable components only
             decimal taxDeduction = 0m;
@@ -423,7 +426,7 @@ public class PayrollController : ControllerBase
                 EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
                 EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
-                YtdGross = ytdGross + gross + overtimePay,
+                YtdGross = ytdGross + gross + overtimePay + totalBonusNet,
                 YtdDeductions = ytdDeduct + deductions,
                 YtdNet = ytdNet + netSalary,
                 Status = "Draft",
@@ -462,7 +465,7 @@ public class PayrollController : ControllerBase
             foreach (var line in statutoryResult.Lines.Where(l => l.EmployeeAmount > 0))
                 AddDeduction(tenantId, id, e.Id, line.Code, line.Label, line.EmployeeAmount, "Statutory");
             foreach (var line in statutoryResult.Lines.Where(l => l.EmployerAmount > 0))
-                AddDeduction(tenantId, id, e.Id, line.Code, line.Label, line.EmployerAmount, "Statutory");
+                AddDeduction(tenantId, id, e.Id, line.Code, line.Label, line.EmployerAmount, "Statutory", isEmployerContribution: true);
         }
 
         _db.PayrollSlips.AddRange(slips);
@@ -496,11 +499,28 @@ public class PayrollController : ControllerBase
             .GroupBy(x => x.EmployeeId)
             .ToDictionary(g => g.Key, g => g.Sum(x => x.Hours));
 
+        // GOSI staleness check: look up the most-recent system-default GOSI effective date
+        // for this company's country pack so validation engine can warn if rates are stale.
+        DateOnly? gosiRatesEffectiveFrom = null;
+        if (string.Equals(company?.CountryCode, "SAU", StringComparison.OrdinalIgnoreCase)
+         || string.Equals(company?.CountryCode, "SA",  StringComparison.OrdinalIgnoreCase))
+        {
+            // IgnoreQueryFilters is intentional: GosiContributionRules platform defaults use TenantId == Guid.Empty
+            // which is excluded by the per-tenant global query filter. This query reads system-wide default
+            // rates (not tenant data), so bypassing the tenant filter is correct and safe here.
+            var latestGosiRule = await _db.GosiContributionRules.IgnoreQueryFilters()
+                .Where(r => r.TenantId == Guid.Empty && r.CountryCode == "SA")
+                .OrderByDescending(r => r.EffectiveFrom)
+                .FirstOrDefaultAsync(cancellationToken);
+            gosiRatesEffectiveFrom = latestGosiRule?.EffectiveFrom;
+        }
+
         var validationCtx = new PayrollValidationContext(
             run, slips, employees, salaryAssignments, valProfiles, valDeductions, valEarnings, company)
         {
-            OvertimeHoursByEmployee      = otHoursByEmpForValidation,
+            OvertimeHoursByEmployee        = otHoursByEmpForValidation,
             AttendanceProcessedEmployeeIds = attendanceProcessedEmpIds,
+            GosiRatesEffectiveFrom         = gosiRatesEffectiveFrom,
         };
         foreach (var r in PayrollValidationEngine.Run(validationCtx))
             _db.PayrollValidationResults.Add(r);
@@ -602,8 +622,12 @@ public class PayrollController : ControllerBase
             var totalNet   = run.TotalNetSalary;
             var uid        = GetUserId();
             var uname      = GetUserName();
+            // Use company currency for GL entries — not hard-coded "USD".
+            var glCompany  = await _db.Companies.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId, cancellationToken);
+            var glCurrency = glCompany?.DefaultCurrency ?? "SAR";
             var (glLines, totalDebits, totalCredits) = BuildPayrollGlEntries(
-                tenantId, id, period, earnings, dedxns, totalNet, uid, uname);
+                tenantId, id, period, earnings, dedxns, totalNet, uid, uname, glCurrency);
             if (Math.Abs(totalDebits - totalCredits) > 0.01m)
                 return UnprocessableEntity(new
                 {
@@ -1538,45 +1562,36 @@ public class PayrollController : ControllerBase
         decimal eosbAmount;
         string eosbFormula;
 
-        // COMPLIANCE: KSA rule — Saudi Labor Law Art. 84 (month-fraction, not day-based).
-        // Applies when GCCComplianceSetting.CountryCode is "SA" and rates are at UAE defaults (i.e. not explicitly overridden for KSA).
-        // KSA: ≤5 yrs → (1/3 month × years), 5-10 yrs → (2/3 month × years), 10+ yrs → (1 month × years)
-        bool isKsa = string.Equals(gcc.CountryCode, "SA", StringComparison.OrdinalIgnoreCase);
-        bool uaeRatesUnchanged = (gcc.EosbYears1To5Rate is <= 0 or 21m) && (gcc.EosbYearsAbove5Rate is <= 0 or 30m);
-
-        if (isKsa && uaeRatesUnchanged)
+        // Resolve the correct country-pack end-of-service calculator for this tenant.
+        // This ensures KSA uses KsaEndOfServiceCalculator (½ month/yr tiers 1-5, 1 month/yr tier 2+)
+        // rather than the incorrect inline formula that was using the resignation haircut as a base.
+        // Map GCC CountryCode "SA" → pack key "SAU" (CountryCodes.Saudi).
+        var eosbPackCc = gcc.CountryCode switch
         {
-            // KSA: 1/3 month per year (≤5 yrs), 2/3 month per year (5-10 yrs), 1 full month per year (10+ yrs)
-            // Saudi rule is applied on TOTAL years (no marginal stacking between brackets)
-            if (totalYears <= 5)
-            {
-                eosbAmount = monthlySalary * (1m / 3m) * (decimal)totalYears;
-                eosbFormula = "KSA_ART84_LT5";
-            }
-            else if (totalYears <= 10)
-            {
-                eosbAmount = monthlySalary * (2m / 3m) * (decimal)totalYears;
-                eosbFormula = "KSA_ART84_5TO10";
-            }
-            else
-            {
-                eosbAmount = monthlySalary * 1m * (decimal)totalYears;
-                eosbFormula = "KSA_ART84_ABOVE10";
-            }
-        }
-        else
-        {
-            // UAE / configurable day-based: 21 days/yr (≤5) then 30 days/yr (>5), marginal stacking
-            var rate1 = gcc.EosbYears1To5Rate > 0 ? gcc.EosbYears1To5Rate : 21m;
-            var rate2 = gcc.EosbYearsAbove5Rate > 0 ? gcc.EosbYearsAbove5Rate : 30m;
-            if (totalYears <= 5)
-                eosbAmount = dailySalary * rate1 * (decimal)totalYears;
-            else
-                eosbAmount = dailySalary * rate1 * 5 + dailySalary * rate2 * (decimal)(totalYears - 5);
-            eosbFormula = isKsa ? "KSA_CUSTOM" : "UAE_DEFAULT";
-        }
+            "SA" => CountryCodes.Saudi,
+            "AE" or "UAE" => CountryCodes.UAE,
+            "QA" or "QAT" => CountryCodes.Qatar,
+            _ => gcc.CountryCode ?? "SAU",
+        };
+        var eosbJur = "mainland"; // GCCComplianceSetting has no jurisdiction field; default to mainland
+        var eosbCalc = _packResolver.ResolveEndOfServiceCalculator(eosbPackCc, eosbJur);
 
-        eosbAmount = Math.Round(eosbAmount, 2);
+        var serviceStartDate = DateOnly.FromDateTime(joiningDate);
+        var serviceEndDate   = DateOnly.FromDateTime(calcDate);
+
+        var eosbInput = new EndOfServiceInput(
+            EmployeeId:        Guid.Empty,
+            CompanyId:         Guid.Empty,
+            Salary:            new SalaryBreakdown(eligibleSalary, 0m, 0m, 0m),
+            ServiceStartDate:  serviceStartDate,
+            ServiceEndDate:    serviceEndDate,
+            TerminationReason: req.TerminationReason ?? "Termination",
+            ContractType:      employee.ContractType ?? "Indefinite",
+            Nationality:       employee.Nationality ?? string.Empty);
+
+        var eosbResult = await eosbCalc.CalculateAsync(eosbInput, cancellationToken);
+        eosbAmount  = Math.Round(eosbResult.TotalGratuity, 2);
+        eosbFormula = eosbResult.ApplicableRule;
 
         // Persist the calculation
         var existing = await _db.EOSBCalculations.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.Status == "Draft", cancellationToken);
@@ -1609,8 +1624,9 @@ public class PayrollController : ControllerBase
             dailySalary = Math.Round(dailySalary, 4),
             formula = eosbFormula,
             eosbAmount,
-            currency = salary?.Currency ?? "USD",
-            message = $"Calculated EOSB/Gratuity for {employee.FullName}: {salary?.Currency ?? "USD"} {eosbAmount:N2}"
+            terminationReason = req.TerminationReason ?? "Termination",
+            currency = salary?.Currency ?? "SAR",
+            message = $"Calculated EOSB/Gratuity for {employee.FullName}: {salary?.Currency ?? "SAR"} {eosbAmount:N2}"
         });
     }
 
@@ -1635,8 +1651,8 @@ public class PayrollController : ControllerBase
     private void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source) =>
         _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source });
 
-    private void AddDeduction(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source) =>
-        _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source });
+    private void AddDeduction(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source, bool isEmployerContribution = false) =>
+        _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, IsEmployerContribution = isEmployerContribution });
 
     // Builds the double-entry GL lines for a payroll run.
     // Uses Source-based routing so new pack codes (GOSI-ANN-EE, GPSSA-EE, etc.) map correctly
@@ -1645,7 +1661,8 @@ public class PayrollController : ControllerBase
     private static (List<FinanceGlEntry> Lines, decimal TotalDebits, decimal TotalCredits) BuildPayrollGlEntries(
         Guid tenantId, Guid runId, string period,
         List<PayrollEarning> earnings, List<PayrollDeduction> deductions,
-        decimal totalNetSalary, Guid? postedBy, string postedByName)
+        decimal totalNetSalary, Guid? postedBy, string postedByName,
+        string currency = "SAR")  // default SAR since this is primarily a Saudi HRM
     {
         var lines = new List<FinanceGlEntry>();
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -1668,7 +1685,7 @@ public class PayrollController : ControllerBase
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = "PayrollLock",
                 DebitAccount  = $"{acct} - {acctName}", CreditAccount = string.Empty,
-                Amount = grp.Sum(e => e.Amount), Currency = "USD",
+                Amount = grp.Sum(e => e.Amount), Currency = currency,
                 EntryDate = today, Period = period,
                 Description = $"Payroll earning: {acctName}",
                 PostedBy = postedBy, PostedByName = postedByName,
@@ -1702,7 +1719,7 @@ public class PayrollController : ControllerBase
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = "PayrollLock",
                 DebitAccount = string.Empty, CreditAccount = $"{acct} - {acctName}",
-                Amount = grp.Sum(d => d.Amount), Currency = "USD",
+                Amount = grp.Sum(d => d.Amount), Currency = currency,
                 EntryDate = today, Period = period,
                 Description = $"Payroll deduction: {acctName}",
                 PostedBy = postedBy, PostedByName = postedByName,
@@ -1716,7 +1733,7 @@ public class PayrollController : ControllerBase
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = "PayrollLock",
                 DebitAccount = "5101 - Employer Social Insurance Expense", CreditAccount = string.Empty,
-                Amount = employerStatutoryTotal, Currency = "USD",
+                Amount = employerStatutoryTotal, Currency = currency,
                 EntryDate = today, Period = period,
                 Description = "Employer statutory contributions (social insurance)",
                 PostedBy = postedBy, PostedByName = postedByName,
@@ -1728,7 +1745,7 @@ public class PayrollController : ControllerBase
             TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
             SourceEntityRef = period, EventType = "PayrollLock",
             DebitAccount = string.Empty, CreditAccount = "2100 - Salaries Payable",
-            Amount = totalNetSalary, Currency = "USD",
+            Amount = totalNetSalary, Currency = currency,
             EntryDate = today, Period = period,
             Description = "Net salaries payable",
             PostedBy = postedBy, PostedByName = postedByName,
@@ -2665,5 +2682,5 @@ public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency
 public record WpsStatusRequest(string Status, string? Notes);
 public record PayrollGroupRequest(string Code, string Name, string? Currency);
 public record ImportSalaryStructuresRequest(string CsvContent);
-public record EosbCalculationRequest(int EmployeeId, DateTime? AsOfDate);
+public record EosbCalculationRequest(int EmployeeId, DateTime? AsOfDate, string? TerminationReason = null);
 public record FinalSettlementRequest(int EmployeeId, DateOnly LastWorkingDay, int NoticePeriodDaysShort = 0);

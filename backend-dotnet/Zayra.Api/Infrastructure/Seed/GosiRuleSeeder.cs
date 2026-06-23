@@ -22,6 +22,8 @@ public static class GosiRuleSeeder
 {
     private static readonly DateOnly EffectiveFrom = new(2016, 6, 1);
 
+    private const int GosiRateStalenessThresholdMonths = 18;
+
     public static async Task SeedDefaultsAsync(ZayraDbContext db, ILogger logger)
     {
         // IgnoreQueryFilters is intentional: seeder runs at startup outside any request context
@@ -31,13 +33,47 @@ public static class GosiRuleSeeder
             .IgnoreQueryFilters()
             .AnyAsync(r => r.TenantId == Guid.Empty);
 
-        if (hasDefaults) return;
+        if (!hasDefaults)
+        {
+            var rules = BuildDefaultRules();
+            db.GosiContributionRules.AddRange(rules);
+            await db.SaveChangesAsync();
+            logger.LogInformation("GOSI: seeded {Count} default contribution rules.", rules.Count);
+        }
 
-        var rules = BuildDefaultRules();
-        db.GosiContributionRules.AddRange(rules);
-        await db.SaveChangesAsync();
+        // ── GOSI-RATE-AUDIT ───────────────────────────────────────────────────
+        // Regardless of whether rules were just seeded, check how old the most recent
+        // system-default GOSI rule effective date is. Emit a startup WARNING if stale.
+        // IgnoreQueryFilters is intentional: GOSI system-default rules have TenantId == Guid.Empty
+        // which is excluded by the per-tenant global filter. The seeder runs at startup outside
+        // any request context (no IHttpContextAccessor), so bypassing the filter is correct here.
+        var mostRecentRule = await db.GosiContributionRules
+            .IgnoreQueryFilters()
+            .Where(r => r.TenantId == Guid.Empty && r.CountryCode == "SA")
+            .OrderByDescending(r => r.EffectiveFrom)
+            .FirstOrDefaultAsync();
 
-        logger.LogInformation("GOSI: seeded {Count} default contribution rules.", rules.Count);
+        if (mostRecentRule is not null)
+        {
+            var effectiveDate = mostRecentRule.EffectiveFrom;
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var ageMonths = (today.Year - effectiveDate.Year) * 12 + (today.Month - effectiveDate.Month);
+
+            if (ageMonths >= GosiRateStalenessThresholdMonths)
+            {
+                var effectiveDateStr = effectiveDate.ToString("yyyy-MM-dd");
+                logger.LogWarning(
+                    "[GOSI-RATE-AUDIT] Default GOSI contribution rules effective from {Date} — older than {Threshold} months. " +
+                    "Saudi GOSI rates require annual review against current GOSI circulars. " +
+                    "ACTION REQUIRED: Obtain written sign-off from a Saudi-qualified payroll compliance officer " +
+                    "before seeding or processing payroll for any real tenant. " +
+                    "The current system default rates have NOT been independently verified against GOSI " +
+                    "circulars issued after {Date}. See GosiRuleSeeder.cs for rate values.",
+                    effectiveDateStr,
+                    GosiRateStalenessThresholdMonths,
+                    effectiveDateStr);
+            }
+        }
     }
 
     private static List<GosiContributionRule> BuildDefaultRules()

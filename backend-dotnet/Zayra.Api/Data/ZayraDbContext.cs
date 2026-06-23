@@ -1053,7 +1053,7 @@ public class ZayraDbContext : DbContext
         modelBuilder.Entity<OvertimeRequest>(entity => { entity.ToTable("overtime_requests"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.WorkDate }); entity.HasIndex(x => new { x.TenantId, x.Status }); });
         modelBuilder.Entity<OvertimeApproval>(entity => { entity.ToTable("overtime_approvals"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }); });
         modelBuilder.Entity<OvertimeCalculation>(entity => { entity.ToTable("overtime_calculations"); entity.HasKey(x => x.Id); entity.Property(x => x.ApprovedHours).HasPrecision(8,2); entity.Property(x => x.HourlyRate).HasPrecision(12,2); entity.Property(x => x.Multiplier).HasPrecision(6,3); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.CalculationJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }); });
-        modelBuilder.Entity<OvertimePayrollImpact>(entity => { entity.ToTable("overtime_payroll_impacts"); entity.HasKey(x => x.Id); entity.Property(x => x.Hours).HasPrecision(8,2); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status }); });
+        modelBuilder.Entity<OvertimePayrollImpact>(entity => { entity.ToTable("overtime_payroll_impacts"); entity.HasKey(x => x.Id); entity.Property(x => x.Hours).HasPrecision(8,2); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.ApprovedMultiplier).HasPrecision(4,2).HasDefaultValue(0m); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status }); });
         modelBuilder.Entity<OvertimeAdjustment>(entity => { entity.ToTable("overtime_adjustments"); entity.HasKey(x => x.Id); entity.Property(x => x.HoursAdjustment).HasPrecision(8,2); entity.Property(x => x.AmountAdjustment).HasPrecision(14,2); });
         modelBuilder.Entity<OvertimeBudget>(entity => { entity.ToTable("overtime_budgets"); entity.HasKey(x => x.Id); entity.Property(x => x.BudgetAmount).HasPrecision(14,2); entity.Property(x => x.ConsumedAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }); });
         modelBuilder.Entity<OvertimeCompOffConversion>(entity => { entity.ToTable("overtime_comp_off_conversions"); entity.HasKey(x => x.Id); entity.Property(x => x.OvertimeHours).HasPrecision(8,2); entity.Property(x => x.CompOffDays).HasPrecision(6,2); });
@@ -1066,7 +1066,7 @@ public class ZayraDbContext : DbContext
         modelBuilder.Entity<PayrollCycle>(entity => { entity.ToTable("payroll_cycles"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }); });
         modelBuilder.Entity<PayrollRunEmployee>(entity => { entity.ToTable("payroll_run_employees"); entity.HasKey(x => x.Id); entity.Property(x => x.GrossEarnings).HasPrecision(14,2); entity.Property(x => x.TotalDeductions).HasPrecision(14,2); entity.Property(x => x.NetPay).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
         modelBuilder.Entity<PayrollEarning>(entity => { entity.ToTable("payroll_earnings"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
-        modelBuilder.Entity<PayrollDeduction>(entity => { entity.ToTable("payroll_deductions"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
+        modelBuilder.Entity<PayrollDeduction>(entity => { entity.ToTable("payroll_deductions"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.IsEmployerContribution).HasDefaultValue(false); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
         modelBuilder.Entity<PayrollAllowance>(entity => { entity.ToTable("payroll_allowances"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); });
         modelBuilder.Entity<PayrollAdjustment>(entity => { entity.ToTable("payroll_adjustments"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
         modelBuilder.Entity<PayrollApproval>(entity => { entity.ToTable("payroll_approvals"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId }); });
@@ -1103,10 +1103,12 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.TotalGrossSalary).HasPrecision(14, 2);
             entity.Property(x => x.TotalDeductions).HasPrecision(14, 2);
             entity.Property(x => x.TotalNetSalary).HasPrecision(14, 2);
+            entity.Property(x => x.Status).HasMaxLength(40);
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Year, x.Month });
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }).IsUnique()
-                .HasDatabaseName("IX_payroll_runs_tenant_id_year_month");
+                .HasDatabaseName("IX_payroll_runs_tenant_id_year_month")
+                .HasFilter("\"status\" != 'Voided'");
         });
 
         modelBuilder.Entity<PayrollSlip>(entity =>
@@ -1120,6 +1122,11 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.GrossSalary).HasPrecision(12, 2);
             entity.Property(x => x.Deductions).HasPrecision(12, 2);
             entity.Property(x => x.NetSalary).HasPrecision(12, 2);
+            entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.YtdGross).HasPrecision(14, 2);
+            entity.Property(x => x.YtdDeductions).HasPrecision(14, 2);
+            entity.Property(x => x.YtdNet).HasPrecision(14, 2);
+            entity.Property(x => x.LoanDeductions).HasPrecision(14, 2);
             entity.HasIndex(x => new { x.TenantId, x.RunId, x.EmployeeId }).IsUnique();
         });
 

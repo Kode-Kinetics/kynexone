@@ -34,7 +34,7 @@ public class ScopeFilteringTests
 
     private static EmployeeSelfServiceController EssController(ZayraDbContext db, Guid tenantId, int employeeId)
     {
-        var controller = new EmployeeSelfServiceController(db, new StubLetterService());
+        var controller = new EmployeeSelfServiceController(db, new StubLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1));
         controller.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext

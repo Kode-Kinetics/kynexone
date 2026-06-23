@@ -173,6 +173,13 @@ public class OvertimePayrollImpact : ITenantOwned
     public string Status { get; set; } = "PendingPayroll";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? ProcessedAtUtc { get; set; }
+    /// <summary>
+    /// The multiplier approved at the time the overtime request was approved.
+    /// Set from OvertimeMultiplier.Multiplier based on the request's DayCategory
+    /// (e.g. 1.5 for regular OT, 2.0 for holiday/rest-day per KSA Art.107).
+    /// 0.0 means unset — payroll will fall back to the statutory standard multiplier.
+    /// </summary>
+    public decimal ApprovedMultiplier { get; set; } = 0m;
 }
 
 public class OvertimeAdjustment : ITenantOwned
@@ -331,6 +338,12 @@ public class PayrollDeduction : ITenantOwned
     public string ComponentName { get; set; } = string.Empty;
     public decimal Amount { get; set; }
     public string Source { get; set; } = "Manual";
+    /// <summary>
+    /// True for employer-side statutory contributions (e.g. GOSI-ANN-ER, GOSI-OH-ER).
+    /// These do NOT reduce employee net pay — they are employer cost lines tracked separately
+    /// for GL routing and compliance reporting.
+    /// </summary>
+    public bool IsEmployerContribution { get; set; }
 }
 
 public class PayrollAllowance : ITenantOwned

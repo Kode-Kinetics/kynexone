@@ -202,7 +202,8 @@ public sealed class SaudiComplianceDashboardService
                 DateTime.DaysInMonth(lastRun.Year, lastRun.Month));
 
             var deductions = await _db.PayrollDeductions.AsNoTracking()
-                .Where(d => d.TenantId == tenantId && d.PayrollRunId == lastRun.Id && d.Source == "GOSI")
+                .Where(d => d.TenantId == tenantId && d.PayrollRunId == lastRun.Id
+                            && d.Source == "Statutory" && !d.IsEmployerContribution)
                 .ToListAsync(ct);
 
             var empIds = deductions.Select(d => d.EmployeeId).Distinct().ToList();
@@ -218,7 +219,7 @@ public sealed class SaudiComplianceDashboardService
                     emp.Nationality, sal?.BasicSalary ?? 0m, rules, lastRunDate, tenantId);
                 var actual = deductions
                     .Where(d => d.EmployeeId == empId
-                             && (d.ComponentCode.EndsWith("_EMP") || d.ComponentCode == "GOSI_EMPLOYEE"))
+                             && d.ComponentCode.EndsWith("-EE"))
                     .Sum(d => d.Amount);
                 if (Math.Abs(actual - expected.EmployeeTotal) > 0.01m)
                     varianceCount++;

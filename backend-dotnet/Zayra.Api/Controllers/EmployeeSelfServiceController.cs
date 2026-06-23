@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
 
@@ -24,11 +25,13 @@ public class EmployeeSelfServiceController : ControllerBase
 
     private readonly ZayraDbContext _db;
     private readonly ILetterService _letters;
+    private readonly PdfRenderGate _pdfGate;
 
-    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters)
+    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate)
     {
         _letters = letters;
         _db = db;
+        _pdfGate = pdfGate;
     }
 
     [HttpGet("dashboard")]
@@ -267,7 +270,9 @@ public class EmployeeSelfServiceController : ControllerBase
             CompanyName: tenant?.Name ?? "KynexOne Technologies"
         );
 
-        var pdfBytes = await _letters.GeneratePayslipPdfAsync(data, cancellationToken);
+        byte[] pdfBytes;
+        try { pdfBytes = await _pdfGate.RenderAsync(() => _letters.GeneratePayslipPdfAsync(data, cancellationToken), cancellationToken); }
+        catch (Exception ex) { return StatusCode(500, new { message = "PDF generation failed.", detail = ex.Message }); }
         _db.EmployeePayslipAccessLogs.Add(new EmployeePayslipAccessLog { TenantId = tenantId, EmployeeId = employeeId, PayslipId = id, Action = "Download", UserId = GetUserId() });
         await _db.SaveChangesAsync(cancellationToken);
         return File(pdfBytes, "application/pdf", $"payslip-{slip.EmployeeCode}-{run?.Year}{run?.Month:00}.pdf");

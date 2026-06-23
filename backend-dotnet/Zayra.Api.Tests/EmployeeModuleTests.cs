@@ -213,6 +213,8 @@ file sealed class FakeDocumentStorage : Zayra.Api.Infrastructure.Documents.IDocu
 {
     public Task<Zayra.Api.Infrastructure.Documents.StoredDocument> SaveAsync(Guid tenantId, IFormFile file, CancellationToken cancellationToken) => Task.FromResult(new Zayra.Api.Infrastructure.Documents.StoredDocument(file.FileName, file.ContentType, "storage/documents/test", "/tmp/test"));
     public string ResolvePath(string storageUrl) => "/tmp/test";
+    public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) =>
+        Task.FromResult(Array.Empty<byte>());
 }
 
 file sealed class FakeHijriDateService : Zayra.Api.Infrastructure.Localization.IHijriDateService

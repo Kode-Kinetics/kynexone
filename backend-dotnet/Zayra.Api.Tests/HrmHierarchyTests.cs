@@ -467,6 +467,8 @@ file sealed class FakeDocStorage : IDocumentStorage
     public Task<StoredDocument> SaveAsync(Guid tenantId, IFormFile file, CancellationToken ct) =>
         Task.FromResult(new StoredDocument(file.FileName, file.ContentType, "storage/test", "/tmp/test"));
     public string ResolvePath(string storageUrl) => "/tmp/test";
+    public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) =>
+        Task.FromResult(Array.Empty<byte>());
 }
 
 file sealed class FakeEmailSvc : IEmailService

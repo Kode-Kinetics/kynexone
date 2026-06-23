@@ -25,6 +25,7 @@ namespace Zayra.Api.Infrastructure.Payroll;
 public static class PayrollValidationEngine
 {
     private const decimal GosiCoveredWageCeiling = 45_000m;
+    private const int GosiRateStalenessThresholdMonths = 18;
 
     public static List<PayrollValidationResult> Run(PayrollValidationContext ctx)
     {
@@ -64,6 +65,21 @@ public static class PayrollValidationEngine
         var isKsa = string.Equals(ctx.Company?.CountryCode, "SAU", StringComparison.OrdinalIgnoreCase)
                  || string.Equals(ctx.Company?.CountryCode, "SA",  StringComparison.OrdinalIgnoreCase);
         var companyCurrency = ctx.Company?.DefaultCurrency ?? "SAR";
+
+        // ── WARN_GOSI_RATES_REQUIRE_SIGNOFF ─────────────────────────────────
+        // Fire at the start of every validation for KSA runs when the GOSI rate
+        // effective date is older than the staleness threshold.
+        if (isKsa && ctx.GosiRatesEffectiveFrom.HasValue)
+        {
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var ageMonths = (today.Year - ctx.GosiRatesEffectiveFrom.Value.Year) * 12
+                          + (today.Month - ctx.GosiRatesEffectiveFrom.Value.Month);
+            if (ageMonths >= GosiRateStalenessThresholdMonths)
+                Warn("WARN_GOSI_RATES_REQUIRE_SIGNOFF",
+                    $"GOSI contribution rates in use (effective from {ctx.GosiRatesEffectiveFrom.Value:yyyy-MM-dd}) have not been confirmed against " +
+                    $"current GOSI circulars. Ensure rates are reviewed by a Saudi compliance officer before " +
+                    $"locking this payroll run.");
+        }
 
         // ── Indexes ───────────────────────────────────────────────────────────
         var salaryByEmp  = ctx.SalaryAssignments.GroupBy(x => x.EmployeeId).ToDictionary(g => g.Key);
@@ -315,4 +331,11 @@ public sealed record PayrollValidationContext(
     /// </summary>
     public IReadOnlySet<int> AttendanceProcessedEmployeeIds { get; init; } =
         new HashSet<int>();
+
+    /// <summary>
+    /// The EffectiveFrom date of the most recent system-default GOSI rate rules.
+    /// If set and older than 18 months, the engine emits WARN_GOSI_RATES_REQUIRE_SIGNOFF.
+    /// Populated by the Process/Validate endpoints from GosiContributionRule data.
+    /// </summary>
+    public DateOnly? GosiRatesEffectiveFrom { get; init; }
 }
