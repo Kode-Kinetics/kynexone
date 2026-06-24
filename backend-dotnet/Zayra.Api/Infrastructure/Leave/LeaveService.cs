@@ -381,6 +381,15 @@ public class LeaveService : ILeaveService
         await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "Approved",
             previousStatus, "Approved", notes ?? string.Empty, approverName, ct);
 
+        // Notify the employee in their self-service feed (EmployeeNotification was a dead
+        // table — read by ESS but never written, so employees never saw any updates).
+        _db.EmployeeNotifications.Add(new EmployeeNotification
+        {
+            TenantId = tenantId, EmployeeId = request.EmployeeId, NotificationType = "Success",
+            Title = "Leave approved",
+            Body = $"Your {request.LeaveTypeName} request ({request.StartDate:dd MMM} – {request.EndDate:dd MMM}) was approved by {approverName}.",
+        });
+
         await _db.SaveChangesAsync(ct);
         return request;
     }
@@ -441,6 +450,13 @@ public class LeaveService : ILeaveService
 
         await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "Rejected",
             previousStatus, "Rejected", reason, approverName, ct);
+
+        _db.EmployeeNotifications.Add(new EmployeeNotification
+        {
+            TenantId = tenantId, EmployeeId = request.EmployeeId, NotificationType = "Warning",
+            Title = "Leave rejected",
+            Body = $"Your {request.LeaveTypeName} request ({request.StartDate:dd MMM} – {request.EndDate:dd MMM}) was rejected: {reason}",
+        });
 
         await _db.SaveChangesAsync(ct);
         return request;

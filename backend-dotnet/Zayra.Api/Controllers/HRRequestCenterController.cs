@@ -238,6 +238,14 @@ public class HRRequestCenterController : ControllerBase
         var ticket = await _db.HRRequests.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (ticket is not null && ticket.Status == "Open")
             ticket.Status = "In Progress";
+        // Notify the employee in their self-service feed that HR replied.
+        if (ticket is not null)
+            _db.EmployeeNotifications.Add(new EmployeeNotification
+            {
+                TenantId = tenantId.Value, EmployeeId = ticket.EmployeeId, NotificationType = "Info",
+                Title = "HR replied to your request",
+                Body = $"HR responded to \"{ticket.Subject}\". Open it to read the reply.",
+            });
         await _db.SaveChangesAsync(ct);
         return Created($"/api/hr-requests/{id}/comments/{comment.Id}", comment);
     }
