@@ -971,7 +971,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
             {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{error}</p>}
             <div className="grid grid-cols-2 gap-3">
               <Field label="Year" info="The calendar year this payroll run covers, e.g. 2026." infoKey="payroll.run_year">
-                <input type="number" aria-label="Year" className={inp} value={createYear} onChange={e => setCreateYear(Number(e.target.value))} min={2020} max={2035} />
+                <input type="number" aria-label="Year" className={inp} value={createYear} onChange={e => setCreateYear(Number(e.target.value))} min={2020} max={new Date().getFullYear() + 1} />
               </Field>
               <Field label="Month" info="The salary month to process. One run per month — duplicates are rejected." infoKey="payroll.run_month">
                 <select aria-label="Month" className={sel} value={createMonth} onChange={e => setCreateMonth(Number(e.target.value))}>

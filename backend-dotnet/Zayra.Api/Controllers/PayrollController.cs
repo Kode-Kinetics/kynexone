@@ -110,8 +110,11 @@ public class PayrollController : ControllerBase
         var tenantId = GetTenantId();
         if (req.Month < 1 || req.Month > 12)
             return BadRequest(new { message = "Month must be between 1 and 12." });
-        if (req.Year < 2000 || req.Year > 2100)
-            return BadRequest(new { message = "Year is out of range." });
+        // Reject far-future/typo years (e.g. "2099"). Payroll can be run at most one year
+        // ahead of the current year; anything beyond that is almost certainly a data-entry slip.
+        var currentYear = DateTime.UtcNow.Year;
+        if (req.Year < 2000 || req.Year > currentYear + 1)
+            return BadRequest(new { message = $"Year must be between 2000 and {currentYear + 1}." });
         if (req.CompanyId.HasValue && !await _db.Companies.AnyAsync(c => c.TenantId == tenantId && c.Id == req.CompanyId.Value && c.IsActive, cancellationToken))
             return BadRequest(new { message = "Company not found or not active." });
         // Guard at the period level — one run per (tenant, year, month) regardless of company_id.

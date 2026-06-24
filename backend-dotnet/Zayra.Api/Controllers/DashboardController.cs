@@ -239,8 +239,12 @@ public class DashboardController : ControllerBase
                 a.CreatedAtUtc))
             .ToListAsync(ct);
 
+        // Headline payroll period = latest run up to and including the current month.
+        // Guards against a stray future-dated run (e.g. a "2099" typo in the year field)
+        // hijacking the dashboard and showing "Jan 2099".
         var latestRun = await _db.PayrollRuns
-            .Where(p => p.TenantId == tenantId)
+            .Where(p => p.TenantId == tenantId
+                && (p.Year < today.Year || (p.Year == today.Year && p.Month <= today.Month)))
             .OrderByDescending(p => p.Year).ThenByDescending(p => p.Month)
             .FirstOrDefaultAsync(ct);
 
