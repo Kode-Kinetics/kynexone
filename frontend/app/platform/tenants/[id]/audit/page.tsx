@@ -36,12 +36,12 @@ export default function TenantAuditPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link href={`/platform/tenants/${id}`} className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-white border border-white/10 rounded-lg transition-colors shrink-0">
+          <Link href={`/platform/tenants/${id}`} title="Back to tenant" aria-label="Back to tenant" className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-white border border-white/10 rounded-lg transition-colors shrink-0">
             <ArrowLeft className="h-4 w-4" />
           </Link>
           <h1 className="text-lg font-bold text-white">Tenant Audit Log</h1>
         </div>
-        <button type="button" onClick={load} disabled={loading}
+        <button type="button" onClick={load} disabled={loading} title="Refresh" aria-label="Refresh"
           className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-white border border-white/10 rounded-lg transition-colors disabled:opacity-40">
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>

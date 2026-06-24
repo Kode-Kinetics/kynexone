@@ -134,7 +134,7 @@ export default function AuditLogsPage() {
           <h1 className="text-lg font-bold text-white">Platform Audit Log</h1>
           <p className="text-xs text-slate-500 mt-0.5">All platform-level events across all tenants</p>
         </div>
-        <button type="button" onClick={() => load(page, filters)} disabled={loading}
+        <button type="button" onClick={() => load(page, filters)} disabled={loading} title="Refresh" aria-label="Refresh"
           className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-white border border-white/10 rounded-lg transition-colors disabled:opacity-40">
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>

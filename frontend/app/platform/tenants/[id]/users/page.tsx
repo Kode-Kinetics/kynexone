@@ -59,7 +59,7 @@ export default function TenantUsersPage() {
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('platform_access_token') : null;
     if (!token) { router.replace('/platform/login'); return; }
-    Promise.all([load(), platformApi.listTenantRoles(id).then(setRoles).catch(() => {})]);
+    Promise.all([load(), platformApi.listTenantRoles(id).then(setRoles).catch(e => console.warn('Failed to load tenant roles for the role dropdown:', e))]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
