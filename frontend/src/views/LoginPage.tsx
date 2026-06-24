@@ -28,6 +28,13 @@ const WORKFORCE_SIGNALS = [
   'Compliance',
 ];
 
+const WORKFLOW_STEPS = [
+  { title: 'Clock in', detail: 'Attendance and location-aware entry' },
+  { title: 'Review', detail: 'Approvals and exception handling' },
+  { title: 'Run payroll', detail: 'Payroll cycles and validation' },
+  { title: 'Close out', detail: 'Audit trail and compliance' },
+];
+
 type Mode = 'login' | 'forgot' | 'reset' | 'mfa';
 
 export function LoginPage() {
@@ -156,6 +163,10 @@ export function LoginPage() {
           0%, 100% { opacity: 0.28; transform: scale(1); }
           50% { opacity: 0.52; transform: scale(1.06); }
         }
+        @keyframes kx-line {
+          0%, 100% { transform: scaleX(0.85); opacity: 0.55; }
+          50% { transform: scaleX(1); opacity: 1; }
+        }
         .kx-float { animation: kx-float 8s ease-in-out infinite; }
         .kx-drift { animation: kx-drift 10s ease-in-out infinite; }
         .kx-panel-in { animation: kx-panel-in 0.65s ease-out both; }
@@ -163,6 +174,7 @@ export function LoginPage() {
         .kx-orbit { animation: kx-orbit 14s linear infinite; }
         .kx-rise { animation: kx-rise 2.8s ease-in-out infinite; transform-origin: bottom; }
         .kx-glow { animation: kx-glow 5.5s ease-in-out infinite; }
+        .kx-line { animation: kx-line 5.5s ease-in-out infinite; transform-origin: center; }
       `}</style>
 
       <div className="relative min-h-screen overflow-hidden bg-[#eef2ff] text-slate-900 dark:bg-[#040814] dark:text-white">
@@ -179,8 +191,8 @@ export function LoginPage() {
             <div className="pointer-events-none absolute -left-12 bottom-20 h-44 w-44 rounded-full bg-blue-500/10 blur-3xl kx-glow" />
 
             <div className="relative z-10 flex items-center gap-3">
-              <div className="rounded-[22px] border border-white/12 bg-white/[0.07] px-4 py-3 shadow-[0_18px_45px_rgba(0,0,0,0.26)] backdrop-blur-xl">
-                <Logo size="lg" theme="dark" />
+              <div className="rounded-[24px] border border-white/12 bg-white/[0.09] px-5 py-4 shadow-[0_20px_52px_rgba(0,0,0,0.30)] backdrop-blur-xl">
+                <Logo size="xl" theme="dark" />
               </div>
               <div className="h-10 w-px bg-white/[0.12]" />
               <div>
@@ -200,11 +212,42 @@ export function LoginPage() {
               </div>
               <div>
                 <h1 className="max-w-[560px] text-[52px] font-black leading-[1.02] tracking-tight text-white xl:text-[62px]">
-                  One secure doorway into workforce operations.
+                  Where workforce operations come together.
                 </h1>
                 <p className="mt-4 max-w-[540px] text-[16px] leading-relaxed text-white/68">
-                  Access attendance, payroll, approvals, and compliance from a tenant-isolated workspace with production-grade controls.
+                  A refined entry point for attendance, leave, payroll, approvals, and compliance - all tenant-isolated, auditable, and ready for real work.
                 </p>
+              </div>
+
+              <div className="rounded-[28px] border border-white/10 bg-white/[0.05] p-4 shadow-[0_18px_60px_rgba(3,10,23,0.24)] backdrop-blur-2xl">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/38">Operational flow</p>
+                    <p className="mt-1 text-sm font-semibold text-white/86">From clock-in to closeout</p>
+                  </div>
+                  <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/55 sm:flex">
+                    <div className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    Active
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-4">
+                  {WORKFLOW_STEPS.map((step, index) => (
+                    <div
+                      key={step.title}
+                      className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3"
+                      style={{ animationDelay: `${index * 0.12}s` }}
+                    >
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="h-2.5 w-2.5 rounded-full bg-gradient-to-br from-cyan-300 to-blue-500" />
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/74">
+                          {step.title}
+                        </span>
+                      </div>
+                      <p className="text-[12px] leading-snug text-white/54">{step.detail}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="kx-line mt-4 h-px w-full bg-[linear-gradient(90deg,transparent,rgba(94,235,255,0.9),rgba(47,107,255,0.95),transparent)]" />
               </div>
 
               <div className="grid gap-3 sm:grid-cols-3">
@@ -255,7 +298,7 @@ export function LoginPage() {
               </div>
             </div>
 
-            <p className="relative z-10 text-[11px] text-white/38">
+            <p className="relative z-10 text-[11px] text-white/44">
               A <span className="font-semibold text-white/58">Kode Kinetics</span> product · secure access only
             </p>
           </section>
@@ -271,7 +314,7 @@ export function LoginPage() {
 
                 <div className="relative">
                   <div className="mb-6 flex items-center justify-between gap-3">
-                    <div className="inline-flex items-center gap-2 rounded-full border border-sapphire/15 bg-sapphire/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-sapphire dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
+                    <div className="inline-flex items-center gap-2 rounded-full border border-blue-500/15 bg-blue-500/8 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                       KynexOne secure access
                     </div>
@@ -281,10 +324,10 @@ export function LoginPage() {
                   </div>
 
                   <h2 className="mb-2 text-[34px] font-black tracking-tight text-slate-950 dark:text-white sm:text-[38px]">
-                    Sign in to your workspace
+                    Access your workspace
                   </h2>
                   <p className="mb-8 max-w-[340px] text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
-                    Enter your work email, password, and workspace slug to reach your tenant-controlled workspace.
+                    Use your work email, password, and workspace slug to enter the tenant-bound workspace.
                   </p>
 
                   {mode === 'login' && (
@@ -318,7 +361,7 @@ export function LoginPage() {
                         labelRight={tenantLocked
                           ? <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"><Lock className="h-3 w-3" />Auto-detected</span>
                           : tenantSlug ? <span className="text-[11px] text-slate-400">Pre-filled</span> : null}
-                        hint="Your company's unique workspace identifier"
+                        hint="Your company or tenant workspace identifier"
                       >
                         <input id="li-ws" type="text" value={tenantSlug} onChange={e => setTenantSlug(e.target.value)}
                           className="auth-input" placeholder="your-workspace" autoComplete="organization" required />

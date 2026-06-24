@@ -2,12 +2,12 @@
 
 interface LogoProps {
   collapsed?: boolean;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
   theme?: 'light' | 'dark';
 }
 
 export function Logo({ collapsed, size = 'md', theme = 'light' }: LogoProps) {
-  const dim = size === 'lg' ? 44 : size === 'sm' ? 28 : 36;
+  const dim = size === 'xl' ? 52 : size === 'lg' ? 44 : size === 'sm' ? 28 : 36;
   const inverse = theme === 'dark';
 
   return (
