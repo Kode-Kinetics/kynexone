@@ -27,6 +27,7 @@ import { InfoTip } from '../components/InfoTip';
 import client from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
+import { useTenantSettings } from '../contexts/TenantSettingsContext';
 
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
@@ -1504,6 +1505,7 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const [encashPickedEmp, setEncashPickedEmp] = useState<SelectedEmployee | null>(null);
   const [form, setForm] = useState({ employeeId: '', employeeName: '', leaveTypeId: '', year: new Date().getFullYear(), daysToEncash: '', amountPerDay: '', reason: '' });
   const [saving, setSaving] = useState(false);
+  const { currencyCode } = useTenantSettings();
   const set = (k: keyof typeof form, v: string | number) => setForm(f => ({ ...f, [k]: v }));
 
   useEffect(() => {
@@ -1541,7 +1543,7 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
               <div>
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.employeeName}</p>
                 <p className="text-xs text-slate-400">{r.leaveTypeName} · {r.year} · {r.daysToEncash} days</p>
-                <p className="mt-1 text-sm font-bold text-emerald-600 dark:text-emerald-400">AED {fmtAmt(r.totalAmount)}</p>
+                <p className="mt-1 text-sm font-bold text-emerald-600 dark:text-emerald-400">{currencyCode} {fmtAmt(r.totalAmount)}</p>
               </div>
               <div className="flex items-center gap-3">
                 <StatusBadge status={r.status} />
@@ -1569,11 +1571,11 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
             <div className="grid grid-cols-3 gap-3">
               <Field label="Year"><input type="number" className={inp} value={form.year} onChange={e => set('year', Number(e.target.value))} /></Field>
               <Field label="Days to Encash *"><input type="number" step="0.5" className={inp} value={form.daysToEncash} onChange={e => set('daysToEncash', e.target.value)} /></Field>
-              <Field label="Daily Rate (AED) *"><input type="number" step="0.01" className={inp} value={form.amountPerDay} onChange={e => set('amountPerDay', e.target.value)} /></Field>
+              <Field label={`Daily Rate (${currencyCode}) *`}><input type="number" step="0.01" aria-label={`Daily rate in ${currencyCode}`} className={inp} value={form.amountPerDay} onChange={e => set('amountPerDay', e.target.value)} /></Field>
             </div>
             {form.daysToEncash && form.amountPerDay && (
               <div className="rounded-lg bg-emerald-50 px-4 py-3 dark:bg-emerald-500/10">
-                <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">Estimated: AED {fmtAmt(Number(form.daysToEncash) * Number(form.amountPerDay))}</p>
+                <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">Estimated: {currencyCode} {fmtAmt(Number(form.daysToEncash) * Number(form.amountPerDay))}</p>
               </div>
             )}
             <Field label="Reason"><textarea className={inp} rows={2} value={form.reason} onChange={e => set('reason', e.target.value)} /></Field>

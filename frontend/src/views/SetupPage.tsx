@@ -50,6 +50,7 @@ import type {
 import { Modal } from '../components/Modal';
 import { useAutoTranslate } from '../hooks/useAutoTranslate';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
+import { useTenantSettings } from '../contexts/TenantSettingsContext';
 
 type Tab = 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
@@ -87,6 +88,7 @@ function InfoRow({ label, value, detail }: { label: string; value: string; detai
 // ─── Companies ───────────────────────────────────────────────────────────────
 
 function CompaniesTab() {
+  const { currencyCode } = useTenantSettings();
   const [items, setItems] = useState<CompanyDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -282,7 +284,7 @@ function CompaniesTab() {
             <input type="text" value={form.taxNumber ?? ''} onChange={(e) => f('taxNumber', e.target.value)} className="input w-full" />
           </FormField>
           <FormField label="Default Currency" required>
-            <select value={form.defaultCurrency} onChange={(e) => f('defaultCurrency', e.target.value)} className="select w-full">
+            <select value={form.defaultCurrency || currencyCode} onChange={(e) => f('defaultCurrency', e.target.value)} className="select w-full">
               {['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR'].map((c) => <option key={c}>{c}</option>)}
             </select>
           </FormField>
@@ -1954,7 +1956,7 @@ function FormError({ error }: { error: string }) {
 const emptyCompany = (): CompanyRequest => ({
   legalNameEn: '', legalNameAr: '', tradeName: '', countryCode: '', jurisdiction: '',
   registrationNumber: '', taxNumber: '', wpsEmployerId: '', gosiEmployerId: '',
-  qiwaEstablishmentId: '', defaultCurrency: 'USD', isActive: true,
+  qiwaEstablishmentId: '', defaultCurrency: '', isActive: true,
 });
 
 const emptyBranch = (companyId: string): BranchRequest => ({

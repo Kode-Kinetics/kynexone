@@ -125,6 +125,7 @@ const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: s
 function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   const [summary, setSummary] = useState<OvertimeSummary | null>(null);
   const [recent, setRecent] = useState<OvertimeRequest[]>([]);
+  const { currencyCode } = useTenantSettings();
 
   useEffect(() => {
     overtimeApi.summary().then(setSummary).catch(() => {});
@@ -137,7 +138,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         <KpiCard label="Total Requests" value={summary?.totalRequests ?? '—'} icon={FileClock} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
         <KpiCard label="Pending Approval" value={summary?.pendingRequests ?? '—'} icon={Clock3} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
         <KpiCard label="Approved Hours" value={summary?.approvedHours != null ? `${summary.approvedHours}h` : '—'} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-        <KpiCard label="Payroll Amount" value={summary?.payrollAmount != null ? fmtAmt(summary.payrollAmount) : '—'} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+        <KpiCard label="Payroll Amount" value={summary?.payrollAmount != null ? fmtAmt(summary.payrollAmount, currencyCode) : '—'} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -806,6 +807,7 @@ function PayrollReviewTab() {
   const [impacts, setImpacts] = useState<OvertimePayrollImpact[]>([]);
   const [conversions, setConversions] = useState<OvertimeCompOffConversion[]>([]);
   const [loading, setLoading] = useState(true);
+  const { currencyCode } = useTenantSettings();
 
   useEffect(() => {
     Promise.all([
@@ -820,7 +822,7 @@ function PayrollReviewTab() {
     <div className="space-y-6">
       <div className="grid grid-cols-3 gap-4">
         <KpiCard label="Pending Payroll Items" value={impacts.length} icon={WalletCards} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-        <KpiCard label="Total OT Amount" value={fmtAmt(total)} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+        <KpiCard label="Total OT Amount" value={fmtAmt(total, currencyCode)} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
         <KpiCard label="Comp-Off Pending" value={conversions.filter(c => c.status === 'Pending').length} icon={Layers3} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
       </div>
 
@@ -889,6 +891,7 @@ function PayrollReviewTab() {
 
 function ReportsTab() {
   const [summary, setSummary] = useState<OvertimeSummary | null>(null);
+  const { currencyCode } = useTenantSettings();
   const [from, setFrom] = useState(() => {
     const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10);
   });
@@ -918,7 +921,7 @@ function ReportsTab() {
         <p className="mb-3 text-sm font-semibold text-slate-800 dark:text-white">OT Payroll Amount</p>
         {summary ? (
           <p className="text-3xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
-            {fmtAmt(summary.payrollAmount)}
+            {fmtAmt(summary.payrollAmount, currencyCode)}
           </p>
         ) : (
           <p className="text-sm text-slate-400">Run the report to see figures.</p>

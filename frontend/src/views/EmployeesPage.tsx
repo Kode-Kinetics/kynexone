@@ -27,6 +27,7 @@ import { useAutoTranslate } from '../hooks/useAutoTranslate';
 import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
+import { useTenantSettings } from '../contexts/TenantSettingsContext';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'compliance' | 'documents' | 'history' | 'transfers';
@@ -73,7 +74,7 @@ const emptyEmployee = (): EmployeeCreateRequest => ({
     iban: '',
     accountNumber: '',
     paymentMethod: 'BankTransfer',
-    salaryCurrency: 'USD',
+    salaryCurrency: '',
     payrollGroup: '',
     salaryStructureReference: '',
     wpsEligible: true,
@@ -134,6 +135,7 @@ interface EmployeeUsageData {
 
 export function EmployeesPage() {
   const searchParams = useSearchParams();
+  const { currencyCode } = useTenantSettings();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -747,7 +749,7 @@ export function EmployeesPage() {
             <Input label="Account number" value={form.payrollProfile?.accountNumber ?? ''} onChange={(v) => setPayrollField('accountNumber', v)} />
             <Input label="Bank routing / sort code" value={form.payrollProfile?.bankRoutingCode ?? ''} onChange={(v) => setPayrollField('bankRoutingCode', v)} info="Bank branch routing or sort code required for WPS SIF export (UAE: 6-digit CBQ code; KSA: Mudad bank code)." infoKey="employees.bankRoutingCode" />
             <Input label="MOL ID / National labour number" value={form.payrollProfile?.molId ?? ''} onChange={(v) => setPayrollField('molId', v)} info="Ministry of Labour employee registration number — required in CBUAE WPS v2 SIF E1EDL20 segment and Saudi Mudad WPS." infoKey="employees.molId" />
-            <Select label="Salary currency" value={form.payrollProfile?.salaryCurrency ?? 'AED'} onChange={(v) => setPayrollField('salaryCurrency', v)} options={['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR']} />
+            <Select label="Salary currency" value={form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setPayrollField('salaryCurrency', v)} options={['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR']} />
             <Input label="Payroll group" value={form.payrollProfile?.payrollGroup ?? ''} onChange={(v) => setPayrollField('payrollGroup', v)} />
             <Input label="Salary structure reference" value={form.payrollProfile?.salaryStructureReference ?? ''} onChange={(v) => setPayrollField('salaryStructureReference', v)} />
           </Section>

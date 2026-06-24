@@ -207,6 +207,7 @@ function PayrollSetupWizard({ readiness, onNavigate }: { readiness: PayrollReadi
 // ── Company Bird's-Eye Table ───────────────────────────────────────────────────
 
 function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOverview; onDrillDown: (company: PayrollCompanySummary) => void }) {
+  const { currencyCode } = useTenantSettings();
   return (
     <div className="surface overflow-hidden">
       <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
@@ -273,8 +274,8 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
       <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 dark:border-white/5 dark:bg-white/3">
         <div className="flex items-center gap-8 text-xs">
           <span className="text-slate-500 dark:text-slate-400">Group totals:</span>
-          <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll)}</span>
-          <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll)}</span>
+          <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll, currencyCode)}</span>
+          <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll, currencyCode)}</span>
           {overview.totalValidationErrors > 0 && <span className="font-semibold text-rose-600 dark:text-rose-400">{overview.totalValidationErrors} errors</span>}
           {overview.totalPendingApprovals > 0 && <span className="font-semibold text-amber-600 dark:text-amber-400">{overview.totalPendingApprovals} pending approvals</span>}
         </div>
@@ -347,6 +348,7 @@ function AiInsightsPanel() {
 
 function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   const now = new Date();
+  const { currencyCode } = useTenantSettings();
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>('all');
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
@@ -431,8 +433,8 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       {!loading && overview && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <KpiCard label="Active Employees" value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="Gross Payroll" value={overview.totalGrossPayroll > 0 ? fmtAmt(overview.totalGrossPayroll) : '—'} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label="Net Payroll" value={overview.totalNetPayroll > 0 ? fmtAmt(overview.totalNetPayroll) : '—'} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label="Gross Payroll" value={overview.totalGrossPayroll > 0 ? fmtAmt(overview.totalGrossPayroll, currencyCode) : '—'} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Net Payroll" value={overview.totalNetPayroll > 0 ? fmtAmt(overview.totalNetPayroll, currencyCode) : '—'} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
           <KpiCard label="Locked Runs YTD" value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
         </div>
       )}
@@ -1063,6 +1065,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [approvals, setApprovals] = useState<PayrollApproval[]>([]);
   const [notes, setNotes] = useState('');
+  const { currencyCode } = useTenantSettings();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -1148,7 +1151,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-semibold text-slate-900 dark:text-white">Payroll Run — {MONTHS[selectedRun.month - 1]} {selectedRun.year}</p>
-              <p className="text-xs text-slate-400">{selectedRun.employeeCount} employees · Gross {fmtAmt(selectedRun.totalGrossSalary)} · Net {fmtAmt(selectedRun.totalNetSalary)}</p>
+              <p className="text-xs text-slate-400">{selectedRun.employeeCount} employees · Gross {fmtAmt(selectedRun.totalGrossSalary, currencyCode)} · Net {fmtAmt(selectedRun.totalNetSalary, currencyCode)}</p>
             </div>
             <StatusBadge status={selectedRun.status} />
           </div>
@@ -1459,6 +1462,7 @@ function BankWpsTab() {
 function PaymentTrackingTab() {
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
   const [loading, setLoading] = useState(true);
+  const { currencyCode } = useTenantSettings();
 
   useEffect(() => {
     setLoading(true);
@@ -1474,7 +1478,7 @@ function PaymentTrackingTab() {
         <div className="grid grid-cols-3 gap-4">
           <KpiCard label="Total Batches" value={batches.length} icon={WalletCards} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
           <KpiCard label="WPS Files Generated" value={fileGenerated} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label="Total Amount" value={fmtAmt(total)} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Total Amount" value={fmtAmt(total, currencyCode)} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
         </div>
       )}
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : batches.length === 0 ? (
@@ -1520,6 +1524,7 @@ function ReportsTab() {
   const [slips, setSlips] = useState<PayrollSlip[]>([]);
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
   const [loading, setLoading] = useState(false);
+  const { currencyCode } = useTenantSettings();
 
   useEffect(() => {
     payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {});
@@ -1540,8 +1545,8 @@ function ReportsTab() {
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <KpiCard label="Total Runs" value={summary.totalRuns} icon={FileText} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
           <KpiCard label="Locked Runs" value={summary.lockedRuns} icon={Lock} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label="Gross YTD" value={fmtAmt(summary.totalGrossYtd)} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label="Net YTD" value={fmtAmt(summary.totalNetYtd)} icon={TrendingUp} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+          <KpiCard label="Gross YTD" value={fmtAmt(summary.totalGrossYtd, currencyCode)} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Net YTD" value={fmtAmt(summary.totalNetYtd, currencyCode)} icon={TrendingUp} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
         </div>
       )}
 
@@ -1561,7 +1566,7 @@ function ReportsTab() {
           <>
             <div className="mt-4 rounded-lg bg-slate-50 px-4 py-3 dark:bg-white/5">
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                {slips.length} employees · Gross {fmtAmt(slips.reduce((s, x) => s + x.grossSalary, 0))} · Net {fmtAmt(slips.reduce((s, x) => s + x.netSalary, 0))}
+                {slips.length} employees · Gross {fmtAmt(slips.reduce((s, x) => s + x.grossSalary, 0), currencyCode)} · Net {fmtAmt(slips.reduce((s, x) => s + x.netSalary, 0), currencyCode)}
               </p>
             </div>
             <div className="mt-4 overflow-x-auto">
@@ -1696,6 +1701,7 @@ function EOSBTab() {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<unknown[]>([]);
   const [error, setError] = useState('');
+  const { currencyCode } = useTenantSettings();
 
   const calculate = async () => {
     if (!employeeId) return;
@@ -1766,8 +1772,8 @@ function EOSBTab() {
               {(history as Array<Record<string, unknown>>).map((h, i) => (
                 <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                   <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{h.calculationDate as string}</td>
-                  <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">AED {(h.eligibleSalary as number).toLocaleString()}</td>
-                  <td className="px-4 py-2.5 font-medium text-sapphire dark:text-cyanAccent">AED {(h.calculatedAmount as number).toLocaleString()}</td>
+                  <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{currencyCode} {(h.eligibleSalary as number).toLocaleString()}</td>
+                  <td className="px-4 py-2.5 font-medium text-sapphire dark:text-cyanAccent">{currencyCode} {(h.calculatedAmount as number).toLocaleString()}</td>
                   <td className="px-4 py-2.5"><StatusBadge status={h.status as string} /></td>
                 </tr>
               ))}
@@ -1786,6 +1792,7 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [journal, setJournal] = useState<PayrollGLJournal | null>(null);
   const [loading, setLoading] = useState(false);
+  const { currencyCode } = useTenantSettings();
 
   useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
@@ -1825,11 +1832,11 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
             </div>
             <div className="surface p-4">
               <p className="text-xs text-slate-400">Total Debits</p>
-              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits)}</p>
+              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits, currencyCode)}</p>
             </div>
             <div className="surface p-4">
               <p className="text-xs text-slate-400">Total Credits</p>
-              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits)}</p>
+              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits, currencyCode)}</p>
             </div>
           </div>
 
@@ -1862,12 +1869,12 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
                       <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                         <td className="px-3 py-2 font-mono text-xs text-slate-500">{e.glAccount}</td>
                         <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{e.glAccountName}</td>
-                        <td className={`px-3 py-2 text-right font-semibold tabular-nums ${side.color}`}>{fmtAmt(e.amount)}</td>
+                        <td className={`px-3 py-2 text-right font-semibold tabular-nums ${side.color}`}>{fmtAmt(e.amount, currencyCode)}</td>
                       </tr>
                     ))}
                     <tr className="border-t-2 border-slate-200 dark:border-white/10">
                       <td colSpan={2} className="px-3 py-2 text-xs font-bold text-slate-600 dark:text-slate-300">Total</td>
-                      <td className={`px-3 py-2 text-right text-sm font-extrabold tabular-nums ${side.color}`}>{fmtAmt(side.entries.reduce((s, e) => s + e.amount, 0))}</td>
+                      <td className={`px-3 py-2 text-right text-sm font-extrabold tabular-nums ${side.color}`}>{fmtAmt(side.entries.reduce((s, e) => s + e.amount, 0), currencyCode)}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -1887,6 +1894,7 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [report, setReport] = useState<PayrollReconciliation | null>(null);
   const [loading, setLoading] = useState(false);
+  const { currencyCode } = useTenantSettings();
 
   useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
@@ -1931,9 +1939,9 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
               {[{ label: 'Gross', prior: report.priorTotalGross, current: report.currentTotalGross }, { label: 'Net', prior: report.priorTotalNet, current: report.currentTotalNet }].map(m => (
                 <div key={m.label} className="p-4">
                   <p className="text-xs text-slate-400">Total {m.label}</p>
-                  <p className="text-lg font-bold text-slate-900 dark:text-white">{fmtAmt(m.current)}</p>
+                  <p className="text-lg font-bold text-slate-900 dark:text-white">{fmtAmt(m.current, currencyCode)}</p>
                   <p className={`text-xs ${m.current >= m.prior ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    {m.current >= m.prior ? '+' : ''}{fmtAmt(m.current - m.prior)} vs {report.priorPeriod ?? 'prior period'}
+                    {m.current >= m.prior ? '+' : ''}{fmtAmt(m.current - m.prior, currencyCode)} vs {report.priorPeriod ?? 'prior period'}
                   </p>
                 </div>
               ))}

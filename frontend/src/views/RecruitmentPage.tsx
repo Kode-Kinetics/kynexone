@@ -38,6 +38,7 @@ import type {
   CandidateAssessment, OnboardingTask,
 } from '../api/recruitment';
 import { StatusChip } from '../components/StatusChip';
+import { useTenantSettings } from '../contexts/TenantSettingsContext';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -184,6 +185,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 interface CreateReqModalProps { onClose: () => void; onSaved: () => void; }
 
 function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
+  const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
     departmentName: '', designationTitle: '', headCount: 1, employmentType: 'Full-Time',
     priority: 'Medium', justification: '', requiredSkills: '', minExperienceYears: '',
@@ -271,7 +273,7 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Budget Range (AED/mo)</label>
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Budget Range ({currencyCode}/mo)</label>
                 <div className="flex items-center gap-1">
                   <input className="input w-full" type="number" placeholder="From" value={form.budgetFrom} onChange={e => set('budgetFrom', e.target.value)} aria-label="Budget from" />
                   <span className="text-slate-400">–</span>
@@ -416,6 +418,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
 function CreateOpeningModal({ requisition, onClose, onSaved }: {
   requisition: ManpowerRequisition | null; onClose: () => void; onSaved: () => void;
 }) {
+  const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
     title: requisition?.designationTitle ?? '',
     departmentName: requisition?.departmentName ?? '',
@@ -480,11 +483,11 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Salary From (AED)</label>
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Salary From ({currencyCode})</label>
                 <input type="number" className="input w-full" value={form.salaryFrom} onChange={e => set('salaryFrom', e.target.value)} aria-label="Salary from" />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Salary To (AED)</label>
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Salary To ({currencyCode})</label>
                 <input type="number" className="input w-full" value={form.salaryTo} onChange={e => set('salaryTo', e.target.value)} aria-label="Salary to" />
               </div>
             </div>
@@ -518,6 +521,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
   requisitionToOpen: ManpowerRequisition | null;
   onOpeningCreated: () => void;
 }) {
+  const { currencyCode } = useTenantSettings();
   const [items, setItems] = useState<JobOpening[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(!!requisitionToOpen);
@@ -566,7 +570,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
             </div>
             <div className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
               <p>{o.departmentName}</p>
-              {o.salaryFrom && <p>AED {fmt(o.salaryFrom)}–{fmt(o.salaryTo)}/mo</p>}
+              {o.salaryFrom && <p>{currencyCode} {fmt(o.salaryFrom)}–{fmt(o.salaryTo)}/mo</p>}
               {o.location && <p>{o.location}</p>}
             </div>
             <div className="flex items-center justify-between border-t border-slate-100 pt-3 dark:border-white/[0.06]">
@@ -597,6 +601,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
 // ── Application Detail Drawer ──────────────────────────────────────────────────
 
 function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: () => void; onRefresh: () => void }) {
+  const { currencyCode } = useTenantSettings();
   const [detail, setDetail] = useState<ApplicationDetail | null>(null);
   const [tab, setTab] = useState<'timeline' | 'interviews' | 'offer'>('timeline');
   const [acting, setActing] = useState('');
@@ -839,11 +844,11 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                     <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${offer.status === 'Accepted' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10' : offer.status === 'Declined' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10'}`}>{offer.status}</span>
                   </div>
                   <div className="space-y-1 text-xs text-slate-600 dark:text-slate-400">
-                    <div className="flex justify-between"><span>Basic Salary</span><span className="font-medium">AED {fmt(offer.basicSalary)}</span></div>
-                    <div className="flex justify-between"><span>Housing</span><span>AED {fmt(offer.housingAllowance)}</span></div>
-                    <div className="flex justify-between"><span>Transport</span><span>AED {fmt(offer.transportAllowance)}</span></div>
+                    <div className="flex justify-between"><span>Basic Salary</span><span className="font-medium">{currencyCode} {fmt(offer.basicSalary)}</span></div>
+                    <div className="flex justify-between"><span>Housing</span><span>{currencyCode} {fmt(offer.housingAllowance)}</span></div>
+                    <div className="flex justify-between"><span>Transport</span><span>{currencyCode} {fmt(offer.transportAllowance)}</span></div>
                     <div className="flex justify-between border-t border-slate-100 pt-1 font-semibold text-slate-800 dark:border-white/10 dark:text-white">
-                      <span>Gross Total</span><span>AED {fmt(offer.grossSalary)}</span>
+                      <span>Gross Total</span><span>{currencyCode} {fmt(offer.grossSalary)}</span>
                     </div>
                   </div>
                   <div className="mt-3 flex gap-2">
@@ -879,7 +884,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       <input className="input w-full" placeholder="Department" value={offerForm.department} onChange={e => setOfferForm(f => ({ ...f, department: e.target.value }))} />
                       <input type="date" className="input w-full" value={offerForm.startDate} onChange={e => setOfferForm(f => ({ ...f, startDate: e.target.value }))} aria-label="Start date" />
                       <div className="grid grid-cols-2 gap-2">
-                        <input type="number" className="input w-full" placeholder="Basic Salary (AED)" value={offerForm.basicSalary} onChange={e => setOfferForm(f => ({ ...f, basicSalary: e.target.value }))} aria-label="Basic salary" />
+                        <input type="number" className="input w-full" placeholder={`Basic Salary (${currencyCode})`} value={offerForm.basicSalary} onChange={e => setOfferForm(f => ({ ...f, basicSalary: e.target.value }))} aria-label="Basic salary" />
                         <input type="number" className="input w-full" placeholder="Housing Allowance" value={offerForm.housingAllowance} onChange={e => setOfferForm(f => ({ ...f, housingAllowance: e.target.value }))} aria-label="Housing allowance" />
                       </div>
                       <div className="grid grid-cols-2 gap-2">
@@ -1664,6 +1669,7 @@ function AssessmentsTab() {
 // ── Offers Tab ────────────────────────────────────────────────────────────────
 
 function OffersTab() {
+  const { currencyCode } = useTenantSettings();
   const [offers, setOffers] = useState<OfferLetter[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
@@ -1778,7 +1784,7 @@ function OffersTab() {
             </div>
             {[['basicSalary', 'Basic Salary'], ['housingAllowance', 'Housing Allowance'], ['transportAllowance', 'Transport Allowance'], ['otherAllowances', 'Other Allowances']].map(([k, l]) => (
               <div key={k}>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{l} (AED)</label>
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{l} ({currencyCode})</label>
                 <input type="number" min={0} title={l} placeholder="0" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                   value={(offerForm as Record<string, unknown>)[k] as number} onChange={e => setOfferForm(f => ({ ...f, [k]: Number(e.target.value) }))} />
               </div>

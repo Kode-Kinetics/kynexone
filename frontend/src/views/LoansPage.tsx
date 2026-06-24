@@ -782,6 +782,7 @@ function BonusTypesTab() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...EMPTY_BONUS_TYPE_FORM });
   const [saving, setSaving] = useState(false);
+  const { currencyCode } = useTenantSettings();
   const [error, setError] = useState('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -884,7 +885,7 @@ function BonusTypesTab() {
                     ) : t.defaultCalculationValue > 0 ? (
                       t.calculationMethod === 'PercentageSalary'
                         ? <span>{t.defaultCalculationValue}%</span>
-                        : <span>AED {t.defaultCalculationValue.toLocaleString()}</span>
+                        : <span>{currencyCode} {t.defaultCalculationValue.toLocaleString()}</span>
                     ) : (
                       <span className="text-xs text-slate-400 font-normal">—</span>
                     )}
@@ -936,7 +937,7 @@ function BonusTypesTab() {
             <FormField label={form.calculationMethod === 'PercentageSalary' ? 'Default Percentage (%)' : 'Default Amount'} required>
               <div className="relative">
                 {form.calculationMethod === 'Fixed' && (
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">AED</span>
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">{currencyCode}</span>
                 )}
                 <input
                   type="number" min={0} step={form.calculationMethod === 'PercentageSalary' ? 0.01 : 1}
