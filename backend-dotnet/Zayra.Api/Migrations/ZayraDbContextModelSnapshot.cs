@@ -14312,6 +14312,22 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("year");
 
+                    b.Property<string>("VoidReason")
+                        .HasColumnType("text")
+                        .HasColumnName("void_reason");
+
+                    b.Property<DateTime?>("VoidedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("voided_at_utc");
+
+                    b.Property<string>("VoidedByName")
+                        .HasColumnType("text")
+                        .HasColumnName("voided_by_name");
+
+                    b.Property<Guid?>("VoidedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("voided_by_user_id");
+
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "CompanyId", "Status");
