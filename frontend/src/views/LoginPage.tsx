@@ -16,29 +16,29 @@ const SECURITY_POINTS = [
 ];
 
 const TRUST_POINTS = [
-  { label: 'People ops', value: 'Attendance, leave, onboarding' },
-  { label: 'Payroll', value: 'Runs, approvals, pay cycles' },
-  { label: 'Control', value: 'MFA, audit trails, tenant isolation' },
+  { label: 'Leaders', value: 'Fewer tools, clearer visibility' },
+  { label: 'Operations', value: 'Less rework, faster approvals' },
+  { label: 'Finance', value: 'Cleaner payroll, stronger control' },
 ];
 
 const WORKFORCE_SIGNALS = [
-  'Clock-ins',
-  'Approvals',
-  'Payroll',
-  'Compliance',
+  'No spreadsheet sprawl',
+  'One source of truth',
+  'Audit-ready by design',
+  'Built for multi-tenant teams',
 ];
 
 const WORKFORCE_FLOW = [
-  'Clock in',
-  'Approve',
-  'Run payroll',
-  'Audit',
+  'Capture',
+  'Route',
+  'Resolve',
+  'Close',
 ];
 
 const WORKFORCE_BACKGROUND = [
-  { label: 'Clock-in stream', bars: [42, 68, 58, 84, 62] },
-  { label: 'Approval queue', bars: [24, 48, 36, 54, 44] },
-  { label: 'Payroll pulse', bars: [16, 28, 40, 62, 78] },
+  { label: 'Adoption signal', bars: [42, 68, 58, 84, 62] },
+  { label: 'Approval speed', bars: [24, 48, 36, 54, 44] },
+  { label: 'Payroll confidence', bars: [16, 28, 40, 62, 78] },
 ];
 
 type Mode = 'login' | 'forgot' | 'reset' | 'mfa';
@@ -335,17 +335,17 @@ export function LoginPage() {
               <div className="relative z-10 max-w-[560px] space-y-3">
                 <div className="kx-pop inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-white/78 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 shadow-sm backdrop-blur">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  Secure workspace access
+                  Workforce platform for leaders and teams
                 </div>
                 <div>
                   <h1 className="max-w-[540px] text-[38px] font-black leading-[1.03] tracking-tight text-slate-950 xl:text-[45px]">
-                    Sign in to the<br />
+                    One sign-in for the<br />
                     <span className="bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-400 bg-clip-text text-transparent">
                       workforce command center.
                     </span>
                   </h1>
                   <p className="mt-2 max-w-[500px] text-[14px] leading-relaxed text-slate-600">
-                    Attendance, leave, payroll, approvals, and compliance in a tenant-isolated workspace with production-grade controls.
+                    Replace fragmented HR tools, reduce approval drag, and keep payroll, leave, attendance, and compliance in one tenant-isolated workspace.
                   </p>
                 </div>
 
@@ -362,7 +362,7 @@ export function LoginPage() {
                 </div>
 
                 <div className="rounded-[24px] border border-slate-200/80 bg-white/72 p-3 shadow-[0_14px_28px_rgba(37,99,235,0.06)] backdrop-blur-xl">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Core controls</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Why teams switch</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {WORKFORCE_SIGNALS.map((signal) => (
                       <span
@@ -379,7 +379,7 @@ export function LoginPage() {
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Operational flow</p>
                     <span className="kx-pop rounded-full border border-cyan-200/80 bg-cyan-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-600">
-                      Live
+                      Simple
                     </span>
                   </div>
                   <div className="kx-flow mt-3 flex items-center gap-2">
@@ -391,7 +391,7 @@ export function LoginPage() {
                         <div className="min-w-0">
                           <p className="text-[11px] font-semibold text-slate-700">{item}</p>
                           <p className="truncate text-[10px] text-slate-400">
-                            {index === 0 ? 'Capture' : index === 1 ? 'Route' : index === 2 ? 'Process' : 'Review'}
+                            {index === 0 ? 'Enter once' : index === 1 ? 'Auto-route' : index === 2 ? 'Act fast' : 'Close cleanly'}
                           </p>
                         </div>
                         {index < WORKFORCE_FLOW.length - 1 && (
