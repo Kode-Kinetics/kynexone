@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { notifyApiError } from '../api/client';
 import {
-  FileText, Shield, Globe, AlertTriangle, BarChart3, Bot,
+  FileText, Shield, Globe, AlertTriangle, BarChart3, Lightbulb,
   Plus, CheckCircle, Clock, XCircle, RefreshCw,
 } from 'lucide-react';
 import {
@@ -126,7 +127,7 @@ function ContractsTab() {
     try {
       await complianceContractsApi.create({ ...form, basicSalary: Number(form.basicSalary) });
       setShowCreate(false); load();
-    } catch {} finally { setSaving(false); }
+    } catch (e) { notifyApiError(e); } finally { setSaving(false); }
   };
 
   const STATUS_COLORS: Record<string, string> = {
@@ -367,7 +368,7 @@ function RenewalsTab() {
   useEffect(() => { load(); }, [statusFilter]);
 
   const advance = async (id: string, status: string) => {
-    try { await complianceRenewalsApi.updateStatus(id, status); load(); } catch {}
+    try { await complianceRenewalsApi.updateStatus(id, status); load(); } catch (e) { notifyApiError(e); }
   };
 
   const STATUS_COLORS: Record<string, string> = {
@@ -520,8 +521,8 @@ function ComplianceAITab() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/5 px-4 py-3 text-xs text-amber-700 dark:text-amber-400 flex-1 mr-3">
-          <Bot className="inline h-3.5 w-3.5 mr-1.5" />
-          All compliance insights are <strong>advisory only</strong>. AI must not automatically approve compliance, reject employees, or make legal decisions.
+          <Lightbulb className="inline h-3.5 w-3.5 mr-1.5" />
+          All compliance insights are <strong>advisory only</strong> and must not automatically approve compliance, reject employees, or make legal decisions.
           {genTime && <span className="ml-2 opacity-60">Generated: {new Date(genTime).toLocaleString()}</span>}
         </div>
         <button type="button" onClick={load} className="shrink-0 flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-white/10 px-3 py-1.5 text-xs text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5">
@@ -529,7 +530,7 @@ function ComplianceAITab() {
         </button>
       </div>
 
-      {loading ? <p className="py-8 text-center text-sm text-slate-400">Generating AI compliance insights…</p> : insights.length === 0 ? (
+      {loading ? <p className="py-8 text-center text-sm text-slate-400">Generating compliance insights…</p> : insights.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No insights available.</p>
       ) : (
         <div className="space-y-3">
@@ -570,7 +571,7 @@ export default function CompliancePage() {
     { id: 'visa', label: 'Visa & ID', icon: Globe },
     { id: 'renewals', label: 'Renewals', icon: RefreshCw },
     { id: 'expiry', label: 'Expiry Alerts', icon: AlertTriangle },
-    { id: 'ai', label: 'AI Insights', icon: Bot },
+    { id: 'ai', label: 'Insights', icon: Lightbulb },
   ];
 
   return (

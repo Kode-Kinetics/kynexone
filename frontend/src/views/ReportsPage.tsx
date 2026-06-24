@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { notifyApiError } from '../api/client';
 import { useSearchParams } from 'next/navigation';
 import {
   BarChart2, BookOpen, Clock, Download, Play, Plus, RefreshCw, Save, Trash2, ToggleLeft, ToggleRight,
@@ -396,7 +397,7 @@ function SavedReportsTab() {
 
   const deleteSaved = async (id: string) => {
     if (!confirm('Delete this saved report?')) return;
-    try { await reportsApi.deleteSaved(id); load(); } catch { /**/ }
+    try { await reportsApi.deleteSaved(id); load(); } catch (e) { notifyApiError(e); }
   };
 
   const columns = result && result.data.data.length > 0 ? Object.keys(result.data.data[0] as object) : [];
@@ -505,7 +506,7 @@ function ScheduledReportsTab() {
 
   const deleteSchedule = async (id: string) => {
     if (!confirm('Delete this schedule?')) return;
-    try { await reportsApi.deleteSchedule(id); load(); } catch { /**/ }
+    try { await reportsApi.deleteSchedule(id); load(); } catch (e) { notifyApiError(e); }
   };
 
   const selectReport = (key: string) => {

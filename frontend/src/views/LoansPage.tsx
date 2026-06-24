@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { notifyApiError } from '../api/client';
 import { useAutoTranslate } from '../hooks/useAutoTranslate';
 import {
   CreditCard, DollarSign, Gift, Plus, CheckCircle, XCircle,
@@ -1123,17 +1124,17 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
 
   const submitBatch = async (id: string) => {
     if (!confirm('Submit this batch for approval?')) return;
-    try { await bonusBatchesApi.submit(id); load(); if (selected?.batch.id === id) { const d = await bonusBatchesApi.get(id); setSelected(d); } } catch { /**/ }
+    try { await bonusBatchesApi.submit(id); load(); if (selected?.batch.id === id) { const d = await bonusBatchesApi.get(id); setSelected(d); } } catch (e) { notifyApiError(e); }
   };
 
   const approveBatch = async (id: string) => {
     if (!confirm('Approve this bonus batch? This will generate GL entries.')) return;
-    try { await bonusBatchesApi.approve(id); load(); if (selected?.batch.id === id) { const d = await bonusBatchesApi.get(id); setSelected(d); } } catch { /**/ }
+    try { await bonusBatchesApi.approve(id); load(); if (selected?.batch.id === id) { const d = await bonusBatchesApi.get(id); setSelected(d); } } catch (e) { notifyApiError(e); }
   };
 
   const markPaidBatch = async (id: string) => {
     if (!confirm('Mark this batch as paid? This action is final.')) return;
-    try { await bonusBatchesApi.markPaid(id); load(); if (selected?.batch.id === id) { const d = await bonusBatchesApi.get(id); setSelected(d); } } catch { /**/ }
+    try { await bonusBatchesApi.markPaid(id); load(); if (selected?.batch.id === id) { const d = await bonusBatchesApi.get(id); setSelected(d); } } catch (e) { notifyApiError(e); }
   };
 
   const openEditBatch = (b: BonusBatch, e: React.MouseEvent) => {

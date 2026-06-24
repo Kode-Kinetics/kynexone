@@ -99,3 +99,20 @@ client.interceptors.response.use(
 );
 
 export default client;
+
+/**
+ * Extracts a human-readable message from an API error (backend `message`/`error`,
+ * or a sensible fallback) and shows it via the global toast (the AppToastProvider
+ * listens for the `zayra:error` event). Use in action handlers so a failed write
+ * never fails silently. 403/402 are already toasted by the interceptor, so they are
+ * skipped here to avoid double toasts.
+ */
+export function notifyApiError(err: unknown, fallback = 'Something went wrong. Please try again.'): void {
+  const e = err as { response?: { status?: number; data?: { message?: string; error?: string } } };
+  const status = e?.response?.status;
+  if (status === 401 || status === 402 || status === 403) return; // handled globally by the interceptor
+  const msg = e?.response?.data?.message ?? e?.response?.data?.error ?? fallback;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('zayra:error', { detail: msg }));
+  }
+}

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight } from 'lucide-react';
 import {
   companiesApi,
@@ -148,7 +149,7 @@ function CompaniesTab() {
   const deleteCompany = async (id: string) => {
     if (!confirm('Delete this company? This cannot be undone.')) return;
     setDeleting(id);
-    try { await companiesApi.remove(id); load(); } catch { /**/ }
+    try { await companiesApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -352,7 +353,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   const deleteBranch = async (id: string) => {
     if (!confirm('Delete this branch?')) return;
     setDeleting(id);
-    try { await branchesApi.remove(id); load(); } catch { /**/ }
+    try { await branchesApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -503,7 +504,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const deleteDept = async (id: string) => {
     if (!confirm('Delete this department?')) return;
     setDeleting(id);
-    try { await departmentsApi.remove(id); load(); } catch { /**/ }
+    try { await departmentsApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -627,7 +628,7 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   const deleteDesig = async (id: string) => {
     if (!confirm('Delete this designation?')) return;
     setDeleting(id);
-    try { await designationsApi.remove(id); load(); } catch { /**/ }
+    try { await designationsApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -762,7 +763,7 @@ function GradesTab() {
   const deleteGrade = async (id: string) => {
     if (!confirm('Delete this grade?')) return;
     setDeleting(id);
-    try { await gradesApi.remove(id); load(); } catch { /**/ }
+    try { await gradesApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -850,7 +851,7 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
   const deleteCostCenter = async (id: string) => {
     if (!confirm('Delete this cost center?')) return;
     setDeleting(id);
-    try { await costCentersApi.remove(id); load(); } catch { /**/ }
+    try { await costCentersApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
   const companyName = (id?: string) => companies.find((c) => c.id === id)?.legalNameEn ?? '—';
@@ -977,7 +978,7 @@ function MasterDataTab() {
   const deleteValue = async (v: MasterDataValue) => {
     if (v.isSystemDefined) return;
     if (!confirm(`Delete "${v.valueEn}"?`)) return;
-    try { await masterDataApi.deleteValue(v.id); if (selectedType) loadValues(selectedType.id); } catch { /**/ }
+    try { await masterDataApi.deleteValue(v.id); if (selectedType) loadValues(selectedType.id); } catch (e) { notifyApiError(e); }
   };
 
   return (
@@ -1148,7 +1149,7 @@ function NumberingRulesTab() {
   const deleteRule = async (id: string) => {
     if (!confirm('Delete this numbering rule?')) return;
     setDeleting(id);
-    try { await numberingRulesApi.delete(id); load(); } catch { /**/ }
+    try { await numberingRulesApi.delete(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -1434,7 +1435,7 @@ function FiscalYearsTab() {
   const deleteFY = async (id: string) => {
     if (!confirm('Delete this fiscal year?')) return;
     setDeleting(id);
-    try { await fiscalYearsApi.delete(id); load(); } catch { /**/ }
+    try { await fiscalYearsApi.delete(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -1522,7 +1523,7 @@ function LocationsTab() {
   const deleteLocation = async (id: string) => {
     if (!confirm('Delete this location?')) return;
     setDeleting(id);
-    try { await locationsApi.delete(id); load(); } catch { /**/ }
+    try { await locationsApi.delete(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -1622,7 +1623,7 @@ function NotificationTemplatesTab() {
   const deleteTemplate = async (id: string) => {
     if (!confirm('Delete this notification template?')) return;
     setDeleting(id);
-    try { await notificationTemplatesApi.delete(id); load(); } catch { /**/ }
+    try { await notificationTemplatesApi.delete(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 

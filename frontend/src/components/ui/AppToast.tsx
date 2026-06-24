@@ -114,6 +114,17 @@ export function AppToastProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('zayra:access-denied', handler);
   }, [showToast]);
 
+  // Generic action-failure toast, dispatched by notifyApiError() from action handlers
+  // so a failed write (400/409/422/500) never fails silently — the user always sees why.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const msg = (e as CustomEvent<string>).detail ?? 'Something went wrong. Please try again.';
+      showToast('error', msg, 'Action failed', 6000);
+    };
+    window.addEventListener('zayra:error', handler);
+    return () => window.removeEventListener('zayra:error', handler);
+  }, [showToast]);
+
   const ctx: AppToastCtx = {
     showToast,
     success: (msg, title) => showToast('success', msg, title),

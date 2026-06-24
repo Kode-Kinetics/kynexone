@@ -5,11 +5,11 @@ import { createPortal } from 'react-dom';
 import {
   Plus, ChevronLeft, Users, Briefcase, ClipboardList, UserPlus,
   CheckCircle, Clock, XCircle, ChevronRight, X, Star, Send,
-  FileText, AlertCircle, ArrowRight, Calendar, BarChart3, Bot,
+  FileText, AlertCircle, ArrowRight, Calendar, BarChart3, Lightbulb,
   Target, BookOpen, Award, TrendingUp, LayoutGrid,
 } from 'lucide-react';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
-import client from '../api/client';
+import client, { notifyApiError } from '../api/client';
 
 // ── Recruitment import/export helpers ─────────────────────────────────────────
 
@@ -326,13 +326,13 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
 
   const submit = async (id: string) => {
     setActing(id);
-    try { await requisitionsApi.submit(id); load(); } catch { /**/ }
+    try { await requisitionsApi.submit(id); load(); } catch (e) { notifyApiError(e); }
     finally { setActing(null); }
   };
 
   const approve = async (id: string) => {
     setActing(id);
-    try { await requisitionsApi.approve(id); load(); } catch { /**/ }
+    try { await requisitionsApi.approve(id); load(); } catch (e) { notifyApiError(e); }
     finally { setActing(null); }
   };
 
@@ -340,7 +340,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
     const reason = window.prompt('Rejection reason:');
     if (!reason) return;
     setActing(id);
-    try { await requisitionsApi.reject(id, reason); load(); } catch { /**/ }
+    try { await requisitionsApi.reject(id, reason); load(); } catch (e) { notifyApiError(e); }
     finally { setActing(null); }
   };
 
@@ -626,21 +626,21 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
 
   const doAdvance = async () => {
     setActing('advance');
-    try { await applicationsApi.advance(id); load(); onRefresh(); } catch { /**/ }
+    try { await applicationsApi.advance(id); load(); onRefresh(); } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
   const doReject = async () => {
     if (!rejectReason.trim()) return;
     setActing('reject');
-    try { await applicationsApi.reject(id, rejectReason); load(); onRefresh(); } catch { /**/ }
+    try { await applicationsApi.reject(id, rejectReason); load(); onRefresh(); } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
   const doNote = async () => {
     if (!noteText.trim()) return;
     setActing('note');
-    try { await applicationsApi.addNote(id, noteText); setNoteText(''); load(); } catch { /**/ }
+    try { await applicationsApi.addNote(id, noteText); setNoteText(''); load(); } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
@@ -657,7 +657,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
         location: interviewForm.location,
       });
       load();
-    } catch { /**/ }
+    } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
@@ -674,7 +674,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
         probationMonths: offerForm.probationMonths,
       });
       setTab('offer'); load();
-    } catch { /**/ }
+    } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
@@ -691,7 +691,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
         await applicationsApi.declineOffer(offer.id, reason);
       }
       load(); onRefresh();
-    } catch { /**/ }
+    } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
@@ -1222,7 +1222,7 @@ function WorkforcePlanningTab() {
 
   const save = async () => {
     setSaving(true);
-    try { await workforcePlanningApi.create(form); setShowCreate(false); setForm({ planName: '', planYear: new Date().getFullYear(), departmentName: '', currentHeadcount: 0, plannedHeadcount: 0, budgetAllocated: 0, currencyCode: 'USD', notes: '' }); load(); } catch {} finally { setSaving(false); }
+    try { await workforcePlanningApi.create(form); setShowCreate(false); setForm({ planName: '', planYear: new Date().getFullYear(), departmentName: '', currentHeadcount: 0, plannedHeadcount: 0, budgetAllocated: 0, currencyCode: 'USD', notes: '' }); load(); } catch (e) { notifyApiError(e); } finally { setSaving(false); }
   };
 
   const STATUS_COLORS: Record<string, string> = {
@@ -1366,7 +1366,7 @@ function InterviewsTab() {
 
   const cancelInterview = async (id: string) => {
     setCancelling(id);
-    try { await interviewsApi.cancel(id); load(); } catch {} finally { setCancelling(null); }
+    try { await interviewsApi.cancel(id); load(); } catch (e) { notifyApiError(e); } finally { setCancelling(null); }
   };
 
   const MODE_ICON: Record<string, string> = { InPerson: '🏢', Video: '📹', Phone: '📞' };
@@ -1717,12 +1717,12 @@ function OffersTab() {
 
   const acceptOffer = async (id: string) => {
     setActioning(id);
-    try { await offersApi.accept(id); load(); } catch {} finally { setActioning(null); }
+    try { await offersApi.accept(id); load(); } catch (e) { notifyApiError(e); } finally { setActioning(null); }
   };
 
   const declineOffer = async (id: string) => {
     setActioning(id);
-    try { await offersApi.decline(id, 'Declined by candidate'); load(); } catch {} finally { setActioning(null); }
+    try { await offersApi.decline(id, 'Declined by candidate'); load(); } catch (e) { notifyApiError(e); } finally { setActioning(null); }
   };
 
   const STATUS_COLORS: Record<string, string> = {
@@ -1893,7 +1893,7 @@ function OnboardingTab() {
 
   const updateStatus = async (id: string, status: string) => {
     setUpdatingStatus(id);
-    try { await onboardingApi.updateStatus(id, status); load(); } catch {} finally { setUpdatingStatus(null); }
+    try { await onboardingApi.updateStatus(id, status); load(); } catch (e) { notifyApiError(e); } finally { setUpdatingStatus(null); }
   };
 
   const STATUS_COLORS: Record<string, string> = {
@@ -2112,7 +2112,7 @@ function RecruitmentAITab() {
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/5 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
-        <Bot className="inline h-3.5 w-3.5 mr-1.5" />
+        <Lightbulb className="inline h-3.5 w-3.5 mr-1.5" />
         All insights are <strong>advisory only</strong>. Final hiring and staffing decisions remain with authorized HR personnel.
         {genTime && <span className="ml-2 opacity-60">Generated: {new Date(genTime).toLocaleString()}</span>}
       </div>
@@ -2162,7 +2162,7 @@ export function RecruitmentPage({ initialTab }: { initialTab?: Tab } = {}) {
     { id: 'offers', label: 'Offers', icon: Award },
     { id: 'onboarding', label: 'Onboarding', icon: UserPlus },
     { id: 'reports', label: 'Reports', icon: BarChart3 },
-    { id: 'ai', label: 'AI Insights', icon: Bot },
+    { id: 'ai', label: 'Insights', icon: Lightbulb },
   ];
 
   const handleCreateOpening = (req: ManpowerRequisition) => {

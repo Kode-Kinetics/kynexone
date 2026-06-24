@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { notifyApiError } from '../api/client';
 import {
   hrRequestApi,
   type HRRequest,
@@ -83,7 +84,7 @@ export default function HRRequestCenterPage() {
       await hrRequestApi.addComment(selectedRequest, requestDetail.request.employeeId, newComment.trim());
       setNewComment('');
       await loadRequestDetail(selectedRequest);
-    } catch {}
+    } catch (e) { notifyApiError(e); }
   }
 
   async function updateStatus(id: string, status: string) {
@@ -91,7 +92,7 @@ export default function HRRequestCenterPage() {
       await hrRequestApi.updateStatus(id, status);
       if (requestDetail) setRequestDetail(prev => prev ? { ...prev, request: { ...prev.request, status } } : null);
       await loadRequests();
-    } catch {}
+    } catch (e) { notifyApiError(e); }
   }
 
   async function createRequest() {
@@ -108,7 +109,7 @@ export default function HRRequestCenterPage() {
       });
       setForm({ employeeId: '', categoryId: '', subject: '', description: '', priority: 'Normal' });
       setTab('requests');
-    } catch {} finally {
+    } catch (e) { notifyApiError(e); } finally {
       setSubmitting(false);
     }
   }
