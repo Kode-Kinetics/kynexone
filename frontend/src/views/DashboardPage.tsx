@@ -33,6 +33,9 @@ import type { DashboardFull, ActivityFeedItem } from '../api/dashboard';
 import { aiAssistantApi } from '../api/intelligence';
 import type { AIInsight } from '../api/intelligence';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { useAuth } from '../contexts/AuthContext';
+import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { Gauge } from 'lucide-react';
 
 // ── Chart imports (SSR-safe) ──────────────────────────────────────────────────
 
@@ -380,6 +383,9 @@ function SLabel({ label, icon: Icon }: { label: string; icon?: React.ElementType
 export function DashboardPage() {
   const router = useRouter();
   const { isFeatureEnabled } = useFeatureFlags();
+  const { user } = useAuth();
+  const { currencyCode } = useTenantSettings();
+  const money = (n: number) => fmtMoney(n, currencyCode);
   const [data, setData] = useState<DashboardFull | null>(null);
   const [insights, setInsights] = useState<AIInsight[]>([]);
   const [loading, setLoading] = useState(true);
@@ -457,13 +463,51 @@ export function DashboardPage() {
     ctaLabel: 'Fix Documents',
   });
 
+  // ── Executive identity + organizational health verdict ──────────────────────
+
+  const firstName = (user?.fullName ?? '').trim().split(/\s+/)[0] || 'there';
+  const roleLabel = user?.roles?.[0] ?? 'Member';
+  const greeting = localHour < 12 ? 'Good morning' : localHour < 18 ? 'Good afternoon' : 'Good evening';
+  const todayLabel = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+  // Synthesised health verdict from real signals (critical compliance/expired docs →
+  // Critical; heavy approval backlog or low attendance → Needs attention; else Healthy).
+  const lowAttendance = !isEarlyMorning && s != null && s.activeEmployees > 0 && attendanceRate < 60;
+  const heavyBacklog = (o?.pendingApprovals ?? 0) >= 8;
+  const health = (() => {
+    if (criticalAlerts.length > 0 || (kpis?.expiredDocuments ?? 0) > 0) {
+      const n = criticalAlerts.length + (kpis?.expiredDocuments ?? 0);
+      return { label: 'Needs attention', tone: 'critical' as const, icon: ShieldAlert,
+        detail: `${n} critical item${n !== 1 ? 's' : ''} to resolve` };
+    }
+    if (heavyBacklog || lowAttendance) {
+      return { label: 'Monitor', tone: 'warning' as const, icon: Clock,
+        detail: heavyBacklog ? `${o!.pendingApprovals} approvals waiting` : `${attendanceRate}% present today` };
+    }
+    return { label: 'Healthy', tone: 'healthy' as const, icon: CheckCircle2,
+      detail: 'All systems nominal' };
+  })();
+  const HEALTH_STYLE = {
+    healthy:  { dot: 'bg-emerald-400', text: 'text-emerald-300', ring: 'ring-emerald-400/30', chip: 'bg-emerald-400/15' },
+    warning:  { dot: 'bg-amber-400',   text: 'text-amber-300',   ring: 'ring-amber-400/30',   chip: 'bg-amber-400/15' },
+    critical: { dot: 'bg-rose-400',    text: 'text-rose-300',    ring: 'ring-rose-400/30',    chip: 'bg-rose-400/15' },
+  }[health.tone];
+
+  // At-a-glance pulse stats rendered inline in the hero band.
+  const pulse = [
+    { label: 'Net Payroll', value: payroll ? money(payroll.totalNet) : '—', hint: payroll?.periodLabel ?? 'No run', to: '/payroll' },
+    { label: 'Present Today', value: loading ? '—' : `${attendanceRate}%`, hint: `${s?.presentToday ?? 0} of ${s?.activeEmployees ?? 0}`, to: '/attendance' },
+    { label: 'Active Staff', value: loading ? '—' : (s?.activeEmployees ?? 0).toLocaleString(), hint: `+${o?.newJoinersThisMonth ?? 0} this month`, to: '/people' },
+    { label: 'Approvals', value: loading ? '—' : (o?.pendingApprovals ?? 0).toLocaleString(), hint: `${o?.openLeaveRequests ?? 0} leave open`, to: '/approvals' },
+  ];
+
   // ── KPI definitions ────────────────────────────────────────────────────────
 
   const kpiDefs: KpiDef[] = [
     {
       label: 'Net Payroll',
       icon: BadgeDollarSign,
-      value: payroll ? fmtMoney(payroll.totalNet) : (loading ? '—' : 'No run'),
+      value: payroll ? money(payroll.totalNet) : (loading ? '—' : 'No run'),
       sub: payroll
         ? `${payroll.periodLabel} · ${payroll.employeeCount} employees · ${payroll.status}`
         : 'No processed payroll run yet',
@@ -538,55 +582,102 @@ export function DashboardPage() {
   return (
     <div className="mx-auto flex max-w-[1600px] flex-col gap-5 px-1" aria-label="Workforce Command Center">
 
-      {/* ── Command header ─────────────────────────────────────────────────── */}
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-            </span>
-            <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400">Live</span>
-          </div>
-          <h1 className="mt-1 text-xl font-extrabold tracking-tight text-slate-900 dark:text-white sm:text-2xl">
-            Workforce Command Center
-          </h1>
-          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-            {loading
-              ? 'Loading live data…'
-              : `${(s?.activeEmployees ?? 0).toLocaleString()} active · ${attendanceRate}% present${payroll ? ` · ${payroll.periodLabel} net ${fmtMoney(payroll.totalNet)}` : ''}`}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={load}
-            disabled={loading}
-            aria-label="Refresh dashboard"
-            className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-800 disabled:opacity-40 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-400 dark:hover:text-white"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-          </button>
-          <button
-            type="button"
-            onClick={() => router.push('/reports')}
-            className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.08]"
-          >
-            Reports
-          </button>
-          <button
-            type="button"
-            onClick={() => router.push('/approvals')}
-            className="flex h-8 items-center gap-1.5 rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white transition hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-          >
-            Approvals
-            {!loading && (o?.pendingApprovals ?? 0) > 0 && (
-              <span className="rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-bold leading-none">
-                {o!.pendingApprovals}
+      {/* ── Executive command band ─────────────────────────────────────────── */}
+      <header className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-gradient-to-br from-[#0b1220] via-[#101c33] to-[#0b1220] px-5 py-5 text-white shadow-sm sm:px-7 sm:py-6">
+        {/* ambient glow */}
+        <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-[#2F6BFF]/20 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-24 left-1/3 h-56 w-56 rounded-full bg-[#00C896]/10 blur-3xl" />
+
+        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          {/* identity */}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
               </span>
-            )}
-            <ArrowRight className="h-3 w-3" />
-          </button>
+              <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-300">Live</span>
+              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">· {todayLabel}</span>
+            </div>
+            <h1 className="mt-2 text-2xl font-extrabold tracking-tight sm:text-[28px]">
+              {greeting}, {firstName}
+            </h1>
+            <p className="mt-1 flex items-center gap-2 text-sm text-white/55">
+              <span className="font-semibold text-white/80">Workforce Command Center</span>
+              <span className="text-white/25">|</span>
+              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/70">{roleLabel}</span>
+            </p>
+          </div>
+
+          {/* health verdict + actions */}
+          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center lg:flex-col lg:items-end">
+            <button
+              type="button"
+              onClick={() => router.push(health.tone === 'critical' ? '/compliance' : '/approvals')}
+              className={`group flex items-center gap-3 rounded-xl bg-white/[0.06] px-4 py-2.5 text-left ring-1 ${HEALTH_STYLE.ring} transition hover:bg-white/[0.1]`}
+            >
+              <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${HEALTH_STYLE.chip}`}>
+                <health.icon className={`h-4 w-4 ${HEALTH_STYLE.text}`} />
+              </span>
+              <span className="min-w-0">
+                <span className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-white/45">Org Health</span>
+                  <span className={`h-1.5 w-1.5 rounded-full ${HEALTH_STYLE.dot}`} />
+                </span>
+                <span className={`block text-sm font-bold ${HEALTH_STYLE.text}`}>{health.label}</span>
+                <span className="block text-[11px] text-white/50">{health.detail}</span>
+              </span>
+              <Gauge className="ml-1 h-4 w-4 shrink-0 text-white/30 transition group-hover:text-white/60" />
+            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={load}
+                disabled={loading}
+                aria-label="Refresh dashboard"
+                className="grid h-9 w-9 place-items-center rounded-lg bg-white/[0.06] text-white/70 ring-1 ring-white/10 transition hover:bg-white/[0.12] hover:text-white disabled:opacity-40"
+              >
+                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push('/reports')}
+                className="h-9 rounded-lg bg-white/[0.06] px-3 text-xs font-semibold text-white/80 ring-1 ring-white/10 transition hover:bg-white/[0.12] hover:text-white"
+              >
+                Reports
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push('/approvals')}
+                className="flex h-9 items-center gap-1.5 rounded-lg bg-[#2F6BFF] px-3.5 text-xs font-semibold text-white shadow-lg shadow-[#2F6BFF]/20 transition hover:bg-[#2a5fe0]"
+              >
+                Approvals
+                {!loading && (o?.pendingApprovals ?? 0) > 0 && (
+                  <span className="rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-bold leading-none">{o!.pendingApprovals}</span>
+                )}
+                <ArrowRight className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* at-a-glance pulse strip */}
+        <div className="relative mt-5 grid grid-cols-2 gap-px overflow-hidden rounded-xl bg-white/[0.06] sm:grid-cols-4">
+          {pulse.map((p) => (
+            <button
+              key={p.label}
+              type="button"
+              onClick={() => router.push(p.to)}
+              className="group flex flex-col gap-0.5 bg-[#0d1626] px-4 py-3 text-left transition hover:bg-[#13203a]"
+            >
+              <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-white/40">{p.label}</span>
+              <span className="font-mono text-lg font-extrabold leading-tight tracking-tight text-white sm:text-xl">{p.value}</span>
+              <span className="flex items-center gap-1 text-[10px] text-white/45">
+                {p.hint}
+                <ArrowUpRight className="h-2.5 w-2.5 opacity-0 transition group-hover:opacity-100" />
+              </span>
+            </button>
+          ))}
         </div>
       </header>
 
@@ -751,9 +842,9 @@ export function DashboardPage() {
                       <div className="p-4 pt-2">
                         <div className="grid grid-cols-2 gap-2">
                           {[
-                            { label: 'Gross',      value: fmtMoney(payroll.totalGross) },
-                            { label: 'Net',        value: fmtMoney(payroll.totalNet) },
-                            { label: 'Deductions', value: fmtMoney(payroll.totalDeductions) },
+                            { label: 'Gross',      value: money(payroll.totalGross) },
+                            { label: 'Net',        value: money(payroll.totalNet) },
+                            { label: 'Deductions', value: money(payroll.totalDeductions) },
                             { label: 'Headcount',  value: payroll.employeeCount.toLocaleString() },
                           ].map((t) => (
                             <div key={t.label} className="rounded-xl border border-slate-100 bg-slate-50/80 p-3 dark:border-white/[0.06] dark:bg-white/[0.03]">
