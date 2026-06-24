@@ -562,7 +562,41 @@ public class AccessController : ControllerBase
         await _db.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
+
+    // Elevate or restrict a user's group-scope flag (cross-company visibility).
+    // Class-level [Authorize(Roles = "Admin")] applies — no [AllowAnonymous] here.
+    [HttpPatch("users/{userId:guid}/group-scope")]
+    public async Task<IActionResult> SetGroupScope(Guid userId, [FromBody] SetGroupScopeRequest request, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var actorId = GetUserId();
+        if (tenantId is null || actorId is null) return Unauthorized();
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == tenantId && !u.IsDeleted, cancellationToken);
+        if (user is null) return NotFound();
+
+        var oldValue = user.IsGroupScope;
+        user.IsGroupScope = request.IsGroupScope;
+        user.UpdatedAtUtc = DateTime.UtcNow;
+
+        _db.AdminAuditLogs.Add(new Models.AdminAuditLog
+        {
+            TenantId = tenantId.Value,
+            EntityType = "User",
+            EntityId = userId.ToString(),
+            Action = request.IsGroupScope ? "GroupScopeGranted" : "GroupScopeRevoked",
+            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { isGroupScope = oldValue }),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { isGroupScope = request.IsGroupScope }),
+            PerformedBy = actorId,
+            PerformedByName = User.FindFirstValue("name") ?? actorId.ToString()!,
+        });
+
+        await _db.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
 }
+
+public record SetGroupScopeRequest(bool IsGroupScope);
 
 public record EntityGrantDto(Guid Id, Guid UserId, Guid? CompanyId, string Role, DateTime CreatedAtUtc);
 public record CreateEntityGrantRequest(Guid UserId, Guid? CompanyId, string Role);

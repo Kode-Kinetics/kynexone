@@ -34,6 +34,15 @@ public sealed class PostgresFixture : IAsyncLifetime
         // Build the full schema from the EF model (faster than running all migrations)
         await using var db = CreateDb();
         await db.Database.EnsureCreatedAsync();
+        // EnsureCreatedAsync generates CREATE INDEX from HasFilter but omits the WHERE clause
+        // for partial indexes in some Npgsql versions. Recreate the payroll_runs period index
+        // explicitly so voided runs don't permanently block re-use of the same period.
+        await db.Database.ExecuteSqlRawAsync(
+            @"DROP INDEX IF EXISTS ""IX_payroll_runs_tenant_id_year_month"";");
+        await db.Database.ExecuteSqlRawAsync(
+            @"CREATE UNIQUE INDEX ""IX_payroll_runs_tenant_id_year_month""
+              ON payroll_runs (tenant_id, year, month)
+              WHERE status != 'Voided';");
     }
 
     public Task DisposeAsync() => _container.DisposeAsync().AsTask();

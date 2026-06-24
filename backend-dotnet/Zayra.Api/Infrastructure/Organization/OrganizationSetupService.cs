@@ -274,7 +274,22 @@ public class OrganizationSetupService : IOrganizationSetupService
         return costCenter.ToDto();
     }
 
-    public Task<bool> DeleteCompanyAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Companies, tenantId, id, "organization.company_deleted", context, cancellationToken);
+    public async Task<bool> DeleteCompanyAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken)
+    {
+        // IgnoreQueryFilters is intentional: counting all active employees in this company regardless of the
+        // calling user's company-scope JWT claims — this is a system-level integrity check, not a user query.
+        var activeCount = await _db.Employees
+            .IgnoreQueryFilters()
+            .CountAsync(e => e.TenantId == tenantId && e.CompanyId == id
+                             && !e.IsDeleted
+                             && e.Status != "Archived" && e.Status != "Terminated" && e.Status != "Exited",
+                cancellationToken);
+        if (activeCount > 0)
+            throw new InvalidOperationException(
+                $"Cannot delete company: {activeCount} active employee{(activeCount == 1 ? "" : "s")} still belong to it. " +
+                $"Reassign or deactivate all employees before deleting the company.");
+        return await SoftDelete(_db.Companies, tenantId, id, "organization.company_deleted", context, cancellationToken);
+    }
     public Task<bool> DeleteBranchAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Branches, tenantId, id, "organization.branch_deleted", context, cancellationToken);
     public Task<bool> DeleteDepartmentAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Departments, tenantId, id, "organization.department_deleted", context, cancellationToken);
     public Task<bool> DeleteDesignationAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Designations, tenantId, id, "organization.designation_deleted", context, cancellationToken);

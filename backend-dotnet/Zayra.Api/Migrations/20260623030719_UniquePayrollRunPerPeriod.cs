@@ -10,26 +10,37 @@ namespace Zayra.Api.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            // One payroll run per (tenant, year, month) — period uniqueness independent of company.
-            // A null company_id falls back to the tenant's first active company during Process(),
-            // so two runs for the same period (one with company_id, one without) would compute
-            // the same payroll and produce a double-payment. The DB constraint enforces
-            // period-level uniqueness.
-            //
-            // NOTE: Remove any duplicate runs before applying this migration.
-            // Dedup SQL (keep the run with data, delete the rest):
-            //   DELETE FROM payroll_runs
-            //   WHERE id IN (
-            //     SELECT id FROM (
-            //       SELECT id,
-            //              ROW_NUMBER() OVER (PARTITION BY tenant_id, year, month
-            //                                ORDER BY employee_count DESC, created_at_utc ASC) AS rn
-            //       FROM payroll_runs
-            //     ) t WHERE rn > 1
-            //   );
+            // Void duplicate runs per period before creating the unique index.
+            // Priority: Locked > Processed > Approved > Completed > Draft — never hard-deletes.
+            // Uses a partial index (WHERE status != 'Voided') so voided duplicates don't conflict.
             migrationBuilder.Sql(@"
-                CREATE UNIQUE INDEX ""IX_payroll_runs_tenant_id_year_month""
-                ON payroll_runs (tenant_id, year, month);
+                UPDATE payroll_runs
+                SET status = 'Voided'
+                WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY tenant_id, year, month
+                                   ORDER BY
+                                       CASE status
+                                           WHEN 'Locked'    THEN 1
+                                           WHEN 'Processed' THEN 2
+                                           WHEN 'Approved'  THEN 3
+                                           WHEN 'Completed' THEN 4
+                                           WHEN 'Draft'     THEN 5
+                                           ELSE 6
+                                       END ASC,
+                                       employee_count DESC,
+                                       created_at_utc ASC
+                               ) AS rn
+                        FROM payroll_runs
+                        WHERE status != 'Voided'
+                    ) t WHERE rn > 1
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS ""IX_payroll_runs_tenant_id_year_month""
+                ON payroll_runs (tenant_id, year, month)
+                WHERE status != 'Voided';
             ");
         }
 

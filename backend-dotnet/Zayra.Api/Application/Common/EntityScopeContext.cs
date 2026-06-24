@@ -20,12 +20,24 @@ public sealed class EntityScopeContext
         AccessibleCompanyIds = ids;
     }
 
-    public static EntityScopeContext FromClaims(ClaimsPrincipal user)
+    /// <param name="strictMode">
+    /// When true, absence of both entity_access and is_group_scope claims is treated as
+    /// default-deny (Empty) rather than backward-compat GroupLevel. Enable after all users
+    /// have re-authenticated with the new JWT schema.
+    /// </param>
+    public static EntityScopeContext FromClaims(ClaimsPrincipal user, bool strictMode = false)
     {
         var claims = user.FindAll("entity_access").Select(c => c.Value).ToList();
-        // No entity_access claim → group-level (backwards-compatible for all existing users)
         if (claims.Count == 0)
-            return GroupLevel;
+        {
+            // Explicit is_group_scope=true claim — post-migration group access
+            if (user.HasClaim("is_group_scope", "true"))
+                return GroupLevel;
+            // No entity_access and no is_group_scope:
+            //   Non-strict → backward-compat GroupLevel (pre-migration behavior)
+            //   Strict → default-deny (Empty)
+            return strictMode ? Empty : GroupLevel;
+        }
 
         var companyIds = new List<Guid>();
         bool hasGroupGrant = false;
@@ -50,6 +62,8 @@ public sealed class EntityScopeContext
     }
 
     public static readonly EntityScopeContext GroupLevel = new(true, Array.Empty<Guid>());
+    // No entity_access + StrictMode — deny all company-owned data
+    public static readonly EntityScopeContext Empty = new(false, Array.Empty<Guid>());
 
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
 

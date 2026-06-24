@@ -23,6 +23,10 @@ public class User : ITenantOwned
     public int FailedLoginCount { get; set; }
     public DateTime? LastPasswordChangedAt { get; set; }
     public bool MustChangePassword { get; set; }
+    // True when this user has group-level (cross-company) access within their tenant.
+    // Derives from explicit is_group_scope=true JWT claim (post-migration) or is used
+    // to elevate scoped users by an Admin via the AccessController.SetGroupScope endpoint.
+    public bool IsGroupScope { get; set; }
     public bool MFAEnabled { get; set; }
     // TOTP-specific fields — secrets are always stored encrypted via IDataProtector.
     // These are never returned in any API response; read them only inside MfaService.

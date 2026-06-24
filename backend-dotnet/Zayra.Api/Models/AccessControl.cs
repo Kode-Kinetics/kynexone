@@ -154,4 +154,7 @@ public class UserEntityAccess : ITenantOwned
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
     public Guid? UpdatedBy { get; set; }
+    // Explicit grant tracking — who approved this access grant and when
+    public Guid? GrantedBy { get; set; }
+    public DateTime? GrantedAt { get; set; }
 }

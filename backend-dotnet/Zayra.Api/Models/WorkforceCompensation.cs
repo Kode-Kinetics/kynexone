@@ -232,7 +232,7 @@ public class OvertimeAuditLog : ITenantOwned
     public Guid? UserId { get; set; }
 }
 
-public class SalaryStructure : ITenantOwned
+public class SalaryStructure : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }

@@ -4,6 +4,8 @@ using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
 
@@ -19,6 +21,7 @@ public class ZayraDbContext : DbContext
     /// </summary>
     private readonly IHttpContextAccessor? _httpContextAccessor;
     private readonly ILogger<ZayraDbContext>? _logger;
+    private readonly IOptions<EntityScopeOptions>? _scopeOptions;
 
     /// <summary>
     /// Current request's tenant, resolved lazily from the ambient HttpContext.
@@ -50,14 +53,40 @@ public class ZayraDbContext : DbContext
         }
     }
 
+    // Company scope — derived lazily from JWT entity_access claims.
+    // True when no HTTP context (admin/background work) or user has group-level access.
+    private bool _isGroupScope
+    {
+        get
+        {
+            var user = _httpContextAccessor?.HttpContext?.User;
+            if (user is null) return true;
+            return EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false).IsGroupLevel;
+        }
+    }
+
+    // Explicit company IDs the current user may access. Empty when _isGroupScope=true.
+    private List<Guid> _companyScopeIds
+    {
+        get
+        {
+            var user = _httpContextAccessor?.HttpContext?.User;
+            if (user is null) return [];
+            return EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false)
+                .AccessibleCompanyIds.ToList();
+        }
+    }
+
     public ZayraDbContext(
         DbContextOptions<ZayraDbContext> options,
         IHttpContextAccessor? httpContextAccessor = null,
-        ILogger<ZayraDbContext>? logger = null)
+        ILogger<ZayraDbContext>? logger = null,
+        IOptions<EntityScopeOptions>? scopeOptions = null)
         : base(options)
     {
         _logger = logger;
         _httpContextAccessor = httpContextAccessor;
+        _scopeOptions = scopeOptions;
     }
 
     /// <summary>
@@ -2418,18 +2447,31 @@ public class ZayraDbContext : DbContext
         }
     }
 
-    // The lambdas close over instance field _tenantId so EF Core re-parameterises per request.
-    // Each method also AND-s in the soft-delete guard when the entity has an `IsDeleted` property,
-    // giving two automatic safety nets in one filter expression (EF Core only supports one
-    // HasQueryFilter call per entity type — combining both here is the correct pattern).
-    // Code that intentionally needs deleted records must call .IgnoreQueryFilters().
+    // The lambdas close over instance properties (_tenantId, _isGroupScope, _companyScopeIds)
+    // so EF Core re-parameterises per request (lazy resolution from the ambient HttpContext).
+    // Each method AND-s in the soft-delete guard and, for ICompanyScoped entities, the
+    // company-scope guard in one HasQueryFilter call (EF Core only supports one per entity type).
+    // Code that intentionally needs deleted/cross-company records must call .IgnoreQueryFilters().
     private void SetTenantFilterNonNull<TEntity>(ModelBuilder modelBuilder) where TEntity : class
     {
         var hasSoftDelete = typeof(TEntity).GetProperty("IsDeleted") != null;
-        if (hasSoftDelete)
+        var hasCompanyScope = typeof(ICompanyScoped).IsAssignableFrom(typeof(TEntity));
+
+        if (hasSoftDelete && hasCompanyScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                     && !EF.Property<bool>(e, "IsDeleted")
+                     && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
+                         || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
+        else if (hasSoftDelete)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
                      && !EF.Property<bool>(e, "IsDeleted"));
+        else if (hasCompanyScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                     && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
+                         || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
         else
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => _tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId);
@@ -2438,10 +2480,23 @@ public class ZayraDbContext : DbContext
     private void SetTenantFilterNullable<TEntity>(ModelBuilder modelBuilder) where TEntity : class
     {
         var hasSoftDelete = typeof(TEntity).GetProperty("IsDeleted") != null;
-        if (hasSoftDelete)
+        var hasCompanyScope = typeof(ICompanyScoped).IsAssignableFrom(typeof(TEntity));
+
+        if (hasSoftDelete && hasCompanyScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                     && !EF.Property<bool>(e, "IsDeleted")
+                     && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
+                         || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
+        else if (hasSoftDelete)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
                      && !EF.Property<bool>(e, "IsDeleted"));
+        else if (hasCompanyScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                     && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
+                         || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
         else
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => _tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId);

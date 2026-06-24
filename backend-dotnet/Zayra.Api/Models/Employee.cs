@@ -23,7 +23,7 @@ public static class EmployeeStatuses
     public const string Exited     = "Exited";
 }
 
-public class Employee : INullableTenantOwned
+public class Employee : INullableTenantOwned, ICompanyScoped
 {
     public int Id { get; set; }
     public Guid? TenantId { get; set; }
