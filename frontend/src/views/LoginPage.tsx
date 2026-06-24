@@ -180,8 +180,8 @@ export function LoginPage() {
         <div className="pointer-events-none absolute left-0 top-1/4 h-56 w-56 rounded-full bg-blue-300/14 blur-3xl dark:bg-blue-700/8 kx-float" />
         <div className="pointer-events-none absolute bottom-[-4rem] right-[-5rem] h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl dark:bg-cyan-600/8 kx-float" />
 
-        <div className="relative z-10 grid min-h-[100svh] w-full lg:grid-cols-[0.96fr_1.04fr]">
-          <section className="relative flex min-h-[34svh] flex-col justify-between overflow-hidden bg-[linear-gradient(160deg,#fbfdff_0%,#f4f8ff_42%,#eaf2ff_100%)] px-5 py-4 text-slate-900 sm:px-8 sm:py-5 lg:min-h-[100svh] lg:px-10 lg:py-6">
+        <div className="relative z-10 grid min-h-[100svh] w-full lg:grid-cols-[0.98fr_1.02fr]">
+          <section className="relative flex min-h-[34svh] flex-col overflow-hidden bg-[linear-gradient(160deg,#fbfdff_0%,#f4f8ff_42%,#eaf2ff_100%)] px-5 py-4 text-slate-900 sm:px-8 sm:py-5 lg:min-h-[100svh] lg:px-10 lg:py-6">
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(47,107,255,0.18),transparent_26%),radial-gradient(circle_at_88%_14%,rgba(94,235,255,0.12),transparent_18%),radial-gradient(circle_at_50%_100%,rgba(56,189,248,0.10),transparent_22%)]" />
             <div className="pointer-events-none absolute inset-0 opacity-[0.16] [background-image:linear-gradient(rgba(47,107,255,0.07)_1px,transparent_1px),linear-gradient(90deg,rgba(47,107,255,0.07)_1px,transparent_1px)] [background-size:72px_72px]" />
             <div className="pointer-events-none absolute -right-10 top-10 h-28 w-28 rounded-full border border-cyan-300/20 bg-cyan-300/12 blur-2xl kx-orbit" />
@@ -189,7 +189,7 @@ export function LoginPage() {
 
             <div className="relative z-10 flex items-center gap-3">
               <div className="rounded-[22px] border border-white/85 bg-white/86 px-4 py-3.5 shadow-[0_18px_40px_rgba(37,99,235,0.10)] backdrop-blur-xl">
-                <Logo size="lg" />
+                <Logo size="xl" />
               </div>
               <div className="h-9 w-px bg-slate-300/60" />
               <div>
@@ -202,7 +202,8 @@ export function LoginPage() {
               </div>
             </div>
 
-            <div className="relative z-10 max-w-[560px] space-y-3 lg:pb-3">
+            <div className="flex flex-1 items-center">
+              <div className="relative z-10 max-w-[560px] space-y-3 lg:-mt-4">
               <div className="inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-white/78 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 shadow-sm backdrop-blur">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 Secure workspace access
@@ -239,9 +240,10 @@ export function LoginPage() {
                   ))}
                 </div>
               </div>
+              </div>
             </div>
 
-            <p className="relative z-10 text-[11px] text-slate-500">
+            <p className="relative z-10 mt-auto pt-4 text-[11px] text-slate-500">
               A <span className="font-semibold text-slate-600">Kode Kinetics</span> product · secure access only
             </p>
           </section>
