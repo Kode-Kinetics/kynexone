@@ -35,6 +35,12 @@ const WORKFORCE_FLOW = [
   'Audit',
 ];
 
+const WORKFORCE_BACKGROUND = [
+  { label: 'Clock-in stream', bars: [42, 68, 58, 84, 62] },
+  { label: 'Approval queue', bars: [24, 48, 36, 54, 44] },
+  { label: 'Payroll pulse', bars: [16, 28, 40, 62, 78] },
+];
+
 type Mode = 'login' | 'forgot' | 'reset' | 'mfa';
 
 export function LoginPage() {
@@ -187,6 +193,18 @@ export function LoginPage() {
           0% { background-position: 0% 50%; }
           100% { background-position: 200% 50%; }
         }
+        @keyframes kx-bar {
+          0%, 100% { transform: scaleY(0.58); opacity: 0.48; }
+          50% { transform: scaleY(1); opacity: 1; }
+        }
+        @keyframes kx-pan {
+          0%, 100% { transform: translateX(0); }
+          50% { transform: translateX(14px); }
+        }
+        @keyframes kx-pan-reverse {
+          0%, 100% { transform: translateX(0); }
+          50% { transform: translateX(-14px); }
+        }
         .kx-float { animation: kx-float 14s ease-in-out infinite; }
         .kx-drift { animation: kx-drift 18s ease-in-out infinite; }
         .kx-panel-in { animation: kx-panel-in 0.65s ease-out both; }
@@ -205,6 +223,9 @@ export function LoginPage() {
         }
         .kx-delay-1 { animation-delay: 0.8s; }
         .kx-delay-2 { animation-delay: 1.6s; }
+        .kx-bar { animation: kx-bar 2.8s ease-in-out infinite; transform-origin: bottom; }
+        .kx-pan { animation: kx-pan 16s ease-in-out infinite; }
+        .kx-pan-reverse { animation: kx-pan-reverse 18s ease-in-out infinite; }
 
         @media (prefers-reduced-motion: reduce) {
           .kx-float,
@@ -219,7 +240,10 @@ export function LoginPage() {
           .kx-node,
           .kx-pop,
           .kx-drift-soft,
-          .kx-cta-shine {
+          .kx-cta-shine,
+          .kx-bar,
+          .kx-pan,
+          .kx-pan-reverse {
             animation: none !important;
           }
         }
@@ -235,6 +259,55 @@ export function LoginPage() {
         <div className="pointer-events-none absolute inset-y-0 left-1/3 w-px bg-gradient-to-b from-transparent via-blue-300/14 to-transparent opacity-45" />
         <div className="pointer-events-none absolute left-0 top-1/4 h-56 w-56 rounded-full bg-blue-300/14 blur-3xl dark:bg-blue-700/8 kx-float" />
         <div className="pointer-events-none absolute bottom-[-4rem] right-[-5rem] h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl dark:bg-cyan-600/8 kx-float" />
+        <div className="pointer-events-none absolute left-[6%] top-[19%] hidden lg:block">
+          <div className="rounded-[28px] border border-white/55 bg-white/48 p-3 shadow-[0_18px_50px_rgba(37,99,235,0.08)] backdrop-blur-2xl kx-pan">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-[9px] font-semibold uppercase tracking-[0.28em] text-blue-500/70">Live workforce feed</p>
+              <span className="rounded-full bg-emerald-400/15 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.2em] text-emerald-600">
+                synced
+              </span>
+            </div>
+            <div className="flex items-end gap-2">
+              {WORKFORCE_BACKGROUND[0].bars.map((bar, idx) => (
+                <span
+                  key={idx}
+                  className="kx-bar w-3 rounded-full bg-gradient-to-t from-blue-500 via-sky-400 to-cyan-200"
+                  style={{ height: `${bar}px`, animationDelay: `${idx * 0.14}s` }}
+                />
+              ))}
+            </div>
+            <p className="mt-3 text-[10px] font-medium text-slate-500">{WORKFORCE_BACKGROUND[0].label}</p>
+          </div>
+        </div>
+        <div className="pointer-events-none absolute right-[7%] top-[24%] hidden xl:block">
+          <div className="rounded-[28px] border border-white/55 bg-white/48 p-3 shadow-[0_18px_50px_rgba(37,99,235,0.08)] backdrop-blur-2xl kx-pan-reverse">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              <p className="text-[9px] font-semibold uppercase tracking-[0.28em] text-cyan-600">Approval pipeline</p>
+            </div>
+            <div className="space-y-2">
+              {WORKFORCE_BACKGROUND.slice(1).map((item, idx) => (
+                <div key={item.label} className="rounded-2xl border border-slate-200/60 bg-white/80 p-2.5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-semibold text-slate-600">{item.label}</p>
+                    <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                      {idx === 0 ? '84%' : '42%'}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-end gap-1.5">
+                    {item.bars.map((bar, barIdx) => (
+                      <span
+                        key={barIdx}
+                        className="kx-bar w-2.5 rounded-full bg-gradient-to-t from-sky-500 to-cyan-200"
+                        style={{ height: `${bar}px`, animationDelay: `${(idx + barIdx) * 0.12}s` }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
 
         <div className="relative z-10 grid min-h-[100svh] w-full lg:grid-cols-[0.98fr_1.02fr]">
           <section className="relative flex min-h-[34svh] flex-col overflow-hidden bg-[linear-gradient(160deg,#fbfdff_0%,#f4f8ff_42%,#eaf2ff_100%)] px-5 py-4 text-slate-900 sm:px-8 sm:py-5 lg:min-h-[100svh] lg:px-10 lg:py-6">
