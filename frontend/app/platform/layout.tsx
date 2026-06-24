@@ -122,12 +122,14 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
       >
         {/* Logo + env */}
         <div className="h-[52px] flex items-center gap-2.5 px-4 border-b border-white/[0.06] shrink-0">
-          <Logo size="sm" />
-          <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-bold text-white tracking-wide truncate">KynexOne</p>
-            <p className="text-[10px] text-slate-600 truncate leading-none mt-0.5">Control Plane</p>
+          <Logo size="sm" collapsed />
+          <div className="min-w-0 flex-1 leading-tight">
+            <p className="text-[13px] font-bold text-white tracking-tight truncate">
+              Kynex<span className="text-cyan-300">One</span>
+            </p>
+            <p className="text-[10px] text-slate-500 truncate leading-none mt-0.5">Control Plane</p>
           </div>
-          <span className="shrink-0 text-[9px] font-semibold bg-blue-500/15 text-blue-400 border border-blue-500/25 px-1.5 py-0.5 rounded uppercase tracking-wider">
+          <span className="shrink-0 text-[9px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 px-1.5 py-0.5 rounded uppercase tracking-wider">
             PROD
           </span>
         </div>
