@@ -4,13 +4,15 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Plus, Search, RefreshCw, Building2, ChevronRight, X,
-  MoreHorizontal, CheckCircle, AlertTriangle, XCircle, Circle, Clock, Eye, EyeOff,
+  Plus, Search, RefreshCw, Building2, X,
+  MoreHorizontal, CheckCircle, AlertTriangle, XCircle, Clock, Eye, EyeOff,
+  Power, PowerOff, Trash2, Zap, Globe,
 } from 'lucide-react';
 import {
   platformApi,
   type PlatformTenantSummary,
   type CreateTenantBody,
+  type BulkOpResult,
 } from '@/src/api/platform';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
@@ -293,11 +295,110 @@ function ConfirmModal({ title, message, onConfirm, onClose, danger = false, requ
   );
 }
 
+// ── Bulk Feature Modal ────────────────────────────────────────────────────────
+
+function BulkFeatureModal({ selectedCount, totalCount, onClose, onApply }: {
+  selectedCount: number;
+  totalCount: number;
+  onClose: () => void;
+  onApply: (featureKey: string, isEnabled: boolean, applyToAll: boolean) => Promise<void>;
+}) {
+  const [features, setFeatures] = useState<{ key: string; label: string; category: string }[]>([]);
+  const [featureKey, setFeatureKey] = useState('');
+  const [isEnabled, setIsEnabled] = useState(true);
+  const [applyToAll, setApplyToAll] = useState(selectedCount === 0);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    platformApi.getFeatureFlags()
+      .then(fs => { setFeatures(fs); if (fs.length) setFeatureKey(fs[0].key); })
+      .catch(() => setFeatures([]));
+  }, []);
+
+  const targetLabel = applyToAll
+    ? `ALL ${totalCount} tenants`
+    : `${selectedCount} selected tenant${selectedCount === 1 ? '' : 's'}`;
+
+  async function apply() {
+    if (!featureKey) return;
+    setBusy(true);
+    try { await onApply(featureKey, isEnabled, applyToAll); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-md bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <Zap className="h-4 w-4 text-sapphire" />
+          <h3 className="text-sm font-semibold text-white">Apply Feature in Bulk</h3>
+        </div>
+
+        <div>
+          <label className="block text-xs text-slate-400 mb-1">Feature</label>
+          <select aria-label="Feature to apply" value={featureKey} onChange={e => setFeatureKey(e.target.value)}
+            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60">
+            {features.length === 0 && <option value="">No features available</option>}
+            {features.map(f => <option key={f.key} value={f.key}>{f.label} · {f.category}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-xs text-slate-400 mb-1.5">Action</label>
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setIsEnabled(true)}
+              className={`flex items-center justify-center gap-1.5 rounded-lg py-2 text-sm font-medium border transition-colors ${isEnabled ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300' : 'border-white/10 text-slate-400 hover:text-white'}`}>
+              <Power className="h-3.5 w-3.5" /> Enable
+            </button>
+            <button type="button" onClick={() => setIsEnabled(false)}
+              className={`flex items-center justify-center gap-1.5 rounded-lg py-2 text-sm font-medium border transition-colors ${!isEnabled ? 'bg-rose-500/15 border-rose-500/40 text-rose-300' : 'border-white/10 text-slate-400 hover:text-white'}`}>
+              <PowerOff className="h-3.5 w-3.5" /> Disable
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs text-slate-400 mb-1.5">Target</label>
+          <div className="space-y-1.5">
+            <button type="button" disabled={selectedCount === 0} onClick={() => setApplyToAll(false)}
+              className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-sm border transition-colors text-left disabled:opacity-40 ${!applyToAll ? 'bg-sapphire/15 border-sapphire/40 text-white' : 'border-white/10 text-slate-400 hover:text-white'}`}>
+              <CheckCircle className={`h-3.5 w-3.5 ${!applyToAll ? 'text-sapphire' : 'text-slate-600'}`} />
+              Selected tenants ({selectedCount})
+            </button>
+            <button type="button" onClick={() => setApplyToAll(true)}
+              className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-sm border transition-colors text-left ${applyToAll ? 'bg-amber-500/15 border-amber-500/40 text-white' : 'border-white/10 text-slate-400 hover:text-white'}`}>
+              <Globe className={`h-3.5 w-3.5 ${applyToAll ? 'text-amber-400' : 'text-slate-600'}`} />
+              ALL tenants ({totalCount}) — platform-wide
+            </button>
+          </div>
+        </div>
+
+        <p className="text-xs text-slate-500">
+          {isEnabled ? 'Enable' : 'Disable'} <span className="text-slate-300 font-medium">{featureKey || '—'}</span> for {targetLabel}.
+        </p>
+
+        <div className="flex gap-3 pt-1">
+          <button type="button" onClick={onClose}
+            className="flex-1 border border-white/10 text-slate-400 hover:text-white rounded-lg py-2 text-sm transition-colors">
+            Cancel
+          </button>
+          <button type="button" onClick={apply} disabled={busy || !featureKey}
+            className="flex-1 bg-sapphire hover:bg-blue-500 text-white rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-40">
+            {busy ? 'Applying…' : 'Apply'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Tenant Row ────────────────────────────────────────────────────────────────
 
-function TenantRow({ t, onAction }: {
+function TenantRow({ t, onAction, selected, onToggle }: {
   t: PlatformTenantSummary;
   onAction: (action: 'suspend' | 'reactivate', t: PlatformTenantSummary) => void;
+  selected: boolean;
+  onToggle: (id: string) => void;
 }) {
   const router = useRouter();
   const status  = statusKey(t.subscription?.status ?? 'unknown');
@@ -312,10 +413,21 @@ function TenantRow({ t, onAction }: {
   return (
     <tr
       className={`border-b border-white/[0.04] hover:bg-white/[0.03] transition-colors cursor-pointer
+        ${selected ? 'bg-sapphire/[0.07]' : ''}
         ${risk === 'rose' ? 'bg-rose-950/20 border-l-2 border-l-rose-700' : ''}
         ${risk === 'amber' ? 'bg-amber-950/20 border-l-2 border-l-amber-600' : ''}`}
       onClick={() => router.push(`/platform/tenants/${t.id}`)}
     >
+      {/* Select checkbox */}
+      <td className="px-3 py-3 w-9" onClick={e => e.stopPropagation()}>
+        <input
+          type="checkbox"
+          aria-label={`Select ${t.name}`}
+          checked={selected}
+          onChange={() => onToggle(t.id)}
+          className="h-3.5 w-3.5 rounded border-white/20 bg-white/[0.04] accent-sapphire cursor-pointer"
+        />
+      </td>
       {/* Status dot + name */}
       <td className="px-4 py-3">
         <div className="flex items-center gap-3">
@@ -403,6 +515,9 @@ export default function TenantsPage() {
   const [showNew, setShowNew]     = useState(false);
   const [confirm, setConfirm]     = useState<{ action: 'suspend' | 'reactivate'; tenant: PlatformTenantSummary } | null>(null);
   const [opMsg, setOpMsg]         = useState<{ text: string; ok: boolean } | null>(null);
+  const [selected, setSelected]   = useState<Set<string>>(new Set());
+  const [bulkConfirm, setBulkConfirm] = useState<'suspend' | 'reactivate' | 'delete' | null>(null);
+  const [showBulkFeature, setShowBulkFeature] = useState(false);
 
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('platform_access_token') : null;
@@ -439,6 +554,67 @@ export default function TenantsPage() {
     return matchQ && matchS;
   });
 
+  // ── Selection helpers ────────────────────────────────────────────────────
+  function toggleOne(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+  const filteredIds = filtered.map(t => t.id);
+  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every(id => selected.has(id));
+  function toggleAll() {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (allFilteredSelected) filteredIds.forEach(id => next.delete(id));
+      else filteredIds.forEach(id => next.add(id));
+      return next;
+    });
+  }
+  function clearSelection() { setSelected(new Set()); }
+
+  function summaryText(r: BulkOpResult, verb: string) {
+    const parts = [`${r.succeeded} ${verb}`];
+    if (r.skipped) parts.push(`${r.skipped} skipped`);
+    if (r.failed)  parts.push(`${r.failed} failed`);
+    return parts.join(' · ');
+  }
+
+  async function doBulkAction(reason: string) {
+    if (!bulkConfirm) return;
+    const ids = [...selected];
+    try {
+      let r: BulkOpResult;
+      if (bulkConfirm === 'suspend')         r = await platformApi.bulkSuspendTenants(ids, reason);
+      else if (bulkConfirm === 'reactivate') r = await platformApi.bulkReactivateTenants(ids, reason);
+      else                                   r = await platformApi.bulkDeleteTenants(ids);
+      const verb = bulkConfirm === 'suspend' ? 'suspended' : bulkConfirm === 'reactivate' ? 'reactivated' : 'deleted';
+      setOpMsg({ text: summaryText(r, verb), ok: r.failed === 0 });
+      setBulkConfirm(null);
+      clearSelection();
+      await load();
+    } catch {
+      setOpMsg({ text: `Bulk ${bulkConfirm} failed.`, ok: false });
+      setBulkConfirm(null);
+    }
+  }
+
+  async function doBulkFeature(featureKey: string, isEnabled: boolean, applyToAll: boolean) {
+    try {
+      const r = await platformApi.bulkSetFeature(
+        applyToAll ? { applyToAll: true, featureKey, isEnabled }
+                   : { tenantIds: [...selected], featureKey, isEnabled });
+      setOpMsg({ text: `${featureKey} ${isEnabled ? 'enabled' : 'disabled'}: ${summaryText(r, 'updated')}`, ok: r.failed === 0 });
+      setShowBulkFeature(false);
+      clearSelection();
+      await load();
+    } catch {
+      setOpMsg({ text: 'Bulk feature update failed.', ok: false });
+      setShowBulkFeature(false);
+    }
+  }
+
   const counts = {
     total: tenants.length,
     active: tenants.filter(t => statusKey(t.subscription?.status ?? '') === 'active').length,
@@ -456,9 +632,14 @@ export default function TenantsPage() {
           <p className="text-xs text-slate-500 mt-0.5">{counts.total} tenants · {counts.active} active · {counts.trial} trial</p>
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={load} disabled={loading}
+          <button type="button" onClick={load} disabled={loading} title="Refresh"
             className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-white border border-white/10 rounded-lg transition-colors disabled:opacity-40">
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button type="button" onClick={() => setShowBulkFeature(true)}
+            className="flex items-center gap-1.5 border border-white/10 text-slate-300 hover:text-white hover:border-white/20 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors">
+            <Zap className="h-3.5 w-3.5 text-sapphire" />
+            Feature Rollout
           </button>
           <button type="button" onClick={() => setShowNew(true)}
             className="flex items-center gap-1.5 bg-sapphire hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors">
@@ -507,6 +688,31 @@ export default function TenantsPage() {
         </select>
       </div>
 
+      {/* Bulk action bar */}
+      {selected.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 rounded-lg border border-sapphire/30 bg-sapphire/[0.08]">
+          <span className="text-sm font-medium text-white">{selected.size} selected</span>
+          <button type="button" onClick={clearSelection} className="text-xs text-slate-400 hover:text-white">Clear</button>
+          <div className="flex-1" />
+          <button type="button" onClick={() => setShowBulkFeature(true)}
+            className="flex items-center gap-1.5 text-xs font-medium text-sapphire hover:text-blue-300 border border-sapphire/30 hover:border-sapphire/50 px-2.5 py-1.5 rounded-lg transition-colors">
+            <Zap className="h-3.5 w-3.5" /> Apply Feature
+          </button>
+          <button type="button" onClick={() => setBulkConfirm('reactivate')}
+            className="flex items-center gap-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
+            <Power className="h-3.5 w-3.5" /> Reactivate
+          </button>
+          <button type="button" onClick={() => setBulkConfirm('suspend')}
+            className="flex items-center gap-1.5 text-xs font-medium text-amber-400 hover:text-amber-300 border border-amber-500/20 hover:border-amber-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
+            <PowerOff className="h-3.5 w-3.5" /> Suspend
+          </button>
+          <button type="button" onClick={() => setBulkConfirm('delete')}
+            className="flex items-center gap-1.5 text-xs font-medium text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
+            <Trash2 className="h-3.5 w-3.5" /> Delete
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
         {loading ? (
@@ -531,14 +737,22 @@ export default function TenantsPage() {
             <table className="w-full min-w-[700px]">
               <thead>
                 <tr className="border-b border-white/[0.06]">
+                  <th className="px-3 py-2.5 w-9">
+                    <input type="checkbox" aria-label="Select all tenants"
+                      checked={allFilteredSelected} onChange={toggleAll}
+                      className="h-3.5 w-3.5 rounded border-white/20 bg-white/[0.04] accent-sapphire cursor-pointer" />
+                  </th>
                   {['Tenant', 'Plan', 'Status', 'MRR', 'Employees', 'Expires', ''].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest first:pl-4">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {filtered.map(t => (
-                  <TenantRow key={t.id} t={t} onAction={(action, tenant) => setConfirm({ action, tenant })} />
+                  <TenantRow key={t.id} t={t}
+                    onAction={(action, tenant) => setConfirm({ action, tenant })}
+                    selected={selected.has(t.id)}
+                    onToggle={toggleOne} />
                 ))}
               </tbody>
             </table>
@@ -558,6 +772,30 @@ export default function TenantsPage() {
           onClose={() => setConfirm(null)}
           danger={confirm.action === 'suspend'}
           requireReason={confirm.action === 'suspend'}
+        />
+      )}
+      {bulkConfirm && (
+        <ConfirmModal
+          title={
+            bulkConfirm === 'suspend'    ? `Suspend ${selected.size} tenant${selected.size === 1 ? '' : 's'}?` :
+            bulkConfirm === 'reactivate' ? `Reactivate ${selected.size} tenant${selected.size === 1 ? '' : 's'}?` :
+                                           `Delete ${selected.size} tenant${selected.size === 1 ? '' : 's'}?`}
+          message={
+            bulkConfirm === 'suspend'    ? 'This will disable all users across the selected tenants. Provide a reason for the record.' :
+            bulkConfirm === 'reactivate' ? 'This will restore access for all users across the selected tenants.' :
+                                           'This permanently deactivates the selected tenants, revokes all their sessions, and frees their slugs. This cannot be undone from here.'}
+          onConfirm={doBulkAction}
+          onClose={() => setBulkConfirm(null)}
+          danger={bulkConfirm !== 'reactivate'}
+          requireReason={bulkConfirm === 'suspend'}
+        />
+      )}
+      {showBulkFeature && (
+        <BulkFeatureModal
+          selectedCount={selected.size}
+          totalCount={tenants.length}
+          onClose={() => setShowBulkFeature(false)}
+          onApply={doBulkFeature}
         />
       )}
     </div>
