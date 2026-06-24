@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Upload, FileText, Trash2, Bot, CheckCircle, XCircle, Clock, Send,
+  Upload, FileText, Trash2, MessageSquareText, CheckCircle, XCircle, Clock, Send,
 } from 'lucide-react';
 import { policyDocumentsApi } from '../api/policyDocuments';
 import type { PolicyDocument, PolicyAskResponse } from '../api/policyDocuments';
@@ -241,11 +241,11 @@ export function PolicyDocumentManager() {
         )}
       </div>
 
-      {/* Ask Policy AI */}
+      {/* Policy Assistant */}
       <div className="rounded-xl border border-slate-200 bg-white dark:border-white/[0.08] dark:bg-white/[0.02]">
         <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3 dark:border-white/[0.07]">
-          <Bot className="h-4 w-4 text-sapphire dark:text-cyan-400" />
-          <p className="text-sm font-semibold text-slate-800 dark:text-white">Ask Policy AI</p>
+          <MessageSquareText className="h-4 w-4 text-sapphire dark:text-cyan-400" />
+          <p className="text-sm font-semibold text-slate-800 dark:text-white">Policy Assistant</p>
           <span className="ml-auto rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
             Advisory
           </span>
@@ -279,8 +279,8 @@ export function PolicyDocumentManager() {
           {answer && (
             <div className="rounded-lg border border-sapphire/20 bg-sapphire/5 p-4 dark:border-sapphire/30 dark:bg-sapphire/10 space-y-3">
               <div className="flex items-center gap-2">
-                <Bot className="h-4 w-4 text-sapphire dark:text-cyan-400" />
-                <span className="text-xs font-semibold text-sapphire dark:text-cyan-400">Policy AI</span>
+                <MessageSquareText className="h-4 w-4 text-sapphire dark:text-cyan-400" />
+                <span className="text-xs font-semibold text-sapphire dark:text-cyan-400">Assistant</span>
                 <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
                   Advisory Only
                 </span>
@@ -310,7 +310,7 @@ export function PolicyDocumentManager() {
           )}
 
           <p className="text-xs text-amber-600 dark:text-amber-400">
-            AI answers are advisory only. Always verify important policy information with HR.
+            Answers are advisory only. Always verify important policy information with HR.
           </p>
         </div>
       </div>

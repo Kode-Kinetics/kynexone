@@ -48,7 +48,7 @@ export default function AIAssistantPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      text: 'Hello! I\'m your AI HR Assistant. I can help you with headcount, leave status, pending approvals, department information, and more. All my responses are advisory only — I never make automated HR decisions.\n\nWhat would you like to know?',
+      text: 'Hello! I\'m your workspace assistant. I can help you with headcount, leave status, pending approvals, department information, and more. Responses are advisory only — no automated HR decisions are made.\n\nWhat would you like to know?',
       timestamp: new Date(),
     },
   ]);
@@ -141,7 +141,7 @@ export default function AIAssistantPage() {
   }
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: 'assistant', label: 'AI Assistant' },
+    { id: 'assistant', label: 'Assistant' },
     { id: 'insights', label: 'Insights' },
     { id: 'risk', label: 'Risk Scores' },
     { id: 'history', label: 'Query Log' },
@@ -151,10 +151,10 @@ export default function AIAssistantPage() {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-4">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center text-white text-xl font-bold">Z</div>
+        <div className="w-10 h-10 rounded-xl bg-sapphire flex items-center justify-center text-white text-xl font-bold">Z</div>
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">AI HR Intelligence</h1>
-          <p className="text-sm text-gray-500">Advisory only — AI assists HR decisions but never replaces them</p>
+          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Workspace Assistant</h1>
+          <p className="text-sm text-gray-500">Advisory only — assists HR decisions but never replaces them</p>
         </div>
         <div className="ml-auto flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-full text-xs text-amber-700 font-medium">
           Advisory Label Active
@@ -169,7 +169,7 @@ export default function AIAssistantPage() {
             onClick={() => setTab(t.id)}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
               tab === t.id
-                ? 'border-purple-600 text-purple-600'
+                ? 'border-sapphire text-sapphire'
                 : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
           >
@@ -183,14 +183,14 @@ export default function AIAssistantPage() {
         <div className="flex items-start gap-3 px-4 py-3 bg-amber-50 border border-amber-300 rounded-xl text-sm text-amber-800">
           <span className="text-amber-500 text-lg leading-none mt-0.5">⚠</span>
           <div>
-            <span className="font-semibold">AI provider not configured.</span>{' '}
-            The AI Assistant is disabled because no provider key is set (<code className="font-mono text-xs bg-amber-100 px-1 rounded">AI_PROVIDER=none</code>).
+            <span className="font-semibold">Assistant not configured.</span>{' '}
+            The assistant is disabled because no provider key is set (<code className="font-mono text-xs bg-amber-100 px-1 rounded">AI_PROVIDER=none</code>).
             Set <code className="font-mono text-xs bg-amber-100 px-1 rounded">AI_PROVIDER</code> and an API key in Render to enable live responses.
           </div>
         </div>
       )}
 
-      {/* AI Assistant Chat */}
+      {/* Assistant Chat */}
       {tab === 'assistant' && (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           <div className="lg:col-span-3 flex flex-col bg-white rounded-xl border border-gray-200 overflow-hidden" style={{ height: 540 }}>
@@ -200,15 +200,15 @@ export default function AIAssistantPage() {
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${
                     msg.role === 'user'
-                      ? 'bg-purple-600 text-white'
+                      ? 'bg-sapphire text-white'
                       : msg.wasBlocked
                         ? 'bg-red-50 border border-red-200 text-red-800'
                         : 'bg-gray-50 border border-gray-200 text-gray-800'
                   }`}>
                     {msg.role === 'assistant' && (
                       <div className="flex items-center gap-1.5 mb-1.5">
-                        <div className="w-4 h-4 rounded-full bg-gradient-to-br from-purple-600 to-indigo-600"></div>
-                        <span className="text-xs font-semibold text-purple-700">AI Assistant</span>
+                        <div className="w-4 h-4 rounded-full bg-sapphire"></div>
+                        <span className="text-xs font-semibold text-sapphire">Assistant</span>
                         <span className="text-xs text-gray-400 ml-auto">Advisory</span>
                       </div>
                     )}
@@ -224,7 +224,7 @@ export default function AIAssistantPage() {
                   <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-center gap-2">
                     <div className="flex gap-1">
                       {[0, 1, 2].map(i => (
-                        <div key={i} className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.1}s` }} />
+                        <div key={i} className="w-1.5 h-1.5 bg-sapphire rounded-full animate-bounce" style={{ animationDelay: `${i * 0.1}s` }} />
                       ))}
                     </div>
                     <span className="text-sm text-gray-500">Thinking...</span>
@@ -241,14 +241,14 @@ export default function AIAssistantPage() {
                   value={query}
                   onChange={e => setQuery(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(query); } }}
-                  placeholder={providerStatus?.enabled === false ? 'AI provider not configured — see banner above' : 'Ask anything about your workforce...'}
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:bg-gray-50 disabled:text-gray-400"
+                  placeholder={providerStatus?.enabled === false ? 'Assistant not configured — see banner above' : 'Ask anything about your workforce...'}
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sapphire disabled:bg-gray-50 disabled:text-gray-400"
                   disabled={loading || providerStatus?.enabled === false}
                 />
                 <button
                   onClick={() => sendQuery(query)}
                   disabled={loading || !query.trim() || providerStatus?.enabled === false}
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-purple-700"
+                  className="px-4 py-2 bg-sapphire text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-sapphire/90"
                 >
                   Send
                 </button>
@@ -265,7 +265,7 @@ export default function AIAssistantPage() {
                   <button
                     key={i}
                     onClick={() => sendQuery(s)}
-                    className="w-full text-left text-xs px-3 py-2 bg-gray-50 hover:bg-purple-50 hover:text-purple-700 rounded-lg border border-gray-100 transition-colors"
+                    className="w-full text-left text-xs px-3 py-2 bg-gray-50 hover:bg-sapphire/10 hover:text-sapphire rounded-lg border border-gray-100 transition-colors"
                   >
                     {s}
                   </button>
@@ -275,23 +275,23 @@ export default function AIAssistantPage() {
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
               <p className="text-xs text-amber-700 font-medium mb-1">Advisory Notice</p>
               <p className="text-xs text-amber-600">
-                All AI responses are advisory only. The AI does not make or enforce HR decisions. All sensitive queries are logged and subject to RBAC.
+                All responses are advisory only and do not make or enforce HR decisions. All sensitive queries are logged and subject to RBAC.
               </p>
             </div>
           </div>
         </div>
       )}
 
-      {/* AI Insights */}
+      {/* Insights */}
       {tab === 'insights' && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900">AI Insights</h2>
-            <button onClick={loadInsights} className="text-sm text-purple-600 hover:underline">Refresh</button>
+            <h2 className="text-lg font-semibold text-gray-900">Insights</h2>
+            <button onClick={loadInsights} className="text-sm text-sapphire hover:underline">Refresh</button>
           </div>
           {insights.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
-              <p className="text-gray-500 text-sm">No insights available. AI insights are generated automatically as your modules accumulate data.</p>
+              <p className="text-gray-500 text-sm">No insights available. Insights are generated automatically as your modules accumulate data.</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -335,7 +335,7 @@ export default function AIAssistantPage() {
             <button
               onClick={computeRisk}
               disabled={computing}
-              className="px-4 py-2 bg-purple-600 text-white text-sm rounded-lg disabled:opacity-50 hover:bg-purple-700"
+              className="px-4 py-2 bg-sapphire text-white text-sm rounded-lg disabled:opacity-50 hover:bg-sapphire/90"
             >
               {computing ? 'Computing...' : 'Recompute Scores'}
             </button>
@@ -344,7 +344,7 @@ export default function AIAssistantPage() {
           {riskScores.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
               <p className="text-gray-500 text-sm mb-3">No risk scores yet.</p>
-              <button onClick={computeRisk} className="px-4 py-2 bg-purple-600 text-white text-sm rounded-lg">
+              <button onClick={computeRisk} className="px-4 py-2 bg-sapphire text-white text-sm rounded-lg">
                 Compute Now
               </button>
             </div>
@@ -411,10 +411,10 @@ export default function AIAssistantPage() {
       {/* Query Log */}
       {tab === 'history' && (
         <div className="space-y-4">
-          <h2 className="text-lg font-semibold text-gray-900">AI Query Audit Log</h2>
+          <h2 className="text-lg font-semibold text-gray-900">Assistant Query Log</h2>
           {history.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
-              <p className="text-gray-500 text-sm">No queries logged yet. Use the AI Assistant to get started.</p>
+              <p className="text-gray-500 text-sm">No queries logged yet. Use the assistant to get started.</p>
             </div>
           ) : (
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -438,7 +438,7 @@ export default function AIAssistantPage() {
                       </td>
                       <td className="px-4 py-3 text-xs">{h.userRole}</td>
                       <td className="px-4 py-3 text-xs text-gray-700 max-w-xs truncate">{h.query}</td>
-                      <td className="px-4 py-3 text-xs text-purple-600">{h.intentClassified}</td>
+                      <td className="px-4 py-3 text-xs text-sapphire">{h.intentClassified}</td>
                       <td className="px-4 py-3 text-center">
                         {h.wasBlocked ? (
                           <span className="text-xs text-red-600 font-semibold">Yes</span>

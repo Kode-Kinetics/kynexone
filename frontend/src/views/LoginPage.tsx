@@ -3,48 +3,67 @@
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound, Lock, Mail, Smartphone,
+  AlertCircle, CheckCircle2, Clock, Eye, EyeOff, KeyRound, Lock, Mail,
+  ShieldCheck, Smartphone, TrendingUp, Users,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 
+// Feature-specific marketing ticker — a scrolling marquee of real modules/capabilities.
+const FEATURE_TICKER = [
+  'WPS / SIF export', 'GOSI & social insurance', 'EOSB gratuity', 'Qiwa & Mudad',
+  'Shift & roster planning', 'Overtime & time-off', 'Loans & advances', 'Payslip designer',
+  'Performance & calibration', 'Recruitment & onboarding', 'Org chart', 'Employee self-service',
+  'Multi-company & multi-currency', 'Approval workflows', 'Saudization tracking', 'Hijri calendar',
+  'Document & visa compliance', 'Bank file generation', 'Role-based access', 'Audit trails',
+];
+
+// Illustrative product-preview slides (a UI glimpse, like a product screenshot) — the
+// carousel cycles these to show the platform's breadth at a glance.
+const PREVIEW_SLIDES = [
+  {
+    tag: 'Payroll · June 2026', value: '$1.31M', delta: '+3.2%',
+    bars: [40, 54, 46, 68, 60, 82, 74],
+    stats: [
+      { icon: Users, label: 'Employees', value: '1,248' },
+      { icon: Clock, label: 'On-time', value: '99.9%' },
+      { icon: CheckCircle2, label: 'Approved', value: '96%' },
+    ],
+  },
+  {
+    tag: 'Attendance · Today', value: '1,194 in', delta: '+96%',
+    bars: [70, 82, 60, 88, 74, 90, 84],
+    stats: [
+      { icon: Users, label: 'Present', value: '96%' },
+      { icon: Clock, label: 'Late', value: '18' },
+      { icon: CheckCircle2, label: 'Synced', value: '42' },
+    ],
+  },
+  {
+    tag: 'Leave · This month', value: '84 requests', delta: '−12%',
+    bars: [30, 44, 38, 52, 40, 58, 48],
+    stats: [
+      { icon: CheckCircle2, label: 'Approved', value: '71' },
+      { icon: Clock, label: 'Pending', value: '9' },
+      { icon: Users, label: 'Avg days', value: '1.2' },
+    ],
+  },
+  {
+    tag: 'Headcount · Q2', value: '1,248', delta: '+23',
+    bars: [50, 58, 55, 66, 70, 76, 80],
+    stats: [
+      { icon: Users, label: 'New hires', value: '23' },
+      { icon: TrendingUp, label: 'Attrition', value: '1.4%' },
+      { icon: CheckCircle2, label: 'Open roles', value: '12' },
+    ],
+  },
+];
+
 const SECURITY_POINTS = [
   'Tenant isolation',
   'Audit logging',
   'MFA-ready access',
-];
-
-const TRUST_POINTS = [
-  { label: 'Leaders', value: 'Fewer tools, clearer visibility' },
-  { label: 'Operations', value: 'Less rework, faster approvals' },
-  { label: 'Finance', value: 'Cleaner payroll, stronger control' },
-];
-
-const OUTCOME_POINTS = [
-  { value: '1 workspace', label: 'for people, payroll, and approvals' },
-  { value: 'Less friction', label: 'for managers and employees' },
-  { value: 'Built in control', label: 'with audit-ready access' },
-];
-
-const WORKFORCE_SIGNALS = [
-  'No spreadsheet sprawl',
-  'One source of truth',
-  'Audit-ready by design',
-  'Built for multi-tenant teams',
-];
-
-const WORKFORCE_FLOW = [
-  'Capture',
-  'Route',
-  'Resolve',
-  'Close',
-];
-
-const WORKFORCE_BACKGROUND = [
-  { label: 'Adoption signal', bars: [42, 68, 58, 84, 62] },
-  { label: 'Approval speed', bars: [24, 48, 36, 54, 44] },
-  { label: 'Payroll confidence', bars: [16, 28, 40, 62, 78] },
 ];
 
 type Mode = 'login' | 'forgot' | 'reset' | 'mfa';
@@ -55,6 +74,7 @@ export function LoginPage() {
   const searchParams = useSearchParams();
   const from         = searchParams?.get('from') ?? '/dashboard';
 
+  const [slide,        setSlide]        = useState(0);
   const [mode,         setMode]         = useState<Mode>('login');
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
@@ -118,6 +138,12 @@ export function LoginPage() {
     if (mfaPending && mode !== 'mfa') setMode('mfa');
   }, [mfaPending, mode]);
 
+  // Auto-advance the product-preview carousel.
+  useEffect(() => {
+    const id = setInterval(() => setSlide((s) => (s + 1) % PREVIEW_SLIDES.length), 3800);
+    return () => clearInterval(id);
+  }, []);
+
   const handleForgot = async (e: React.FormEvent) => {
     e.preventDefault(); setError(''); setLoading(true);
     try {
@@ -146,584 +172,467 @@ export function LoginPage() {
   return (
     <>
       <style>{`
-        @keyframes kx-float {
-          0%, 100% { transform: translateY(0px); }
-          50% { transform: translateY(-10px); }
+        @keyframes auth-fade {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
         }
-        @keyframes kx-drift {
-          0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); }
-          50% { transform: translate3d(10px, -8px, 0) rotate(5deg); }
+        .auth-fade { animation: auth-fade 0.4s ease-out both; }
+        @keyframes aurora-a {
+          0%, 100% { transform: translate3d(0,0,0) scale(1); }
+          50% { transform: translate3d(6%, 8%, 0) scale(1.15); }
         }
-        @keyframes kx-panel-in {
-          from { opacity: 0; transform: translateY(16px); }
-          to { opacity: 1; transform: translateY(0); }
+        @keyframes aurora-b {
+          0%, 100% { transform: translate3d(0,0,0) scale(1.1); }
+          50% { transform: translate3d(-8%, -6%, 0) scale(1); }
         }
-        @keyframes kx-sheen {
-          0% { transform: translateX(-40%); opacity: 0; }
-          25% { opacity: 0.45; }
-          100% { transform: translateX(40%); opacity: 0; }
+        @keyframes aurora-c {
+          0%, 100% { transform: translate3d(0,0,0) scale(1); }
+          50% { transform: translate3d(5%, -7%, 0) scale(1.2); }
         }
-        @keyframes kx-orbit {
-          from { transform: rotate(0deg) translateX(36px) rotate(0deg); }
-          to { transform: rotate(360deg) translateX(36px) rotate(-360deg); }
+        .aurora-a { animation: aurora-a 19s ease-in-out infinite; }
+        .aurora-b { animation: aurora-b 23s ease-in-out infinite; }
+        .aurora-c { animation: aurora-c 27s ease-in-out infinite; }
+        .brand-spot {
+          background: radial-gradient(520px circle at var(--mx, 30%) var(--my, 22%), rgba(86,148,255,0.22), transparent 62%);
+          transition: background 0.18s ease-out;
         }
-        @keyframes kx-rise {
-          0%, 100% { transform: scaleY(0.84); opacity: 0.72; }
-          50% { transform: scaleY(1); opacity: 1; }
+        @keyframes bar-rise {
+          0%, 100% { transform: scaleY(0.78); }
+          50% { transform: scaleY(1); }
         }
-        @keyframes kx-glow {
-          0%, 100% { opacity: 0.28; transform: scale(1); }
-          50% { opacity: 0.52; transform: scale(1.06); }
-        }
-        @keyframes kx-line {
-          0%, 100% { transform: scaleX(0.85); opacity: 0.55; }
-          50% { transform: scaleX(1); opacity: 1; }
-        }
-        @keyframes kx-flow {
-          0%, 100% { transform: translateX(-8px); opacity: 0.55; }
-          50% { transform: translateX(8px); opacity: 1; }
-        }
-        @keyframes kx-node {
-          0%, 100% { transform: scale(0.96); opacity: 0.72; }
-          50% { transform: scale(1); opacity: 1; }
-        }
-        @keyframes kx-pop {
-          0%, 100% { transform: translateY(0); opacity: 1; }
-          50% { transform: translateY(-3px); opacity: 0.98; }
-        }
-        @keyframes kx-drift-soft {
-          0%, 100% { transform: translate3d(0, 0, 0); }
-          50% { transform: translate3d(0, -6px, 0); }
-        }
-        @keyframes kx-cta-shine {
-          0% { background-position: 0% 50%; }
-          100% { background-position: 200% 50%; }
-        }
-        @keyframes kx-bar {
-          0%, 100% { transform: scaleY(0.58); opacity: 0.48; }
-          50% { transform: scaleY(1); opacity: 1; }
-        }
-        @keyframes kx-pan {
-          0%, 100% { transform: translateX(0); }
-          50% { transform: translateX(14px); }
-        }
-        @keyframes kx-pan-reverse {
-          0%, 100% { transform: translateX(0); }
-          50% { transform: translateX(-14px); }
-        }
-        .kx-float { animation: kx-float 14s ease-in-out infinite; }
-        .kx-drift { animation: kx-drift 18s ease-in-out infinite; }
-        .kx-panel-in { animation: kx-panel-in 0.65s ease-out both; }
-        .kx-sheen { animation: kx-sheen 8s ease-in-out infinite; }
-        .kx-orbit { animation: kx-orbit 24s linear infinite; }
-        .kx-rise { animation: kx-rise 2.8s ease-in-out infinite; transform-origin: bottom; }
-        .kx-glow { animation: kx-glow 10s ease-in-out infinite; }
-        .kx-line { animation: kx-line 10s ease-in-out infinite; transform-origin: center; }
-        .kx-flow { animation: kx-flow 12s ease-in-out infinite; }
-        .kx-node { animation: kx-node 3.6s ease-in-out infinite; }
-        .kx-pop { animation: kx-pop 4.5s ease-in-out infinite; }
-        .kx-drift-soft { animation: kx-drift-soft 8s ease-in-out infinite; }
-        .kx-cta-shine {
-          background-size: 220% 220%;
-          animation: kx-cta-shine 8s linear infinite;
-        }
-        .kx-delay-1 { animation-delay: 0.8s; }
-        .kx-delay-2 { animation-delay: 1.6s; }
-        .kx-bar { animation: kx-bar 2.8s ease-in-out infinite; transform-origin: bottom; }
-        .kx-pan { animation: kx-pan 16s ease-in-out infinite; }
-        .kx-pan-reverse { animation: kx-pan-reverse 18s ease-in-out infinite; }
-
+        .pv-bar { transform-origin: bottom; animation: bar-rise 2.8s ease-in-out infinite; }
+        @keyframes ticker-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+        .ticker-track { animation: ticker-scroll 38s linear infinite; }
+        .ticker-mask:hover .ticker-track { animation-play-state: paused; }
         @media (prefers-reduced-motion: reduce) {
-          .kx-float,
-          .kx-drift,
-          .kx-panel-in,
-          .kx-sheen,
-          .kx-orbit,
-          .kx-rise,
-          .kx-glow,
-          .kx-line,
-          .kx-flow,
-          .kx-node,
-          .kx-pop,
-          .kx-drift-soft,
-          .kx-cta-shine,
-          .kx-bar,
-          .kx-pan,
-          .kx-pan-reverse {
-            animation: none !important;
-          }
+          .auth-fade, .aurora-a, .aurora-b, .aurora-c, .pv-bar, .ticker-track { animation: none !important; }
         }
       `}</style>
 
-      <div className="relative min-h-[100svh] w-full overflow-hidden bg-[#eef2ff] text-slate-900 dark:bg-[#040814] dark:text-white">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.16),transparent_28%),radial-gradient(circle_at_85%_20%,rgba(94,235,255,0.10),transparent_22%),linear-gradient(180deg,rgba(255,255,255,0.5),transparent_35%)] dark:bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.18),transparent_28%),radial-gradient(circle_at_85%_20%,rgba(94,235,255,0.08),transparent_22%),linear-gradient(180deg,rgba(6,11,24,0.9),rgba(4,8,20,0.98))]" />
-        <div className="pointer-events-none absolute inset-0 opacity-[0.22] mix-blend-soft-light [background-image:linear-gradient(rgba(47,107,255,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(47,107,255,0.08)_1px,transparent_1px)] [background-size:72px_72px]" />
-        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-[linear-gradient(90deg,transparent,rgba(47,107,255,0.24),rgba(94,235,255,0.28),transparent)] opacity-45 kx-line" />
-        <div className="pointer-events-none absolute left-[10%] top-[14%] h-60 w-60 rounded-full bg-white/28 blur-3xl kx-drift" />
-        <div className="pointer-events-none absolute right-[12%] bottom-[16%] h-64 w-64 rounded-full bg-cyan-200/12 blur-3xl kx-float" />
-        <div className="pointer-events-none absolute left-[18%] top-[58%] h-32 w-32 rounded-full bg-sky-300/15 blur-3xl kx-drift-soft" />
-        <div className="pointer-events-none absolute inset-y-0 left-1/3 w-px bg-gradient-to-b from-transparent via-blue-300/14 to-transparent opacity-45" />
-        <div className="pointer-events-none absolute left-0 top-1/4 h-56 w-56 rounded-full bg-blue-300/14 blur-3xl dark:bg-blue-700/8 kx-float" />
-        <div className="pointer-events-none absolute bottom-[-4rem] right-[-5rem] h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl dark:bg-cyan-600/8 kx-float" />
-        <div className="pointer-events-none absolute left-[6%] top-[19%] hidden lg:block">
-          <div className="rounded-[28px] border border-white/55 bg-white/48 p-3 shadow-[0_18px_50px_rgba(37,99,235,0.08)] backdrop-blur-2xl kx-pan">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <p className="text-[9px] font-semibold uppercase tracking-[0.28em] text-blue-500/70">Live workforce feed</p>
-              <span className="rounded-full bg-emerald-400/15 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.2em] text-emerald-600">
-                synced
-              </span>
+      <div className="grid min-h-[100svh] w-full lg:grid-cols-2">
+        {/* ── Brand panel ───────────────────────────────────────────────── */}
+        <section
+          onMouseMove={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            e.currentTarget.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`);
+            e.currentTarget.style.setProperty('--my', `${((e.clientY - r.top) / r.height) * 100}%`);
+          }}
+          className="relative hidden flex-col overflow-hidden bg-[#060a17] px-12 py-14 text-white lg:flex"
+        >
+          {/* Aurora mesh */}
+          <div className="pointer-events-none absolute -left-1/4 -top-1/4 h-[70%] w-[70%] rounded-full bg-[radial-gradient(circle,rgba(47,107,255,0.55),transparent_60%)] blur-3xl aurora-a" />
+          <div className="pointer-events-none absolute bottom-[-20%] right-[-15%] h-[65%] w-[65%] rounded-full bg-[radial-gradient(circle,rgba(56,189,248,0.30),transparent_60%)] blur-3xl aurora-b" />
+          <div className="pointer-events-none absolute left-[20%] top-[35%] h-[55%] w-[55%] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.34),transparent_60%)] blur-3xl aurora-c" />
+          {/* Iso dot-grid */}
+          <div className="pointer-events-none absolute inset-0 opacity-[0.18] [background-image:radial-gradient(rgba(255,255,255,0.5)_1px,transparent_1px)] [background-size:26px_26px] [mask-image:radial-gradient(ellipse_at_center,black,transparent_75%)]" />
+          {/* Cursor spotlight */}
+          <div className="brand-spot pointer-events-none absolute inset-0" />
+          {/* Film grain */}
+          <div
+            className="pointer-events-none absolute inset-0 opacity-[0.06] mix-blend-overlay"
+            style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")" }}
+          />
+          {/* Top edge fade for depth */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[0.06] to-transparent" />
+
+          {/* Brand */}
+          <div className="relative z-10 mx-auto flex w-full max-w-[440px] items-center gap-3">
+            <div className="rounded-2xl border border-white/15 bg-white/[0.07] p-2.5 shadow-[0_8px_30px_rgba(8,18,55,0.5)] backdrop-blur-md">
+              <Logo size="md" collapsed theme="dark" />
             </div>
-            <div className="flex items-end gap-2">
-              {WORKFORCE_BACKGROUND[0].bars.map((bar, idx) => (
-                <span
-                  key={idx}
-                  className="kx-bar w-3 rounded-full bg-gradient-to-t from-blue-500 via-sky-400 to-cyan-200"
-                  style={{ height: `${bar}px`, animationDelay: `${idx * 0.14}s` }}
-                />
-              ))}
+            <div>
+              <p className="text-sm font-bold tracking-tight text-white">KynexOne</p>
+              <p className="text-xs text-slate-400">Enterprise Workforce Platform</p>
             </div>
-            <p className="mt-3 text-[10px] font-medium text-slate-500">{WORKFORCE_BACKGROUND[0].label}</p>
           </div>
-        </div>
-        <div className="pointer-events-none absolute left-[12%] bottom-[12%] hidden xl:block">
-          <div className="rounded-[28px] border border-white/55 bg-white/45 p-3 shadow-[0_18px_50px_rgba(37,99,235,0.08)] backdrop-blur-2xl kx-pan-reverse">
-            <div className="mb-3 flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full bg-emerald-400" />
-              <p className="text-[9px] font-semibold uppercase tracking-[0.28em] text-cyan-600">Approval pipeline</p>
+
+          {/* Hero + product glimpse — grows to fill the panel and centers vertically */}
+          <div className="relative z-10 mx-auto flex w-full max-w-[440px] flex-1 flex-col justify-center py-10">
+            <div className="inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-[11px] font-medium tracking-wide text-slate-300 backdrop-blur">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              </span>
+              Built for HR, payroll &amp; finance teams
             </div>
-            <div className="space-y-2">
-              {WORKFORCE_BACKGROUND.slice(1).map((item, idx) => (
-                <div key={item.label} className="rounded-2xl border border-slate-200/60 bg-white/80 p-2.5">
+
+            <h1 className="mt-5 text-[2rem] font-bold leading-[1.1] tracking-tight xl:text-[2.4rem]">
+              Run your entire workforce from{' '}
+              <span className="bg-gradient-to-r from-sky-300 via-blue-300 to-indigo-300 bg-clip-text text-transparent">
+                one trusted system.
+              </span>
+            </h1>
+            <p className="mt-3.5 text-[14.5px] leading-relaxed text-slate-300/90">
+              People, payroll, leave, attendance, and compliance — unified, tenant-isolated,
+              and audit-ready from day one.
+            </p>
+
+            {/* Product preview carousel — cycles modules to show platform breadth */}
+            {(() => {
+              const s = PREVIEW_SLIDES[slide];
+              const negative = s.delta.startsWith('−');
+              return (
+                <div className="mt-7 rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4 shadow-[0_24px_70px_rgba(4,10,30,0.55)] backdrop-blur-xl">
                   <div className="flex items-center justify-between">
-                    <p className="text-[10px] font-semibold text-slate-600">{item.label}</p>
-                    <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                      {idx === 0 ? '84%' : '42%'}
+                    <div className="flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-white/15" />
+                      <span className="h-2 w-2 rounded-full bg-white/15" />
+                      <span className="h-2 w-2 rounded-full bg-white/15" />
+                    </div>
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Live
                     </span>
                   </div>
-                  <div className="mt-2 flex items-end gap-1.5">
-                    {item.bars.map((bar, barIdx) => (
-                      <span
-                        key={barIdx}
-                        className="kx-bar w-2.5 rounded-full bg-gradient-to-t from-sky-500 to-cyan-200"
-                        style={{ height: `${bar}px`, animationDelay: `${(idx + barIdx) * 0.12}s` }}
+
+                  {/* slide body — re-keyed so it cross-fades on change */}
+                  <div key={slide} className="auth-fade">
+                    <div className="mt-3 flex items-end justify-between">
+                      <div>
+                        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">{s.tag}</p>
+                        <p className="mt-0.5 text-2xl font-bold tracking-tight text-white">{s.value}</p>
+                      </div>
+                      <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-semibold ${negative ? 'bg-rose-400/10 text-rose-300' : 'bg-emerald-400/10 text-emerald-300'}`}>
+                        <TrendingUp className={`h-3.5 w-3.5 ${negative ? 'rotate-180' : ''}`} /> {s.delta.replace(/[+−]/, '')}
+                      </span>
+                    </div>
+
+                    {/* animated sparkline bars */}
+                    <div className="mt-3 flex h-12 items-end gap-1.5">
+                      {s.bars.map((b, i) => (
+                        <span
+                          key={i}
+                          className="pv-bar flex-1 rounded-sm bg-gradient-to-t from-blue-500/70 to-sky-300/80"
+                          style={{ height: `${b}%`, animationDelay: `${i * 0.12}s` }}
+                        />
+                      ))}
+                    </div>
+
+                    {/* KPI row */}
+                    <div className="mt-4 grid grid-cols-3 gap-2 border-t border-white/[0.07] pt-3">
+                      {s.stats.map((st) => (
+                        <div key={st.label} className="flex flex-col">
+                          <span className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                            <st.icon className="h-3 w-3" /> {st.label}
+                          </span>
+                          <span className="mt-0.5 text-sm font-bold text-white">{st.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* carousel dots */}
+                  <div className="mt-4 flex items-center justify-center gap-1.5">
+                    {PREVIEW_SLIDES.map((sl, i) => (
+                      <button
+                        key={sl.tag}
+                        type="button"
+                        aria-label={`Show ${sl.tag}`}
+                        onClick={() => setSlide(i)}
+                        className={`h-1.5 rounded-full transition-all ${i === slide ? 'w-5 bg-sky-300' : 'w-1.5 bg-white/20 hover:bg-white/40'}`}
                       />
                     ))}
                   </div>
                 </div>
-              ))}
+              );
+            })()}
+
+            {/* Feature ticker — scrolling marquee of platform capabilities */}
+            <div className="ticker-mask relative mt-6 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_8%,black_92%,transparent)]">
+              <div className="ticker-track flex w-max items-center gap-2.5">
+                {[...FEATURE_TICKER, ...FEATURE_TICKER].map((f, i) => (
+                  <span
+                    key={i}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-slate-300"
+                  >
+                    <span className="h-1 w-1 rounded-full bg-sky-400/80" />
+                    {f}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="relative z-10 grid min-h-[100svh] w-full lg:grid-cols-[0.98fr_1.02fr]">
-          <section className="relative flex min-h-[34svh] flex-col overflow-hidden bg-[linear-gradient(160deg,#fbfdff_0%,#f4f8ff_42%,#eaf2ff_100%)] px-5 py-4 text-slate-900 sm:px-8 sm:py-5 lg:min-h-[100svh] lg:px-10 lg:py-6">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(47,107,255,0.18),transparent_26%),radial-gradient(circle_at_88%_14%,rgba(94,235,255,0.12),transparent_18%),radial-gradient(circle_at_50%_100%,rgba(56,189,248,0.10),transparent_22%)]" />
-            <div className="pointer-events-none absolute inset-0 opacity-[0.16] [background-image:linear-gradient(rgba(47,107,255,0.07)_1px,transparent_1px),linear-gradient(90deg,rgba(47,107,255,0.07)_1px,transparent_1px)] [background-size:72px_72px]" />
-            <div className="pointer-events-none absolute -right-10 top-10 h-28 w-28 rounded-full border border-cyan-300/20 bg-cyan-300/12 blur-2xl kx-orbit" />
-            <div className="pointer-events-none absolute -left-12 bottom-16 h-36 w-36 rounded-full bg-blue-500/12 blur-3xl kx-glow" />
+          <p className="relative z-10 mx-auto w-full max-w-[440px] text-xs text-slate-500">
+            A <span className="font-semibold text-slate-400">Kode Kinetics</span> product
+          </p>
+        </section>
 
-            <div className="relative z-10 flex items-center gap-3">
-              <div className="rounded-[22px] border border-white/90 bg-white/88 px-5 py-4 shadow-[0_20px_46px_rgba(37,99,235,0.12)] backdrop-blur-xl">
-                <Logo size="xl" />
+        {/* ── Form panel ────────────────────────────────────────────────── */}
+        <section className="flex items-center justify-center bg-slate-50 px-5 py-10 dark:bg-[#0a0f1e] sm:px-8">
+          <div className="auth-fade w-full max-w-[420px]">
+            {/* Mobile brand */}
+            <div className="mb-8 flex items-center gap-3 lg:hidden">
+              <div className="rounded-xl border border-slate-200 bg-white p-2.5 shadow-sm dark:border-white/10 dark:bg-white/5">
+                <Logo size="md" collapsed />
               </div>
-              <div className="h-9 w-px bg-slate-300/60" />
               <div>
-                <p className="text-[10px] font-bold tracking-[0.28em] uppercase text-blue-500/70">
-                  KynexOne
-                </p>
-                <p className="mt-1 text-[11px] font-semibold tracking-[0.22em] uppercase text-slate-500">
-                  Enterprise workforce platform
-                </p>
+                <p className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">KynexOne</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Enterprise Workforce Platform</p>
               </div>
             </div>
 
-            <div className="flex flex-1 items-center justify-center">
-              <div className="relative z-10 max-w-[560px] space-y-3">
-                <div className="kx-pop inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-white/78 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 shadow-sm backdrop-blur">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  Workforce platform for leaders and teams
+            {mode === 'login' && (
+              <>
+                <h2 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">Sign in</h2>
+                <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
+                  Enter your work email, password, and workspace to continue.
+                </p>
+
+                <form onSubmit={handleLogin} noValidate className="mt-8 space-y-5">
+                  <FormField label="Work email">
+                    <input id="li-em" type="email" value={email} onChange={e => setEmail(e.target.value)}
+                      className="auth-input" placeholder="you@company.com" autoComplete="email" required />
+                  </FormField>
+
+                  <FormField label="Password" labelRight={
+                    <button type="button" onClick={() => go('forgot')}
+                      className="text-xs font-medium text-sapphire hover:text-blue-700 dark:text-sky-400">
+                      Forgot password?
+                    </button>
+                  }>
+                    <div className="relative">
+                      <input id="li-pw" type={showPw ? 'text' : 'password'} value={password}
+                        onChange={e => setPassword(e.target.value)}
+                        className="auth-input pr-11" placeholder="••••••••••"
+                        autoComplete="current-password" required />
+                      <button type="button" onClick={() => setShowPw(v => !v)} tabIndex={-1}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                        aria-label={showPw ? 'Hide password' : 'Show password'}>
+                        {showPw ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
+                      </button>
+                    </div>
+                  </FormField>
+
+                  <FormField
+                    label="Workspace"
+                    labelRight={tenantLocked
+                      ? <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400"><Lock className="h-3 w-3" />Auto-detected</span>
+                      : tenantSlug ? <span className="text-xs text-slate-400">Pre-filled</span> : null}
+                    hint="Your company or tenant workspace identifier"
+                  >
+                    <input id="li-ws" type="text" value={tenantSlug} onChange={e => setTenantSlug(e.target.value)}
+                      className="auth-input" placeholder="your-workspace" autoComplete="organization" required />
+                  </FormField>
+
+                  <AuthFeedback error={error} info={info} />
+
+                  <button type="submit" disabled={loading}
+                    className="auth-btn disabled:cursor-not-allowed disabled:opacity-60">
+                    {loading
+                      ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                      : 'Sign in'}
+                  </button>
+                </form>
+              </>
+            )}
+
+            {mode === 'forgot' && (
+              <form onSubmit={handleForgot} noValidate className="space-y-5">
+                <button type="button" onClick={() => go('login')}
+                  className="flex items-center gap-1.5 text-sm font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+                  ← Back to sign in
+                </button>
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sapphire/10 ring-1 ring-sapphire/20">
+                  <Mail className="h-5 w-5 text-sapphire dark:text-sky-400" />
                 </div>
                 <div>
-                  <h1 className="max-w-[540px] text-[38px] font-black leading-[1.03] tracking-tight text-slate-950 xl:text-[45px]">
-                    One sign-in for the<br />
-                    <span className="bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-400 bg-clip-text text-transparent">
-                      workforce command center.
-                    </span>
-                  </h1>
-                  <p className="mt-2 max-w-[500px] text-[14px] leading-relaxed text-slate-600">
-                    Replace fragmented HR tools, reduce approval drag, and keep payroll, leave, attendance, and compliance in one tenant-isolated workspace.
+                  <h2 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">Reset password</h2>
+                  <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
+                    We&apos;ll send a reset code to your email address.
                   </p>
                 </div>
 
-                <div className="grid gap-2 sm:grid-cols-3">
-                  {OUTCOME_POINTS.map((item, index) => (
-                    <div
-                      key={item.value}
-                      className={`rounded-2xl border border-blue-100/80 bg-white/76 px-4 py-3 shadow-[0_12px_24px_rgba(37,99,235,0.05)] backdrop-blur-xl kx-drift-soft ${index === 1 ? 'kx-delay-1' : ''} ${index === 2 ? 'kx-delay-2' : ''}`}
-                    >
-                      <p className="text-[17px] font-black tracking-tight text-slate-950">{item.value}</p>
-                      <p className="mt-1 text-[11px] leading-snug text-slate-500">{item.label}</p>
-                    </div>
-                  ))}
+                <FormField label="Work email">
+                  <input id="fg-em" type="email" value={forgotEmail || email}
+                    onChange={e => setForgotEmail(e.target.value)}
+                    className="auth-input" placeholder="you@company.com" autoComplete="email" required />
+                </FormField>
+                <FormField label="Workspace" hint="Optional — helps locate your account">
+                  <input id="fg-ws" type="text" value={tenantSlug}
+                    onChange={e => setTenantSlug(e.target.value)}
+                    className="auth-input" placeholder="your-workspace" />
+                </FormField>
+
+                <AuthFeedback error={error} info={info} />
+
+                <button type="submit" disabled={loading} className="auth-btn disabled:cursor-not-allowed disabled:opacity-60">
+                  {loading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> : 'Send reset code'}
+                </button>
+              </form>
+            )}
+
+            {mode === 'reset' && (
+              <form onSubmit={handleReset} noValidate className="space-y-5">
+                <button type="button" onClick={() => go('forgot')}
+                  className="flex items-center gap-1.5 text-sm font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+                  ← Back
+                </button>
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sapphire/10 ring-1 ring-sapphire/20">
+                  <KeyRound className="h-5 w-5 text-sapphire dark:text-sky-400" />
+                </div>
+                <div>
+                  <h2 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">New password</h2>
+                  <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">Enter the code from your email and set a new password.</p>
                 </div>
 
-                <div className="grid gap-2 sm:grid-cols-3">
-                  {TRUST_POINTS.map((item, index) => (
-                    <div
-                      key={item.label}
-                      className={`rounded-2xl border border-white/80 bg-white/78 px-4 py-3 shadow-[0_10px_20px_rgba(37,99,235,0.05)] backdrop-blur-xl kx-drift-soft ${index === 1 ? 'kx-delay-1' : ''} ${index === 2 ? 'kx-delay-2' : ''}`}
-                    >
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{item.label}</p>
-                      <p className="mt-1.5 text-[12px] leading-snug text-slate-700">{item.value}</p>
-                    </div>
-                  ))}
+                <FormField label="Work email">
+                  <input id="rs-em" type="email" value={forgotEmail || email}
+                    onChange={e => setForgotEmail(e.target.value)}
+                    className="auth-input" placeholder="you@company.com" autoComplete="email" required />
+                </FormField>
+                <FormField label="Reset code">
+                  <input id="rs-tk" type="text" value={resetToken} onChange={e => setResetToken(e.target.value)}
+                    className="auth-input font-mono tracking-wider" placeholder="Paste code from email" required />
+                </FormField>
+                <FormField label="New password" hint="Minimum 10 characters">
+                  <input id="rs-pw" type="password" value={newPw} onChange={e => setNewPw(e.target.value)}
+                    className="auth-input" placeholder="••••••••••" autoComplete="new-password" required />
+                </FormField>
+                <FormField label="Confirm password">
+                  <input id="rs-cf" type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)}
+                    className="auth-input" placeholder="••••••••••" autoComplete="new-password" required />
+                </FormField>
+
+                <AuthFeedback error={error} info={info} />
+
+                <button type="submit" disabled={loading} className="auth-btn disabled:cursor-not-allowed disabled:opacity-60">
+                  {loading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> : 'Update password'}
+                </button>
+              </form>
+            )}
+
+            {mode === 'mfa' && (
+              <form onSubmit={handleMfa} noValidate className="space-y-5">
+                <button type="button" onClick={() => { setMode('login'); setTotpCode(''); }}
+                  className="flex items-center gap-1.5 text-sm font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+                  ← Back to sign in
+                </button>
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sapphire/10 ring-1 ring-sapphire/20">
+                  <Smartphone className="h-5 w-5 text-sapphire dark:text-sky-400" />
                 </div>
-
-                <div className="rounded-[24px] border border-slate-200/80 bg-white/72 p-3 shadow-[0_14px_28px_rgba(37,99,235,0.06)] backdrop-blur-xl">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Why teams switch</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {WORKFORCE_SIGNALS.map((signal) => (
-                      <span
-                        key={signal}
-                        className="rounded-full border border-slate-200/80 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600"
-                      >
-                        {signal}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded-[24px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.84),rgba(244,248,255,0.72))] p-3 shadow-[0_14px_26px_rgba(37,99,235,0.05)] backdrop-blur-xl">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">What this solves</p>
-                    <span className="kx-pop rounded-full border border-cyan-200/80 bg-cyan-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-600">
-                      Fast
-                    </span>
-                  </div>
-                  <div className="kx-flow mt-3 flex items-center gap-2">
-                    {WORKFORCE_FLOW.map((item, index) => (
-                      <div key={item} className="flex min-w-0 flex-1 items-center gap-2">
-                        <div className="kx-node flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-blue-200/80 bg-white text-[10px] font-bold text-blue-600 shadow-sm">
-                          {index + 1}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-[11px] font-semibold text-slate-700">{item}</p>
-                          <p className="truncate text-[10px] text-slate-400">
-                            {index === 0 ? 'Enter once' : index === 1 ? 'Auto-route' : index === 2 ? 'Act fast' : 'Close cleanly'}
-                          </p>
-                        </div>
-                        {index < WORKFORCE_FLOW.length - 1 && (
-                      <div className="hidden h-px flex-1 bg-gradient-to-r from-blue-200 via-cyan-200 to-transparent sm:block kx-line" />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <p className="relative z-10 mt-auto pt-4 text-[11px] text-slate-500">
-              A <span className="font-semibold text-slate-600">Kode Kinetics</span> product · secure access only
-            </p>
-          </section>
-
-          <section className="relative flex min-h-[66svh] items-stretch justify-center px-3 py-3 sm:px-5 sm:py-5 lg:min-h-[100svh] lg:px-6 lg:py-4">
-            <div className="pointer-events-none absolute -left-8 top-6 h-40 w-40 rounded-full border border-white/30 bg-white/40 blur-3xl dark:border-white/10 dark:bg-white/5" />
-            <div className="pointer-events-none absolute right-2 top-2 h-16 w-16 rounded-full border border-cyan-300/20 bg-cyan-300/10 blur-2xl dark:bg-cyan-500/10" />
-
-            <div className="relative z-10 flex w-full max-w-[560px] items-stretch">
-              <div className="relative flex min-h-full w-full flex-col rounded-[30px] border border-white/85 bg-[rgba(250,252,255,0.56)] p-[1px] shadow-[0_24px_80px_rgba(37,99,235,0.12),0_0_0_1px_rgba(255,255,255,0.72)] backdrop-blur-3xl dark:border-white/[0.10] dark:bg-white/[0.04] dark:shadow-[0_24px_80px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)] kx-panel-in">
-              <div className="relative flex min-h-full flex-1 flex-col overflow-hidden rounded-[29px] bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(247,249,255,0.48))] px-5 py-5 sm:px-8 sm:py-8 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.94),rgba(7,12,24,0.90))]">
-                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(255,255,255,0.88),transparent_34%),linear-gradient(135deg,rgba(47,107,255,0.08),transparent_42%,rgba(94,235,255,0.05))]" />
-                <div className="pointer-events-none absolute inset-y-0 left-0 w-20 bg-gradient-to-r from-white/30 to-transparent dark:from-white/[0.04] kx-sheen" />
-
-                <div className="relative flex flex-1 flex-col">
-                  <div className="mb-5 flex items-center justify-between gap-3">
-                    <div className="inline-flex items-center gap-2 rounded-full border border-blue-500/15 bg-blue-500/8 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                      KynexOne secure access
-                    </div>
-                    <div className="hidden rounded-full border border-emerald-500/15 bg-emerald-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-emerald-600 dark:text-emerald-400 sm:block">
-                      Production
-                    </div>
-                  </div>
-
-                  <h2 className="mb-2 text-[30px] font-black tracking-tight text-slate-950 dark:text-white sm:text-[34px]">
-                    Access your workspace
-                  </h2>
-                  <p className="mb-6 max-w-[340px] text-[14px] leading-relaxed text-slate-500 dark:text-slate-400">
-                    Use your work email, password, and workspace slug to enter the tenant-bound workspace.
+                <div>
+                  <h2 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">Two-factor authentication</h2>
+                  <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
+                    Enter the 6-digit code from your authenticator app.
                   </p>
-
-                  {mode === 'login' && (
-                    <form onSubmit={handleLogin} noValidate className="space-y-5">
-                      <FormField label="Work Email">
-                        <input id="li-em" type="email" value={email} onChange={e => setEmail(e.target.value)}
-                          className="auth-input" placeholder="you@company.com" autoComplete="email" required />
-                      </FormField>
-
-                      <FormField label="Password" labelRight={
-                        <button type="button" onClick={() => go('forgot')}
-                          className="text-[11px] font-medium text-blue-500 hover:text-blue-600 dark:text-blue-400">
-                          Forgot password?
-                        </button>
-                      }>
-                        <div className="relative">
-                          <input id="li-pw" type={showPw ? 'text' : 'password'} value={password}
-                            onChange={e => setPassword(e.target.value)}
-                            className="auth-input pr-11" placeholder="••••••••••"
-                            autoComplete="current-password" required />
-                          <button type="button" onClick={() => setShowPw(v => !v)} tabIndex={-1}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                            aria-label={showPw ? 'Hide' : 'Show'}>
-                            {showPw ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
-                          </button>
-                        </div>
-                      </FormField>
-
-                      <FormField
-                        label="Workspace"
-                        labelRight={tenantLocked
-                          ? <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"><Lock className="h-3 w-3" />Auto-detected</span>
-                          : tenantSlug ? <span className="text-[11px] text-slate-400">Pre-filled</span> : null}
-                        hint="Your company or tenant workspace identifier"
-                      >
-                        <input id="li-ws" type="text" value={tenantSlug} onChange={e => setTenantSlug(e.target.value)}
-                          className="auth-input" placeholder="your-workspace" autoComplete="organization" required />
-                      </FormField>
-
-                      <AuthFeedback error={error} info={info} />
-
-                      <button type="submit" disabled={loading}
-                    className="auth-btn mt-6 disabled:cursor-not-allowed disabled:opacity-60">
-                        {loading
-                          ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                          : 'Sign in'}
-                      </button>
-
-                      <div className="flex flex-wrap justify-center gap-2 pt-1">
-                        {SECURITY_POINTS.map((point) => (
-                          <span key={point} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-500">
-                            {point}
-                          </span>
-                        ))}
-                      </div>
-                    </form>
-                  )}
-
-                  {mode === 'forgot' && (
-                    <form onSubmit={handleForgot} noValidate className="space-y-5">
-                      <button type="button" onClick={() => go('login')}
-                        className="mb-2 flex items-center gap-1.5 text-[13px] font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
-                        ← Back to sign in
-                      </button>
-                      <div className="mb-2 flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-50 ring-1 ring-blue-200/60 dark:bg-blue-500/10 dark:ring-blue-500/20">
-                        <Mail className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-                      </div>
-                      <h2 className="mb-1 text-[28px] font-black tracking-tight text-slate-950 dark:text-white">Reset password</h2>
-                      <p className="mb-4 text-[14px] text-slate-500 dark:text-slate-400">
-                        We&apos;ll send a reset code to your email address.
-                      </p>
-
-                      <FormField label="Work Email">
-                        <input id="fg-em" type="email" value={forgotEmail || email}
-                          onChange={e => setForgotEmail(e.target.value)}
-                          className="auth-input" placeholder="you@company.com" autoComplete="email" required />
-                      </FormField>
-                      <FormField label="Workspace" hint="Optional - helps locate your account">
-                        <input id="fg-ws" type="text" value={tenantSlug}
-                          onChange={e => setTenantSlug(e.target.value)}
-                          className="auth-input" placeholder="your-workspace" />
-                      </FormField>
-
-                      <AuthFeedback error={error} info={info} />
-
-                      <button type="submit" disabled={loading} className="auth-btn mt-6 disabled:cursor-not-allowed disabled:opacity-60">
-                        {loading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> : 'Send reset code'}
-                      </button>
-                    </form>
-                  )}
-
-                  {mode === 'reset' && (
-                    <form onSubmit={handleReset} noValidate className="space-y-5">
-                      <button type="button" onClick={() => go('forgot')}
-                        className="mb-2 flex items-center gap-1.5 text-[13px] font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
-                        ← Back
-                      </button>
-                      <div className="mb-2 flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-50 ring-1 ring-blue-200/60 dark:bg-blue-500/10 dark:ring-blue-500/20">
-                        <KeyRound className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-                      </div>
-                      <h2 className="mb-1 text-[28px] font-black tracking-tight text-slate-950 dark:text-white">New password</h2>
-                      <p className="mb-4 text-[14px] text-slate-500 dark:text-slate-400">Enter the code from your email and set a new password.</p>
-
-                      <FormField label="Work Email">
-                        <input id="rs-em" type="email" value={forgotEmail || email}
-                          onChange={e => setForgotEmail(e.target.value)}
-                          className="auth-input" placeholder="you@company.com" autoComplete="email" required />
-                      </FormField>
-                      <FormField label="Reset Code">
-                        <input id="rs-tk" type="text" value={resetToken} onChange={e => setResetToken(e.target.value)}
-                          className="auth-input font-mono tracking-wider" placeholder="Paste code from email" required />
-                      </FormField>
-                      <FormField label="New Password" hint="Min. 10 characters">
-                        <input id="rs-pw" type="password" value={newPw} onChange={e => setNewPw(e.target.value)}
-                          className="auth-input" placeholder="••••••••••" autoComplete="new-password" required />
-                      </FormField>
-                      <FormField label="Confirm Password">
-                        <input id="rs-cf" type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)}
-                          className="auth-input" placeholder="••••••••••" autoComplete="new-password" required />
-                      </FormField>
-
-                      <AuthFeedback error={error} info={info} />
-
-                      <button type="submit" disabled={loading} className="auth-btn mt-6 disabled:cursor-not-allowed disabled:opacity-60">
-                        {loading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> : 'Update password'}
-                      </button>
-                    </form>
-                  )}
-
-                  {mode === 'mfa' && (
-                    <form onSubmit={handleMfa} noValidate className="space-y-5">
-                      <button type="button" onClick={() => { setMode('login'); setTotpCode(''); }}
-                        className="mb-2 flex items-center gap-1.5 text-[13px] font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
-                        ← Back to sign in
-                      </button>
-                      <div className="mb-2 flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-50 ring-1 ring-blue-200/60 dark:bg-blue-500/10 dark:ring-blue-500/20">
-                        <Smartphone className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-                      </div>
-                      <h2 className="mb-1 text-[28px] font-black tracking-tight text-slate-950 dark:text-white">Two-factor auth</h2>
-                      <p className="mb-4 text-[14px] text-slate-500 dark:text-slate-400">
-                        Enter the 6-digit code from your authenticator app.
-                      </p>
-
-                      <FormField label="Authentication Code">
-                        <input
-                          id="mfa-code"
-                          type="text"
-                          inputMode="numeric"
-                          pattern="[0-9]{6}"
-                          maxLength={6}
-                          value={totpCode}
-                          onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
-                          className="auth-input font-mono tracking-[0.3em] text-center text-xl"
-                          placeholder="000000"
-                          autoComplete="one-time-code"
-                          autoFocus
-                          required
-                        />
-                      </FormField>
-
-                      <AuthFeedback error={error} info={info} />
-
-                      <button type="submit" disabled={loading || totpCode.length !== 6}
-                        className="auth-btn mt-6 disabled:cursor-not-allowed disabled:opacity-60">
-                        {loading
-                          ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                          : 'Verify'}
-                      </button>
-                    </form>
-                  )}
-
-                  <div className="mt-auto pt-5">
-                    <p className="text-center text-[11px] text-slate-500 dark:text-slate-500">
-                      By signing in you agree to our{' '}
-                      <a href="/privacy" target="_blank" rel="noopener noreferrer"
-                        className="underline underline-offset-2 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
-                        Privacy Policy
-                      </a>
-                      {' '}and{' '}
-                      <a href="/terms" target="_blank" rel="noopener noreferrer"
-                        className="underline underline-offset-2 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
-                        Terms of Service
-                      </a>
-                    </p>
-                  </div>
                 </div>
-              </div>
-            </div>
+
+                <FormField label="Authentication code">
+                  <input
+                    id="mfa-code"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    maxLength={6}
+                    value={totpCode}
+                    onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                    className="auth-input text-center font-mono text-xl tracking-[0.3em]"
+                    placeholder="000000"
+                    autoComplete="one-time-code"
+                    autoFocus
+                    required
+                  />
+                </FormField>
+
+                <AuthFeedback error={error} info={info} />
+
+                <button type="submit" disabled={loading || totpCode.length !== 6}
+                  className="auth-btn disabled:cursor-not-allowed disabled:opacity-60">
+                  {loading
+                    ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    : 'Verify'}
+                </button>
+              </form>
+            )}
+
+            {/* Trust row */}
+            <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-6 dark:border-white/10">
+              <ShieldCheck className="h-4 w-4 text-slate-400" aria-hidden />
+              {SECURITY_POINTS.map((point) => (
+                <span key={point} className="text-xs font-medium text-slate-400 after:mx-1.5 after:text-slate-300 after:content-['·'] last:after:content-['']">
+                  {point}
+                </span>
+              ))}
             </div>
 
-            <p className="mt-6 text-center text-[11px] text-slate-500 dark:text-slate-600 lg:hidden">
-              A <span className="font-semibold text-slate-500">Kode Kinetics</span> product
+            <p className="mt-6 text-center text-xs text-slate-400 dark:text-slate-500">
+              By signing in you agree to our{' '}
+              <a href="/privacy" target="_blank" rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:text-slate-600 dark:hover:text-slate-300">
+                Privacy Policy
+              </a>
+              {' '}and{' '}
+              <a href="/terms" target="_blank" rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:text-slate-600 dark:hover:text-slate-300">
+                Terms of Service
+              </a>
             </p>
-          </section>
-        </div>
+          </div>
+        </section>
       </div>
 
       <style>{`
         .auth-input {
           display: block; width: 100%;
-          border-radius: 16px;
-          border: 1px solid rgba(148, 163, 184, 0.24);
-          background: linear-gradient(180deg, rgba(255,255,255,0.74), rgba(247,249,255,0.96));
-          padding: 14px 16px;
-          font-size: 15px;
+          border-radius: 10px;
+          border: 1px solid rgb(203 213 225);
+          background: #ffffff;
+          padding: 11px 14px;
+          font-size: 14px;
           color: #0f172a;
-          box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.95),
-            0 1px 2px rgba(15, 23, 42, 0.04);
-          transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s, background 0.18s;
+          transition: border-color 0.15s, box-shadow 0.15s;
           outline: none;
         }
         .auth-input::placeholder { color: #94a3b8; }
         .auth-input:focus {
-          border-color: rgba(47, 107, 255, 0.55);
-          box-shadow:
-            0 0 0 4px rgba(47, 107, 255, 0.12),
-            0 10px 22px rgba(47, 107, 255, 0.08);
-          transform: translateY(-1px);
+          border-color: #2f6bff;
+          box-shadow: 0 0 0 3px rgba(47, 107, 255, 0.14);
         }
         @media (prefers-color-scheme: dark) {
           .auth-input {
-            background:
-              linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
-            border-color: rgba(255,255,255,0.09);
+            background: rgba(255,255,255,0.04);
+            border-color: rgba(255,255,255,0.12);
             color: #f1f5f9;
-            box-shadow:
-              inset 0 1px 0 rgba(255,255,255,0.05),
-              0 1px 2px rgba(0,0,0,0.16);
           }
-          .auth-input::placeholder { color: rgba(255,255,255,0.2); }
+          .auth-input::placeholder { color: rgba(255,255,255,0.28); }
           .auth-input:focus {
-            border-color: rgba(94, 235, 255, 0.55);
-            box-shadow:
-              0 0 0 4px rgba(47, 107, 255, 0.18),
-              0 10px 22px rgba(0,0,0,0.24);
+            border-color: #5eebff;
+            box-shadow: 0 0 0 3px rgba(94, 235, 255, 0.16);
           }
         }
         .auth-btn {
+          position: relative;
           display: flex; align-items: center; justify-content: center; gap: 8px;
           width: 100%;
-          border-radius: 16px;
-          background:
-            linear-gradient(135deg, #1d4ed8 0%, #2f6bff 50%, #5eebff 170%);
-          padding: 15px 24px;
-          font-size: 15px;
-          font-weight: 800;
+          overflow: hidden;
+          border-radius: 10px;
+          background: linear-gradient(180deg, #3b78ff 0%, #2f6bff 55%, #1f54e6 100%);
+          padding: 12px 20px;
+          font-size: 14px;
+          font-weight: 600;
           color: white;
-          letter-spacing: 0.01em;
-          box-shadow:
-            0 12px 30px rgba(47, 107, 255, 0.28),
-            inset 0 1px 0 rgba(255,255,255,0.24);
-          transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+          box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 8px 20px rgba(31, 84, 230, 0.30);
+          transition: box-shadow 0.18s ease, transform 0.18s ease, filter 0.18s ease;
         }
-        .auth-btn:not(:disabled) {
-          background-image: linear-gradient(120deg, #1d4ed8 0%, #2f6bff 42%, #5eebff 72%, #1d4ed8 100%);
-          background-size: 220% 220%;
-          animation: kx-cta-shine 8s linear infinite;
+        /* hover sheen sweep */
+        .auth-btn::after {
+          content: '';
+          position: absolute; top: 0; bottom: 0; left: -60%;
+          width: 45%;
+          background: linear-gradient(100deg, transparent, rgba(255,255,255,0.45), transparent);
+          transform: skewX(-18deg);
+          transition: left 0.6s cubic-bezier(.2,.7,.2,1);
         }
         .auth-btn:hover:not(:disabled) {
-          filter: saturate(1.05) brightness(1.02);
-          box-shadow:
-            0 16px 36px rgba(47, 107, 255, 0.34),
-            inset 0 1px 0 rgba(255,255,255,0.28);
+          filter: brightness(1.04);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.3) inset, 0 12px 26px rgba(31, 84, 230, 0.42);
           transform: translateY(-1px);
         }
-        .auth-btn:active:not(:disabled) {
-          transform: translateY(0) scale(0.995);
-          box-shadow:
-            0 8px 22px rgba(47, 107, 255, 0.24),
-            inset 0 1px 0 rgba(255,255,255,0.20);
+        .auth-btn:hover:not(:disabled)::after { left: 120%; }
+        .auth-btn:active:not(:disabled) { transform: translateY(0); box-shadow: 0 1px 0 rgba(255,255,255,0.2) inset, 0 6px 16px rgba(31, 84, 230, 0.32); }
+        @media (prefers-reduced-motion: reduce) {
+          .auth-btn::after { display: none; }
+          .auth-btn:hover:not(:disabled) { transform: none; }
         }
       `}</style>
     </>
@@ -740,27 +649,27 @@ function FormField({ label, labelRight, hint, children }: {
 }) {
   return (
     <div>
-      <div className="mb-2 flex items-center justify-between">
-        <p className="text-[10px] font-bold tracking-[0.2em] uppercase text-slate-400 dark:text-slate-500">{label}</p>
+      <div className="mb-1.5 flex items-center justify-between">
+        <p className="text-sm font-medium text-slate-700 dark:text-slate-300">{label}</p>
         {labelRight}
       </div>
       {children}
-      {hint && <p className="mt-1.5 text-[11px] leading-relaxed text-slate-400 dark:text-slate-500">{hint}</p>}
+      {hint && <p className="mt-1.5 text-xs leading-relaxed text-slate-400 dark:text-slate-500">{hint}</p>}
     </div>
   );
 }
 
 function AuthFeedback({ error, info }: { error: string; info: string }) {
   if (error) return (
-    <div className="mt-5 flex items-start gap-3 rounded-2xl border border-red-100 bg-red-50/80 px-4 py-3 shadow-[0_8px_24px_rgba(239,68,68,0.08)] dark:border-red-500/15 dark:bg-red-500/[0.07]">
+    <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 dark:border-red-500/20 dark:bg-red-500/[0.08]">
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-      <p className="text-[13px] leading-relaxed text-red-700 dark:text-red-400">{error}</p>
+      <p className="text-sm leading-relaxed text-red-700 dark:text-red-400">{error}</p>
     </div>
   );
   if (info) return (
-    <div className="mt-5 flex items-start gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/80 px-4 py-3 shadow-[0_8px_24px_rgba(16,185,129,0.08)] dark:border-emerald-500/15 dark:bg-emerald-500/[0.07]">
+    <div className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/[0.08]">
       <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
-      <p className="text-[13px] leading-relaxed text-emerald-700 dark:text-emerald-400">{info}</p>
+      <p className="text-sm leading-relaxed text-emerald-700 dark:text-emerald-400">{info}</p>
     </div>
   );
   return null;

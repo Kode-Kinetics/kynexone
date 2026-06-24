@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Bot, Clock, Search, X } from 'lucide-react';
+import { MessageSquareText, Clock, Search, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
@@ -39,7 +39,7 @@ interface PaletteItem {
   id: string;
   label: string;
   sublabel: string;
-  icon: 'bot' | 'search';
+  icon: 'assistant' | 'search';
   onSelect: () => void;
 }
 
@@ -70,7 +70,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
       }));
 
     const extras = [
-      { label: 'Ask AI Assistant', path: '/ai-assistant', description: 'Open the advisory AI assistant' },
+      { label: 'Assistant', path: '/ai-assistant', description: 'Open the workspace assistant' },
       { label: 'Search Employees', path: '/people', description: 'Jump to employee search and records' },
       { label: 'Review Approvals', path: '/approvals', description: 'Open approval center' },
       { label: 'View Reports', path: '/reports', description: 'Open reports and analytics' },
@@ -285,7 +285,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
       id: `${item.path}-${item.label}`,
       label: item.label,
       sublabel: item.description,
-      icon: item.path === '/ai-assistant' ? 'bot' as const : 'search' as const,
+      icon: item.path === '/ai-assistant' ? 'assistant' as const : 'search' as const,
       onSelect: () => runCommand(item.path),
     }));
   }, [employeeResults, filteredCommands, reportResults, showingSearchResults, userResults]);
@@ -375,7 +375,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                 autoFocus
                 value={commandQuery}
                 onChange={(event) => setCommandQuery(event.target.value)}
-                placeholder="Search modules, employees, reports, or ask AI..."
+                placeholder="Search modules, employees, reports…"
                 className="w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400 dark:text-white dark:placeholder:text-slate-500"
               />
               <button
@@ -509,11 +509,11 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                 </div>
               ) : filteredCommands.length === 0 ? (
                 <div className="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
-                  No matches found. Try a module name like payroll, leave, or AI.
+                  No matches found. Try a module name like payroll, leave, or reports.
                 </div>
               ) : (
                 filteredCommands.map((item) => {
-                  const isAi = item.path === '/ai-assistant';
+                  const isAssistant = item.path === '/ai-assistant';
                   const index = paletteItems.findIndex((entry) => entry.id === `${item.path}-${item.label}`);
                   const selected = index === activeIndex;
                   return (
@@ -523,8 +523,8 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                       onClick={() => runCommand(item.path)}
                       className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
                     >
-                      <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${isAi ? 'bg-sapphire/10 text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent' : 'bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-slate-300'}`}>
-                        {isAi ? <Bot className="h-4 w-4" /> : <Search className="h-4 w-4" />}
+                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-slate-300">
+                        {isAssistant ? <MessageSquareText className="h-4 w-4" /> : <Search className="h-4 w-4" />}
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-semibold text-slate-900 dark:text-white">{item.label}</span>

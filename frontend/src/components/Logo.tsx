@@ -1,127 +1,163 @@
 'use client';
 
+import { useId } from 'react';
+
 interface LogoProps {
   collapsed?: boolean;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   theme?: 'light' | 'dark';
 }
 
+/**
+ * KynexOne mark — an extruded 3D monogram.
+ *
+ * Construction (back-to-front for real depth):
+ *   1. an extruded side-face offset down-right (the "thickness")
+ *   2. the glass front face with a layered mesh gradient
+ *   3. a fine grain overlay + top specular highlight (material realism)
+ *   4. the "K" rendered as a beveled ribbon: dark depth pass + bright
+ *      front pass + a thin top-edge highlight
+ *   5. a glowing accent node with its own spec dot
+ *   6. a sheen that sweeps across on hover
+ *
+ * All gradient/filter ids are namespaced with useId() so multiple logos can
+ * coexist on one page without cross-referencing each other's defs (a subtle
+ * Safari bug with duplicate SVG ids).
+ */
 export function Logo({ collapsed, size = 'md', theme = 'light' }: LogoProps) {
   const dim = size === 'xl' ? 64 : size === 'lg' ? 48 : size === 'sm' ? 28 : 40;
   const inverse = theme === 'dark';
+  const uid = useId().replace(/:/g, '');
+  const id = (n: string) => `${n}-${uid}`;
 
   return (
     <div className="flex items-center gap-2.5">
       <svg
         width={dim}
         height={dim}
-        viewBox="0 0 32 32"
+        viewBox="0 0 40 40"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        className={`shrink-0 transition-transform duration-300 hover:scale-[1.03] ${
+        role="img"
+        aria-label="KynexOne"
+        className={`kx-logo shrink-0 ${
           inverse
-            ? 'drop-shadow-[0_18px_32px_rgba(29,78,216,0.28)]'
-            : 'drop-shadow-[0_16px_26px_rgba(37,99,235,0.12)]'
+            ? 'drop-shadow-[0_22px_40px_rgba(29,78,216,0.34)]'
+            : 'drop-shadow-[0_20px_34px_rgba(37,99,235,0.18)]'
         }`}
-        aria-hidden="true"
       >
-        <g filter="url(#logo-shadow)">
-          {/* Back face creates the 3D offset */}
-          <path
-            d="M7.5 8.5C7.5 6.01472 9.51472 4 12 4H23.5C26.5376 4 29 6.46243 29 9.5V21.5C29 24.5376 26.5376 27 23.5 27H12C9.51472 27 7.5 24.9853 7.5 22.5V8.5Z"
-            fill="url(#logo-side)"
-            opacity={inverse ? 0.85 : 0.9}
-            transform="translate(1.7 1.9)"
-          />
+        <defs>
+          {/* Front-face mesh: bright corner light → deep core */}
+          <linearGradient id={id('face')} x1="9" y1="5" x2="34" y2="36" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#4f8bff" />
+            <stop offset="45%" stopColor="#2356d6" />
+            <stop offset="100%" stopColor="#0a1c63" />
+          </linearGradient>
+          {/* Radial bloom of light from the top-left for a 3D sphere-ish read */}
+          <radialGradient id={id('bloom')} cx="28%" cy="20%" r="85%" gradientUnits="objectBoundingBox">
+            <stop offset="0%" stopColor="#bfdcff" stopOpacity="0.55" />
+            <stop offset="55%" stopColor="#bfdcff" stopOpacity="0" />
+          </radialGradient>
+          {/* Extruded side wall */}
+          <linearGradient id={id('wall')} x1="10" y1="8" x2="34" y2="36" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#0a1a55" />
+            <stop offset="100%" stopColor="#040e33" />
+          </linearGradient>
+          {/* Glass rim light */}
+          <linearGradient id={id('rim')} x1="8" y1="6" x2="34" y2="34" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.9" />
+            <stop offset="42%" stopColor="#cfe4ff" stopOpacity="0.25" />
+            <stop offset="100%" stopColor="#5aa0ff" stopOpacity="0.12" />
+          </linearGradient>
+          {/* K front material */}
+          <linearGradient id={id('k')} x1="15" y1="11" x2="27" y2="29" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#ffffff" />
+            <stop offset="100%" stopColor="#d6e6ff" />
+          </linearGradient>
+          {/* Accent node */}
+          <linearGradient id={id('orb')} x1="26" y1="7" x2="33" y2="15" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#c9fbff" />
+            <stop offset="100%" stopColor="#2bbede" />
+          </linearGradient>
+          {/* Top specular sweep */}
+          <linearGradient id={id('spec')} x1="8" y1="6" x2="30" y2="13" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.82" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          </linearGradient>
+          {/* Hover sheen */}
+          <linearGradient id={id('sheen')} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="50%" stopColor="#ffffff" stopOpacity="0.55" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          </linearGradient>
 
-          {/* Main face */}
-          <path
-            d="M7.5 8.5C7.5 6.01472 9.51472 4 12 4H23.5C26.5376 4 29 6.46243 29 9.5V21.5C29 24.5376 26.5376 27 23.5 27H12C9.51472 27 7.5 24.9853 7.5 22.5V8.5Z"
-            fill="url(#logo-bg)"
-          />
+          {/* Fine film grain for material texture */}
+          <filter id={id('grain')} x="0" y="0" width="100%" height="100%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch" result="n" />
+            <feColorMatrix in="n" type="saturate" values="0" />
+          </filter>
 
-          {/* Architectural edge */}
-          <path
-            d="M12 4H23.5C26.5376 4 29 6.46243 29 9.5V21.5C29 24.5376 26.5376 27 23.5 27"
-            stroke="url(#logo-edge)"
-            strokeWidth="0.9"
-            strokeLinecap="round"
-            opacity="0.9"
-          />
+          {/* Squircle clip for overlays */}
+          <clipPath id={id('clip')}>
+            <rect x="6" y="6" width="28" height="28" rx="9.5" />
+          </clipPath>
+        </defs>
 
-          {/* Top highlight */}
-          <path
-            d="M8.5 9C8.5 6.96243 10.1624 5.3 12.2 5.3H22.9C25.0231 5.3 26.8 7.07687 26.8 9.2V10.3H8.5V9Z"
-            fill="url(#logo-highlight)"
-            opacity={inverse ? 0.95 : 0.9}
-          />
+        {/* 1 — extruded thickness */}
+        <rect x="6" y="6" width="28" height="28" rx="9.5" fill={`url(#${id('wall')})`} transform="translate(1.6 2.1)" opacity={inverse ? 0.95 : 0.92} />
 
-          {/* Inner sheen */}
-          <rect width="21" height="21" x="8.5" y="5.5" rx="7.5" fill="url(#logo-glow)" opacity="0.55" />
+        {/* 2 — glass front face */}
+        <rect x="6" y="6" width="28" height="28" rx="9.5" fill={`url(#${id('face')})`} />
+        <rect x="6" y="6" width="28" height="28" rx="9.5" fill={`url(#${id('bloom')})`} />
 
-          {/* Subtle grid dots */}
-          <circle cx="11" cy="10" r="1" fill="white" fillOpacity={inverse ? '0.18' : '0.13'} />
-          <circle cx="17" cy="10" r="1" fill="white" fillOpacity={inverse ? '0.18' : '0.13'} />
-          <circle cx="23" cy="10" r="1" fill="white" fillOpacity={inverse ? '0.18' : '0.13'} />
-          <circle cx="11" cy="16" r="1" fill="white" fillOpacity={inverse ? '0.18' : '0.13'} />
-          <circle cx="23" cy="16" r="1" fill="white" fillOpacity={inverse ? '0.18' : '0.13'} />
-          <circle cx="11" cy="22" r="1" fill="white" fillOpacity={inverse ? '0.18' : '0.13'} />
-          <circle cx="17" cy="22" r="1" fill="white" fillOpacity={inverse ? '0.18' : '0.13'} />
-          <circle cx="23" cy="22" r="1" fill="white" fillOpacity={inverse ? '0.18' : '0.13'} />
+        <g clipPath={`url(#${id('clip')})`}>
+          {/* 3 — grain + specular */}
+          <rect x="6" y="6" width="28" height="28" filter={`url(#${id('grain')})`} opacity="0.13" style={{ mixBlendMode: 'overlay' }} />
+          <path d="M6 13 Q20 4 34 11 L34 6 L6 6 Z" fill={`url(#${id('spec')})`} opacity="0.9" />
 
-          {/* K letterform */}
-          <path
-            d="M12 9.5V22.5M12 16L21.6 9.5M12 16L21.6 22.5"
-            stroke="white"
-            strokeWidth="2.55"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
+          {/* 4 — extruded "K" ribbon */}
+          {/* depth pass */}
+          <path d="M15.6 12.6 V27.4 M15.6 20 L26.6 12.6 M15.6 20 L26.6 27.4"
+            stroke="#0a1850" strokeWidth="3.1" strokeLinecap="round" strokeLinejoin="round"
+            transform="translate(0.85 1.15)" opacity="0.85" />
+          {/* front pass */}
+          <path d="M15.6 12.6 V27.4 M15.6 20 L26.6 12.6 M15.6 20 L26.6 27.4"
+            stroke={`url(#${id('k')})`} strokeWidth="3.1" strokeLinecap="round" strokeLinejoin="round" />
+          {/* top-edge bevel highlight */}
+          <path d="M15.6 12.6 V27.4 M15.6 20 L26.6 12.6 M15.6 20 L26.6 27.4"
+            stroke="#ffffff" strokeWidth="0.7" strokeLinecap="round" strokeLinejoin="round"
+            transform="translate(-0.35 -0.45)" opacity="0.55" />
 
-          {/* Accent dot — vibrant cyan with depth */}
-          <circle cx="23.85" cy="8.75" r="2.7" fill="url(#logo-dot)" />
-          <circle cx="22.95" cy="7.95" r="0.95" fill="white" fillOpacity="0.72" />
+          {/* 6 — hover sheen (clipped to face) */}
+          <rect className="kx-sheen" x="-22" y="6" width="16" height="28" fill={`url(#${id('sheen')})`} opacity="0" />
         </g>
 
-        <defs>
-          <filter id="logo-shadow" x="-20%" y="-20%" width="160%" height="170%" colorInterpolationFilters="sRGB">
-            <feDropShadow dx="0" dy="1.5" stdDeviation="1.7" floodColor={inverse ? '#1d4ed8' : '#0f172a'} floodOpacity={inverse ? '0.24' : '0.11'} />
-            <feDropShadow dx="0" dy="6" stdDeviation="6" floodColor="#1d4ed8" floodOpacity={inverse ? '0.18' : '0.09'} />
-          </filter>
-          <linearGradient id="logo-bg" x1="7.5" y1="4" x2="29" y2="27" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#356fff" />
-            <stop offset="42%" stopColor="#2455d8" />
-            <stop offset="100%" stopColor="#112f84" />
-          </linearGradient>
-          <linearGradient id="logo-side" x1="9" y1="6" x2="29" y2="28" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#0a2878" />
-            <stop offset="100%" stopColor="#061948" />
-          </linearGradient>
-          <linearGradient id="logo-edge" x1="12" y1="4" x2="29" y2="27" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="#7dd3fc" stopOpacity="0.16" />
-          </linearGradient>
-          <linearGradient id="logo-highlight" x1="8.5" y1="5.3" x2="26.8" y2="10.2" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.82" />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0.06" />
-          </linearGradient>
-          <radialGradient id="logo-glow" cx="25%" cy="20%" r="70%" gradientUnits="objectBoundingBox">
-            <stop offset="0%" stopColor="#dbeafe" stopOpacity="0.32" />
-            <stop offset="100%" stopColor="#dbeafe" stopOpacity="0" />
-          </radialGradient>
-          <linearGradient id="logo-dot" x1="20.5" y1="6.2" x2="26.5" y2="12.5" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#b0fbff" />
-            <stop offset="100%" stopColor="#28b7db" />
-          </linearGradient>
-        </defs>
+        {/* 5 — accent node */}
+        <circle cx="29.6" cy="10.8" r="3.1" fill={`url(#${id('orb')})`} />
+        <circle cx="29.6" cy="10.8" r="3.1" fill="none" stroke="#ffffff" strokeOpacity="0.5" strokeWidth="0.5" />
+        <circle cx="28.7" cy="9.9" r="0.95" fill="#ffffff" fillOpacity="0.8" />
+
+        {/* glass rim, drawn last so it crowns everything */}
+        <rect x="6" y="6" width="28" height="28" rx="9.5" fill="none" stroke={`url(#${id('rim')})`} strokeWidth="0.9" />
+
+        <style>{`
+          .kx-logo { transition: transform .45s cubic-bezier(.2,.8,.2,1), filter .45s ease; transform-origin: 50% 60%; }
+          .kx-logo:hover { transform: translateY(-1px) scale(1.035) rotate(-1.2deg); }
+          .kx-logo .kx-sheen { transition: transform .7s cubic-bezier(.2,.7,.2,1), opacity .2s ease; }
+          .kx-logo:hover .kx-sheen { transform: translateX(58px); opacity: 1; }
+          @media (prefers-reduced-motion: reduce) {
+            .kx-logo, .kx-logo:hover { transition: none; transform: none; }
+            .kx-logo .kx-sheen { display: none; }
+          }
+        `}</style>
       </svg>
 
       {!collapsed && (
         <div className="min-w-0 leading-none">
           <p className={`truncate text-[15px] font-bold tracking-tight ${inverse ? 'text-white' : 'text-slate-900 dark:text-white'}`}>
-            Kynex<span className={`font-black ${inverse ? 'text-cyan-300' : 'text-blue-400'}`}>One</span>
+            Kynex<span className={`font-black ${inverse ? 'text-cyan-300' : 'text-blue-500 dark:text-cyan-300'}`}>One</span>
           </p>
-          <p className={`truncate text-[10px] font-medium tracking-wide ${inverse ? 'text-white/65' : 'text-slate-400 dark:text-slate-500'}`}>
+          <p className={`truncate text-[10px] font-medium tracking-wide ${inverse ? 'text-white/60' : 'text-slate-400 dark:text-slate-500'}`}>
             Workforce Platform
           </p>
         </div>
