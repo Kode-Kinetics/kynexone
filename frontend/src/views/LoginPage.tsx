@@ -170,6 +170,10 @@ export function LoginPage() {
   return (
     <>
       <style>{`
+        @keyframes kx-float {
+          0%, 100% { transform: translateY(0px); }
+          50% { transform: translateY(-8px); }
+        }
         @keyframes kx-sheen {
           0% { transform: translateX(-35%); opacity: 0; }
           30% { opacity: 0.55; }
@@ -192,6 +196,7 @@ export function LoginPage() {
         .kx-dot   { animation: kx-pulse-dot 2s ease-in-out infinite }
         .kx-count { animation: kx-count 0.5s ease-out both }
         .kx-row   { animation: kx-row-in 0.4s ease-out both }
+        .kx-float { animation: kx-float 7s ease-in-out infinite }
       `}</style>
 
       <div className="relative flex min-h-screen overflow-hidden font-sans bg-[#eef2ff] text-slate-900 dark:bg-[#040814] dark:text-white">
@@ -374,8 +379,8 @@ export function LoginPage() {
         <div className="relative flex flex-1 flex-col items-center justify-center overflow-hidden px-6 py-10 sm:px-10 sm:py-14">
 
           {/* Glass background blobs — subtle, behind the card */}
-          <div className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-blue-300/20 blur-3xl dark:bg-blue-700/10" />
-          <div className="pointer-events-none absolute -bottom-16 -left-16 h-64 w-64 rounded-full bg-indigo-300/20 blur-3xl dark:bg-indigo-700/10" />
+          <div className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-blue-300/25 blur-3xl dark:bg-blue-700/12 kx-float" />
+          <div className="pointer-events-none absolute -bottom-16 -left-16 h-64 w-64 rounded-full bg-indigo-300/20 blur-3xl dark:bg-indigo-700/10 kx-float" />
           <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.55),rgba(255,255,255,0.12))] dark:bg-[linear-gradient(180deg,rgba(4,8,20,0.18),rgba(4,8,20,0.04))]" />
 
           {/* Mobile logo */}
@@ -384,8 +389,9 @@ export function LoginPage() {
           </div>
 
           {/* Glass card wrapper */}
-          <div className="relative z-10 w-full max-w-[460px] rounded-[32px] border border-white/75 bg-white/72 p-[1px] shadow-[0_30px_120px_rgba(37,99,235,0.12),0_0_0_1px_rgba(255,255,255,0.6)] backdrop-blur-2xl dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-[0_30px_120px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)]">
-            <div className="rounded-[31px] bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(255,255,255,0.72))] px-6 py-6 sm:px-10 sm:py-10 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.90),rgba(7,12,24,0.86))]">
+        <div className="relative z-10 w-full max-w-[460px] rounded-[34px] border border-white/85 bg-[rgba(250,252,255,0.58)] p-[1px] shadow-[0_30px_120px_rgba(37,99,235,0.14),0_0_0_1px_rgba(255,255,255,0.75)] backdrop-blur-3xl dark:border-white/[0.10] dark:bg-white/[0.04] dark:shadow-[0_30px_120px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)]">
+            <div className="relative overflow-hidden rounded-[33px] bg-[linear-gradient(180deg,rgba(255,255,255,0.64),rgba(247,249,255,0.42))] px-6 py-6 sm:px-10 sm:py-10 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.90),rgba(7,12,24,0.86))]">
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(255,255,255,0.9),transparent_35%),linear-gradient(135deg,rgba(47,107,255,0.08),transparent_40%,rgba(94,235,255,0.06))]" />
 
           <div className="w-full max-w-[380px]">
 

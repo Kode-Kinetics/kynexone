@@ -220,8 +220,8 @@ export default function PlatformLoginPage() {
       </div>
 
       <div className="relative flex flex-1 flex-col items-center justify-center overflow-hidden px-6 py-10 sm:px-10 sm:py-14">
-        <div className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-blue-300/20 blur-3xl dark:bg-blue-700/10" />
-        <div className="pointer-events-none absolute -bottom-16 -left-16 h-64 w-64 rounded-full bg-indigo-300/20 blur-3xl dark:bg-indigo-700/10" />
+        <div className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-blue-300/25 blur-3xl dark:bg-blue-700/12 kx-float" />
+        <div className="pointer-events-none absolute -bottom-16 -left-16 h-64 w-64 rounded-full bg-indigo-300/20 blur-3xl dark:bg-indigo-700/10 kx-float" />
         <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.55),rgba(255,255,255,0.12))] dark:bg-[linear-gradient(180deg,rgba(4,8,20,0.18),rgba(4,8,20,0.04))]" />
 
         <div className="relative z-10 w-full max-w-[980px]">
@@ -250,7 +250,7 @@ export default function PlatformLoginPage() {
                 ))}
               </div>
 
-              <div className="rounded-[28px] border border-white/70 bg-white/70 p-4 shadow-[0_18px_60px_rgba(37,99,235,0.08)] backdrop-blur-xl dark:border-white/[0.08] dark:bg-white/[0.03]">
+              <div className="rounded-[28px] border border-white/75 bg-[rgba(250,252,255,0.52)] p-4 shadow-[0_18px_60px_rgba(37,99,235,0.10)] backdrop-blur-3xl dark:border-white/[0.08] dark:bg-white/[0.03]">
                 <div className="mb-3 flex items-center justify-between">
                   <div>
                     <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400 dark:text-slate-500">Operating focus</p>
@@ -280,8 +280,9 @@ export default function PlatformLoginPage() {
 
             <div className="relative">
               <div className="absolute -inset-4 rounded-[38px] bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.24),transparent_40%),linear-gradient(135deg,rgba(47,107,255,0.18),rgba(94,235,255,0.06))] blur-2xl opacity-80" />
-              <div className="relative z-10 rounded-[34px] border border-white/75 bg-white/78 p-[1px] shadow-[0_30px_120px_rgba(37,99,235,0.12),0_0_0_1px_rgba(255,255,255,0.6)] backdrop-blur-2xl dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-[0_30px_120px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)]">
-                <div className="rounded-[33px] bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(255,255,255,0.78))] px-6 py-6 sm:px-10 sm:py-10 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.92),rgba(7,12,24,0.88))]">
+              <div className="relative z-10 rounded-[36px] border border-white/85 bg-[rgba(250,252,255,0.58)] p-[1px] shadow-[0_30px_120px_rgba(37,99,235,0.16),0_0_0_1px_rgba(255,255,255,0.75)] backdrop-blur-3xl dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-[0_30px_120px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)]">
+                <div className="relative overflow-hidden rounded-[35px] bg-[linear-gradient(180deg,rgba(255,255,255,0.68),rgba(247,249,255,0.42))] px-6 py-6 sm:px-10 sm:py-10 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.92),rgba(7,12,24,0.88))]">
+                  <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_25%_0%,rgba(255,255,255,0.92),transparent_34%),linear-gradient(135deg,rgba(47,107,255,0.08),transparent_42%,rgba(94,235,255,0.06))]" />
                   <div className="mb-6 flex items-start justify-between gap-4">
                     <div>
                       <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-sapphire/15 bg-sapphire/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-sapphire dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
@@ -397,6 +398,10 @@ export default function PlatformLoginPage() {
       </div>
 
       <style>{`
+        @keyframes kx-float {
+          0%, 100% { transform: translateY(0px); }
+          50% { transform: translateY(-8px); }
+        }
         @keyframes kx-grid-shift { from{background-position:0 0} to{background-position:44px 44px} }
         @keyframes kx-window-in  { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
         @keyframes kx-bar-in     { from{transform:scaleY(0)} to{transform:scaleY(1)} }
@@ -412,6 +417,7 @@ export default function PlatformLoginPage() {
         .kx-bar   { animation: kx-bar-in 0.4s ease-out both; transform-origin: bottom }
         .kx-dot   { animation: kx-pulse-dot 2s ease-in-out infinite }
         .kx-count { animation: kx-count 0.5s ease-out both }
+        .kx-float { animation: kx-float 7s ease-in-out infinite }
         .auth-input {
           display: block;
           width: 100%;
