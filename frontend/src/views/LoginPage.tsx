@@ -160,25 +160,25 @@ export function LoginPage() {
           0%, 100% { transform: scaleX(0.85); opacity: 0.55; }
           50% { transform: scaleX(1); opacity: 1; }
         }
-        .kx-float { animation: kx-float 8s ease-in-out infinite; }
-        .kx-drift { animation: kx-drift 10s ease-in-out infinite; }
+        .kx-float { animation: kx-float 14s ease-in-out infinite; }
+        .kx-drift { animation: kx-drift 18s ease-in-out infinite; }
         .kx-panel-in { animation: kx-panel-in 0.65s ease-out both; }
-        .kx-sheen { animation: kx-sheen 4.5s ease-in-out infinite; }
-        .kx-orbit { animation: kx-orbit 14s linear infinite; }
+        .kx-sheen { animation: kx-sheen 8s ease-in-out infinite; }
+        .kx-orbit { animation: kx-orbit 24s linear infinite; }
         .kx-rise { animation: kx-rise 2.8s ease-in-out infinite; transform-origin: bottom; }
-        .kx-glow { animation: kx-glow 5.5s ease-in-out infinite; }
-        .kx-line { animation: kx-line 5.5s ease-in-out infinite; transform-origin: center; }
+        .kx-glow { animation: kx-glow 10s ease-in-out infinite; }
+        .kx-line { animation: kx-line 10s ease-in-out infinite; transform-origin: center; }
       `}</style>
 
       <div className="relative min-h-[100svh] w-full overflow-hidden bg-[#eef2ff] text-slate-900 dark:bg-[#040814] dark:text-white">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.16),transparent_28%),radial-gradient(circle_at_85%_20%,rgba(94,235,255,0.10),transparent_22%),linear-gradient(180deg,rgba(255,255,255,0.5),transparent_35%)] dark:bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.18),transparent_28%),radial-gradient(circle_at_85%_20%,rgba(94,235,255,0.08),transparent_22%),linear-gradient(180deg,rgba(6,11,24,0.9),rgba(4,8,20,0.98))]" />
         <div className="pointer-events-none absolute inset-0 opacity-[0.22] mix-blend-soft-light [background-image:linear-gradient(rgba(47,107,255,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(47,107,255,0.08)_1px,transparent_1px)] [background-size:72px_72px]" />
-        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-[linear-gradient(90deg,transparent,rgba(47,107,255,0.35),rgba(94,235,255,0.45),transparent)] opacity-70 kx-line" />
-        <div className="pointer-events-none absolute left-[10%] top-[14%] h-72 w-72 rounded-full bg-white/45 blur-3xl kx-drift" />
-        <div className="pointer-events-none absolute right-[12%] bottom-[16%] h-80 w-80 rounded-full bg-cyan-200/18 blur-3xl kx-float" />
-        <div className="pointer-events-none absolute inset-y-0 left-1/3 w-px bg-gradient-to-b from-transparent via-blue-300/20 to-transparent opacity-70" />
-        <div className="pointer-events-none absolute left-0 top-1/4 h-72 w-72 rounded-full bg-blue-300/25 blur-3xl dark:bg-blue-700/12 kx-float" />
-        <div className="pointer-events-none absolute bottom-[-4rem] right-[-5rem] h-80 w-80 rounded-full bg-cyan-300/18 blur-3xl dark:bg-cyan-600/10 kx-float" />
+        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-[linear-gradient(90deg,transparent,rgba(47,107,255,0.24),rgba(94,235,255,0.28),transparent)] opacity-45 kx-line" />
+        <div className="pointer-events-none absolute left-[10%] top-[14%] h-60 w-60 rounded-full bg-white/28 blur-3xl kx-drift" />
+        <div className="pointer-events-none absolute right-[12%] bottom-[16%] h-64 w-64 rounded-full bg-cyan-200/12 blur-3xl kx-float" />
+        <div className="pointer-events-none absolute inset-y-0 left-1/3 w-px bg-gradient-to-b from-transparent via-blue-300/14 to-transparent opacity-45" />
+        <div className="pointer-events-none absolute left-0 top-1/4 h-56 w-56 rounded-full bg-blue-300/14 blur-3xl dark:bg-blue-700/8 kx-float" />
+        <div className="pointer-events-none absolute bottom-[-4rem] right-[-5rem] h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl dark:bg-cyan-600/8 kx-float" />
 
         <div className="relative z-10 grid min-h-[100svh] w-full lg:grid-cols-[0.96fr_1.04fr]">
           <section className="relative flex min-h-[34svh] flex-col justify-between overflow-hidden bg-[linear-gradient(160deg,#fbfdff_0%,#f4f8ff_42%,#eaf2ff_100%)] px-5 py-4 text-slate-900 sm:px-8 sm:py-5 lg:min-h-[100svh] lg:px-10 lg:py-6">
