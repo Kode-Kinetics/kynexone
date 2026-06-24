@@ -28,6 +28,13 @@ const WORKFORCE_SIGNALS = [
   'Compliance',
 ];
 
+const WORKFORCE_FLOW = [
+  'Clock in',
+  'Approve',
+  'Run payroll',
+  'Audit',
+];
+
 type Mode = 'login' | 'forgot' | 'reset' | 'mfa';
 
 export function LoginPage() {
@@ -160,6 +167,14 @@ export function LoginPage() {
           0%, 100% { transform: scaleX(0.85); opacity: 0.55; }
           50% { transform: scaleX(1); opacity: 1; }
         }
+        @keyframes kx-flow {
+          0%, 100% { transform: translateX(-8px); opacity: 0.55; }
+          50% { transform: translateX(8px); opacity: 1; }
+        }
+        @keyframes kx-node {
+          0%, 100% { transform: scale(0.96); opacity: 0.72; }
+          50% { transform: scale(1); opacity: 1; }
+        }
         .kx-float { animation: kx-float 14s ease-in-out infinite; }
         .kx-drift { animation: kx-drift 18s ease-in-out infinite; }
         .kx-panel-in { animation: kx-panel-in 0.65s ease-out both; }
@@ -168,6 +183,8 @@ export function LoginPage() {
         .kx-rise { animation: kx-rise 2.8s ease-in-out infinite; transform-origin: bottom; }
         .kx-glow { animation: kx-glow 10s ease-in-out infinite; }
         .kx-line { animation: kx-line 10s ease-in-out infinite; transform-origin: center; }
+        .kx-flow { animation: kx-flow 12s ease-in-out infinite; }
+        .kx-node { animation: kx-node 3.6s ease-in-out infinite; }
       `}</style>
 
       <div className="relative min-h-[100svh] w-full overflow-hidden bg-[#eef2ff] text-slate-900 dark:bg-[#040814] dark:text-white">
@@ -188,7 +205,7 @@ export function LoginPage() {
             <div className="pointer-events-none absolute -left-12 bottom-16 h-36 w-36 rounded-full bg-blue-500/12 blur-3xl kx-glow" />
 
             <div className="relative z-10 flex items-center gap-3">
-              <div className="rounded-[22px] border border-white/85 bg-white/86 px-4 py-3.5 shadow-[0_18px_40px_rgba(37,99,235,0.10)] backdrop-blur-xl">
+              <div className="rounded-[22px] border border-white/90 bg-white/88 px-5 py-4 shadow-[0_20px_46px_rgba(37,99,235,0.12)] backdrop-blur-xl">
                 <Logo size="xl" />
               </div>
               <div className="h-9 w-px bg-slate-300/60" />
@@ -210,8 +227,10 @@ export function LoginPage() {
                 </div>
                 <div>
                   <h1 className="max-w-[540px] text-[38px] font-black leading-[1.03] tracking-tight text-slate-950 xl:text-[45px]">
-                    Workforce operations,<br />
-                    brought into one place.
+                    Sign in to the<br />
+                    <span className="bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-400 bg-clip-text text-transparent">
+                      workforce command center.
+                    </span>
                   </h1>
                   <p className="mt-2 max-w-[500px] text-[14px] leading-relaxed text-slate-600">
                     Attendance, leave, payroll, approvals, and compliance in a tenant-isolated workspace with production-grade controls.
@@ -237,6 +256,33 @@ export function LoginPage() {
                       >
                         {signal}
                       </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-[24px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.84),rgba(244,248,255,0.72))] p-3 shadow-[0_14px_26px_rgba(37,99,235,0.05)] backdrop-blur-xl">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Operational flow</p>
+                    <span className="rounded-full border border-cyan-200/80 bg-cyan-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-600">
+                      Live
+                    </span>
+                  </div>
+                  <div className="kx-flow mt-3 flex items-center gap-2">
+                    {WORKFORCE_FLOW.map((item, index) => (
+                      <div key={item} className="flex min-w-0 flex-1 items-center gap-2">
+                        <div className="kx-node flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-blue-200/80 bg-white text-[10px] font-bold text-blue-600 shadow-sm">
+                          {index + 1}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-semibold text-slate-700">{item}</p>
+                          <p className="truncate text-[10px] text-slate-400">
+                            {index === 0 ? 'Capture' : index === 1 ? 'Route' : index === 2 ? 'Process' : 'Review'}
+                          </p>
+                        </div>
+                        {index < WORKFORCE_FLOW.length - 1 && (
+                          <div className="hidden h-px flex-1 bg-gradient-to-r from-blue-200 via-cyan-200 to-transparent sm:block" />
+                        )}
+                      </div>
                     ))}
                   </div>
                 </div>
