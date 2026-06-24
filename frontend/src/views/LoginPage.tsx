@@ -177,14 +177,14 @@ export function LoginPage() {
         .kx-line { animation: kx-line 5.5s ease-in-out infinite; transform-origin: center; }
       `}</style>
 
-      <div className="relative min-h-screen overflow-hidden bg-[#eef2ff] text-slate-900 dark:bg-[#040814] dark:text-white">
+      <div className="relative min-h-[100svh] w-full overflow-hidden bg-[#eef2ff] text-slate-900 dark:bg-[#040814] dark:text-white">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.16),transparent_28%),radial-gradient(circle_at_85%_20%,rgba(94,235,255,0.10),transparent_22%),linear-gradient(180deg,rgba(255,255,255,0.5),transparent_35%)] dark:bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.18),transparent_28%),radial-gradient(circle_at_85%_20%,rgba(94,235,255,0.08),transparent_22%),linear-gradient(180deg,rgba(6,11,24,0.9),rgba(4,8,20,0.98))]" />
         <div className="pointer-events-none absolute inset-0 opacity-[0.22] mix-blend-soft-light [background-image:linear-gradient(rgba(47,107,255,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(47,107,255,0.08)_1px,transparent_1px)] [background-size:72px_72px]" />
         <div className="pointer-events-none absolute left-0 top-1/4 h-72 w-72 rounded-full bg-blue-300/25 blur-3xl dark:bg-blue-700/12 kx-float" />
         <div className="pointer-events-none absolute bottom-[-4rem] right-[-5rem] h-80 w-80 rounded-full bg-cyan-300/18 blur-3xl dark:bg-cyan-600/10 kx-float" />
 
-        <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-6 py-6 lg:grid lg:grid-cols-[1fr_460px] lg:items-center lg:gap-12 lg:px-10">
-          <section className="relative hidden overflow-hidden rounded-[40px] border border-slate-950/10 bg-[linear-gradient(160deg,#06101d_0%,#07172c_48%,#09101c_100%)] px-12 py-10 text-white shadow-[0_40px_120px_rgba(6,12,24,0.24)] lg:flex lg:flex-col lg:justify-between lg:gap-8">
+        <div className="relative z-10 grid min-h-[100svh] w-full lg:grid-cols-[1.08fr_0.92fr]">
+          <section className="relative flex min-h-[42svh] flex-col justify-between overflow-hidden bg-[linear-gradient(160deg,#06101d_0%,#07172c_48%,#09101c_100%)] px-6 py-6 text-white sm:px-10 sm:py-8 lg:min-h-[100svh] lg:px-12 lg:py-10">
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(47,107,255,0.32),transparent_26%),radial-gradient(circle_at_88%_14%,rgba(94,235,255,0.18),transparent_18%),radial-gradient(circle_at_50%_100%,rgba(56,189,248,0.14),transparent_22%)]" />
             <div className="pointer-events-none absolute inset-0 opacity-[0.18] [background-image:linear-gradient(rgba(255,255,255,0.09)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.09)_1px,transparent_1px)] [background-size:72px_72px]" />
             <div className="pointer-events-none absolute -right-10 top-10 h-36 w-36 rounded-full border border-cyan-300/20 bg-cyan-300/8 blur-2xl kx-orbit" />
@@ -205,7 +205,7 @@ export function LoginPage() {
               </div>
             </div>
 
-            <div className="relative z-10 max-w-[640px] space-y-6">
+            <div className="relative z-10 max-w-[720px] space-y-6 lg:pb-6">
               <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-200">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 Secure workspace access
@@ -303,16 +303,17 @@ export function LoginPage() {
             </p>
           </section>
 
-          <section className="relative flex items-center justify-center">
+          <section className="relative flex min-h-[58svh] items-stretch justify-center px-4 py-4 sm:px-6 sm:py-6 lg:min-h-[100svh] lg:px-8 lg:py-4">
             <div className="pointer-events-none absolute -left-8 top-6 h-44 w-44 rounded-full border border-white/30 bg-white/40 blur-3xl dark:border-white/10 dark:bg-white/5" />
             <div className="pointer-events-none absolute right-2 top-2 h-20 w-20 rounded-full border border-cyan-300/20 bg-cyan-300/10 blur-2xl dark:bg-cyan-500/10" />
 
-            <div className="relative z-10 w-full max-w-[460px] rounded-[34px] border border-white/85 bg-[rgba(250,252,255,0.56)] p-[1px] shadow-[0_30px_120px_rgba(37,99,235,0.12),0_0_0_1px_rgba(255,255,255,0.72)] backdrop-blur-3xl dark:border-white/[0.10] dark:bg-white/[0.04] dark:shadow-[0_30px_120px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)] kx-panel-in">
-              <div className="relative overflow-hidden rounded-[33px] bg-[linear-gradient(180deg,rgba(255,255,255,0.66),rgba(247,249,255,0.42))] px-6 py-6 sm:px-10 sm:py-10 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.92),rgba(7,12,24,0.88))]">
+            <div className="relative z-10 flex w-full max-w-[620px] items-stretch">
+              <div className="relative flex min-h-full w-full flex-col rounded-[34px] border border-white/85 bg-[rgba(250,252,255,0.56)] p-[1px] shadow-[0_30px_120px_rgba(37,99,235,0.12),0_0_0_1px_rgba(255,255,255,0.72)] backdrop-blur-3xl dark:border-white/[0.10] dark:bg-white/[0.04] dark:shadow-[0_30px_120px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)] kx-panel-in">
+              <div className="relative flex min-h-full flex-1 flex-col overflow-hidden rounded-[33px] bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(247,249,255,0.48))] px-6 py-6 sm:px-10 sm:py-10 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.94),rgba(7,12,24,0.90))]">
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(255,255,255,0.88),transparent_34%),linear-gradient(135deg,rgba(47,107,255,0.08),transparent_42%,rgba(94,235,255,0.05))]" />
                 <div className="pointer-events-none absolute inset-y-0 left-0 w-20 bg-gradient-to-r from-white/30 to-transparent dark:from-white/[0.04] kx-sheen" />
 
-                <div className="relative">
+                <div className="relative flex flex-1 flex-col">
                   <div className="mb-6 flex items-center justify-between gap-3">
                     <div className="inline-flex items-center gap-2 rounded-full border border-blue-500/15 bg-blue-500/8 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
@@ -499,23 +500,26 @@ export function LoginPage() {
                     </form>
                   )}
 
-                  <p className="mt-8 text-center text-[11px] text-slate-500 dark:text-slate-500">
-                    By signing in you agree to our{' '}
-                    <a href="/privacy" target="_blank" rel="noopener noreferrer"
-                      className="underline underline-offset-2 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
-                      Privacy Policy
-                    </a>
-                    {' '}and{' '}
-                    <a href="/terms" target="_blank" rel="noopener noreferrer"
-                      className="underline underline-offset-2 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
-                      Terms of Service
-                    </a>
-                  </p>
+                  <div className="mt-auto pt-8">
+                    <p className="text-center text-[11px] text-slate-500 dark:text-slate-500">
+                      By signing in you agree to our{' '}
+                      <a href="/privacy" target="_blank" rel="noopener noreferrer"
+                        className="underline underline-offset-2 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
+                        Privacy Policy
+                      </a>
+                      {' '}and{' '}
+                      <a href="/terms" target="_blank" rel="noopener noreferrer"
+                        className="underline underline-offset-2 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
+                        Terms of Service
+                      </a>
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
+            </div>
 
-            <p className="mt-8 text-center text-[11px] text-slate-500 dark:text-slate-600 lg:hidden">
+            <p className="mt-6 text-center text-[11px] text-slate-500 dark:text-slate-600 lg:hidden">
               A <span className="font-semibold text-slate-500">Kode Kinetics</span> product
             </p>
           </section>
