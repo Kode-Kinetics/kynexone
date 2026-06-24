@@ -26,7 +26,9 @@ public static class DemoDataSeeder
         CancellationToken ct = default)
     {
         await SeedPlatformOwnerAsync(db, hasher, logger, ct);
-        await SeedPricingConfigAsync(db, logger, ct);
+        // Pricing config is now seeded unconditionally from Program.cs startup (runs in all
+        // environments, not just demo) — see PricingConfigSeeder. Not called here to avoid a
+        // double invocation in the same DbContext scope.
         await FreeInactiveSlugsThatWereNotRenamedAsync(db, logger, ct);
         await DeactivateDemoTenantsAsync(db, logger, ct);
 
@@ -936,7 +938,9 @@ public static class DemoDataSeeder
         string dob,
         int? managerId = null)
     {
-        var joiningDate = new DateTime(2022, 1, 1).AddDays(new Random(code.GetHashCode()).Next(0, 730));
+        // Kind MUST be Utc — Npgsql rejects Unspecified DateTimes for timestamptz columns, and an
+        // insert failure here would poison the shared startup DbContext for every later seeder.
+        var joiningDate = new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(new Random(code.GetHashCode()).Next(0, 730));
         var emp = new Employee
         {
             TenantId          = tenantId,
@@ -1079,11 +1083,14 @@ public static class DemoDataSeeder
 
     // ── Pricing config seed ───────────────────────────────────────────────────
 
-    private static async Task SeedPricingConfigAsync(ZayraDbContext db, ILogger logger, CancellationToken ct)
+    /// <summary>Seeds baseline pricing config + module catalog. Idempotent (skips when already present).
+    /// Exposed so it can run UNCONDITIONALLY at startup — the pricing console must never be empty,
+    /// even in production where demo-data seeding is disabled.</summary>
+    public static async Task SeedPricingConfigAsync(ZayraDbContext db, ILogger logger, CancellationToken ct)
     {
         if (await db.PricingModuleConfigs.AnyAsync(ct))
         {
-            logger.LogInformation("DemoDataSeeder: pricing config already seeded — skipping.");
+            logger.LogInformation("Pricing config already seeded — skipping.");
             return;
         }
 

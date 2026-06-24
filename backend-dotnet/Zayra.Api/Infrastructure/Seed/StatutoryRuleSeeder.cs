@@ -51,8 +51,8 @@ public static class StatutoryRuleSeeder
     private static List<StatutoryRule> BuildRules()
     {
         var list = new List<StatutoryRule>();
-        var eff16 = new DateTime(2016, 6, 1);   // GOSI regulation effective date
-        var eff22 = new DateTime(2022, 1, 1);   // UAE/Qatar post-reform effective date
+        var eff16 = new DateTime(2016, 6, 1, 0, 0, 0, DateTimeKind.Utc);   // GOSI regulation effective date
+        var eff22 = new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc);   // UAE/Qatar post-reform effective date
 
         // ── KSA GOSI ─────────────────────────────────────────────────────────
         // ⚠️  COMPLIANCE GATE — DO NOT REMOVE ⚠️
@@ -96,7 +96,7 @@ public static class StatutoryRuleSeeder
         //   explicitly mandated by statute — court precedent varies by case.
         // Standard work minutes: 480 min (8h/day) — adjust for Ramadan-reduced hours
         //   or sector-specific shift patterns as required.
-        var eff07 = new DateTime(2005, 9, 27); // KSA Labour Law Royal Decree M/51 effective date
+        var eff07 = new DateTime(2005, 9, 27, 0, 0, 0, DateTimeKind.Utc); // KSA Labour Law Royal Decree M/51 effective date
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "ot.standard_multiplier", "1.5", "decimal", eff07,
             "FLAG-COMPLIANCE: OT 1.5× per KSA Labour Law Art.107 — weekend/holiday may differ — VERIFY before filing"));

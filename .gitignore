@@ -18,3 +18,7 @@ backend-dotnet/**/obj/
 *.suo
 .vercel
 docker-compose.override.yml
+
+# Temp screenshots / scratch artifacts
+.tmp-*
+*.tmp.png

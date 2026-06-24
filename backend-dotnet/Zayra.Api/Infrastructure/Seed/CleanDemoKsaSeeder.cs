@@ -87,7 +87,7 @@ public static class CleanDemoKsaSeeder
         logger.LogInformation("CleanDemoKsaSeeder: seeding Ras Al-Manar Consulting Company LLC...");
 
         var now       = DateTime.UtcNow;
-        var prevMonth = new DateTime(now.Year, now.Month, 1).AddMonths(-1);
+        var prevMonth = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc).AddMonths(-1);
         var year      = prevMonth.Year;
         var month     = prevMonth.Month;
         var period    = $"{year}-{month:D2}";
@@ -280,7 +280,9 @@ public static class CleanDemoKsaSeeder
             Designation     = desig.TitleEn,
             JobTitle        = desig.TitleEn,
             Salary          = basic,
-            JoiningDate     = joining,
+            // Force UTC — the literal new DateTime(...) joining dates are Kind=Unspecified, which
+            // Npgsql rejects for the timestamptz column (fails only on a fresh DB, where this seeds).
+            JoiningDate     = DateTime.SpecifyKind(joining, DateTimeKind.Utc),
             Status          = "Active",
             ContractType    = "FixedTerm",
             EmploymentType  = "FullTime",

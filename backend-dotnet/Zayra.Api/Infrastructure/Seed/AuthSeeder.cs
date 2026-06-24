@@ -971,7 +971,8 @@ public class AuthSeeder : IAuthSeeder
             {
                 var emp = employees[o.EmpIdx % employees.Count];
                 var workDate = today.AddDays(-o.DaysAgo);
-                var start = workDate.ToDateTime(new TimeOnly(18, 0));
+                // DateOnly.ToDateTime yields Kind=Unspecified — force UTC so Npgsql accepts the timestamptz.
+                var start = DateTime.SpecifyKind(workDate.ToDateTime(new TimeOnly(18, 0)), DateTimeKind.Utc);
                 _db.OvertimeRequests.Add(new OvertimeRequest
                 {
                     TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName,

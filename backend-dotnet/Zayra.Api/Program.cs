@@ -482,10 +482,16 @@ using (var scope = app.Services.CreateScope())
     // Seed data — each step is independently non-fatal so one failure never
     // prevents subsequent seeders from running (GOSI/Statutory rules must run
     // even when DemoDataSeeder fails, for example).
-    static async Task TrySeedAsync(string name, Func<Task> seed, ILogger log)
+    async Task TrySeedAsync(string name, Func<Task> seed, ILogger log)
     {
         try { await seed(); }
-        catch (Exception ex) { log.LogError(ex, "Seeder '{Name}' failed — continuing startup.", name); }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Seeder '{Name}' failed — continuing startup.", name);
+            // Drop any entities the failed seeder left in the Added/Modified state, otherwise the
+            // next seeder's SaveChanges re-flushes the bad rows and fails too (cascade poisoning).
+            dbContext.ChangeTracker.Clear();
+        }
     }
 
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
@@ -508,10 +514,26 @@ using (var scope = app.Services.CreateScope())
     await TrySeedAsync("GosiRuleSeeder",      () => GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger), logger);
     await TrySeedAsync("StatutoryRuleSeeder", () => Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.SeedAsync(dbContext, logger), logger);
 
+    // Pricing config + module catalog must exist even in production (demo seeding is off there),
+    // otherwise the platform-admin pricing/CPQ console is empty. Idempotent (skips when present).
+    await TrySeedAsync("PricingConfigSeeder", () => DemoDataSeeder.SeedPricingConfigAsync(dbContext, logger, CancellationToken.None), logger);
+
     // Deactivate garbage demo tenants and seed one clean KSA tenant.
     // Idempotent: cleanup is a no-op when already deactivated; seed is a no-op when slug exists.
     await TrySeedAsync("GarbageDemoCleanup", () => CleanDemoKsaSeeder.DeactivateGarbageDemoTenantsAsync(dbContext, logger), logger);
     await TrySeedAsync("CleanDemoKsaSeeder", () => CleanDemoKsaSeeder.SeedAsync(
+        dbContext,
+        scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
+        authSeeder,
+        logger), logger);
+
+    // Soft-delete the 5 split-tenant IntelliFlow fragments (SeedDemoData corruption).
+    // Idempotent: already-deactivated fragments are skipped; rasalmanar is explicitly guarded.
+    await TrySeedAsync("IntelliFlowFragmentCleanup", () => IntelliFlowFragmentCleanup.RunAsync(dbContext, logger), logger);
+
+    // Seed one clean IntelliFlow Systems tenant (KSA, 12 employees, locked payroll).
+    // Idempotent: skips if active "intelliflow" slug already exists.
+    await TrySeedAsync("IntelliFlowDemoSeeder", () => IntelliFlowDemoSeeder.SeedAsync(
         dbContext,
         scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
         authSeeder,

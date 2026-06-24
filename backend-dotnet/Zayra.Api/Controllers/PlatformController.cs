@@ -3459,10 +3459,19 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> CreateComplianceControl([FromBody] ComplianceControlRequest req, CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(req.Category) || string.IsNullOrWhiteSpace(req.ControlId) || string.IsNullOrWhiteSpace(req.Title))
+            return BadRequest(new { message = "Category, ControlId and Title are required." });
+
+        var category  = req.Category.Trim();
+        var controlId = req.ControlId.Trim().ToUpperInvariant();
+        // (Category, ControlId) is uniquely indexed — return a clean 409 instead of a raw DB 500.
+        if (await _db.PlatformComplianceControls.AnyAsync(c => c.Category == category && c.ControlId == controlId, ct))
+            return Conflict(new { message = $"A control '{controlId}' already exists in category '{category}'." });
+
         var control = new PlatformComplianceControl
         {
-            Category    = req.Category.Trim(),
-            ControlId   = req.ControlId.Trim().ToUpperInvariant(),
+            Category    = category,
+            ControlId   = controlId,
             Title       = req.Title.Trim(),
             Description = req.Description?.Trim(),
             Status      = req.Status ?? ComplianceControlStatus.NotStarted,
@@ -3485,7 +3494,7 @@ public class PlatformController : ControllerBase
 
     [HttpPatch("compliance/controls/{id:guid}")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
-    public async Task<IActionResult> UpdateComplianceControl(Guid id, [FromBody] ComplianceControlRequest req, CancellationToken ct)
+    public async Task<IActionResult> UpdateComplianceControl(Guid id, [FromBody] PatchComplianceControlRequest req, CancellationToken ct)
     {
         var control = await _db.PlatformComplianceControls.FindAsync([id], ct);
         if (control is null) return NotFound();
@@ -3689,6 +3698,12 @@ public record PlatformLoginRequest(string Email, string Password);
 public record ComplianceControlRequest(
     string Category, string ControlId, string Title,
     string? Description, string? Status, string? Owner,
+    string? EvidenceNote, string? EvidenceUrl, bool? Reviewed);
+
+/// <summary>Partial update for a compliance control — every field optional so the
+/// console can PATCH just a status/owner/evidence without resending Category/ControlId/Title.</summary>
+public record PatchComplianceControlRequest(
+    string? Title, string? Description, string? Status, string? Owner,
     string? EvidenceNote, string? EvidenceUrl, bool? Reviewed);
 
 public record SecurityIncidentRequest(

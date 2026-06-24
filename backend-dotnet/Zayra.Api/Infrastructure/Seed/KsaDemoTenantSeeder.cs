@@ -237,7 +237,9 @@ public static class KsaDemoTenantSeeder
             GradeId           = default, // set below after save (grade.Id captured via closure)
             JobTitle          = desig.TitleEn,
             Salary            = basic,
-            JoiningDate       = joining,
+            // Force UTC — literal new DateTime(...) joining dates are Kind=Unspecified, rejected by
+            // Npgsql for the timestamptz column (fails on a fresh DB where this seeds).
+            JoiningDate       = DateTime.SpecifyKind(joining, DateTimeKind.Utc),
             Status            = "Active",
             ContractType      = "FixedTerm",
             EmploymentType    = "FullTime",
@@ -511,8 +513,8 @@ public static class KsaDemoTenantSeeder
                     TenantId   = tenantId,
                     EmployeeId = emp.Id,
                     WorkDate   = d,
-                    TimeIn     = new TimeOnly(8, 30 + checkInMin),
-                    TimeOut    = new TimeOnly(17, 30 + checkOutMin),
+                    TimeIn     = new TimeOnly(8, 30).AddMinutes(checkInMin),
+                    TimeOut    = new TimeOnly(17, 30).AddMinutes(checkOutMin),
                     Status     = "Present",
                     Notes      = string.Empty,
                 });
@@ -523,7 +525,7 @@ public static class KsaDemoTenantSeeder
 
         // ── 17. Locked payroll run (previous calendar month) ──────────────────
         var now       = DateTime.UtcNow;
-        var prevMonth = new DateTime(now.Year, now.Month, 1).AddMonths(-1);
+        var prevMonth = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc).AddMonths(-1);
         var prevYear  = prevMonth.Year;
         var prevMo    = prevMonth.Month;
         var period    = $"{prevYear}-{prevMo:D2}";
