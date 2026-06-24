@@ -106,7 +106,7 @@ function CreateModal({ tenantId, onClose, onCreated }: {
   tenantId: string; onClose: () => void; onCreated: () => void;
 }) {
   const [form, setForm] = useState<CreateForm>({
-    invoiceNumber: `INV-${YM()}-001`,
+    invoiceNumber: '',
     amount: '',
     currencyCode: 'USD',
     status: 'Draft',
@@ -128,7 +128,7 @@ function CreateModal({ tenantId, onClose, onCreated }: {
     setSaving(true); setErr('');
     try {
       await platformApi.createInvoice(tenantId, {
-        invoiceNumber: form.invoiceNumber.trim(),
+        invoiceNumber: form.invoiceNumber.trim() || undefined,
         amount,
         currencyCode: form.currencyCode,
         status: form.status,
@@ -165,8 +165,8 @@ function CreateModal({ tenantId, onClose, onCreated }: {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <Field label="Invoice Number *">
-                <FInput value={form.invoiceNumber} onChange={set('invoiceNumber')} required placeholder="INV-202606-001" />
+              <Field label="Invoice Number">
+                <FInput value={form.invoiceNumber} onChange={set('invoiceNumber')} placeholder="Auto-generated (INV-YYYY-NNNN)" />
               </Field>
             </div>
 

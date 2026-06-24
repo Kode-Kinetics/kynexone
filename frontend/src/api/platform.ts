@@ -120,6 +120,7 @@ export interface PlatformTenantSummary {
   } | null;
   activeUserCount: number;
   activeEmployeeCount: number;
+  isDeleted?: boolean;
 }
 
 export interface TenantBranding {
@@ -558,6 +559,17 @@ export const platformApi = {
   deleteTenant: (tenantId: string) =>
     platform.delete(`/api/platform/tenants/${tenantId}?confirm=DELETE`).then(r => r.data),
 
+  // ── Soft-delete lifecycle ─────────────────────────────────────────────────
+  restoreTenant: (tenantId: string) =>
+    platform.post(`/api/platform/tenants/${tenantId}/restore`).then(r => r.data),
+
+  bulkRestoreTenants: (tenantIds: string[]) =>
+    platform.post<BulkOpResult>('/api/platform/tenants/bulk/restore', { tenantIds }).then(r => r.data),
+
+  /** GDPR hard-erase a soft-deleted tenant. Owner-only, irreversible. */
+  purgeTenant: (tenantId: string) =>
+    platform.delete(`/api/platform/tenants/${tenantId}/purge?confirm=PURGE`).then(r => r.data),
+
   // ── Bulk tenant operations ────────────────────────────────────────────────
   bulkSuspendTenants: (tenantIds: string[], reason?: string) =>
     platform.post<BulkOpResult>('/api/platform/tenants/bulk/suspend', { tenantIds, reason }).then(r => r.data),
@@ -707,7 +719,7 @@ export const platformApi = {
     platform.get<TenantInvoice[]>(`/api/platform/tenants/${tenantId}/invoices`).then(r => r.data),
 
   createInvoice: (tenantId: string, body: {
-    invoiceNumber: string;
+    invoiceNumber?: string;   // optional — backend auto-generates INV-YYYY-NNNN when omitted
     amount: number;
     currencyCode?: string;
     status?: string;

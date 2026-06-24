@@ -6,7 +6,7 @@ import Link from 'next/link';
 import {
   Plus, Search, RefreshCw, Building2, X,
   MoreHorizontal, CheckCircle, AlertTriangle, XCircle, Clock, Eye, EyeOff,
-  Power, PowerOff, Trash2, Zap, Globe,
+  Power, PowerOff, Trash2, Zap, Globe, RotateCcw,
 } from 'lucide-react';
 import {
   platformApi,
@@ -504,7 +504,7 @@ function TenantRow({ t, onAction, selected, onToggle }: {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-const STATUS_FILTERS = ['All', 'Active', 'Trial', 'PastDue', 'Suspended', 'Cancelled'];
+const STATUS_FILTERS = ['All', 'Active', 'Trial', 'PastDue', 'Suspended', 'Cancelled', 'Deleted'];
 
 export default function TenantsPage() {
   const router = useRouter();
@@ -516,7 +516,7 @@ export default function TenantsPage() {
   const [confirm, setConfirm]     = useState<{ action: 'suspend' | 'reactivate'; tenant: PlatformTenantSummary } | null>(null);
   const [opMsg, setOpMsg]         = useState<{ text: string; ok: boolean } | null>(null);
   const [selected, setSelected]   = useState<Set<string>>(new Set());
-  const [bulkConfirm, setBulkConfirm] = useState<'suspend' | 'reactivate' | 'delete' | null>(null);
+  const [bulkConfirm, setBulkConfirm] = useState<'suspend' | 'reactivate' | 'delete' | 'restore' | 'purge' | null>(null);
   const [showBulkFeature, setShowBulkFeature] = useState(false);
 
   useEffect(() => {
@@ -547,9 +547,13 @@ export default function TenantsPage() {
     }
   }
 
+  const viewingDeleted = statusFilter === 'Deleted';
   const filtered = tenants.filter(t => {
     const q = search.toLowerCase();
     const matchQ = !q || t.name.toLowerCase().includes(q) || t.slug.toLowerCase().includes(q);
+    // Deleted tenants are hidden from every normal view; only the "Deleted" filter shows them.
+    if (t.isDeleted) return viewingDeleted && matchQ;
+    if (viewingDeleted) return false;
     const matchS = statusFilter === 'All' || (t.subscription?.status ?? '').toLowerCase() === statusFilter.toLowerCase();
     return matchQ && matchS;
   });
@@ -585,11 +589,22 @@ export default function TenantsPage() {
     if (!bulkConfirm) return;
     const ids = [...selected];
     try {
+      // Purge is per-tenant (Owner-only hard erase) — loop and tally so partial failures show.
+      if (bulkConfirm === 'purge') {
+        let ok = 0, fail = 0;
+        for (const id of ids) {
+          try { await platformApi.purgeTenant(id); ok++; } catch { fail++; }
+        }
+        setOpMsg({ text: `${ok} purged${fail ? ` · ${fail} failed` : ''}`, ok: fail === 0 });
+        setBulkConfirm(null); clearSelection(); await load();
+        return;
+      }
       let r: BulkOpResult;
       if (bulkConfirm === 'suspend')         r = await platformApi.bulkSuspendTenants(ids, reason);
       else if (bulkConfirm === 'reactivate') r = await platformApi.bulkReactivateTenants(ids, reason);
+      else if (bulkConfirm === 'restore')    r = await platformApi.bulkRestoreTenants(ids);
       else                                   r = await platformApi.bulkDeleteTenants(ids);
-      const verb = bulkConfirm === 'suspend' ? 'suspended' : bulkConfirm === 'reactivate' ? 'reactivated' : 'deleted';
+      const verb = bulkConfirm === 'suspend' ? 'suspended' : bulkConfirm === 'reactivate' ? 'reactivated' : bulkConfirm === 'restore' ? 'restored' : 'deleted';
       setOpMsg({ text: summaryText(r, verb), ok: r.failed === 0 });
       setBulkConfirm(null);
       clearSelection();
@@ -694,22 +709,37 @@ export default function TenantsPage() {
           <span className="text-sm font-medium text-white">{selected.size} selected</span>
           <button type="button" onClick={clearSelection} className="text-xs text-slate-400 hover:text-white">Clear</button>
           <div className="flex-1" />
-          <button type="button" onClick={() => setShowBulkFeature(true)}
-            className="flex items-center gap-1.5 text-xs font-medium text-sapphire hover:text-blue-300 border border-sapphire/30 hover:border-sapphire/50 px-2.5 py-1.5 rounded-lg transition-colors">
-            <Zap className="h-3.5 w-3.5" /> Apply Feature
-          </button>
-          <button type="button" onClick={() => setBulkConfirm('reactivate')}
-            className="flex items-center gap-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
-            <Power className="h-3.5 w-3.5" /> Reactivate
-          </button>
-          <button type="button" onClick={() => setBulkConfirm('suspend')}
-            className="flex items-center gap-1.5 text-xs font-medium text-amber-400 hover:text-amber-300 border border-amber-500/20 hover:border-amber-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
-            <PowerOff className="h-3.5 w-3.5" /> Suspend
-          </button>
-          <button type="button" onClick={() => setBulkConfirm('delete')}
-            className="flex items-center gap-1.5 text-xs font-medium text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
-            <Trash2 className="h-3.5 w-3.5" /> Delete
-          </button>
+          {viewingDeleted ? (
+            <>
+              <button type="button" onClick={() => setBulkConfirm('restore')}
+                className="flex items-center gap-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
+                <RotateCcw className="h-3.5 w-3.5" /> Restore
+              </button>
+              <button type="button" onClick={() => setBulkConfirm('purge')}
+                className="flex items-center gap-1.5 text-xs font-medium text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
+                <Trash2 className="h-3.5 w-3.5" /> Purge forever
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" onClick={() => setShowBulkFeature(true)}
+                className="flex items-center gap-1.5 text-xs font-medium text-sapphire hover:text-blue-300 border border-sapphire/30 hover:border-sapphire/50 px-2.5 py-1.5 rounded-lg transition-colors">
+                <Zap className="h-3.5 w-3.5" /> Apply Feature
+              </button>
+              <button type="button" onClick={() => setBulkConfirm('reactivate')}
+                className="flex items-center gap-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
+                <Power className="h-3.5 w-3.5" /> Reactivate
+              </button>
+              <button type="button" onClick={() => setBulkConfirm('suspend')}
+                className="flex items-center gap-1.5 text-xs font-medium text-amber-400 hover:text-amber-300 border border-amber-500/20 hover:border-amber-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
+                <PowerOff className="h-3.5 w-3.5" /> Suspend
+              </button>
+              <button type="button" onClick={() => setBulkConfirm('delete')}
+                className="flex items-center gap-1.5 text-xs font-medium text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/40 px-2.5 py-1.5 rounded-lg transition-colors">
+                <Trash2 className="h-3.5 w-3.5" /> Delete
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -779,14 +809,18 @@ export default function TenantsPage() {
           title={
             bulkConfirm === 'suspend'    ? `Suspend ${selected.size} tenant${selected.size === 1 ? '' : 's'}?` :
             bulkConfirm === 'reactivate' ? `Reactivate ${selected.size} tenant${selected.size === 1 ? '' : 's'}?` :
+            bulkConfirm === 'restore'    ? `Restore ${selected.size} tenant${selected.size === 1 ? '' : 's'}?` :
+            bulkConfirm === 'purge'      ? `Permanently erase ${selected.size} tenant${selected.size === 1 ? '' : 's'}?` :
                                            `Delete ${selected.size} tenant${selected.size === 1 ? '' : 's'}?`}
           message={
             bulkConfirm === 'suspend'    ? 'This will disable all users across the selected tenants. Provide a reason for the record.' :
             bulkConfirm === 'reactivate' ? 'This will restore access for all users across the selected tenants.' :
+            bulkConfirm === 'restore'    ? 'This reactivates the selected tenants and restores their original slugs.' :
+            bulkConfirm === 'purge'      ? '⚠ This PERMANENTLY erases the selected tenants and ALL their data (users, invoices, payments). This is irreversible and cannot be recovered.' :
                                            'This permanently deactivates the selected tenants, revokes all their sessions, and frees their slugs. This cannot be undone from here.'}
           onConfirm={doBulkAction}
           onClose={() => setBulkConfirm(null)}
-          danger={bulkConfirm !== 'reactivate'}
+          danger={bulkConfirm !== 'reactivate' && bulkConfirm !== 'restore'}
           requireReason={bulkConfirm === 'suspend'}
         />
       )}

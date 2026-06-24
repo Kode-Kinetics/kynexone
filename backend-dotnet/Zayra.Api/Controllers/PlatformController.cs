@@ -480,7 +480,10 @@ public class PlatformController : ControllerBase
                     sub.BillingCycle
                 },
                 activeUserCount = users,
-                activeEmployeeCount = emps
+                activeEmployeeCount = emps,
+                // Soft-deleted tenants are deactivated with a "__deleted_" slug suffix so the
+                // console can filter/restore them instead of showing them as plain "Cancelled".
+                isDeleted = !t.IsActive && t.Slug.Contains("__deleted_")
             };
         });
 
@@ -750,6 +753,108 @@ public class PlatformController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { tenantId, deleted = true, message = $"Tenant '{tenant.Name}' has been deactivated and all sessions revoked." });
+    }
+
+    // ── Soft-delete lifecycle: restore + permanent purge ──────────────────────
+
+    /// <summary>Reverses a soft-delete: reactivates the tenant, restores its original slug,
+    /// and reactivates the subscription. Idempotent-ish (no-op message if not deleted).</summary>
+    [HttpPost("tenants/{tenantId:guid}/restore")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> RestoreTenant(Guid tenantId, CancellationToken ct)
+    {
+        var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+
+        var deletedSlug = tenant.Slug;
+        var idx = deletedSlug.IndexOf("__deleted_", StringComparison.Ordinal);
+        if (tenant.IsActive || idx < 0)
+            return BadRequest(new { message = "Tenant is not deleted." });
+
+        var originalSlug = deletedSlug[..idx];
+        // If the original slug was re-used by a new active tenant, keep a suffixed restore slug.
+        if (await _db.Tenants.AnyAsync(t => t.Slug == originalSlug && t.Id != tenantId, ct))
+            originalSlug = $"{originalSlug}-restored-{tenantId.ToString("N")[..6]}";
+
+        tenant.IsActive = true;
+        tenant.Slug = originalSlug;
+
+        var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+        if (sub is not null) { sub.Status = "Active"; sub.UpdatedAtUtc = DateTime.UtcNow; }
+
+        AuditTenant(tenantId, "TenantRestored",
+            new { slug = deletedSlug },
+            new { slug = originalSlug, status = "Active" });
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { tenantId, restored = true, slug = originalSlug });
+    }
+
+    [HttpPost("tenants/bulk/restore")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> BulkRestoreTenants([FromBody] BulkTenantActionRequest req, CancellationToken ct)
+    {
+        var ids = NormalizeTenantIds(req.TenantIds);
+        if (ids.Count == 0) return BadRequest(new { message = "No tenants selected." });
+
+        var results = new List<BulkOpItem>();
+        foreach (var id in ids)
+        {
+            var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == id, ct);
+            if (tenant is null) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
+            var idx = tenant.Slug.IndexOf("__deleted_", StringComparison.Ordinal);
+            if (tenant.IsActive || idx < 0) { results.Add(BulkOpItem.Skip(id, "Not deleted.")); continue; }
+
+            var original = tenant.Slug[..idx];
+            if (await _db.Tenants.AnyAsync(t => t.Slug == original && t.Id != id, ct))
+                original = $"{original}-restored-{id.ToString("N")[..6]}";
+            tenant.IsActive = true;
+            tenant.Slug = original;
+            var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == id, ct);
+            if (sub is not null) { sub.Status = "Active"; sub.UpdatedAtUtc = DateTime.UtcNow; }
+            AuditTenant(id, "TenantRestored", new { slug = tenant.Slug }, new { slug = original, status = "Active" });
+            results.Add(BulkOpItem.Ok(id, tenant.Name));
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(BulkSummary("restore", results));
+    }
+
+    /// <summary>GDPR "right to erasure": PERMANENTLY deletes a soft-deleted tenant and all its
+    /// data. Owner-only, irreversible, requires the tenant to already be soft-deleted, and a
+    /// confirm token. This is the hard-delete that the normal "delete" intentionally avoids.</summary>
+    [HttpDelete("tenants/{tenantId:guid}/purge")]
+    [RequirePlatformRole(PlatformRoles.Owner)]
+    public async Task<IActionResult> PurgeTenant(Guid tenantId, [FromQuery] string? confirm, CancellationToken ct)
+    {
+        if (confirm != "PURGE")
+            return BadRequest(new { message = "Pass ?confirm=PURGE to permanently erase this tenant. This cannot be undone." });
+
+        var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+        if (tenant.IsActive || !tenant.Slug.Contains("__deleted_"))
+            return BadRequest(new { message = "Only a soft-deleted tenant can be purged. Delete it first." });
+
+        var name = tenant.Name;
+        // Audit BEFORE erasure (the audit log row is tenant-scoped but retained as the legal record).
+        AuditTenant(tenantId, "TenantPurged",
+            new { tenantName = name, slug = tenant.Slug },
+            new { purgedBy = "platform_admin", purgedAtUtc = DateTime.UtcNow });
+        await _db.SaveChangesAsync(ct);
+
+        // Hard-delete tenant-owned data. ExecuteDelete runs immediately; order respects FKs.
+        var userIds = await _db.Users.Where(u => u.TenantId == tenantId).Select(u => u.Id).ToListAsync(ct);
+        if (userIds.Count > 0)
+            await _db.RefreshTokens.Where(t => userIds.Contains(t.UserId)).ExecuteDeleteAsync(ct);
+        await _db.TenantInvoiceLines.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
+        await _db.TenantPayments.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
+        await _db.TenantInvoices.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
+        await _db.TenantSubscriptions.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
+        await _db.TenantFeatureFlags.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
+        await _db.Users.Where(u => u.TenantId == tenantId).ExecuteDeleteAsync(ct);
+        await _db.Tenants.Where(t => t.Id == tenantId).ExecuteDeleteAsync(ct);
+
+        return Ok(new { tenantId, purged = true, message = $"Tenant '{name}' and its data have been permanently erased." });
     }
 
     // ── Impersonation ─────────────────────────────────────────────────────────
@@ -1921,7 +2026,40 @@ public class PlatformController : ControllerBase
             .Where(i => i.TenantId == tenantId)
             .OrderByDescending(i => i.InvoiceDate)
             .ToListAsync(ct);
-        return Ok(invoices);
+
+        // Line-level breakdown (subtotal / tax) so the console can show a proper VAT summary,
+        // and the paid-to-date so it can render the outstanding balance per invoice.
+        var ids = invoices.Select(i => i.Id).ToList();
+        var lineAgg = await _db.TenantInvoiceLines.AsNoTracking()
+            .Where(l => ids.Contains(l.InvoiceId))
+            .GroupBy(l => l.InvoiceId)
+            .Select(g => new { InvoiceId = g.Key, Sub = g.Sum(x => x.LineTotal - x.TaxAmount), Tax = g.Sum(x => x.TaxAmount) })
+            .ToDictionaryAsync(x => x.InvoiceId, ct);
+        var paidAgg = await _db.TenantPayments.AsNoTracking()
+            .Where(p => ids.Contains(p.InvoiceId!.Value) && p.Status == PaymentStatuses.Completed)
+            .GroupBy(p => p.InvoiceId!.Value)
+            .Select(g => new { InvoiceId = g.Key, Paid = g.Sum(x => x.Amount) })
+            .ToDictionaryAsync(x => x.InvoiceId, ct);
+
+        var result = invoices.Select(i =>
+        {
+            lineAgg.TryGetValue(i.Id, out var la);
+            paidAgg.TryGetValue(i.Id, out var pa);
+            var paid = pa?.Paid ?? 0m;
+            return new
+            {
+                i.Id, i.TenantId, i.InvoiceNumber, i.Amount, i.CurrencyCode, i.Status,
+                i.PaymentMethod, i.PaymentReference, i.PeriodDescription,
+                i.InvoiceDate, i.DueDate, i.PaidDate, i.Notes, i.RecipientEmail,
+                i.CreatedAtUtc, i.UpdatedAtUtc,
+                effectiveStatus = EffectiveInvoiceStatus(i),
+                subtotal = la?.Sub ?? 0m,
+                taxTotal = la?.Tax ?? 0m,
+                paidToDate = paid,
+                balanceDue = Math.Max(0m, i.Amount - paid),
+            };
+        });
+        return Ok(result);
     }
 
     [HttpPost("tenants/{tenantId:guid}/invoices")]
@@ -1929,15 +2067,21 @@ public class PlatformController : ControllerBase
     public async Task<IActionResult> CreateInvoice(Guid tenantId, [FromBody] CreateInvoiceRequest req, CancellationToken ct)
     {
         if (!await _db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct)) return NotFound();
-        if (string.IsNullOrWhiteSpace(req.InvoiceNumber))
-            return BadRequest(new { message = "Invoice number is required." });
         if (req.Amount < 0)
             return BadRequest(new { message = "Amount must be non-negative." });
+
+        // Best practice: invoice numbers are sequential and gap-less per tenant per year.
+        // Auto-generate when not supplied; always enforce uniqueness so we never issue duplicates.
+        var number = req.InvoiceNumber?.Trim();
+        if (string.IsNullOrWhiteSpace(number))
+            number = await GenerateInvoiceNumberAsync(tenantId, req.InvoiceDate.Year, ct);
+        if (await _db.TenantInvoices.AnyAsync(i => i.TenantId == tenantId && i.InvoiceNumber == number, ct))
+            return Conflict(new { message = $"Invoice number '{number}' already exists for this tenant." });
 
         var invoice = new TenantInvoice
         {
             TenantId = tenantId,
-            InvoiceNumber = req.InvoiceNumber.Trim(),
+            InvoiceNumber = number,
             Amount = req.Amount,
             CurrencyCode = string.IsNullOrWhiteSpace(req.CurrencyCode) ? "USD" : req.CurrencyCode.Trim().ToUpperInvariant(),
             Status = string.IsNullOrWhiteSpace(req.Status) ? InvoiceStatuses.Draft : req.Status,
@@ -2018,8 +2162,10 @@ public class PlatformController : ControllerBase
     {
         var invoice = await _db.TenantInvoices.FirstOrDefaultAsync(i => i.Id == invoiceId && i.TenantId == tenantId, ct);
         if (invoice is null) return NotFound();
-        if (invoice.Status == InvoiceStatuses.Paid)
-            return BadRequest(new { message = "Paid invoices cannot be deleted. Set status to Cancelled instead." });
+        // Best practice: an issued invoice is a financial record — it is VOIDED (Cancelled), never
+        // hard-deleted. Only a Draft (never issued) can be physically removed.
+        if (invoice.Status != InvoiceStatuses.Draft)
+            return BadRequest(new { message = $"A {invoice.Status} invoice cannot be deleted — set its status to Cancelled to void it instead. Only Draft invoices can be removed." });
 
         var snap = new { invoiceNumber = invoice.InvoiceNumber, amount = invoice.Amount, status = invoice.Status };
         _db.TenantInvoices.Remove(invoice);
@@ -2172,8 +2318,8 @@ public class PlatformController : ControllerBase
     {
         var invoice = await _db.TenantInvoices.FirstOrDefaultAsync(i => i.Id == invoiceId && i.TenantId == tenantId, ct);
         if (invoice is null) return NotFound();
-        if (invoice.Status == InvoiceStatuses.Paid || invoice.Status == InvoiceStatuses.Cancelled)
-            return BadRequest(new { message = "Cannot add lines to a Paid or Cancelled invoice." });
+        if (invoice.Status != InvoiceStatuses.Draft)
+            return BadRequest(new { message = "Line items can only be changed while the invoice is a Draft. Once issued an invoice is immutable — issue a credit note or void it to adjust." });
         if (string.IsNullOrWhiteSpace(req.Description))
             return BadRequest(new { message = "Description is required." });
         if (req.Quantity <= 0)
@@ -2221,8 +2367,8 @@ public class PlatformController : ControllerBase
     {
         var invoice = await _db.TenantInvoices.FirstOrDefaultAsync(i => i.Id == invoiceId && i.TenantId == tenantId, ct);
         if (invoice is null) return NotFound();
-        if (invoice.Status == InvoiceStatuses.Paid || invoice.Status == InvoiceStatuses.Cancelled)
-            return BadRequest(new { message = "Cannot edit lines on a Paid or Cancelled invoice." });
+        if (invoice.Status != InvoiceStatuses.Draft)
+            return BadRequest(new { message = "Line items can only be changed while the invoice is a Draft. Once issued an invoice is immutable — issue a credit note or void it to adjust." });
 
         var line = await _db.TenantInvoiceLines.FirstOrDefaultAsync(l => l.Id == lineId && l.InvoiceId == invoiceId, ct);
         if (line is null) return NotFound();
@@ -2258,8 +2404,8 @@ public class PlatformController : ControllerBase
     {
         var invoice = await _db.TenantInvoices.FirstOrDefaultAsync(i => i.Id == invoiceId && i.TenantId == tenantId, ct);
         if (invoice is null) return NotFound();
-        if (invoice.Status == InvoiceStatuses.Paid || invoice.Status == InvoiceStatuses.Cancelled)
-            return BadRequest(new { message = "Cannot delete lines from a Paid or Cancelled invoice." });
+        if (invoice.Status != InvoiceStatuses.Draft)
+            return BadRequest(new { message = "Line items can only be changed while the invoice is a Draft. Once issued an invoice is immutable — issue a credit note or void it to adjust." });
 
         var line = await _db.TenantInvoiceLines.FirstOrDefaultAsync(l => l.Id == lineId && l.InvoiceId == invoiceId, ct);
         if (line is null) return NotFound();
@@ -3163,6 +3309,31 @@ public class PlatformController : ControllerBase
         invoice.UpdatedAtUtc = DateTime.UtcNow;
     }
 
+    /// <summary>Next gap-less sequential invoice number for a tenant+year, e.g. INV-2026-0007.</summary>
+    private async Task<string> GenerateInvoiceNumberAsync(Guid tenantId, int year, CancellationToken ct)
+    {
+        var prefix = $"INV-{year}-";
+        var existing = await _db.TenantInvoices
+            .Where(i => i.TenantId == tenantId && i.InvoiceNumber.StartsWith(prefix))
+            .Select(i => i.InvoiceNumber)
+            .ToListAsync(ct);
+        var maxSeq = existing
+            .Select(s => int.TryParse(s[prefix.Length..], out var n) ? n : 0)
+            .DefaultIfEmpty(0)
+            .Max();
+        return $"{prefix}{maxSeq + 1:D4}";
+    }
+
+    /// <summary>Effective status for display: an issued, not-fully-paid invoice past its due date
+    /// reads as Overdue without mutating the stored status.</summary>
+    private static string EffectiveInvoiceStatus(TenantInvoice i)
+    {
+        var isOpen = i.Status is InvoiceStatuses.Sent or InvoiceStatuses.PartiallyPaid;
+        if (isOpen && i.DueDate < DateOnly.FromDateTime(DateTime.UtcNow.Date))
+            return InvoiceStatuses.Overdue;
+        return i.Status;
+    }
+
     private async Task RecalculateInvoiceStatusAsync(TenantInvoice invoice, CancellationToken ct)
     {
         if (invoice.Status is InvoiceStatuses.Draft or InvoiceStatuses.Cancelled)
@@ -3762,7 +3933,7 @@ public record StartSupportAccessRequest(string TenantId, string UserId, string R
 public record EndSupportAccessRequest(string SessionId);
 
 public record CreateInvoiceRequest(
-    string InvoiceNumber,
+    string? InvoiceNumber,   // optional — auto-generated (INV-YYYY-NNNN) when blank
     decimal Amount,
     string? CurrencyCode,
     string? Status,
