@@ -7,7 +7,7 @@ interface LogoProps {
 }
 
 export function Logo({ collapsed, size = 'md', theme = 'light' }: LogoProps) {
-  const dim = size === 'xl' ? 56 : size === 'lg' ? 44 : size === 'sm' ? 28 : 36;
+  const dim = size === 'xl' ? 60 : size === 'lg' ? 46 : size === 'sm' ? 28 : 38;
   const inverse = theme === 'dark';
 
   return (

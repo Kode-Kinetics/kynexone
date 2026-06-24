@@ -202,44 +202,44 @@ export function LoginPage() {
               </div>
             </div>
 
-            <div className="flex flex-1 items-center">
-              <div className="relative z-10 max-w-[560px] space-y-3 lg:-mt-4">
-              <div className="inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-white/78 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 shadow-sm backdrop-blur">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                Secure workspace access
-              </div>
-              <div>
-                <h1 className="max-w-[540px] text-[38px] font-black leading-[1.03] tracking-tight text-slate-950 xl:text-[45px]">
-                  Workforce operations,<br />
-                  brought into one place.
-                </h1>
-                <p className="mt-2 max-w-[500px] text-[14px] leading-relaxed text-slate-600">
-                  Attendance, leave, payroll, approvals, and compliance in a tenant-isolated workspace with production-grade controls.
-                </p>
-              </div>
+            <div className="flex flex-1 items-center justify-center">
+              <div className="relative z-10 max-w-[560px] space-y-3">
+                <div className="inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-white/78 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 shadow-sm backdrop-blur">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  Secure workspace access
+                </div>
+                <div>
+                  <h1 className="max-w-[540px] text-[38px] font-black leading-[1.03] tracking-tight text-slate-950 xl:text-[45px]">
+                    Workforce operations,<br />
+                    brought into one place.
+                  </h1>
+                  <p className="mt-2 max-w-[500px] text-[14px] leading-relaxed text-slate-600">
+                    Attendance, leave, payroll, approvals, and compliance in a tenant-isolated workspace with production-grade controls.
+                  </p>
+                </div>
 
-              <div className="grid gap-2 sm:grid-cols-3">
-                {TRUST_POINTS.map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-white/80 bg-white/78 px-4 py-3 shadow-[0_10px_20px_rgba(37,99,235,0.05)] backdrop-blur-xl">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{item.label}</p>
-                    <p className="mt-1.5 text-[12px] leading-snug text-slate-700">{item.value}</p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="rounded-[24px] border border-slate-200/80 bg-white/72 p-3 shadow-[0_14px_28px_rgba(37,99,235,0.06)] backdrop-blur-xl">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Core controls</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {WORKFORCE_SIGNALS.map((signal) => (
-                    <span
-                      key={signal}
-                      className="rounded-full border border-slate-200/80 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600"
-                    >
-                      {signal}
-                    </span>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {TRUST_POINTS.map((item) => (
+                    <div key={item.label} className="rounded-2xl border border-white/80 bg-white/78 px-4 py-3 shadow-[0_10px_20px_rgba(37,99,235,0.05)] backdrop-blur-xl">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{item.label}</p>
+                      <p className="mt-1.5 text-[12px] leading-snug text-slate-700">{item.value}</p>
+                    </div>
                   ))}
                 </div>
-              </div>
+
+                <div className="rounded-[24px] border border-slate-200/80 bg-white/72 p-3 shadow-[0_14px_28px_rgba(37,99,235,0.06)] backdrop-blur-xl">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Core controls</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {WORKFORCE_SIGNALS.map((signal) => (
+                      <span
+                        key={signal}
+                        className="rounded-full border border-slate-200/80 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600"
+                      >
+                        {signal}
+                      </span>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 
