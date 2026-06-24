@@ -224,125 +224,176 @@ export default function PlatformLoginPage() {
         <div className="pointer-events-none absolute -bottom-16 -left-16 h-64 w-64 rounded-full bg-indigo-300/20 blur-3xl dark:bg-indigo-700/10" />
         <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.55),rgba(255,255,255,0.12))] dark:bg-[linear-gradient(180deg,rgba(4,8,20,0.18),rgba(4,8,20,0.04))]" />
 
-        <div className="relative z-10 mb-8 lg:hidden">
-          <Logo />
-        </div>
-
-        <div className="relative z-10 w-full max-w-[460px] rounded-[32px] border border-white/75 bg-white/72 p-[1px] shadow-[0_30px_120px_rgba(37,99,235,0.12),0_0_0_1px_rgba(255,255,255,0.6)] backdrop-blur-2xl dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-[0_30px_120px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)]">
-          <div className="rounded-[31px] bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(255,255,255,0.76))] px-6 py-6 sm:px-10 sm:py-10 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.90),rgba(7,12,24,0.86))]">
-            <div className="w-full max-w-[380px]">
-              <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-sapphire/15 bg-sapphire/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-sapphire dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
+        <div className="relative z-10 w-full max-w-[980px]">
+          <div className="grid gap-8 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
+            <div className="space-y-6">
+              <div className="inline-flex items-center gap-2 rounded-full border border-sapphire/15 bg-sapphire/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-sapphire dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 Internal access
               </div>
 
-              <h1 className="mb-2 text-[34px] font-black tracking-tight text-slate-950 dark:text-white sm:text-[38px]">
-                Platform Admin
-              </h1>
-              <p className="mb-8 max-w-[340px] text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
-                Restricted to internal operators. Sign in to manage tenants, monitor platform health, and review security events.
-              </p>
+              <div>
+                <h1 className="max-w-[560px] text-[34px] font-black tracking-tight text-slate-950 dark:text-white sm:text-[40px] lg:text-[50px]">
+                  Platform Admin
+                </h1>
+                <p className="mt-4 max-w-[460px] text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  Restricted to internal operators. Sign in to manage tenants, monitor platform health, and review security events without crossing into tenant space.
+                </p>
+              </div>
 
-              <div className="mb-6 grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
                 {TRUST_POINTS.map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-slate-200/80 bg-white/70 px-3 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.05)] dark:border-white/10 dark:bg-white/[0.03]">
+                  <div key={item.label} className="rounded-2xl border border-slate-200/80 bg-white/72 px-4 py-4 shadow-[0_10px_28px_rgba(15,23,42,0.05)] backdrop-blur-sm dark:border-white/10 dark:bg-white/[0.03]">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">{item.label}</p>
                     <p className="mt-2 text-[12px] leading-snug text-slate-700 dark:text-slate-300">{item.value}</p>
                   </div>
                 ))}
               </div>
 
-              <form onSubmit={handleSubmit} className="space-y-5">
-                <div>
-                  <label htmlFor="platform-email" className="mb-2 block text-[10px] font-bold tracking-[0.2em] uppercase text-slate-400 dark:text-slate-500">
-                    Email address
-                  </label>
-                  <input
-                    id="platform-email"
-                    type="email"
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
-                    required
-                    autoComplete="email"
-                    placeholder="admin@example.com"
-                    className="auth-input"
-                  />
-                </div>
-
-                <div>
-                  <div className="mb-2 flex items-center justify-between">
-                    <label htmlFor="platform-password" className="block text-[10px] font-bold tracking-[0.2em] uppercase text-slate-400 dark:text-slate-500">
-                      Password
-                    </label>
-                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500">Not for tenant users</span>
+              <div className="rounded-[28px] border border-white/70 bg-white/70 p-4 shadow-[0_18px_60px_rgba(37,99,235,0.08)] backdrop-blur-xl dark:border-white/[0.08] dark:bg-white/[0.03]">
+                <div className="mb-3 flex items-center justify-between">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400 dark:text-slate-500">Operating focus</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">Session-aware, audit-first, low-friction</p>
                   </div>
-                  <div className="relative">
-                    <input
-                      id="platform-password"
-                      type={showPassword ? 'text' : 'password'}
-                      value={password}
-                      onChange={e => setPassword(e.target.value)}
-                      required
-                      autoComplete="current-password"
-                      placeholder="••••••••"
-                      className="auth-input pr-11"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(v => !v)}
-                      tabIndex={-1}
-                      aria-label={showPassword ? 'Hide password' : 'Show password'}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                    >
-                      {showPassword ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
-                    </button>
-                  </div>
-                </div>
-
-                {errorKind && (
-                  <div className="mt-5 flex items-start gap-3 rounded-2xl border border-red-100 bg-red-50/80 px-4 py-3 shadow-[0_8px_24px_rgba(239,68,68,0.08)] dark:border-red-500/15 dark:bg-red-500/[0.07]">
-                    <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-                    <p className="text-[13px] leading-relaxed text-red-700 dark:text-red-400">{errorMessage(errorKind)}</p>
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="auth-btn mt-6 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {loading ? (
-                    <>
-                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                      Signing in…
-                    </>
-                  ) : (
-                    'Sign in'
-                  )}
-                </button>
-              </form>
-
-              <div className="mt-8 flex flex-wrap items-center justify-center gap-3 border-t border-slate-100 pt-6 dark:border-white/[0.06]">
-                {['Audit-logged', 'MFA-aware', 'Tenant-safe'].map((pill) => (
-                  <span key={pill} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-500">
-                    {pill}
+                  <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400">
+                    Always on
                   </span>
-                ))}
+                </div>
+                <div className="space-y-2">
+                  {[
+                    ['Tenant health', '482 monitored', 'text-cyan-600 dark:text-cyan-300'],
+                    ['Security events', '12 under review', 'text-amber-600 dark:text-amber-300'],
+                    ['Operator scope', 'RBAC + MFA enforced', 'text-emerald-600 dark:text-emerald-300'],
+                  ].map(([label, value, tone]) => (
+                    <div key={label} className="flex items-center justify-between rounded-2xl border border-slate-200/70 bg-white/60 px-3 py-3 dark:border-white/10 dark:bg-white/[0.03]">
+                      <div>
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">{label}</p>
+                        <p className={`mt-1 text-[13px] font-semibold ${tone}`}>{value}</p>
+                      </div>
+                      <div className="h-2.5 w-2.5 rounded-full bg-sapphire/70" />
+                    </div>
+                  ))}
+                </div>
               </div>
+            </div>
 
-              <p className="mt-6 text-center text-[12px] text-slate-500 dark:text-slate-500">
-                Tenant workspace login?{' '}
-                <a href="/login" className="font-medium text-blue-500 underline underline-offset-2 hover:text-blue-600 dark:text-blue-400">
-                  Sign in here
-                </a>
-              </p>
+            <div className="relative">
+              <div className="absolute -inset-4 rounded-[38px] bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.24),transparent_40%),linear-gradient(135deg,rgba(47,107,255,0.18),rgba(94,235,255,0.06))] blur-2xl opacity-80" />
+              <div className="relative z-10 rounded-[34px] border border-white/75 bg-white/78 p-[1px] shadow-[0_30px_120px_rgba(37,99,235,0.12),0_0_0_1px_rgba(255,255,255,0.6)] backdrop-blur-2xl dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-[0_30px_120px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)]">
+                <div className="rounded-[33px] bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(255,255,255,0.78))] px-6 py-6 sm:px-10 sm:py-10 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.92),rgba(7,12,24,0.88))]">
+                  <div className="mb-6 flex items-start justify-between gap-4">
+                    <div>
+                      <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-sapphire/15 bg-sapphire/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-sapphire dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                        Platform login
+                      </div>
+                      <h2 className="text-[34px] font-black tracking-tight text-slate-950 dark:text-white sm:text-[38px]">
+                        Sign in
+                      </h2>
+                      <p className="mt-2 max-w-[340px] text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
+                        Enter your internal operator credentials to continue.
+                      </p>
+                    </div>
+                    <div className="hidden rounded-2xl border border-emerald-500/15 bg-emerald-500/10 px-3 py-2 text-right sm:block">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400">Live</p>
+                      <p className="mt-1 text-[12px] font-semibold text-slate-700 dark:text-slate-200">Command channel</p>
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleSubmit} className="space-y-5">
+                    <div>
+                      <label htmlFor="platform-email" className="mb-2 block text-[10px] font-bold tracking-[0.2em] uppercase text-slate-400 dark:text-slate-500">
+                        Email address
+                      </label>
+                      <input
+                        id="platform-email"
+                        type="email"
+                        value={email}
+                        onChange={e => setEmail(e.target.value)}
+                        required
+                        autoComplete="email"
+                        placeholder="admin@example.com"
+                        className="auth-input"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="mb-2 flex items-center justify-between">
+                        <label htmlFor="platform-password" className="block text-[10px] font-bold tracking-[0.2em] uppercase text-slate-400 dark:text-slate-500">
+                          Password
+                        </label>
+                        <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500">Not for tenant users</span>
+                      </div>
+                      <div className="relative">
+                        <input
+                          id="platform-password"
+                          type={showPassword ? 'text' : 'password'}
+                          value={password}
+                          onChange={e => setPassword(e.target.value)}
+                          required
+                          autoComplete="current-password"
+                          placeholder="••••••••"
+                          className="auth-input pr-11"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(v => !v)}
+                          tabIndex={-1}
+                          aria-label={showPassword ? 'Hide password' : 'Show password'}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                        >
+                          {showPassword ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    {errorKind && (
+                      <div className="mt-5 flex items-start gap-3 rounded-2xl border border-red-100 bg-red-50/80 px-4 py-3 shadow-[0_8px_24px_rgba(239,68,68,0.08)] dark:border-red-500/15 dark:bg-red-500/[0.07]">
+                        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+                        <p className="text-[13px] leading-relaxed text-red-700 dark:text-red-400">{errorMessage(errorKind)}</p>
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="auth-btn mt-6 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {loading ? (
+                        <>
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                          Signing in…
+                        </>
+                      ) : (
+                        'Sign in'
+                      )}
+                    </button>
+                  </form>
+
+                  <div className="mt-8 flex flex-wrap items-center justify-center gap-3 border-t border-slate-100 pt-6 dark:border-white/[0.06]">
+                    {['Audit-logged', 'MFA-aware', 'Tenant-safe'].map((pill) => (
+                      <span key={pill} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-500">
+                        {pill}
+                      </span>
+                    ))}
+                  </div>
+
+                  <p className="mt-6 text-center text-[12px] text-slate-500 dark:text-slate-500">
+                    Tenant workspace login?{' '}
+                    <a href="/login" className="font-medium text-blue-500 underline underline-offset-2 hover:text-blue-600 dark:text-blue-400">
+                      Sign in here
+                    </a>
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
 
-        <p className="relative z-10 mt-8 text-center text-[11px] text-slate-500 dark:text-slate-600">
-          A <span className="font-semibold text-slate-500">Kode Kinetics</span> product
-        </p>
+          <p className="mt-8 text-center text-[11px] text-slate-500 dark:text-slate-600">
+            A <span className="font-semibold text-slate-500">Kode Kinetics</span> product
+          </p>
+        </div>
       </div>
 
       <style>{`
