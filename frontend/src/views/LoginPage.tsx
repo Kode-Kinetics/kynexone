@@ -16,9 +16,16 @@ const SECURITY_POINTS = [
 ];
 
 const TRUST_POINTS = [
-  { label: 'Workspace', value: 'Tenant-scoped login' },
-  { label: 'Security', value: 'Session and lockout aware' },
-  { label: 'Operations', value: 'Built for everyday use' },
+  { label: 'People ops', value: 'Attendance, leave, onboarding' },
+  { label: 'Payroll', value: 'Runs, approvals, pay cycles' },
+  { label: 'Control', value: 'MFA, audit trails, tenant isolation' },
+];
+
+const WORKFORCE_SIGNALS = [
+  'Clock-ins',
+  'Approvals',
+  'Payroll runs',
+  'Compliance',
 ];
 
 type Mode = 'login' | 'forgot' | 'reset' | 'mfa';
@@ -124,6 +131,10 @@ export function LoginPage() {
           0%, 100% { transform: translateY(0px); }
           50% { transform: translateY(-10px); }
         }
+        @keyframes kx-drift {
+          0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); }
+          50% { transform: translate3d(10px, -8px, 0) rotate(5deg); }
+        }
         @keyframes kx-panel-in {
           from { opacity: 0; transform: translateY(16px); }
           to { opacity: 1; transform: translateY(0); }
@@ -133,9 +144,25 @@ export function LoginPage() {
           25% { opacity: 0.45; }
           100% { transform: translateX(40%); opacity: 0; }
         }
+        @keyframes kx-orbit {
+          from { transform: rotate(0deg) translateX(36px) rotate(0deg); }
+          to { transform: rotate(360deg) translateX(36px) rotate(-360deg); }
+        }
+        @keyframes kx-rise {
+          0%, 100% { transform: scaleY(0.84); opacity: 0.72; }
+          50% { transform: scaleY(1); opacity: 1; }
+        }
+        @keyframes kx-glow {
+          0%, 100% { opacity: 0.28; transform: scale(1); }
+          50% { opacity: 0.52; transform: scale(1.06); }
+        }
         .kx-float { animation: kx-float 8s ease-in-out infinite; }
+        .kx-drift { animation: kx-drift 10s ease-in-out infinite; }
         .kx-panel-in { animation: kx-panel-in 0.65s ease-out both; }
         .kx-sheen { animation: kx-sheen 4.5s ease-in-out infinite; }
+        .kx-orbit { animation: kx-orbit 14s linear infinite; }
+        .kx-rise { animation: kx-rise 2.8s ease-in-out infinite; transform-origin: bottom; }
+        .kx-glow { animation: kx-glow 5.5s ease-in-out infinite; }
       `}</style>
 
       <div className="relative min-h-screen overflow-hidden bg-[#eef2ff] text-slate-900 dark:bg-[#040814] dark:text-white">
@@ -145,58 +172,91 @@ export function LoginPage() {
         <div className="pointer-events-none absolute bottom-[-4rem] right-[-5rem] h-80 w-80 rounded-full bg-cyan-300/18 blur-3xl dark:bg-cyan-600/10 kx-float" />
 
         <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-6 py-6 lg:grid lg:grid-cols-[1fr_460px] lg:items-center lg:gap-12 lg:px-10">
-          <section className="hidden lg:flex lg:flex-col lg:justify-between lg:gap-8">
-            <div className="flex items-center gap-3 dark">
-              <Logo size="lg" />
-              <div className="h-5 w-px bg-white/[0.1]" />
-              <span className="text-[10px] font-bold tracking-[0.22em] uppercase text-blue-300/60">
-                Enterprise Workforce Platform
-              </span>
+          <section className="relative hidden overflow-hidden rounded-[40px] border border-slate-950/10 bg-[linear-gradient(160deg,#06101d_0%,#07172c_48%,#09101c_100%)] px-12 py-10 text-white shadow-[0_40px_120px_rgba(6,12,24,0.24)] lg:flex lg:flex-col lg:justify-between lg:gap-8">
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(47,107,255,0.32),transparent_26%),radial-gradient(circle_at_88%_14%,rgba(94,235,255,0.18),transparent_18%),radial-gradient(circle_at_50%_100%,rgba(56,189,248,0.14),transparent_22%)]" />
+            <div className="pointer-events-none absolute inset-0 opacity-[0.18] [background-image:linear-gradient(rgba(255,255,255,0.09)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.09)_1px,transparent_1px)] [background-size:72px_72px]" />
+            <div className="pointer-events-none absolute -right-10 top-10 h-36 w-36 rounded-full border border-cyan-300/20 bg-cyan-300/8 blur-2xl kx-orbit" />
+            <div className="pointer-events-none absolute -left-12 bottom-20 h-44 w-44 rounded-full bg-blue-500/10 blur-3xl kx-glow" />
+
+            <div className="relative z-10 flex items-center gap-3">
+              <div className="rounded-[22px] border border-white/12 bg-white/[0.07] px-4 py-3 shadow-[0_18px_45px_rgba(0,0,0,0.26)] backdrop-blur-xl">
+                <Logo size="lg" theme="dark" />
+              </div>
+              <div className="h-10 w-px bg-white/[0.12]" />
+              <div>
+                <p className="text-[10px] font-bold tracking-[0.28em] uppercase text-cyan-200/60">
+                  KynexOne
+                </p>
+                <p className="mt-1 text-[11px] font-semibold tracking-[0.22em] uppercase text-white/42">
+                  Enterprise workforce platform
+                </p>
+              </div>
             </div>
 
-            <div className="max-w-[640px] space-y-6">
-              <div className="inline-flex items-center gap-2 rounded-full border border-sapphire/15 bg-sapphire/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-sapphire dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
+            <div className="relative z-10 max-w-[640px] space-y-6">
+              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-200">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 Secure workspace access
               </div>
               <div>
-                <h1 className="max-w-[560px] text-[52px] font-black leading-[1.02] tracking-tight xl:text-[62px]">
-                  <span className="text-slate-950 dark:text-white">Sign in to</span><br />
-                  <span className="bg-gradient-to-r from-blue-400 via-cyan-300 to-sky-300 bg-clip-text text-transparent">
-                    KynexOne.
-                  </span>
+                <h1 className="max-w-[560px] text-[52px] font-black leading-[1.02] tracking-tight text-white xl:text-[62px]">
+                  One secure doorway into workforce operations.
                 </h1>
-                <p className="mt-4 max-w-[500px] text-[16px] leading-relaxed text-slate-500 dark:text-slate-400">
-                  Access your tenant workspace with production credentials, workspace slug, and MFA-enabled security.
+                <p className="mt-4 max-w-[540px] text-[16px] leading-relaxed text-white/68">
+                  Access attendance, payroll, approvals, and compliance from a tenant-isolated workspace with production-grade controls.
                 </p>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-3">
                 {TRUST_POINTS.map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-white/70 bg-white/65 px-4 py-4 shadow-[0_10px_28px_rgba(15,23,42,0.05)] backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.03]">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">{item.label}</p>
-                    <p className="mt-2 text-[13px] leading-snug text-slate-700 dark:text-slate-300">{item.value}</p>
+                  <div key={item.label} className="rounded-2xl border border-white/10 bg-white/[0.06] px-4 py-4 shadow-[0_10px_28px_rgba(3,10,23,0.22)] backdrop-blur-xl">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-100/50">{item.label}</p>
+                    <p className="mt-2 text-[13px] leading-snug text-white/82">{item.value}</p>
                   </div>
                 ))}
               </div>
 
-              <div className="rounded-[30px] border border-white/70 bg-white/60 p-5 shadow-[0_18px_60px_rgba(37,99,235,0.08)] backdrop-blur-2xl dark:border-white/[0.08] dark:bg-white/[0.03]">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-400 dark:text-slate-500">Included protections</p>
+              <div className="rounded-[32px] border border-white/10 bg-white/[0.05] p-5 shadow-[0_18px_60px_rgba(3,10,23,0.28)] backdrop-blur-2xl">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/38">Workforce signal</p>
+                    <p className="mt-1 text-sm font-semibold text-white/88">Live operational rhythm</p>
+                  </div>
+                  <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-200">
+                    Syncing
+                  </span>
+                </div>
+
+                <div className="mt-5 grid grid-cols-4 items-end gap-3">
+                  {[22, 56, 38, 68].map((height, index) => (
+                    <div key={height} className="flex h-[96px] items-end rounded-2xl bg-white/[0.03] p-2 ring-1 ring-white/[0.04]">
+                      <div
+                        className={`kx-rise w-full rounded-[16px] bg-[linear-gradient(180deg,rgba(94,235,255,0.96),rgba(47,107,255,0.88)_55%,rgba(29,78,216,0.78))] shadow-[0_14px_30px_rgba(47,107,255,0.25)]`}
+                        style={{
+                          height: `${height}px`,
+                          animationDelay: `${index * 0.28}s`,
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+
                 <div className="mt-4 flex flex-wrap gap-2">
-                  {SECURITY_POINTS.map((point) => (
+                  {WORKFORCE_SIGNALS.map((signal, index) => (
                     <span
-                      key={point}
-                      className="rounded-full border border-slate-200/80 bg-white/75 px-3 py-1.5 text-[11px] font-medium text-slate-500 backdrop-blur-sm dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-400"
+                      key={signal}
+                      className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/66"
+                      style={{ animationDelay: `${index * 0.18}s` }}
                     >
-                      {point}
+                      {signal}
                     </span>
                   ))}
                 </div>
               </div>
             </div>
 
-            <p className="text-[11px] text-slate-500 dark:text-slate-600">
-              A <span className="font-semibold text-slate-500">Kode Kinetics</span> product · secure access only
+            <p className="relative z-10 text-[11px] text-white/38">
+              A <span className="font-semibold text-white/58">Kode Kinetics</span> product · secure access only
             </p>
           </section>
 
@@ -213,7 +273,7 @@ export function LoginPage() {
                   <div className="mb-6 flex items-center justify-between gap-3">
                     <div className="inline-flex items-center gap-2 rounded-full border border-sapphire/15 bg-sapphire/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-sapphire dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                      Secure access
+                      KynexOne secure access
                     </div>
                     <div className="hidden rounded-full border border-emerald-500/15 bg-emerald-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-emerald-600 dark:text-emerald-400 sm:block">
                       Production
@@ -221,10 +281,10 @@ export function LoginPage() {
                   </div>
 
                   <h2 className="mb-2 text-[34px] font-black tracking-tight text-slate-950 dark:text-white sm:text-[38px]">
-                    Sign in
+                    Sign in to your workspace
                   </h2>
                   <p className="mb-8 max-w-[340px] text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
-                    Use your work email, password, and workspace slug to continue.
+                    Enter your work email, password, and workspace slug to reach your tenant-controlled workspace.
                   </p>
 
                   {mode === 'login' && (

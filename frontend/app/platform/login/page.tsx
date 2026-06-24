@@ -88,7 +88,7 @@ export default function PlatformLoginPage() {
         <div className="relative z-10 flex h-full flex-col justify-between gap-6 px-12 py-10">
           <div className="flex items-center justify-between gap-4 dark">
             <div className="flex items-center gap-3">
-              <Logo size="lg" />
+              <Logo size="lg" theme="dark" />
               <div className="h-5 w-px bg-white/[0.1]" />
               <span className="text-[10px] font-bold tracking-[0.22em] uppercase text-blue-300/60">
                 Platform Command Center

@@ -3,10 +3,12 @@
 interface LogoProps {
   collapsed?: boolean;
   size?: 'sm' | 'md' | 'lg';
+  theme?: 'light' | 'dark';
 }
 
-export function Logo({ collapsed, size = 'md' }: LogoProps) {
+export function Logo({ collapsed, size = 'md', theme = 'light' }: LogoProps) {
   const dim = size === 'lg' ? 44 : size === 'sm' ? 28 : 36;
+  const inverse = theme === 'dark';
 
   return (
     <div className="flex items-center gap-2.5">
@@ -16,7 +18,9 @@ export function Logo({ collapsed, size = 'md' }: LogoProps) {
         viewBox="0 0 32 32"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        className="shrink-0 transition-transform duration-200 hover:scale-105"
+        className={`shrink-0 transition-transform duration-200 hover:scale-105 ${
+          inverse ? 'drop-shadow-[0_12px_22px_rgba(37,99,235,0.28)]' : ''
+        }`}
         aria-hidden="true"
       >
         {/* Base with richer gradient */}
@@ -66,10 +70,10 @@ export function Logo({ collapsed, size = 'md' }: LogoProps) {
 
       {!collapsed && (
         <div className="min-w-0 leading-none">
-          <p className="truncate text-[15px] font-bold tracking-tight text-slate-900 dark:text-white">
-            Kynex<span className="font-black text-blue-400">One</span>
+          <p className={`truncate text-[15px] font-bold tracking-tight ${inverse ? 'text-white' : 'text-slate-900 dark:text-white'}`}>
+            Kynex<span className={`font-black ${inverse ? 'text-cyan-300' : 'text-blue-400'}`}>One</span>
           </p>
-          <p className="truncate text-[10px] font-medium tracking-wide text-slate-400 dark:text-slate-500">
+          <p className={`truncate text-[10px] font-medium tracking-wide ${inverse ? 'text-white/65' : 'text-slate-400 dark:text-slate-500'}`}>
             Workforce Platform
           </p>
         </div>
