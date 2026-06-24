@@ -971,7 +971,7 @@ function CalibrationTab() {
           {/* Manager bias alerts */}
           {managerStats.filter(m => m.possibleLeniency || m.possibleSeverity).length > 0 && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/20 dark:bg-amber-500/10">
-              <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-400"><AlertTriangle className="h-4 w-4" /> Bias Alerts (AI Insights — Human review required)</p>
+              <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-400"><AlertTriangle className="h-4 w-4" /> Bias Alerts (Human review required)</p>
               <div className="space-y-1">
                 {managerStats.filter(m => m.possibleLeniency || m.possibleSeverity).map(m => (
                   <p key={m.managerName} className="text-xs text-amber-700 dark:text-amber-400">
@@ -1400,7 +1400,7 @@ function AnalyticsTab() {
             <div className="surface p-5">
               <div className="mb-3 flex items-center gap-2">
                 <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Manager Rating Analysis</h3>
-                <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">AI Insight — Human review required</span>
+                <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">Human review required</span>
               </div>
               <div className="divide-y divide-slate-100 dark:divide-white/5">
                 {analytics.managerBias.map(m => (

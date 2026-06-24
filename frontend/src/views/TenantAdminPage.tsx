@@ -18,12 +18,12 @@ import { HelpTextManager } from '../components/HelpTextManager';
 type Tab = 'subscription' | 'features' | 'invoices' | 'localization' | 'branding' | 'security' | 'country-rules' | 'statutory-rules' | 'help-text';
 
 const FEATURE_KEYS = [
-  { key: 'ai_assistant', label: 'AI HR Assistant', description: 'Enable natural-language HR queries' },
+  { key: 'ai_assistant', label: 'Workspace Assistant', description: 'Enable natural-language workspace queries' },
   { key: 'mobile_app', label: 'Mobile App', description: 'Enable mobile API endpoints' },
   { key: 'wps_export', label: 'WPS/SIF Export', description: 'GCC WPS payroll file generation' },
   { key: 'eosb_calc', label: 'EOSB Calculator', description: 'End-of-service benefit computation' },
-  { key: 'resume_screening', label: 'AI Resume Screening', description: 'AI-powered CV analysis (advisory)' },
-  { key: 'payroll_ai_validation', label: 'AI Payroll Validation', description: 'AI variance detection for payroll' },
+  { key: 'resume_screening', label: 'Resume Screening', description: 'Automated CV analysis (advisory)' },
+  { key: 'payroll_ai_validation', label: 'Payroll Anomaly Checks', description: 'Variance detection for payroll' },
   { key: 'risk_scores', label: 'Employee Risk Scores', description: 'Churn and burnout risk indicators (advisory)' },
   { key: 'hijri_calendar', label: 'Hijri Calendar', description: 'Show Hijri dates alongside Gregorian' },
 ];
@@ -568,7 +568,7 @@ export default function TenantAdminPage() {
           {/* AI Usage section */}
           {aiUsage && (
             <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">AI Assistant Usage</h2>
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Assistant Usage</h2>
               <div className="space-y-4">
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
@@ -580,11 +580,11 @@ export default function TenantAdminPage() {
                     </span>
                   </div>
                   {!aiUsage.isUnlimited && (
-                    <UsageProgressBar label="AI token usage" pct={aiUsage.usagePct} />
+                    <UsageProgressBar label="Token usage" pct={aiUsage.usagePct} />
                   )}
                   {!aiUsage.isUnlimited && aiUsage.usagePct > 80 && (
                     <p className={`text-xs mt-1 ${aiUsage.usagePct > 95 ? 'text-red-500' : 'text-orange-500'}`}>
-                      {aiUsage.usagePct > 95 ? 'Critical: AI token limit nearly reached' : 'Warning: AI token usage is high'}
+                      {aiUsage.usagePct > 95 ? 'Critical: Token limit nearly reached' : 'Warning: Token usage is high'}
                     </p>
                   )}
                 </div>

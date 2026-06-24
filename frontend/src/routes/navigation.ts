@@ -1,7 +1,7 @@
 import {
   AlertOctagon,
   BarChart3,
-  Bot,
+  MessageSquareText,
   BriefcaseBusiness,
   CalendarCheck,
   ClipboardList,
@@ -60,9 +60,9 @@ export const navigationGroups: NavGroup[] = [
     ],
   },
   {
-    label: 'Intelligence',
+    label: 'Insights & Reports',
     items: [
-      { label: 'AI Assistant', icon: Bot, path: '/ai-assistant', requiredPermissions: ['ai.query', 'ai.insights_view'], requiredFeatureKey: 'ai_assistant' },
+      { label: 'Assistant', icon: MessageSquareText, path: '/ai-assistant', requiredPermissions: ['ai.query', 'ai.insights_view'], requiredFeatureKey: 'ai_assistant' },
       { label: 'Reports & Analytics', icon: Layers3, path: '/reports', requiredPermissions: ['reports.read', 'reports.schedule'] },
     ],
   },

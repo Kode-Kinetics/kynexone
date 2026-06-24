@@ -7,7 +7,7 @@ import type { ReactNode } from 'react';
 import {
   Activity,
   AlertTriangle,
-  Bot,
+  Lightbulb,
   CalendarClock,
   CheckCircle2,
   Clock,
@@ -132,7 +132,7 @@ const tabs: Array<{ key: TabKey; label: string; icon: typeof Activity }> = [
   { key: 'processing', label: 'Processing', icon: RefreshCw },
   { key: 'regularization', label: 'Regularization', icon: ShieldCheck },
   { key: 'reports', label: 'Reports', icon: FileSpreadsheet },
-  { key: 'ai', label: 'AI Insights', icon: Bot },
+  { key: 'ai', label: 'Insights', icon: Lightbulb },
 ];
 
 const statusTone = (status: string): 'emerald' | 'rose' | 'amber' | 'blue' | 'slate' => {
@@ -373,7 +373,7 @@ export function AttendancePage() {
           <p className="text-xs font-bold uppercase tracking-wide text-sapphire">Attendance & Time Tracking</p>
           <h1 className="mt-1 text-2xl font-bold text-slate-950 dark:text-white">Device-agnostic attendance command center</h1>
           <p className="mt-1 max-w-3xl text-sm text-slate-500 dark:text-slate-400">
-            Live punches, device health, regularization, processing, payroll impacts, and AI exceptions from the database.
+            Live punches, device health, regularization, processing, payroll impacts, and exceptions from the database.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -454,7 +454,7 @@ export function AttendancePage() {
                 ))}
               </div>
             </Panel>
-            <Panel title="AI Exceptions" action={`${insights.length} open`}>
+            <Panel title="Exceptions" action={`${insights.length} open`}>
               <InsightList insights={insights.slice(0, 5)} />
             </Panel>
           </div>
@@ -585,13 +585,13 @@ export function AttendancePage() {
 
       {activeTab === 'ai' && (
         <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
-          <Panel title="AI Attendance Intelligence" action={`${insights.length} signals`}>
+          <Panel title="Attendance Insights" action={`${insights.length} signals`}>
             <InsightList insights={insights} />
           </Panel>
           <Panel title="Human Review Guardrails">
             <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
-              <Guardrail text="AI can surface anomalies, buddy-punching risk, late trends, and sync failures." />
-              <Guardrail text="AI does not reject corrections, penalize employees, or finalize payroll decisions." />
+              <Guardrail text="Insights surface anomalies, buddy-punching risk, late trends, and sync failures." />
+              <Guardrail text="Insights never reject corrections, penalize employees, or finalize payroll decisions." />
               <Guardrail text="Payroll impacts remain pending until approved records are reviewed by authorized users." />
             </div>
           </Panel>
@@ -889,7 +889,7 @@ function PayrollTable({ rows }: { rows: AttendancePayrollSummary[] }) {
 }
 
 function InsightList({ insights }: { insights: AttendanceAIInsight[] }) {
-  if (insights.length === 0) return <Empty text="No AI attendance insights are open." />;
+  if (insights.length === 0) return <Empty text="No attendance insights are open." />;
   return (
     <div className="space-y-3">
       {insights.map((item) => <div key={item.id} className="rounded-lg border border-slate-100 p-3 dark:border-white/10"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-slate-900 dark:text-white">{item.title}</p><p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{item.summary}</p></div><StatusChip label={item.severity} tone={item.severity === 'High' ? 'rose' : item.severity === 'Medium' ? 'amber' : 'blue'} /></div></div>)}

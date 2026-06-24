@@ -15,7 +15,7 @@ const PLAN_BADGE: Record<string, string> = {
 const PLAN_FEATURES: Record<string, string[]> = {
   trial:      ['Up to 20 employees', 'Core HR', 'Basic Reports', '14-day limit'],
   starter:    ['Up to 100 employees', 'HR + Payroll', 'Feature flags selectable', 'Email support'],
-  growth:     ['Up to 500 employees', 'Full HR suite', 'AI Assistant', 'Priority support'],
+  growth:     ['Up to 500 employees', 'Full HR suite', 'Workspace Assistant', 'Priority support'],
   enterprise: ['Unlimited employees', 'All features', 'Dedicated support', 'Custom integrations'],
 };
 

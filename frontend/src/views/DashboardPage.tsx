@@ -9,7 +9,7 @@ import {
   ArrowRight,
   ArrowUpRight,
   BadgeDollarSign,
-  Bot,
+  MessageSquareText,
   Building2,
   CalendarCheck,
   CalendarPlus,
@@ -21,7 +21,7 @@ import {
   FileWarning,
   RefreshCw,
   ShieldAlert,
-  Sparkles,
+  Lightbulb,
   TrendingDown,
   TrendingUp,
   UserPlus,
@@ -962,15 +962,10 @@ export function DashboardPage() {
             </div>
           </Card>
 
-          {/* AI insights — only when feature enabled */}
+          {/* Insights — only when feature enabled */}
           {isFeatureEnabled('ai_assistant') && (
             <Card
-              title="AI Insights"
-              titleRight={
-                <span className="flex items-center gap-1 rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-bold text-blue-600 dark:text-blue-400">
-                  <Sparkles className="h-3 w-3" aria-hidden /> AI
-                </span>
-              }
+              title="Insights"
             >
               <div className="p-4 pt-3">
                 {insights.length === 0
@@ -982,7 +977,7 @@ export function DashboardPage() {
                         const cfg = {
                           critical: { icon: ShieldAlert,   cls: 'text-rose-500',  bg: 'bg-rose-500/10' },
                           warning:  { icon: AlertTriangle, cls: 'text-amber-500', bg: 'bg-amber-500/10' },
-                          info:     { icon: Sparkles,      cls: 'text-blue-500',  bg: 'bg-blue-500/10' },
+                          info:     { icon: Lightbulb,     cls: 'text-blue-500',  bg: 'bg-blue-500/10' },
                         } as const;
                         const c = cfg[sev as keyof typeof cfg] ?? cfg.info;
                         const CIcon = c.icon;
@@ -1005,8 +1000,8 @@ export function DashboardPage() {
                   onClick={() => router.push('/ai-assistant')}
                   className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 py-2 text-xs font-semibold text-slate-700 transition hover:border-blue-500/30 hover:bg-blue-500/[0.04] hover:text-blue-600 dark:border-white/[0.07] dark:bg-white/[0.03] dark:text-slate-300 dark:hover:text-blue-400"
                 >
-                  <Bot className="h-3.5 w-3.5" aria-hidden />
-                  Open AI Assistant
+                  <MessageSquareText className="h-3.5 w-3.5" aria-hidden />
+                  Open Assistant
                 </button>
               </div>
             </Card>

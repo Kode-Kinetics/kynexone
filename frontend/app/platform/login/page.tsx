@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { BarChart3, CheckCircle2, Eye, EyeOff, ShieldCheck, Sparkles, Users } from 'lucide-react';
+import { AlertCircle, Eye, EyeOff, Lock, ShieldCheck, Activity, Users } from 'lucide-react';
 import { platformApi } from '@/src/api/platform';
 import { Logo } from '@/src/components/Logo';
 
@@ -17,23 +17,13 @@ function errorMessage(kind: ErrorKind): string {
   }
 }
 
-const INSIGHT_PILLS = [
-  'Tenant health at a glance',
-  'Security events and login activity',
-  'Scoped access for internal operators',
+const CAPABILITIES = [
+  { icon: Users, title: 'Tenant oversight', body: 'Provision, monitor, and manage every tenant from one control plane.' },
+  { icon: Activity, title: 'Security & activity', body: 'Review login activity, sessions, and security events as they happen.' },
+  { icon: ShieldCheck, title: 'Scoped operator access', body: 'Internal-only, role-based, and audit-logged — never crossing into tenant data.' },
 ];
 
-const TRUST_POINTS = [
-  { label: 'Admin scope', value: 'Internal only' },
-  { label: 'Session model', value: 'Token-backed access' },
-  { label: 'Audit posture', value: 'Traceable actions' },
-];
-
-const PLATFORM_METRICS = [
-  { label: 'Tenants monitored', value: '482', sub: '+18 this week', color: 'text-cyan-300', icon: Users },
-  { label: 'Login success', value: '99.4%', sub: '7-day average', color: 'text-emerald-300', icon: CheckCircle2 },
-  { label: 'Security alerts', value: '12', sub: 'Under review', color: 'text-amber-300', icon: ShieldCheck },
-];
+const TRUST_BADGES = ['Audit logs', 'Tenant isolation', 'RBAC controls', 'MFA required'];
 
 export default function PlatformLoginPage() {
   const router = useRouter();
@@ -59,437 +49,222 @@ export default function PlatformLoginPage() {
       router.replace('/platform/dashboard');
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
-      if (status === 401) {
-        setErrorKind('invalid_credentials');
-      } else if (status === 503) {
-        setErrorKind('not_configured');
-      } else if (!(err as { response?: unknown })?.response) {
-        setErrorKind('network');
-      } else {
-        setErrorKind('invalid_credentials');
-      }
+      if (status === 401) setErrorKind('invalid_credentials');
+      else if (status === 503) setErrorKind('not_configured');
+      else if (!(err as { response?: unknown })?.response) setErrorKind('network');
+      else setErrorKind('invalid_credentials');
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="relative flex min-h-screen overflow-hidden bg-[#f2f5ff] text-slate-900 dark:bg-[#040814] dark:text-white">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.18),transparent_28%),radial-gradient(circle_at_80%_20%,rgba(94,235,255,0.10),transparent_22%),linear-gradient(180deg,rgba(255,255,255,0.42),transparent_35%)] dark:bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.22),transparent_28%),radial-gradient(circle_at_80%_20%,rgba(94,235,255,0.10),transparent_22%),linear-gradient(180deg,rgba(6,11,24,0.86),rgba(4,8,20,0.98))]" />
-      <div className="pointer-events-none absolute inset-0 opacity-[0.22] mix-blend-soft-light [background-image:linear-gradient(rgba(47,107,255,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(47,107,255,0.08)_1px,transparent_1px)] [background-size:72px_72px]" />
+    <>
+      <style>{`
+        @keyframes pa-fade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .pa-fade { animation: pa-fade 0.4s ease-out both; }
+        @media (prefers-reduced-motion: reduce) { .pa-fade { animation: none !important; } }
+      `}</style>
 
-      <div className="relative hidden overflow-hidden lg:flex lg:w-[58%] flex-col bg-[#050915]">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_60%_at_30%_45%,rgba(37,99,235,0.14),transparent)]" />
-        <div className="kx-grid absolute inset-0 opacity-90" />
-        <p className="pointer-events-none absolute bottom-6 right-8 select-none text-[72px] font-black tracking-tighter text-white opacity-[0.015] -rotate-3">
-          PLATFORM
-        </p>
+      <div className="grid min-h-[100svh] w-full lg:grid-cols-2">
+        {/* ── Brand panel ─────────────────────────────────────────────── */}
+        <section className="relative hidden flex-col justify-between overflow-hidden bg-[#060a17] px-12 py-12 text-white lg:flex">
+          {/* Aurora + grid */}
+          <div className="pointer-events-none absolute -left-1/4 -top-1/4 h-[70%] w-[70%] rounded-full bg-[radial-gradient(circle,rgba(47,107,255,0.45),transparent_60%)] blur-3xl" />
+          <div className="pointer-events-none absolute bottom-[-20%] right-[-15%] h-[60%] w-[60%] rounded-full bg-[radial-gradient(circle,rgba(56,189,248,0.22),transparent_60%)] blur-3xl" />
+          <div className="pointer-events-none absolute inset-0 opacity-[0.16] [background-image:radial-gradient(rgba(255,255,255,0.5)_1px,transparent_1px)] [background-size:26px_26px] [mask-image:radial-gradient(ellipse_at_center,black,transparent_75%)]" />
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[0.06] to-transparent" />
 
-        <div className="relative z-10 flex h-full flex-col justify-between gap-6 px-12 py-10">
-          <div className="flex items-center justify-between gap-4 dark">
-            <div className="flex items-center gap-3">
-              <Logo size="lg" theme="dark" />
-              <div className="h-5 w-px bg-white/[0.1]" />
-              <span className="text-[10px] font-bold tracking-[0.22em] uppercase text-blue-300/60">
-                Platform Command Center
-              </span>
+          {/* Brand */}
+          <div className="relative z-10 mx-auto flex w-full max-w-[440px] items-center gap-3">
+            <div className="rounded-2xl border border-white/15 bg-white/[0.07] p-2.5 shadow-[0_8px_30px_rgba(8,18,55,0.5)] backdrop-blur-md">
+              <Logo size="md" collapsed theme="dark" />
             </div>
-            <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-white/45">
-              Internal Access
+            <div>
+              <p className="text-sm font-bold tracking-tight text-white">KynexOne</p>
+              <p className="text-xs text-slate-400">Platform Command Center</p>
             </div>
           </div>
 
-          <div className="shrink-0">
-            <h1 className="max-w-[640px] text-[50px] font-black leading-[1.02] tracking-tight xl:text-[60px]">
-              <span className="text-white">Operate the platform</span><br />
-              <span className="bg-gradient-to-r from-blue-400 via-cyan-300 to-sky-300 bg-clip-text text-transparent">
-                with calm precision.
+          {/* Hero */}
+          <div className="relative z-10 mx-auto w-full max-w-[440px]">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-[11px] font-medium tracking-wide text-slate-300 backdrop-blur">
+              <Lock className="h-3 w-3 text-sky-300" />
+              Internal operators only
+            </div>
+
+            <h1 className="mt-5 text-[2rem] font-bold leading-[1.1] tracking-tight xl:text-[2.4rem]">
+              Operate the platform with{' '}
+              <span className="bg-gradient-to-r from-sky-300 via-blue-300 to-indigo-300 bg-clip-text text-transparent">
+                calm precision.
               </span>
             </h1>
-            <p className="mt-4 max-w-[470px] text-[15px] leading-relaxed text-slate-300/80">
-              Monitor tenants, review login activity, and manage the operational surface area from one restrained, audit-friendly control plane.
+            <p className="mt-3.5 text-[14.5px] leading-relaxed text-slate-300/90">
+              Monitor tenants, review login activity, and manage the operational surface area
+              from one restrained, audit-first control plane.
             </p>
-            <div className="mt-6 flex flex-wrap gap-2">
-              {INSIGHT_PILLS.map((pill) => (
-                <span
-                  key={pill}
-                  className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-[11px] font-medium text-white/65 backdrop-blur-sm"
-                >
-                  {pill}
+
+            <div className="mt-8 space-y-2.5">
+              {CAPABILITIES.map((c) => (
+                <div key={c.title} className="group flex gap-3 rounded-xl border border-transparent p-2.5 transition-colors hover:border-white/10 hover:bg-white/[0.04]">
+                  <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.06] text-sky-300 transition-colors group-hover:bg-sky-400/15">
+                    <c.icon className="h-4 w-4" aria-hidden />
+                  </span>
+                  <div>
+                    <p className="text-sm font-semibold text-white">{c.title}</p>
+                    <p className="mt-0.5 text-sm leading-relaxed text-slate-400">{c.body}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-7 flex flex-wrap items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-slate-400" aria-hidden />
+              {TRUST_BADGES.map((b) => (
+                <span key={b} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-slate-300">
+                  {b}
                 </span>
               ))}
             </div>
           </div>
 
-          <div className="kx-win flex-1 overflow-hidden rounded-[28px] border border-white/[0.08] bg-[#08111f] shadow-[0_36px_100px_rgba(0,0,0,0.58),0_0_0_1px_rgba(255,255,255,0.04)]">
-            <div className="flex items-center gap-3 border-b border-white/[0.06] bg-[#070d19] px-4 py-2.5">
-              <div className="flex gap-1.5">
-                <div className="h-2.5 w-2.5 rounded-full bg-[#ff5f57]" />
-                <div className="h-2.5 w-2.5 rounded-full bg-[#febc2e]" />
-                <div className="h-2.5 w-2.5 rounded-full bg-[#28c840]" />
-              </div>
-              <div className="flex flex-1 justify-center">
-                <div className="flex items-center gap-2 rounded-full bg-white/[0.05] px-3 py-1.5">
-                  <div className="kx-dot h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  <span className="text-[11px] text-white/25">platform.kynexone.com / security</span>
-                </div>
-              </div>
-              <div className="h-6 w-6 overflow-hidden rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 ring-1 ring-white/[0.15]" />
-            </div>
-
-            <div className="flex h-full">
-              <div className="flex flex-col items-center gap-1 border-r border-white/[0.05] bg-[#070d19] px-2 py-3">
-                {[BarChart3, ShieldCheck, Users].map((Icon, i) => (
-                  <div
-                    key={i}
-                    className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
-                      i === 0
-                        ? 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/20'
-                        : 'text-white/[0.18] hover:bg-white/[0.04] hover:text-white/30'
-                    }`}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                  </div>
-                ))}
-              </div>
-
-              <div className="relative flex-1 overflow-hidden p-4">
-                <div className="pointer-events-none absolute right-4 top-4 h-24 w-24 rounded-full border border-cyan-300/15 bg-cyan-300/5 blur-2xl" />
-                <div className="mb-4 flex items-start justify-between">
-                  <div>
-                    <p className="text-[11px] font-bold uppercase tracking-widest text-white/30">Platform overview</p>
-                    <p className="mt-0.5 text-sm font-bold text-white/80">Security and tenancy pulse</p>
-                  </div>
-                  <div className="flex items-center gap-1.5 rounded-full bg-emerald-500/[0.08] px-2.5 py-1 ring-1 ring-emerald-500/20">
-                    <div className="kx-dot h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                    <span className="text-[10px] font-semibold text-emerald-400">Live</span>
-                  </div>
-                </div>
-
-                <div className="mb-3 grid grid-cols-3 gap-2">
-                  {PLATFORM_METRICS.map(({ label, value, sub, color, icon: Icon }) => (
-                    <div key={label} className="rounded-2xl bg-white/[0.04] p-3 ring-1 ring-white/[0.06] backdrop-blur-sm">
-                      <Icon className={`mb-2 h-3.5 w-3.5 ${color} opacity-70`} />
-                      <p className={`text-[21px] font-black leading-none ${color}`}>{value}</p>
-                      <p className="mt-1.5 text-[9px] font-medium uppercase tracking-wide text-white/25">{label}</p>
-                      <p className="text-[9px] text-white/15">{sub}</p>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="mb-3 rounded-2xl bg-white/[0.025] p-3 ring-1 ring-white/[0.04]">
-                  <div className="mb-2 flex items-center justify-between">
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-white/20">Recent activity</p>
-                    <p className="text-[9px] text-white/15">Last 60 min</p>
-                  </div>
-                  <div className="space-y-1">
-                    {[
-                      ['Tenant suspended', 'Finance East', '2m ago', 'bg-amber-400'],
-                      ['Login reviewed', 'Platform admin', '12m ago', 'bg-cyan-400'],
-                      ['Security note', 'SAML policy updated', '28m ago', 'bg-emerald-400'],
-                    ].map(([name, action, time, dot]) => (
-                      <div key={name} className="flex items-center gap-2.5 rounded-xl bg-white/[0.02] px-2.5 py-1.5 ring-1 ring-white/[0.03]">
-                        <div className={`h-1.5 w-1.5 rounded-full ${dot}`} />
-                        <p className="flex-1 text-[10px] text-white/40">
-                          <span className="font-semibold text-white/60">{name}</span> · {action}
-                        </p>
-                        <p className="text-[9px] text-white/15">{time}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap justify-center gap-2 shrink-0">
-            {['Audit logs', 'Tenant isolation', 'RBAC controls', 'MFA required'].map((pill) => (
-              <span
-                key={pill}
-                className="rounded-full border border-white/[0.12] bg-white/[0.07] px-4 py-1.5 text-[12px] font-medium text-white/55 backdrop-blur-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
-              >
-                {pill}
-              </span>
-            ))}
-          </div>
-
-          <p className="shrink-0 text-[11px] text-white/20">
-            A <span className="font-semibold text-white/30">Kode Kinetics</span> product · internal platform operations
+          <p className="relative z-10 mx-auto w-full max-w-[440px] text-xs text-slate-500">
+            A <span className="font-semibold text-slate-400">Kode Kinetics</span> product · internal platform operations
           </p>
-        </div>
-      </div>
+        </section>
 
-      <div className="relative flex flex-1 flex-col items-center justify-center overflow-hidden px-6 py-10 sm:px-10 sm:py-14">
-        <div className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-blue-300/25 blur-3xl dark:bg-blue-700/12 kx-float" />
-        <div className="pointer-events-none absolute -bottom-16 -left-16 h-64 w-64 rounded-full bg-indigo-300/20 blur-3xl dark:bg-indigo-700/10 kx-float" />
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.55),rgba(255,255,255,0.12))] dark:bg-[linear-gradient(180deg,rgba(4,8,20,0.18),rgba(4,8,20,0.04))]" />
+        {/* ── Form panel ──────────────────────────────────────────────── */}
+        <section className="flex items-center justify-center bg-slate-50 px-5 py-10 dark:bg-[#0a0f1e] sm:px-8">
+          <div className="pa-fade w-full max-w-[420px]">
+            {/* Mobile brand */}
+            <div className="mb-8 flex items-center gap-3 lg:hidden">
+              <div className="rounded-xl border border-slate-200 bg-white p-2.5 shadow-sm dark:border-white/10 dark:bg-white/5">
+                <Logo size="md" collapsed />
+              </div>
+              <div>
+                <p className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">KynexOne</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Platform Command Center</p>
+              </div>
+            </div>
 
-        <div className="relative z-10 w-full max-w-[980px]">
-          <div className="grid gap-8 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
-            <div className="space-y-6">
-              <div className="inline-flex items-center gap-2 rounded-full border border-sapphire/15 bg-sapphire/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-sapphire dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                Internal access
+            <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500 dark:border-white/10 dark:bg-white/5 dark:text-slate-400">
+              <Lock className="h-3 w-3" /> Platform admin
+            </div>
+            <h2 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">Sign in</h2>
+            <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
+              Enter your internal operator credentials to continue.
+            </p>
+
+            <form onSubmit={handleSubmit} className="mt-8 space-y-5">
+              <div>
+                <label htmlFor="platform-email" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Email address
+                </label>
+                <input
+                  id="platform-email"
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  required
+                  autoComplete="email"
+                  placeholder="admin@example.com"
+                  className="pa-input"
+                />
               </div>
 
               <div>
-                <h1 className="max-w-[560px] text-[34px] font-black tracking-tight text-slate-950 dark:text-white sm:text-[40px] lg:text-[50px]">
-                  Platform Admin
-                </h1>
-                <p className="mt-4 max-w-[460px] text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
-                  Restricted to internal operators. Sign in to manage tenants, monitor platform health, and review security events without crossing into tenant space.
-                </p>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
-                {TRUST_POINTS.map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-slate-200/80 bg-white/72 px-4 py-4 shadow-[0_10px_28px_rgba(15,23,42,0.05)] backdrop-blur-sm dark:border-white/10 dark:bg-white/[0.03]">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">{item.label}</p>
-                    <p className="mt-2 text-[12px] leading-snug text-slate-700 dark:text-slate-300">{item.value}</p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="rounded-[28px] border border-white/75 bg-[rgba(250,252,255,0.52)] p-4 shadow-[0_18px_60px_rgba(37,99,235,0.10)] backdrop-blur-3xl dark:border-white/[0.08] dark:bg-white/[0.03]">
-                <div className="mb-3 flex items-center justify-between">
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400 dark:text-slate-500">Operating focus</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">Session-aware, audit-first, low-friction</p>
-                  </div>
-                  <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400">
-                    Always on
-                  </span>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <label htmlFor="platform-password" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    Password
+                  </label>
+                  <span className="text-xs text-slate-400 dark:text-slate-500">Not for tenant users</span>
                 </div>
-                <div className="space-y-2">
-                  {[
-                    ['Tenant health', '482 monitored', 'text-cyan-600 dark:text-cyan-300'],
-                    ['Security events', '12 under review', 'text-amber-600 dark:text-amber-300'],
-                    ['Operator scope', 'RBAC + MFA enforced', 'text-emerald-600 dark:text-emerald-300'],
-                  ].map(([label, value, tone]) => (
-                    <div key={label} className="flex items-center justify-between rounded-2xl border border-slate-200/70 bg-white/60 px-3 py-3 dark:border-white/10 dark:bg-white/[0.03]">
-                      <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500">{label}</p>
-                        <p className={`mt-1 text-[13px] font-semibold ${tone}`}>{value}</p>
-                      </div>
-                      <div className="h-2.5 w-2.5 rounded-full bg-sapphire/70" />
-                    </div>
-                  ))}
+                <div className="relative">
+                  <input
+                    id="platform-password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    required
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                    className="pa-input pr-11"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(v => !v)}
+                    tabIndex={-1}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                  >
+                    {showPassword ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
+                  </button>
                 </div>
               </div>
+
+              {errorKind && (
+                <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 dark:border-red-500/20 dark:bg-red-500/[0.08]">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+                  <p className="text-sm leading-relaxed text-red-700 dark:text-red-400">{errorMessage(errorKind)}</p>
+                </div>
+              )}
+
+              <button type="submit" disabled={loading} className="pa-btn disabled:cursor-not-allowed disabled:opacity-60">
+                {loading
+                  ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  : 'Sign in'}
+              </button>
+            </form>
+
+            <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-6 dark:border-white/10">
+              <ShieldCheck className="h-4 w-4 text-slate-400" aria-hidden />
+              {['Audit-logged', 'MFA-aware', 'Tenant-safe'].map((pill) => (
+                <span key={pill} className="text-xs font-medium text-slate-400 after:mx-1.5 after:text-slate-300 after:content-['·'] last:after:content-['']">
+                  {pill}
+                </span>
+              ))}
             </div>
 
-            <div className="relative">
-              <div className="absolute -inset-4 rounded-[38px] bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.24),transparent_40%),linear-gradient(135deg,rgba(47,107,255,0.18),rgba(94,235,255,0.06))] blur-2xl opacity-80" />
-              <div className="relative z-10 rounded-[36px] border border-white/85 bg-[rgba(250,252,255,0.58)] p-[1px] shadow-[0_30px_120px_rgba(37,99,235,0.16),0_0_0_1px_rgba(255,255,255,0.75)] backdrop-blur-3xl dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-[0_30px_120px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)]">
-                <div className="relative overflow-hidden rounded-[35px] bg-[linear-gradient(180deg,rgba(255,255,255,0.68),rgba(247,249,255,0.42))] px-6 py-6 sm:px-10 sm:py-10 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.92),rgba(7,12,24,0.88))]">
-                  <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_25%_0%,rgba(255,255,255,0.92),transparent_34%),linear-gradient(135deg,rgba(47,107,255,0.08),transparent_42%,rgba(94,235,255,0.06))]" />
-                  <div className="mb-6 flex items-start justify-between gap-4">
-                    <div>
-                      <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-sapphire/15 bg-sapphire/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-sapphire dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                        Platform login
-                      </div>
-                      <h2 className="text-[34px] font-black tracking-tight text-slate-950 dark:text-white sm:text-[38px]">
-                        Sign in
-                      </h2>
-                      <p className="mt-2 max-w-[340px] text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
-                        Enter your internal operator credentials to continue.
-                      </p>
-                    </div>
-                    <div className="hidden rounded-2xl border border-emerald-500/15 bg-emerald-500/10 px-3 py-2 text-right sm:block">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400">Live</p>
-                      <p className="mt-1 text-[12px] font-semibold text-slate-700 dark:text-slate-200">Command channel</p>
-                    </div>
-                  </div>
-
-                  <form onSubmit={handleSubmit} className="space-y-5">
-                    <div>
-                      <label htmlFor="platform-email" className="mb-2 block text-[10px] font-bold tracking-[0.2em] uppercase text-slate-400 dark:text-slate-500">
-                        Email address
-                      </label>
-                      <input
-                        id="platform-email"
-                        type="email"
-                        value={email}
-                        onChange={e => setEmail(e.target.value)}
-                        required
-                        autoComplete="email"
-                        placeholder="admin@example.com"
-                        className="auth-input"
-                      />
-                    </div>
-
-                    <div>
-                      <div className="mb-2 flex items-center justify-between">
-                        <label htmlFor="platform-password" className="block text-[10px] font-bold tracking-[0.2em] uppercase text-slate-400 dark:text-slate-500">
-                          Password
-                        </label>
-                        <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500">Not for tenant users</span>
-                      </div>
-                      <div className="relative">
-                        <input
-                          id="platform-password"
-                          type={showPassword ? 'text' : 'password'}
-                          value={password}
-                          onChange={e => setPassword(e.target.value)}
-                          required
-                          autoComplete="current-password"
-                          placeholder="••••••••"
-                          className="auth-input pr-11"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowPassword(v => !v)}
-                          tabIndex={-1}
-                          aria-label={showPassword ? 'Hide password' : 'Show password'}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                        >
-                          {showPassword ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
-                        </button>
-                      </div>
-                    </div>
-
-                    {errorKind && (
-                      <div className="mt-5 flex items-start gap-3 rounded-2xl border border-red-100 bg-red-50/80 px-4 py-3 shadow-[0_8px_24px_rgba(239,68,68,0.08)] dark:border-red-500/15 dark:bg-red-500/[0.07]">
-                        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-                        <p className="text-[13px] leading-relaxed text-red-700 dark:text-red-400">{errorMessage(errorKind)}</p>
-                      </div>
-                    )}
-
-                    <button
-                      type="submit"
-                      disabled={loading}
-                      className="auth-btn mt-6 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {loading ? (
-                        <>
-                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                          Signing in…
-                        </>
-                      ) : (
-                        'Sign in'
-                      )}
-                    </button>
-                  </form>
-
-                  <div className="mt-8 flex flex-wrap items-center justify-center gap-3 border-t border-slate-100 pt-6 dark:border-white/[0.06]">
-                    {['Audit-logged', 'MFA-aware', 'Tenant-safe'].map((pill) => (
-                      <span key={pill} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-500">
-                        {pill}
-                      </span>
-                    ))}
-                  </div>
-
-                  <p className="mt-6 text-center text-[12px] text-slate-500 dark:text-slate-500">
-                    Tenant workspace login?{' '}
-                    <a href="/login" className="font-medium text-blue-500 underline underline-offset-2 hover:text-blue-600 dark:text-blue-400">
-                      Sign in here
-                    </a>
-                  </p>
-                </div>
-              </div>
-            </div>
+            <p className="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">
+              Tenant workspace login?{' '}
+              <a href="/login" className="font-medium text-sapphire underline underline-offset-2 hover:text-blue-700 dark:text-sky-400">
+                Sign in here
+              </a>
+            </p>
           </div>
-
-          <p className="mt-8 text-center text-[11px] text-slate-500 dark:text-slate-600">
-            A <span className="font-semibold text-slate-500">Kode Kinetics</span> product
-          </p>
-        </div>
+        </section>
       </div>
 
       <style>{`
-        @keyframes kx-float {
-          0%, 100% { transform: translateY(0px); }
-          50% { transform: translateY(-8px); }
-        }
-        @keyframes kx-grid-shift { from{background-position:0 0} to{background-position:44px 44px} }
-        @keyframes kx-window-in  { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
-        @keyframes kx-bar-in     { from{transform:scaleY(0)} to{transform:scaleY(1)} }
-        @keyframes kx-pulse-dot  { 0%,100%{opacity:1} 50%{opacity:0.3} }
-        @keyframes kx-count      { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
-        .kx-grid {
-          background-image:
-            linear-gradient(rgba(100,150,255,0.04) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(100,150,255,0.04) 1px, transparent 1px);
-          background-size: 44px 44px;
-        }
-        .kx-win   { animation: kx-window-in 0.7s ease-out both }
-        .kx-bar   { animation: kx-bar-in 0.4s ease-out both; transform-origin: bottom }
-        .kx-dot   { animation: kx-pulse-dot 2s ease-in-out infinite }
-        .kx-count { animation: kx-count 0.5s ease-out both }
-        .kx-float { animation: kx-float 7s ease-in-out infinite }
-        .auth-input {
-          display: block;
-          width: 100%;
-          border-radius: 16px;
-          border: 1px solid rgba(148, 163, 184, 0.28);
-          background: linear-gradient(180deg, rgba(255,255,255,0.88), rgba(248,250,252,0.98));
-          padding: 14px 16px;
-          font-size: 15px;
+        .pa-input {
+          display: block; width: 100%;
+          border-radius: 10px;
+          border: 1px solid rgb(203 213 225);
+          background: #ffffff;
+          padding: 11px 14px;
+          font-size: 14px;
           color: #0f172a;
-          box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.9),
-            0 1px 2px rgba(15, 23, 42, 0.04);
-          transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s, background 0.18s;
+          transition: border-color 0.15s, box-shadow 0.15s;
           outline: none;
         }
-        .auth-input::placeholder { color: #94a3b8; }
-        .auth-input:focus {
-          border-color: rgba(47, 107, 255, 0.55);
-          box-shadow:
-            0 0 0 4px rgba(47, 107, 255, 0.12),
-            0 10px 22px rgba(47, 107, 255, 0.08);
-          transform: translateY(-1px);
-        }
+        .pa-input::placeholder { color: #94a3b8; }
+        .pa-input:focus { border-color: #2f6bff; box-shadow: 0 0 0 3px rgba(47,107,255,0.14); }
         @media (prefers-color-scheme: dark) {
-          .auth-input {
-            background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
-            border-color: rgba(255,255,255,0.09);
-            color: #f1f5f9;
-            box-shadow:
-              inset 0 1px 0 rgba(255,255,255,0.05),
-              0 1px 2px rgba(0,0,0,0.16);
-          }
-          .auth-input::placeholder { color: rgba(255,255,255,0.2); }
-          .auth-input:focus {
-            border-color: rgba(94, 235, 255, 0.55);
-            box-shadow:
-              0 0 0 4px rgba(47, 107, 255, 0.18),
-              0 10px 22px rgba(0,0,0,0.24);
-          }
+          .pa-input { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: #f1f5f9; }
+          .pa-input::placeholder { color: rgba(255,255,255,0.28); }
+          .pa-input:focus { border-color: #5eebff; box-shadow: 0 0 0 3px rgba(94,235,255,0.16); }
         }
-        .auth-btn {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 8px;
-          width: 100%;
-          border-radius: 16px;
-          background: linear-gradient(135deg, #1d4ed8 0%, #2f6bff 50%, #5eebff 170%);
-          padding: 15px 24px;
-          font-size: 15px;
-          font-weight: 800;
-          color: white;
-          letter-spacing: 0.01em;
-          box-shadow:
-            0 12px 30px rgba(47, 107, 255, 0.28),
-            inset 0 1px 0 rgba(255,255,255,0.24);
-          transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+        .pa-btn {
+          position: relative; display: flex; align-items: center; justify-content: center; gap: 8px;
+          width: 100%; overflow: hidden; border-radius: 10px;
+          background: linear-gradient(180deg, #3b78ff 0%, #2f6bff 55%, #1f54e6 100%);
+          padding: 12px 20px; font-size: 14px; font-weight: 600; color: white;
+          box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 8px 20px rgba(31,84,230,0.30);
+          transition: box-shadow 0.18s ease, transform 0.18s ease, filter 0.18s ease;
         }
-        .auth-btn:hover:not(:disabled) {
-          filter: saturate(1.05) brightness(1.02);
-          box-shadow:
-            0 16px 36px rgba(47, 107, 255, 0.34),
-            inset 0 1px 0 rgba(255,255,255,0.28);
-          transform: translateY(-1px);
-        }
-        .auth-btn:active:not(:disabled) {
-          transform: translateY(0) scale(0.995);
-          box-shadow:
-            0 8px 22px rgba(47, 107, 255, 0.24),
-            inset 0 1px 0 rgba(255,255,255,0.20);
-        }
+        .pa-btn:hover:not(:disabled) { filter: brightness(1.04); transform: translateY(-1px); box-shadow: 0 1px 0 rgba(255,255,255,0.3) inset, 0 12px 26px rgba(31,84,230,0.42); }
+        .pa-btn:active:not(:disabled) { transform: translateY(0); }
       `}</style>
-    </div>
+    </>
   );
 }

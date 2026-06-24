@@ -309,7 +309,7 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
               ['Team Calendar', 'calendar', Calendar],
               ['Leave Balance', 'balance', BarChart2],
               ['Absence Regularization', 'absences', RefreshCw],
-              ['AI Leave Insights', 'ai-insights', Zap],
+              ['Leave Insights', 'ai-insights', Zap],
             ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, t, Icon]) => (
               <button key={t} type="button" onClick={() => onNavigate(t)}
                 className="flex w-full items-center gap-3 rounded-lg p-2.5 text-left hover:bg-slate-50 dark:hover:bg-white/5">
@@ -1821,7 +1821,7 @@ function AIInsightsTab() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400">
-          <strong>AI assists only.</strong> Insights are for HR review. AI does not reject leave, penalize employees, or make final decisions.
+          <strong>Advisory only.</strong> Insights are for HR review and do not reject leave, penalize employees, or make final decisions.
         </div>
         <button type="button" className={btn.primary} onClick={generate} disabled={generating}><Zap className="h-4 w-4" />{generating ? 'Generating…' : 'Generate Insights'}</button>
       </div>
@@ -1829,7 +1829,7 @@ function AIInsightsTab() {
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : insights.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Zap className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No AI insights yet</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No insights yet</p>
           <p className="text-xs text-slate-400">Click Generate Insights to analyse leave patterns.</p>
         </div>
       ) : (
@@ -1875,7 +1875,7 @@ const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: st
   { id: 'compoff', label: 'Comp-Off', icon: RefreshCw },
   { id: 'absences', label: 'Absences', icon: AlertTriangle },
   { id: 'reports', label: 'Reports', icon: Zap },
-  { id: 'ai-insights', label: 'AI Insights', icon: Users },
+  { id: 'ai-insights', label: 'Insights', icon: Users },
 ];
 
 export function LeavePage() {
@@ -1926,7 +1926,7 @@ export function LeavePage() {
     });
 
   const subtitle = isAdmin
-    ? 'Manage leave across all group companies — policies, balances, workflows, encashment, comp-off, absence records, and AI insights.'
+    ? 'Manage leave across all group companies — policies, balances, workflows, encashment, comp-off, absence records, and insights.'
     : isManager
     ? 'Approve team leave requests, track your team\'s balances, and manage absences.'
     : 'Apply for leave, track your balance, and view your leave history.';

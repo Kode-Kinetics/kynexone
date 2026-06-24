@@ -1,6 +1,6 @@
 'use client';
 
-import { Bell, BellOff, Bot, CheckCheck, Globe, LogOut, Menu, Moon, Sun, Trash2, UserCircle2, X } from 'lucide-react';
+import { Bell, BellOff, MessageSquareText, CheckCheck, Globe, LogOut, Menu, Moon, Sun, Trash2, UserCircle2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
@@ -277,12 +277,12 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         <button
           type="button"
-          aria-label="Ask AI Assistant"
+          aria-label="Open assistant"
           onClick={onAskKynexOne}
-          className="hidden h-8 items-center gap-1.5 rounded-lg border border-sapphire/25 bg-sapphire/[0.07] px-3 text-xs font-semibold text-sapphire transition hover:bg-sapphire/[0.12] sm:flex dark:border-cyanAccent/20 dark:bg-cyanAccent/[0.07] dark:text-cyanAccent dark:hover:bg-cyanAccent/[0.12]"
+          className="hidden h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 sm:flex dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.07]"
         >
-          <Bot className="h-3.5 w-3.5" />
-          {t('Ask AI')}
+          <MessageSquareText className="h-3.5 w-3.5" />
+          {t('Assistant')}
         </button>
 
         <button

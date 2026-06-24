@@ -445,7 +445,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         </div>
       )}
 
-      {/* ── AI Insights Panel ── */}
+      {/* ── Insights Panel ── */}
       <AiInsightsPanel />
 
       {/* ── Drill-down panel (when a company row is clicked) ── */}
