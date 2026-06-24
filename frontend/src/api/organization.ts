@@ -7,6 +7,31 @@ export interface PagedResult<T> {
   pageSize: number;
 }
 
+// Shape returned by master-data import endpoints backed by ImportCommitResult
+// (companies, branches, departments, designations, grades, cost-centres, locations).
+// Per-row failures live in `rows`, batch-level failures in `globalErrors` — there is
+// no flat `errors` array, so the toolbar must be fed a normalised ImportResult.
+export interface RawImportCommit {
+  received: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  rows?: { rowNumber: number; entityCode?: string | null; status: string; errors?: string[] }[];
+  globalErrors?: string[];
+}
+
+export function toImportResult(d: RawImportCommit): { received: number; created: number; skipped: number; errors: string[] } {
+  const rowErrors = (d.rows ?? [])
+    .filter((r) => (r.errors?.length ?? 0) > 0)
+    .map((r) => `Row ${r.rowNumber}${r.entityCode ? ` (${r.entityCode})` : ''}: ${(r.errors ?? []).join(', ')}`);
+  return {
+    received: d.received ?? 0,
+    created: d.created ?? 0,
+    skipped: d.skipped ?? 0,
+    errors: [...(d.globalErrors ?? []), ...rowErrors],
+  };
+}
+
 // ─── Company ────────────────────────────────────────────────────────────────
 
 export interface CompanyDto {
@@ -52,7 +77,7 @@ export const companiesApi = {
   remove: (id: string) => client.delete(`/api/companies/${id}`),
   export: () => client.get<string>('/api/companies/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/companies/import-template', { responseType: 'text' }).then((r) => r.data),
-  import: (csv: string) => client.post<{ received: number; created: number; updated: number; skipped: number; errors: string[] }>('/api/companies/import', { csv }).then((r) => r.data),
+  import: (csv: string) => client.post<RawImportCommit>('/api/companies/import', { csv }).then((r) => toImportResult(r.data)),
 };
 
 // ─── Branch ─────────────────────────────────────────────────────────────────
@@ -100,7 +125,7 @@ export const branchesApi = {
   remove: (id: string) => client.delete(`/api/branches/${id}`),
   export: () => client.get<string>('/api/branches/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/branches/import-template', { responseType: 'text' }).then((r) => r.data),
-  import: (csv: string) => client.post<{ received: number; created: number; updated: number; skipped: number; errors: string[] }>('/api/branches/import', { csv }).then((r) => r.data),
+  import: (csv: string) => client.post<RawImportCommit>('/api/branches/import', { csv }).then((r) => toImportResult(r.data)),
 };
 
 // ─── Department ──────────────────────────────────────────────────────────────
@@ -140,7 +165,7 @@ export const departmentsApi = {
   remove: (id: string) => client.delete(`/api/departments/${id}`),
   export: () => client.get<string>('/api/departments/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/departments/import-template', { responseType: 'text' }).then((r) => r.data),
-  import: (csv: string) => client.post<{ received: number; created: number; updated: number; skipped: number; errors: string[] }>('/api/departments/import', { csv }).then((r) => r.data),
+  import: (csv: string) => client.post<RawImportCommit>('/api/departments/import', { csv }).then((r) => toImportResult(r.data)),
 };
 
 // ─── Designation ─────────────────────────────────────────────────────────────
@@ -184,7 +209,7 @@ export const designationsApi = {
   remove: (id: string) => client.delete(`/api/designations/${id}`),
   export: () => client.get<string>('/api/designations/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/designations/import-template', { responseType: 'text' }).then((r) => r.data),
-  import: (csv: string) => client.post<{ received: number; created: number; updated: number; skipped: number; errors: string[] }>('/api/designations/import', { csv }).then((r) => r.data),
+  import: (csv: string) => client.post<RawImportCommit>('/api/designations/import', { csv }).then((r) => toImportResult(r.data)),
 };
 
 // ─── Grade ──────────────────────────────────────────────────────────────────
@@ -218,7 +243,7 @@ export const gradesApi = {
   remove: (id: string) => client.delete(`/api/grades/${id}`),
   export: () => client.get<string>('/api/grades/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/grades/import-template', { responseType: 'text' }).then((r) => r.data),
-  import: (csv: string) => client.post<{ received: number; created: number; updated: number; skipped: number; errors: string[] }>('/api/grades/import', { csv }).then((r) => r.data),
+  import: (csv: string) => client.post<RawImportCommit>('/api/grades/import', { csv }).then((r) => toImportResult(r.data)),
 };
 
 // ─── Cost Center ────────────────────────────────────────────────────────────
@@ -248,4 +273,7 @@ export const costCentersApi = {
   update: (id: string, data: CostCenterRequest) =>
     client.put<CostCenterDto>(`/api/cost-centers/${id}`, data).then((r) => r.data),
   remove: (id: string) => client.delete(`/api/cost-centers/${id}`),
+  export: () => client.get<string>('/api/cost-centers/export', { responseType: 'text' }).then((r) => r.data),
+  importTemplate: () => client.get<string>('/api/cost-centers/import-template', { responseType: 'text' }).then((r) => r.data),
+  import: (csv: string) => client.post<RawImportCommit>('/api/cost-centers/import', { csv }).then((r) => toImportResult(r.data)),
 };

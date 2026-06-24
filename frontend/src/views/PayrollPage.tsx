@@ -2,11 +2,11 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  AlertTriangle, BarChart2, Bot, BookOpen, Building2, Calculator,
+  AlertTriangle, BarChart2, ShieldCheck, BookOpen, Building2, Calculator,
   CheckCircle2, ChevronDown, ChevronRight, Download, FileText, Landmark, Layers3,
   Lock, Play, Plus, RefreshCw, RotateCcw,
   Settings, TrendingUp, Users, WalletCards, X,
-  Zap, Shield, Sparkles, ArrowUpRight, Circle,
+  Zap, Shield, Lightbulb, ArrowUpRight, Circle,
 } from 'lucide-react';
 import {
   payrollApi,
@@ -145,7 +145,7 @@ const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: s
   { key: 'gl-journal',       label: 'GL Journal',          icon: BookOpen },
   { key: 'reconciliation',   label: 'Reconciliation',      icon: RefreshCw },
   { key: 'final-settlement', label: 'Final Settlement',    icon: Calculator },
-  { key: 'ai-validation',    label: 'AI Validation',       icon: Bot },
+  { key: 'ai-validation',    label: 'Anomaly Checks',      icon: ShieldCheck },
 ];
 
 // ── Payroll Setup Wizard ───────────────────────────────────────────────────────
@@ -311,16 +311,16 @@ function AiInsightsPanel() {
   if (loading) return null;
   if (insights.length === 0) return (
     <div className="surface flex items-center gap-3 p-5">
-      <Sparkles className="h-4 w-4 shrink-0 text-emerald-500" />
-      <p className="text-sm text-slate-500 dark:text-slate-400">AI engine has no active alerts — all payroll and HR signals look normal.</p>
+      <Lightbulb className="h-4 w-4 shrink-0 text-emerald-500" />
+      <p className="text-sm text-slate-500 dark:text-slate-400">No active alerts — all payroll and HR signals look normal.</p>
     </div>
   );
 
   return (
     <div className="surface overflow-hidden">
       <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
-        <Sparkles className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
-        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">AI Insights</h3>
+        <Lightbulb className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Insights</h3>
         <span className="ml-auto rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">{insights.length} active</span>
       </div>
       <div className="divide-y divide-slate-100 dark:divide-white/5">
@@ -512,7 +512,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
             ['Employee Salary', 'employee-salary', Users],
             ['Validation', 'validation', AlertTriangle],
             ['Approvals', 'approvals', CheckCircle2],
-            ['AI Validation', 'ai-validation', Bot],
+            ['Anomaly Checks', 'ai-validation', ShieldCheck],
           ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, t, Icon]) => (
             <button key={t} type="button" onClick={() => onNavigate(t)}
               className="flex items-center gap-3 rounded-xl border border-slate-200 p-3 text-left hover:border-sapphire/40 hover:bg-sapphire/3 dark:border-white/10 dark:hover:border-cyanAccent/30 dark:hover:bg-cyanAccent/5">
@@ -1695,24 +1695,24 @@ function AIValidationTab() {
     <div className="space-y-4">
       <div className="surface p-4">
         <div className="flex items-start gap-3">
-          <Bot className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
+          <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
           <div>
-            <p className="text-sm font-semibold text-slate-800 dark:text-white">AI Payroll Validation — Advisory Only</p>
+            <p className="text-sm font-semibold text-slate-800 dark:text-white">Payroll Anomaly Checks — Advisory Only</p>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              AI checks flag anomalies like salary variance, unusual overtime, missing IBANs, and duplicate entries.
-              AI does not approve payroll or change salaries automatically.
+              These checks flag anomalies like salary variance, unusual overtime, missing IBANs, and duplicate entries.
+              They do not approve payroll or change salaries automatically.
             </p>
           </div>
         </div>
       </div>
 
       <div className="flex items-center gap-3">
-        <select aria-label="Select payroll run for AI validation" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
+        <select aria-label="Select payroll run for anomaly checks" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">Select a payroll run…</option>
           {runs.map(r => <option key={r.id} value={r.id}>{MONTHS[r.month - 1]} {r.year} — {r.status}</option>)}
         </select>
         <button type="button" className={btn.primary} onClick={runAI} disabled={!runId || loading}>
-          <Zap className="h-4 w-4" /> {loading ? 'Analyzing…' : 'Run AI Checks'}
+          <Zap className="h-4 w-4" /> {loading ? 'Analyzing…' : 'Run Checks'}
         </button>
       </div>
 
@@ -1729,7 +1729,7 @@ function AIValidationTab() {
           {result.warnings.length === 0 ? (
             <div className="surface flex flex-col items-center py-12 text-center">
               <CheckCircle2 className="mb-3 h-8 w-8 text-emerald-500" />
-              <p className="text-sm font-medium text-slate-700 dark:text-slate-300">No AI anomalies detected for this payroll run.</p>
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-300">No anomalies detected for this payroll run.</p>
             </div>
           ) : (
             <div className="space-y-3">

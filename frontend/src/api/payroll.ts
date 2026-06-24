@@ -182,6 +182,30 @@ export interface PayrollReconciliation {
   variances: PayrollVarianceRow[];
 }
 
+export interface CostCenterAllocationRow {
+  costCenterId: string | null;
+  costCenterCode: string;
+  costCenterName: string;
+  employeeCount: number;
+  grossSalary: number;
+  netSalary: number;
+  employerCost: number;
+  totalCost: number;
+  percentOfTotal: number;
+}
+
+export interface CostCenterAllocationReport {
+  runId: string;
+  period: string;
+  currency: string;
+  totalEmployees: number;
+  totalGross: number;
+  totalNet: number;
+  totalEmployerCost: number;
+  totalCost: number;
+  allocations: CostCenterAllocationRow[];
+}
+
 export interface FinalSettlementBreakdown {
   component: string;
   amount: number;
@@ -357,6 +381,9 @@ export const payrollApi = {
 
   reconciliation: (runId: string) =>
     client.get<PayrollReconciliation>('/api/payroll/reports/reconciliation', { params: { runId } }).then((r) => r.data),
+
+  costCenterAllocation: (runId: string) =>
+    client.get<CostCenterAllocationReport>(`/api/payroll/runs/${runId}/cost-center-allocation`).then((r) => r.data),
 
   finalSettlement: (employeeId: number, lastWorkingDay: string, noticePeriodDaysShort = 0) =>
     client.post<FinalSettlementResult>('/api/payroll/final-settlement', { employeeId, lastWorkingDay, noticePeriodDaysShort }).then((r) => r.data),

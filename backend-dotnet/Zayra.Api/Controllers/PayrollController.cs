@@ -1952,6 +1952,79 @@ public class PayrollController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Cost-centre payroll allocation — aggregates a run's payroll cost by cost centre
+    /// (resolved via each employee's CostCenterId). Enterprise finance reporting: answers
+    /// "what did we spend per cost centre this period?". Employees with no cost centre roll
+    /// up into an "Unassigned" bucket so the totals always reconcile to the run total.
+    /// TotalCost = gross pay + employer statutory cost (the true cost to the company).
+    /// </summary>
+    [HttpGet("runs/{id:guid}/cost-center-allocation")]
+    public async Task<IActionResult> CostCenterAllocation(Guid id, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == id, cancellationToken);
+        if (run is null) return NotFound();
+
+        var slips = await _db.PayrollSlips.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.RunId == id).ToListAsync(cancellationToken);
+        var empIds = slips.Select(s => s.EmployeeId).Distinct().ToList();
+        var ccByEmp = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && empIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.CostCenterId })
+            .ToDictionaryAsync(e => e.Id, e => e.CostCenterId, cancellationToken);
+        var costCenters = await _db.CostCenters.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
+            .ToDictionaryAsync(c => c.Id, cancellationToken);
+        var currency = await ResolveCurrencyAsync(tenantId, cancellationToken);
+
+        var grouped = slips
+            .GroupBy(s => ccByEmp.TryGetValue(s.EmployeeId, out var cc) ? cc : null)
+            .Select(g =>
+            {
+                var ccId = g.Key;
+                var code = "—";
+                var name = "Unassigned";
+                if (ccId.HasValue && costCenters.TryGetValue(ccId.Value, out var cc)) { code = cc.Code; name = cc.Name; }
+                var gross = g.Sum(s => s.GrossSalary);
+                var employer = g.Sum(s => s.EmployerStatutoryTotal);
+                return new
+                {
+                    costCenterId = ccId,
+                    costCenterCode = code,
+                    costCenterName = name,
+                    employeeCount = g.Count(),
+                    grossSalary = gross,
+                    netSalary = g.Sum(s => s.NetSalary),
+                    employerCost = employer,
+                    totalCost = gross + employer,
+                };
+            })
+            .OrderByDescending(a => a.totalCost)
+            .ToList();
+
+        var totalCost = grouped.Sum(a => a.totalCost);
+        var allocations = grouped.Select(a => new
+        {
+            a.costCenterId, a.costCenterCode, a.costCenterName, a.employeeCount,
+            a.grossSalary, a.netSalary, a.employerCost, a.totalCost,
+            percentOfTotal = totalCost == 0 ? 0m : Math.Round(a.totalCost / totalCost * 100, 2),
+        }).ToList();
+
+        return Ok(new
+        {
+            runId = id,
+            period = $"{run.Year}-{run.Month:D2}",
+            currency,
+            totalEmployees = slips.Count,
+            totalGross = grouped.Sum(a => a.grossSalary),
+            totalNet = grouped.Sum(a => a.netSalary),
+            totalEmployerCost = grouped.Sum(a => a.employerCost),
+            totalCost,
+            allocations,
+        });
+    }
+
     /// <summary>Final settlement calculator: pro-rata salary + EOSB + leave encashment - notice deduction.</summary>
     [HttpPost("final-settlement")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager")]
@@ -1968,7 +2041,7 @@ public class PayrollController : ControllerBase
         var basicSalary    = salary?.BasicSalary ?? employee.Salary ?? 0m;
         var grossSalary    = basicSalary + (salary?.HousingAllowance ?? 0m) + (salary?.TransportAllowance ?? 0m)
                            + (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
-        var currency       = salary?.Currency ?? "USD";
+        var currency       = !string.IsNullOrWhiteSpace(salary?.Currency) ? salary!.Currency : await ResolveCurrencyAsync(tenantId, cancellationToken);
 
         // Pro-rata salary for partial month
         var lastDay        = req.LastWorkingDay;

@@ -857,7 +857,16 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
 
   return (
     <>
-      <TableShell columns={['Code', 'Name', 'Company', 'Status']} onAdd={openNew} addLabel="Add Cost Center" loading={loading} empty={items.length === 0} emptyLabel="No cost centers yet">
+      <TableShell columns={['Code', 'Name', 'Company', 'Status']} onAdd={openNew} addLabel="Add Cost Center" loading={loading} empty={items.length === 0} emptyLabel="No cost centers yet"
+        actions={
+          <ImportExportToolbar
+            entityName="Cost Centers"
+            onExport={async () => { const csv = await costCentersApi.export(); downloadCsv(csv, 'cost-centers.csv'); }}
+            onDownloadTemplate={async () => { const csv = await costCentersApi.importTemplate(); downloadCsv(csv, 'cost-centers-template.csv'); }}
+            onImport={async (csv) => { const r = await costCentersApi.import(csv); load(); return r; }}
+          />
+        }
+      >
         {items.map((c) => (
           <tr key={c.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{c.code}</td>
@@ -1520,7 +1529,16 @@ function LocationsTab() {
   return (
     <>
       <TableShell columns={['Code', 'Name', 'City', 'Country', 'Geofence', 'Status', '']} onAdd={openNew} addLabel="Add Location"
-        loading={loading} empty={items.length === 0} emptyLabel="No locations">
+        loading={loading} empty={items.length === 0} emptyLabel="No locations"
+        actions={
+          <ImportExportToolbar
+            entityName="Locations"
+            onExport={async () => { const csv = await locationsApi.export(); downloadCsv(csv, 'locations.csv'); }}
+            onDownloadTemplate={async () => { const csv = await locationsApi.importTemplate(); downloadCsv(csv, 'locations-template.csv'); }}
+            onImport={async (csv) => { const r = await locationsApi.import(csv); load(); return r; }}
+          />
+        }
+      >
         {items.map((l) => (
           <tr key={l.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500">{l.code}</td>

@@ -1,4 +1,5 @@
 import client from './client';
+import { type RawImportCommit, toImportResult } from './organization';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -203,6 +204,10 @@ export const locationsApi = {
     client.put<Location>(`/api/admin/locations/${id}`, body).then(r => r.data),
 
   delete: (id: string) => client.delete(`/api/admin/locations/${id}`),
+
+  export: () => client.get<string>('/api/locations/export', { responseType: 'text' }).then(r => r.data),
+  importTemplate: () => client.get<string>('/api/locations/import-template', { responseType: 'text' }).then(r => r.data),
+  import: (csv: string) => client.post<RawImportCommit>('/api/locations/import', { csv }).then(r => toImportResult(r.data)),
 };
 
 export const notificationTemplatesApi = {
