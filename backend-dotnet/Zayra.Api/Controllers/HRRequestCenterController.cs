@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -226,10 +227,17 @@ public class HRRequestCenterController : ControllerBase
             HRRequestId = id,
             EmployeeId = req.EmployeeId,
             UserId = userId,
-            Comment = req.Comment
+            Comment = req.Comment,
+            AuthorType = "HR",
+            AuthorName = User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "HR",
         };
 
         _db.HRRequestComments.Add(comment);
+        // A reply from HR moves an Open ticket into "In Progress" so the SLA/response
+        // indicators reflect that HR has engaged.
+        var ticket = await _db.HRRequests.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        if (ticket is not null && ticket.Status == "Open")
+            ticket.Status = "In Progress";
         await _db.SaveChangesAsync(ct);
         return Created($"/api/hr-requests/{id}/comments/{comment.Id}", comment);
     }

@@ -2,13 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import {
-  Bot, Loader2, CalendarOff, Send, FileText, Clock,
+  MessageSquareText, Loader2, CalendarOff, Send, FileText, Clock,
   ChevronRight, Megaphone, CheckCircle2, AlertCircle,
   Zap, ClipboardList, TrendingUp, CreditCard, Banknote,
-  Star, Target, Calendar, BadgeCheck, User,
+  Star, Target, Calendar, BadgeCheck, User, X,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { essApi, type EssDashboard } from '../api/ess';
+import { essApi, type EssDashboard, type EssHrRequest, type EssHrRequestDetail } from '../api/ess';
 import { useAuth } from '../contexts/AuthContext';
 import { StatusChip } from '../components/StatusChip';
 
@@ -269,10 +269,36 @@ export function EmployeeSelfServicePage() {
   const [ticketMessage, setTicketMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [myRequests, setMyRequests] = useState<EssHrRequest[]>([]);
+  const [openThread, setOpenThread] = useState<EssHrRequestDetail | null>(null);
+  const [threadLoading, setThreadLoading] = useState(false);
+  const [replyText, setReplyText] = useState('');
+  const [replying, setReplying] = useState(false);
+
+  const loadRequests = async () => {
+    try { setMyRequests(await essApi.hrRequests()); } catch { /* non-blocking */ }
+  };
+
+  const openTicket = async (id: string) => {
+    setThreadLoading(true); setOpenThread(null); setReplyText('');
+    try { setOpenThread(await essApi.hrRequestDetail(id)); } catch { /* ignore */ }
+    finally { setThreadLoading(false); }
+  };
+
+  const sendReply = async () => {
+    if (!openThread || !replyText.trim()) return;
+    setReplying(true);
+    try {
+      await essApi.addHrRequestComment(openThread.request.id, replyText.trim());
+      setReplyText('');
+      setOpenThread(await essApi.hrRequestDetail(openThread.request.id));
+      await loadRequests();
+    } finally { setReplying(false); }
+  };
 
   const load = async () => {
     setLoading(true); setError('');
-    try { setDashboard(await essApi.dashboard()); }
+    try { setDashboard(await essApi.dashboard()); await loadRequests(); }
     catch (err: unknown) {
       const e = err as { response?: { data?: { message?: string } } };
       setError(e.response?.data?.message ?? 'Unable to load your workspace.');
@@ -298,7 +324,7 @@ export function EmployeeSelfServicePage() {
       await essApi.createHrRequest({ categoryName: 'General HR', subject: ticketSubject, description: ticketMessage, priority: 'Normal' });
       setTicketSubject(''); setTicketMessage(''); setSubmitted(true);
       setTimeout(() => setSubmitted(false), 4000);
-      await load();
+      await loadRequests();
     } finally { setSubmitting(false); }
   };
 
@@ -664,9 +690,9 @@ export function EmployeeSelfServicePage() {
           <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
             <div className="flex items-center gap-2.5 border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-sapphire/10 dark:bg-cyanAccent/10">
-                <Bot className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
+                <MessageSquareText className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
               </div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">AI HR Assistant</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">HR Assistant</p>
             </div>
             <div className="space-y-3 p-5">
               <textarea
@@ -748,6 +774,31 @@ export function EmployeeSelfServicePage() {
                 {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
                 {submitting ? 'Submitting…' : 'Submit request'}
               </button>
+
+              {myRequests.length > 0 && (
+                <div className="space-y-2 border-t border-slate-100 pt-3 dark:border-white/[0.07]">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">My Requests</p>
+                  {myRequests.map((r) => {
+                    const tone = r.status === 'Closed' || r.status === 'Resolved'
+                      ? 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400'
+                      : r.isOverdue
+                        ? 'bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400'
+                        : r.hrResponded
+                          ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400'
+                          : 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400';
+                    return (
+                      <button key={r.id} type="button" onClick={() => openTicket(r.id)}
+                        className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-left hover:bg-slate-50 dark:border-white/[0.07] dark:hover:bg-white/[0.03]">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.subject}</p>
+                          <p className="truncate text-xs text-slate-400">{new Date(r.createdAtUtc).toLocaleDateString()}</p>
+                        </div>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${tone}`}>{r.responseStatus}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </section>
 
@@ -773,6 +824,55 @@ export function EmployeeSelfServicePage() {
           </div>
         </div>
       </div>
+
+      {/* HR request thread modal */}
+      {(openThread || threadLoading) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={() => { setOpenThread(null); setThreadLoading(false); }}>
+          <div className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-2xl bg-white shadow-xl dark:bg-slate-900" onClick={(e) => e.stopPropagation()}>
+            {threadLoading || !openThread ? (
+              <div className="flex items-center justify-center p-10"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>
+            ) : (
+              <>
+                <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4 dark:border-white/[0.07]">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">{openThread.request.subject}</p>
+                    <p className="mt-0.5 text-xs text-slate-400">{openThread.responseStatus}</p>
+                  </div>
+                  <button type="button" aria-label="Close" onClick={() => setOpenThread(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+                </div>
+                <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
+                  <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:bg-white/[0.04] dark:text-slate-300">{openThread.request.description}</div>
+                  {openThread.comments.length === 0 && <p className="text-center text-xs text-slate-400">No replies yet. HR will respond here.</p>}
+                  {openThread.comments.map((c) => {
+                    const fromHr = c.authorType === 'HR';
+                    return (
+                      <div key={c.id} className={`flex ${fromHr ? 'justify-start' : 'justify-end'}`}>
+                        <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm ${fromHr ? 'bg-sapphire/10 text-slate-800 dark:bg-sapphire/20 dark:text-slate-100' : 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'}`}>
+                          <p className="mb-0.5 text-[10px] font-semibold opacity-70">{fromHr ? (c.authorName || 'HR') : 'You'} · {new Date(c.createdAtUtc).toLocaleString()}</p>
+                          <p className="whitespace-pre-wrap">{c.comment}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-2 border-t border-slate-100 px-4 py-3 dark:border-white/[0.07]">
+                  <input
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
+                    placeholder="Reply to HR…"
+                    className="flex-1 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm text-slate-900 outline-none focus:border-sapphire/50 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white"
+                  />
+                  <button type="button" aria-label="Send reply" onClick={sendReply} disabled={replying || !replyText.trim()}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-slate-900">
+                    {replying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

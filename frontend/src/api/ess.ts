@@ -86,13 +86,45 @@ export interface HrRequestPayload {
   priority?: string;
 }
 
+export interface EssHrRequest {
+  id: string;
+  subject: string;
+  description: string;
+  priority: string;
+  status: string;
+  categoryName: string;
+  dueAtUtc: string;
+  createdAtUtc: string;
+  hrResponded: boolean;
+  isOverdue: boolean;
+  responseStatus: string;
+}
+
+export interface EssHrRequestComment {
+  id: string;
+  comment: string;
+  authorType: string;
+  authorName: string;
+  createdAtUtc: string;
+}
+
+export interface EssHrRequestDetail {
+  request: EssHrRequest;
+  comments: EssHrRequestComment[];
+  hrResponded: boolean;
+  isOverdue: boolean;
+  responseStatus: string;
+}
+
 export const essApi = {
   dashboard: () => client.get<EssDashboard>('/api/ess/dashboard').then((r) => r.data),
   profile: () => client.get('/api/ess/profile').then((r) => r.data),
   attendance: () => client.get('/api/ess/attendance').then((r) => r.data),
   leaveBalance: () => client.get('/api/ess/leave/balance').then((r) => r.data),
   documents: () => client.get<EssDocument[]>('/api/ess/documents').then((r) => r.data),
-  hrRequests: () => client.get('/api/ess/hr-requests/my').then((r) => r.data),
+  hrRequests: () => client.get<EssHrRequest[]>('/api/ess/hr-requests/my').then((r) => r.data),
+  hrRequestDetail: (id: string) => client.get<EssHrRequestDetail>(`/api/ess/hr-requests/${id}`).then((r) => r.data),
+  addHrRequestComment: (id: string, comment: string) => client.post<EssHrRequestComment>(`/api/ess/hr-requests/${id}/comments`, { comment }).then((r) => r.data),
   createHrRequest: (payload: HrRequestPayload) => client.post('/api/ess/hr-requests', payload).then((r) => r.data),
   askAi: (question: string) => client.post<{ answer: string }>('/api/ess/ai/ask', { question }).then((r) => r.data),
   notifications: () => client.get<EssNotification[]>('/api/ess/notifications').then((r) => r.data),

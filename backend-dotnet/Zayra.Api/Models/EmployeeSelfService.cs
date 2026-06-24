@@ -75,6 +75,11 @@ public class HRRequestComment : ITenantOwned
     public int EmployeeId { get; set; }
     public Guid? UserId { get; set; }
     public string Comment { get; set; } = string.Empty;
+    // "Employee" when written from the self-service portal, "HR" when written from the
+    // HR Request Centre. Drives the two-sided thread display and the "HR responded?" /
+    // "not responded yet" SLA indicator. Defaults to "Employee" for legacy rows.
+    public string AuthorType { get; set; } = "Employee";
+    public string AuthorName { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 

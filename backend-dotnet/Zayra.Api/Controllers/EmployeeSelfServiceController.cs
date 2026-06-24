@@ -429,11 +429,40 @@ public class EmployeeSelfServiceController : ControllerBase
 
     [HttpGet("hr-requests/my")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: CategoryId/Name, Subject, Description, Priority, Status, DueAtUtc. Scoped to the requesting employee's EmployeeId by GetEssContextAsync. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public async Task<ActionResult<IReadOnlyCollection<HRRequest>>> MyHrRequests(CancellationToken cancellationToken)
+    public async Task<IActionResult> MyHrRequests(CancellationToken cancellationToken)
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError });
-        return Ok(await _db.HRRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken));
+
+        var requests = await _db.HRRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+
+        // Which of these tickets have had an HR reply, and how many unread/total comments.
+        var ids = requests.Select(r => r.Id).ToList();
+        var hrRepliedIds = (await _db.HRRequestComments.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && ids.Contains(c.HRRequestId) && c.AuthorType == "HR")
+            .Select(c => c.HRRequestId)
+            .Distinct()
+            .ToListAsync(cancellationToken)).ToHashSet();
+
+        var now = DateTime.UtcNow;
+        var result = requests.Select(r =>
+        {
+            var hrResponded = hrRepliedIds.Contains(r.Id);
+            var isClosed = r.Status is "Closed" or "Resolved";
+            var isOverdue = !hrResponded && !isClosed && r.DueAtUtc != default && now > r.DueAtUtc;
+            return new
+            {
+                r.Id, r.EmployeeId, r.CategoryId, r.CategoryName, r.Subject, r.Description,
+                r.Priority, r.Status, r.DueAtUtc, r.CreatedAtUtc,
+                hrResponded,
+                isOverdue,
+                responseStatus = isClosed ? "Closed" : hrResponded ? "Responded" : isOverdue ? "Overdue — not responded" : "Awaiting HR response",
+            };
+        });
+        return Ok(result);
     }
 
     [HttpPost("hr-requests/{id:guid}/comments")]
@@ -443,10 +472,52 @@ public class EmployeeSelfServiceController : ControllerBase
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
         if (!essOk) return BadRequest(new { message = ctxError });
         if (!await _db.HRRequests.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == id, cancellationToken)) return NotFound();
-        var comment = new HRRequestComment { TenantId = tenantId, HRRequestId = id, EmployeeId = employeeId, UserId = GetUserId(), Comment = request.Comment };
+        var comment = new HRRequestComment
+        {
+            TenantId = tenantId, HRRequestId = id, EmployeeId = employeeId, UserId = GetUserId(), Comment = request.Comment,
+            AuthorType = "Employee",
+            AuthorName = User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "Employee",
+        };
         _db.HRRequestComments.Add(comment);
         await _db.SaveChangesAsync(cancellationToken);
         return Created($"/api/ess/hr-requests/{id}/comments/{comment.Id}", comment);
+    }
+
+    /// <summary>
+    /// Employee reads one of their own HR requests with its full comment thread.
+    /// This is the read side that was missing — without it, HR replies (added from the
+    /// HR Request Centre) had no endpoint to surface back to the employee's portal.
+    /// Also returns derived SLA fields so the employee sees whether HR has responded
+    /// and whether the request is overdue.
+    /// </summary>
+    [HttpGet("hr-requests/{id:guid}")]
+    [AllowEntityReturn("Flat entity — no navigation properties. Employee's own HR ticket + its comment thread, scoped to the requesting employee. Fields: subject, description, status, priority, comment text + author type/name/time. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    public async Task<IActionResult> GetHrRequest(Guid id, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        var request = await _db.HRRequests.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == id, cancellationToken);
+        if (request is null) return NotFound();
+
+        var comments = await _db.HRRequestComments.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.HRRequestId == id)
+            .OrderBy(c => c.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+
+        var hrResponded = comments.Any(c => c.AuthorType == "HR");
+        var isClosed = request.Status is "Closed" or "Resolved";
+        var isOverdue = !hrResponded && !isClosed && request.DueAtUtc != default && DateTime.UtcNow > request.DueAtUtc;
+
+        return Ok(new
+        {
+            request,
+            comments,
+            hrResponded,
+            isOverdue,
+            responseStatus = isClosed ? "Closed" : hrResponded ? "Responded" : isOverdue ? "Overdue — not responded" : "Awaiting HR response",
+        });
     }
 
     [HttpGet("announcements")]
