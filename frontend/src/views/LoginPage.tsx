@@ -24,15 +24,8 @@ const TRUST_POINTS = [
 const WORKFORCE_SIGNALS = [
   'Clock-ins',
   'Approvals',
-  'Payroll runs',
+  'Payroll',
   'Compliance',
-];
-
-const WORKFLOW_STEPS = [
-  { title: 'Clock in', detail: 'Attendance and location-aware entry' },
-  { title: 'Review', detail: 'Approvals and exception handling' },
-  { title: 'Run payroll', detail: 'Payroll cycles and validation' },
-  { title: 'Close out', detail: 'Audit trail and compliance' },
 ];
 
 type Mode = 'login' | 'forgot' | 'reset' | 'mfa';
@@ -183,18 +176,18 @@ export function LoginPage() {
         <div className="pointer-events-none absolute left-0 top-1/4 h-72 w-72 rounded-full bg-blue-300/25 blur-3xl dark:bg-blue-700/12 kx-float" />
         <div className="pointer-events-none absolute bottom-[-4rem] right-[-5rem] h-80 w-80 rounded-full bg-cyan-300/18 blur-3xl dark:bg-cyan-600/10 kx-float" />
 
-        <div className="relative z-10 grid min-h-[100svh] w-full lg:grid-cols-[1.06fr_0.94fr]">
-          <section className="relative flex min-h-[42svh] flex-col justify-between overflow-hidden bg-[linear-gradient(160deg,#f8fbff_0%,#eef5ff_48%,#e5efff_100%)] px-6 py-5 text-slate-900 sm:px-10 sm:py-6 lg:min-h-[100svh] lg:px-12 lg:py-8">
+        <div className="relative z-10 grid min-h-[100svh] w-full lg:grid-cols-[0.96fr_1.04fr]">
+          <section className="relative flex min-h-[34svh] flex-col justify-between overflow-hidden bg-[linear-gradient(160deg,#fbfdff_0%,#f4f8ff_42%,#eaf2ff_100%)] px-5 py-4 text-slate-900 sm:px-8 sm:py-5 lg:min-h-[100svh] lg:px-10 lg:py-6">
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(47,107,255,0.18),transparent_26%),radial-gradient(circle_at_88%_14%,rgba(94,235,255,0.12),transparent_18%),radial-gradient(circle_at_50%_100%,rgba(56,189,248,0.10),transparent_22%)]" />
             <div className="pointer-events-none absolute inset-0 opacity-[0.16] [background-image:linear-gradient(rgba(47,107,255,0.07)_1px,transparent_1px),linear-gradient(90deg,rgba(47,107,255,0.07)_1px,transparent_1px)] [background-size:72px_72px]" />
-            <div className="pointer-events-none absolute -right-10 top-10 h-36 w-36 rounded-full border border-cyan-300/20 bg-cyan-300/12 blur-2xl kx-orbit" />
-            <div className="pointer-events-none absolute -left-12 bottom-20 h-44 w-44 rounded-full bg-blue-500/12 blur-3xl kx-glow" />
+            <div className="pointer-events-none absolute -right-10 top-10 h-28 w-28 rounded-full border border-cyan-300/20 bg-cyan-300/12 blur-2xl kx-orbit" />
+            <div className="pointer-events-none absolute -left-12 bottom-16 h-36 w-36 rounded-full bg-blue-500/12 blur-3xl kx-glow" />
 
             <div className="relative z-10 flex items-center gap-3">
-              <div className="rounded-[24px] border border-white/80 bg-white/82 px-5 py-4 shadow-[0_20px_52px_rgba(37,99,235,0.12)] backdrop-blur-xl">
-                <Logo size="xl" />
+              <div className="rounded-[22px] border border-white/85 bg-white/86 px-4 py-3.5 shadow-[0_18px_40px_rgba(37,99,235,0.10)] backdrop-blur-xl">
+                <Logo size="lg" />
               </div>
-              <div className="h-10 w-px bg-slate-300/70" />
+              <div className="h-9 w-px bg-slate-300/60" />
               <div>
                 <p className="text-[10px] font-bold tracking-[0.28em] uppercase text-blue-500/70">
                   KynexOne
@@ -205,59 +198,42 @@ export function LoginPage() {
               </div>
             </div>
 
-            <div className="relative z-10 max-w-[640px] space-y-4 lg:pb-4">
-              <div className="inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-white/75 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 shadow-sm backdrop-blur">
+            <div className="relative z-10 max-w-[560px] space-y-3 lg:pb-3">
+              <div className="inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-white/78 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 shadow-sm backdrop-blur">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 Secure workspace access
               </div>
               <div>
-                <h1 className="max-w-[560px] text-[44px] font-black leading-[1.04] tracking-tight text-slate-950 xl:text-[52px]">
-                  Workforce operations,<br className="hidden sm:block" />
+                <h1 className="max-w-[540px] text-[38px] font-black leading-[1.03] tracking-tight text-slate-950 xl:text-[45px]">
+                  Workforce operations,<br />
                   brought into one place.
                 </h1>
-                <p className="mt-3 max-w-[520px] text-[15px] leading-relaxed text-slate-600">
+                <p className="mt-2 max-w-[500px] text-[14px] leading-relaxed text-slate-600">
                   Attendance, leave, payroll, approvals, and compliance in a tenant-isolated workspace with production-grade controls.
                 </p>
               </div>
 
-              <div className="rounded-[26px] border border-slate-200/80 bg-white/72 p-3 shadow-[0_14px_34px_rgba(37,99,235,0.08)] backdrop-blur-xl">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-400">Operational flow</p>
-                    <p className="mt-1 text-[13px] font-semibold text-slate-700">From clock-in to closeout</p>
-                  </div>
-                  <div className="hidden items-center gap-2 rounded-full border border-emerald-500/15 bg-emerald-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-600 sm:flex">
-                    <div className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                    Active
-                  </div>
-                </div>
-                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                  {WORKFLOW_STEPS.map((step, index) => (
-                    <div
-                      key={step.title}
-                      className="rounded-2xl border border-slate-200/80 bg-white/80 px-3 py-3"
-                      style={{ animationDelay: `${index * 0.12}s` }}
-                    >
-                      <div className="mb-2 flex items-center gap-2">
-                        <span className="h-2.5 w-2.5 rounded-full bg-gradient-to-br from-cyan-300 to-blue-500" />
-                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-700">
-                          {step.title}
-                        </span>
-                      </div>
-                      <p className="text-[12px] leading-snug text-slate-500">{step.detail}</p>
-                    </div>
-                  ))}
-                </div>
-                <div className="kx-line mt-4 h-px w-full bg-[linear-gradient(90deg,transparent,rgba(94,235,255,0.9),rgba(47,107,255,0.95),transparent)]" />
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-2 sm:grid-cols-3">
                 {TRUST_POINTS.map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-white/80 bg-white/75 px-4 py-3 shadow-[0_10px_28px_rgba(37,99,235,0.07)] backdrop-blur-xl">
+                  <div key={item.label} className="rounded-2xl border border-white/80 bg-white/78 px-4 py-3 shadow-[0_10px_20px_rgba(37,99,235,0.05)] backdrop-blur-xl">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{item.label}</p>
-                    <p className="mt-2 text-[13px] leading-snug text-slate-700">{item.value}</p>
+                    <p className="mt-1.5 text-[12px] leading-snug text-slate-700">{item.value}</p>
                   </div>
                 ))}
+              </div>
+
+              <div className="rounded-[24px] border border-slate-200/80 bg-white/72 p-3 shadow-[0_14px_28px_rgba(37,99,235,0.06)] backdrop-blur-xl">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Core controls</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {WORKFORCE_SIGNALS.map((signal) => (
+                    <span
+                      key={signal}
+                      className="rounded-full border border-slate-200/80 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600"
+                    >
+                      {signal}
+                    </span>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -266,18 +242,18 @@ export function LoginPage() {
             </p>
           </section>
 
-          <section className="relative flex min-h-[58svh] items-stretch justify-center px-4 py-4 sm:px-6 sm:py-6 lg:min-h-[100svh] lg:px-8 lg:py-4">
-            <div className="pointer-events-none absolute -left-8 top-6 h-44 w-44 rounded-full border border-white/30 bg-white/40 blur-3xl dark:border-white/10 dark:bg-white/5" />
-            <div className="pointer-events-none absolute right-2 top-2 h-20 w-20 rounded-full border border-cyan-300/20 bg-cyan-300/10 blur-2xl dark:bg-cyan-500/10" />
+          <section className="relative flex min-h-[66svh] items-stretch justify-center px-3 py-3 sm:px-5 sm:py-5 lg:min-h-[100svh] lg:px-6 lg:py-4">
+            <div className="pointer-events-none absolute -left-8 top-6 h-40 w-40 rounded-full border border-white/30 bg-white/40 blur-3xl dark:border-white/10 dark:bg-white/5" />
+            <div className="pointer-events-none absolute right-2 top-2 h-16 w-16 rounded-full border border-cyan-300/20 bg-cyan-300/10 blur-2xl dark:bg-cyan-500/10" />
 
-            <div className="relative z-10 flex w-full max-w-[620px] items-stretch">
-              <div className="relative flex min-h-full w-full flex-col rounded-[34px] border border-white/85 bg-[rgba(250,252,255,0.56)] p-[1px] shadow-[0_30px_120px_rgba(37,99,235,0.12),0_0_0_1px_rgba(255,255,255,0.72)] backdrop-blur-3xl dark:border-white/[0.10] dark:bg-white/[0.04] dark:shadow-[0_30px_120px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)] kx-panel-in">
-              <div className="relative flex min-h-full flex-1 flex-col overflow-hidden rounded-[33px] bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(247,249,255,0.48))] px-6 py-6 sm:px-10 sm:py-10 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.94),rgba(7,12,24,0.90))]">
+            <div className="relative z-10 flex w-full max-w-[560px] items-stretch">
+              <div className="relative flex min-h-full w-full flex-col rounded-[30px] border border-white/85 bg-[rgba(250,252,255,0.56)] p-[1px] shadow-[0_24px_80px_rgba(37,99,235,0.12),0_0_0_1px_rgba(255,255,255,0.72)] backdrop-blur-3xl dark:border-white/[0.10] dark:bg-white/[0.04] dark:shadow-[0_24px_80px_rgba(0,0,0,0.52),0_0_0_1px_rgba(255,255,255,0.04)] kx-panel-in">
+              <div className="relative flex min-h-full flex-1 flex-col overflow-hidden rounded-[29px] bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(247,249,255,0.48))] px-5 py-5 sm:px-8 sm:py-8 dark:bg-[linear-gradient(180deg,rgba(9,16,32,0.94),rgba(7,12,24,0.90))]">
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(255,255,255,0.88),transparent_34%),linear-gradient(135deg,rgba(47,107,255,0.08),transparent_42%,rgba(94,235,255,0.05))]" />
                 <div className="pointer-events-none absolute inset-y-0 left-0 w-20 bg-gradient-to-r from-white/30 to-transparent dark:from-white/[0.04] kx-sheen" />
 
                 <div className="relative flex flex-1 flex-col">
-                  <div className="mb-6 flex items-center justify-between gap-3">
+                  <div className="mb-5 flex items-center justify-between gap-3">
                     <div className="inline-flex items-center gap-2 rounded-full border border-blue-500/15 bg-blue-500/8 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 dark:border-sapphire/25 dark:bg-sapphire/10 dark:text-cyanAccent">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                       KynexOne secure access
@@ -287,10 +263,10 @@ export function LoginPage() {
                     </div>
                   </div>
 
-                  <h2 className="mb-2 text-[34px] font-black tracking-tight text-slate-950 dark:text-white sm:text-[38px]">
+                  <h2 className="mb-2 text-[30px] font-black tracking-tight text-slate-950 dark:text-white sm:text-[34px]">
                     Access your workspace
                   </h2>
-                  <p className="mb-8 max-w-[340px] text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  <p className="mb-6 max-w-[340px] text-[14px] leading-relaxed text-slate-500 dark:text-slate-400">
                     Use your work email, password, and workspace slug to enter the tenant-bound workspace.
                   </p>
 
@@ -340,7 +316,7 @@ export function LoginPage() {
                           : 'Sign in'}
                       </button>
 
-                      <div className="flex flex-wrap justify-center gap-2 pt-2">
+                      <div className="flex flex-wrap justify-center gap-2 pt-1">
                         {SECURITY_POINTS.map((point) => (
                           <span key={point} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-medium text-slate-400 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-500">
                             {point}
@@ -463,7 +439,7 @@ export function LoginPage() {
                     </form>
                   )}
 
-                  <div className="mt-auto pt-8">
+                  <div className="mt-auto pt-5">
                     <p className="text-center text-[11px] text-slate-500 dark:text-slate-500">
                       By signing in you agree to our{' '}
                       <a href="/privacy" target="_blank" rel="noopener noreferrer"
