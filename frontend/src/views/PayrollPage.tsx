@@ -827,17 +827,27 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   };
 
   const processRun = async (id: string) => {
-    const updated = await payrollApi.processRun(id).catch(() => null);
-    if (updated) {
+    setError('');
+    try {
+      const updated = await payrollApi.processRun(id);
       setRuns(rs => rs.map(r => r.id === id ? updated : r));
       // Re-fetch slips for the processed run so the table matches the new totals.
       if (selectedRunId === id) openSlips(updated);
+    } catch (e) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setError(msg ?? 'Failed to process the payroll run. Check that the company has a country code and a statutory pack configured.');
     }
   };
 
   const lockRun = async (id: string) => {
-    const updated = await payrollApi.lockRun(id).catch(() => null);
-    if (updated) setRuns(rs => rs.map(r => r.id === id ? updated : r));
+    setError('');
+    try {
+      const updated = await payrollApi.lockRun(id);
+      setRuns(rs => rs.map(r => r.id === id ? updated : r));
+    } catch (e) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setError(msg ?? 'Failed to lock the payroll run. Resolve any blocking validation errors first.');
+    }
   };
 
   const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -848,6 +858,13 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
         <p className="text-sm text-slate-500">{total} payroll run{total !== 1 ? 's' : ''}</p>
         <button type="button" className={btn.primary} onClick={() => { setShowCreate(true); setError(''); }}><Plus className="h-4 w-4" /> New Payroll Run</button>
       </div>
+
+      {!showCreate && error && (
+        <div className="flex items-start gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="surface overflow-hidden">
@@ -1225,6 +1242,7 @@ function PayslipsTab() {
   const [generating, setGenerating] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadingBundle, setDownloadingBundle] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
 
@@ -1238,7 +1256,13 @@ function PayslipsTab() {
   const generate = async () => {
     if (!runId) return;
     setGenerating(true);
-    await payrollApi.generatePayslips(runId).catch(() => {});
+    setError('');
+    try {
+      await payrollApi.generatePayslips(runId);
+    } catch (e) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setError(msg ?? 'Failed to generate payslips. The run must be Processed first.');
+    }
     loadPayslips();
     setGenerating(false);
   };
@@ -1273,6 +1297,13 @@ function PayslipsTab() {
           </button>
         )}
       </div>
+
+      {error && (
+        <div className="flex items-start gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
       {payslips.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
@@ -1345,13 +1376,19 @@ function BankWpsTab() {
   const [records, setRecords] = useState<PayrollPaymentRecord[]>([]);
   const [creating, setCreating] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('WPS');
+  const [error, setError] = useState('');
 
   useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
 
   useEffect(() => {
     if (!runId) { setBatches([]); return; }
+    setError('');
     payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
   }, [runId]);
+
+  const selectedRun = runs.find(r => r.id === runId);
+  // Backend (C5 control) only allows payment batches for Locked runs — finance must lock first.
+  const runIsLocked = selectedRun?.status === 'Locked';
 
   const openBatch = (batch: PayrollPaymentBatch) => {
     setSelectedBatch(batch);
@@ -1361,13 +1398,28 @@ function BankWpsTab() {
   const createBatch = async () => {
     if (!runId) return;
     setCreating(true);
-    const batch = await payrollApi.createPaymentBatch(runId, paymentMethod).catch(() => null);
-    if (batch) { setBatches(b => [batch, ...b]); setSelectedBatch(batch); payrollApi.paymentRecords(batch.id).then(setRecords).catch(() => {}); }
-    setCreating(false);
+    setError('');
+    try {
+      const batch = await payrollApi.createPaymentBatch(runId, paymentMethod);
+      setBatches(b => [batch, ...b]);
+      setSelectedBatch(batch);
+      payrollApi.paymentRecords(batch.id).then(setRecords).catch(() => {});
+    } catch (e) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setError(msg ?? 'Could not create payment batch. The payroll run must be Locked first (Approvals tab → Lock Run).');
+    } finally {
+      setCreating(false);
+    }
   };
 
   const generateWps = async (batchId: string) => {
-    await payrollApi.generateWpsFile(batchId).catch(() => alert('WPS generation failed.'));
+    setError('');
+    try {
+      await payrollApi.generateWpsFile(batchId);
+    } catch (e) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setError(msg ?? 'WPS file generation failed.');
+    }
     payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
   };
 
@@ -1383,12 +1435,24 @@ function BankWpsTab() {
             <select aria-label="Payment method" className={`${sel} w-40`} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
               {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m}>{m}</option>)}
             </select>
-            <button type="button" className={btn.primary} onClick={createBatch} disabled={creating}>
+            <button type="button" className={btn.primary} onClick={createBatch} disabled={creating || !runIsLocked}>
               {creating ? 'Creating…' : 'Create Payment Batch'}
             </button>
           </>
         )}
       </div>
+      {runId && !runIsLocked && (
+        <div className="flex items-start gap-2 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>This run is <strong>{selectedRun?.status}</strong>. A payment batch can only be created once the run is <strong>Locked</strong> — finalise it on the Approvals tab (Lock Run) first.</span>
+        </div>
+      )}
+      {error && (
+        <div className="flex items-start gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="surface overflow-hidden">

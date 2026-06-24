@@ -324,8 +324,8 @@ public class OvertimeController : ControllerBase
             : await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
         policy ??= new OvertimePolicy { TenantId = tenantId, HourlyRateBasis = "BasicSalary", StandardMonthlyHours = 240 };
         var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId && x.IsActive).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(ct);
-        var employee = await _db.Employees.AsNoTracking().FirstAsync(x => x.TenantId == tenantId && x.Id == request.EmployeeId, ct);
-        var basic = salary?.BasicSalary ?? employee.Salary ?? 0m;
+        var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.EmployeeId, ct);
+        var basic = salary?.BasicSalary ?? employee?.Salary ?? 0m;
         var gross = salary is null ? basic : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance;
         var rateBase = policy.HourlyRateBasis switch
         {

@@ -399,8 +399,10 @@ export const payrollApi = {
       URL.revokeObjectURL(url);
     }),
 
-  createPaymentBatch: (runId: string, paymentMethod = 'WPS', currency = 'AED') =>
-    client.post<PayrollPaymentBatch>(`/api/payroll/runs/${runId}/payment-batches`, { paymentMethod, currency }).then((r) => r.data),
+  // currency omitted by default so the backend resolves it from the tenant's company currency.
+  // Pass an explicit currency only to override.
+  createPaymentBatch: (runId: string, paymentMethod = 'WPS', currency?: string) =>
+    client.post<PayrollPaymentBatch>(`/api/payroll/runs/${runId}/payment-batches`, { paymentMethod, ...(currency ? { currency } : {}) }).then((r) => r.data),
 
   listPaymentBatches: (runId?: string) =>
     client.get<PayrollPaymentBatch[]>('/api/payroll/payment-batches', { params: runId ? { runId } : undefined }).then((r) => r.data),
