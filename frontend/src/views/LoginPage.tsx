@@ -279,8 +279,8 @@ export function LoginPage() {
             <p className="mt-3 text-[10px] font-medium text-slate-500">{WORKFORCE_BACKGROUND[0].label}</p>
           </div>
         </div>
-        <div className="pointer-events-none absolute right-[7%] top-[24%] hidden xl:block">
-          <div className="rounded-[28px] border border-white/55 bg-white/48 p-3 shadow-[0_18px_50px_rgba(37,99,235,0.08)] backdrop-blur-2xl kx-pan-reverse">
+        <div className="pointer-events-none absolute left-[12%] bottom-[12%] hidden xl:block">
+          <div className="rounded-[28px] border border-white/55 bg-white/45 p-3 shadow-[0_18px_50px_rgba(37,99,235,0.08)] backdrop-blur-2xl kx-pan-reverse">
             <div className="mb-3 flex items-center gap-2">
               <span className="h-2 w-2 rounded-full bg-emerald-400" />
               <p className="text-[9px] font-semibold uppercase tracking-[0.28em] text-cyan-600">Approval pipeline</p>
