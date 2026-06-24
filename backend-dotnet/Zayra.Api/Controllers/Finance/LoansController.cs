@@ -170,7 +170,7 @@ public class LoansController : ControllerBase
             loan.Status = "Active";
             GenerateInstallments(tid, loan);
             await PostGlEntry(tid, uid, loan.Id, loan.LoanNumber, "Loan", "Disbursement",
-                "1400 - Employee Loans Receivable", "1000 - Cash/Bank", loan.ApprovedAmount, "USD", ct);
+                "1400 - Employee Loans Receivable", "1000 - Cash/Bank", loan.ApprovedAmount, null, ct);
         }
 
         await _db.SaveChangesAsync(ct);
@@ -231,7 +231,7 @@ public class LoansController : ControllerBase
                 else loan.RepaymentStartDate = DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(1));
                 GenerateInstallments(tid, loan);
                 await PostGlEntry(tid, uid, loan.Id, loan.LoanNumber, "Loan", "Disbursement",
-                    "1400 - Employee Loans Receivable", "1000 - Cash/Bank", loan.ApprovedAmount, "USD", ct);
+                    "1400 - Employee Loans Receivable", "1000 - Cash/Bank", loan.ApprovedAmount, null, ct);
             }
         }
         loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = uid;
@@ -267,7 +267,7 @@ public class LoansController : ControllerBase
         loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = uid;
 
         await PostGlEntry(tid, uid, loan.Id, loan.LoanNumber, "Loan", "Repayment",
-            "1000 - Cash/Bank", "1400 - Employee Loans Receivable", req.SettlementAmount, "USD", ct);
+            "1000 - Cash/Bank", "1400 - Employee Loans Receivable", req.SettlementAmount, null, ct);
 
         await _db.SaveChangesAsync(ct);
         await WriteLoanAudit(tid, uid, id, "LoanSettled",
@@ -306,7 +306,7 @@ public class LoansController : ControllerBase
         loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = uid;
 
         await PostGlEntry(tid, uid, loan.Id, loan.LoanNumber, "Loan", "Repayment",
-            "1000 - Cash/Bank", "1400 - Employee Loans Receivable", req.AmountPaid, "USD", ct);
+            "1000 - Cash/Bank", "1400 - Employee Loans Receivable", req.AmountPaid, null, ct);
 
         await _db.SaveChangesAsync(ct);
         await WriteLoanAudit(tid, uid, id, "InstallmentPaid", null,
@@ -370,15 +370,18 @@ public class LoansController : ControllerBase
 
     private async Task PostGlEntry(Guid tid, Guid? uid, Guid entityId, string entityRef,
         string module, string eventType, string debitAccount, string creditAccount,
-        decimal amount, string currency, CancellationToken ct)
+        decimal amount, string? currency, CancellationToken ct)
     {
+        var resolvedCurrency = string.IsNullOrWhiteSpace(currency)
+            ? await _db.ResolveTenantCurrencyAsync(tid, ct)
+            : currency;
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         _db.FinanceGlEntries.Add(new FinanceGlEntry
         {
             TenantId = tid, SourceModule = module, SourceEntityId = entityId,
             SourceEntityRef = entityRef, EventType = eventType,
             DebitAccount = debitAccount, CreditAccount = creditAccount,
-            Amount = amount, Currency = currency,
+            Amount = amount, Currency = resolvedCurrency,
             EntryDate = today, Period = today.ToString("yyyy-MM"),
             Description = $"{module} {eventType}: {entityRef}",
             PostedBy = uid, PostedByName = GetUserName(),

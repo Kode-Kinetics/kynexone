@@ -475,13 +475,14 @@ public class BonusesController : ControllerBase
 
         // GL: Bonus Expense Dr / Bonus Payable Cr
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var bonusApprovalCurrency = await _db.ResolveTenantCurrencyAsync(tid, ct);
         _db.FinanceGlEntries.Add(new FinanceGlEntry
         {
             TenantId = tid, SourceModule = "Bonus", SourceEntityId = id,
             SourceEntityRef = batch.BatchNumber, EventType = "BonusApproval",
             DebitAccount = "6100 - Employee Bonus Expense",
             CreditAccount = "2300 - Bonus Payable",
-            Amount = batch.TotalAmount, Currency = "USD",
+            Amount = batch.TotalAmount, Currency = bonusApprovalCurrency,
             EntryDate = today, Period = batch.PaymentPeriod,
             Description = $"Bonus approval: {batch.BatchName} ({batch.BatchNumber})",
             PostedBy = uid, PostedByName = GetUserName(),
@@ -548,6 +549,7 @@ public class BonusesController : ControllerBase
         // payroll-consumed portion is not double-counted in the bonus GL.
         var remainingGlAmount = unpaidBonuses.Sum(b => b.BonusAmount);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var bonusPayCurrency = await _db.ResolveTenantCurrencyAsync(tid, ct);
         if (remainingGlAmount > 0)
             _db.FinanceGlEntries.Add(new FinanceGlEntry
             {
@@ -555,7 +557,7 @@ public class BonusesController : ControllerBase
                 SourceEntityRef = batch.BatchNumber, EventType = "BonusPayment",
                 DebitAccount = "2300 - Bonus Payable",
                 CreditAccount = "1000 - Cash/Bank",
-                Amount = remainingGlAmount, Currency = "USD",
+                Amount = remainingGlAmount, Currency = bonusPayCurrency,
                 EntryDate = today, Period = batch.PaymentPeriod,
                 Description = $"Bonus payment: {batch.BatchName} ({batch.BatchNumber})",
                 PostedBy = uid, PostedByName = GetUserName(),

@@ -173,7 +173,7 @@ public class AdvancesController : ControllerBase
             adv.Status = "Active";
             GenerateAdvanceInstallments(tid, adv, req.RepaymentStartDate);
             await PostGlEntry(tid, uid, adv.Id, adv.AdvanceNumber, "Advance", "Disbursement",
-                "1410 - Employee Salary Advances", "1000 - Cash/Bank", adv.ApprovedAmount, "USD", ct);
+                "1410 - Employee Salary Advances", "1000 - Cash/Bank", adv.ApprovedAmount, null, ct);
         }
 
         _db.SalaryAdvances.Add(adv);
@@ -210,7 +210,7 @@ public class AdvancesController : ControllerBase
         _db.AdvanceApprovals.Add(approval);
 
         await PostGlEntry(tid, uid, adv.Id, adv.AdvanceNumber, "Advance", "Disbursement",
-            "1410 - Employee Salary Advances", "1000 - Cash/Bank", req.ApprovedAmount, "USD", ct);
+            "1410 - Employee Salary Advances", "1000 - Cash/Bank", req.ApprovedAmount, null, ct);
 
         await _db.SaveChangesAsync(ct);
         await WriteAdvanceAudit(tid, uid, id, "AdvanceApproved",
@@ -259,7 +259,7 @@ public class AdvancesController : ControllerBase
         adv.UpdatedAtUtc = DateTime.UtcNow; adv.UpdatedBy = uid;
 
         await PostGlEntry(tid, uid, adv.Id, adv.AdvanceNumber, "Advance", "Repayment",
-            "1000 - Cash/Bank", "1410 - Employee Salary Advances", req.AmountPaid, "USD", ct);
+            "1000 - Cash/Bank", "1410 - Employee Salary Advances", req.AmountPaid, null, ct);
 
         await _db.SaveChangesAsync(ct);
         await WriteAdvanceAudit(tid, uid, id, "InstallmentPaid", null,
@@ -315,15 +315,18 @@ public class AdvancesController : ControllerBase
 
     private async Task PostGlEntry(Guid tid, Guid? uid, Guid entityId, string entityRef,
         string module, string eventType, string debitAccount, string creditAccount,
-        decimal amount, string currency, CancellationToken ct)
+        decimal amount, string? currency, CancellationToken ct)
     {
+        var resolvedCurrency = string.IsNullOrWhiteSpace(currency)
+            ? await _db.ResolveTenantCurrencyAsync(tid, ct)
+            : currency;
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         _db.FinanceGlEntries.Add(new FinanceGlEntry
         {
             TenantId = tid, SourceModule = module, SourceEntityId = entityId,
             SourceEntityRef = entityRef, EventType = eventType,
             DebitAccount = debitAccount, CreditAccount = creditAccount,
-            Amount = amount, Currency = currency,
+            Amount = amount, Currency = resolvedCurrency,
             EntryDate = today, Period = today.ToString("yyyy-MM"),
             Description = $"{module} {eventType}: {entityRef}",
             PostedBy = uid, PostedByName = GetUserName(),

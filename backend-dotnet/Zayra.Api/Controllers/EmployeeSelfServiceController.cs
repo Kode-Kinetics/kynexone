@@ -74,7 +74,7 @@ public class EmployeeSelfServiceController : ControllerBase
                     .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.IsActive)
                     .OrderByDescending(x => x.EffectiveDate)
                     .FirstOrDefaultAsync(cancellationToken);
-                var currency = salary?.Currency ?? "AED";
+                var currency = !string.IsNullOrWhiteSpace(salary?.Currency) ? salary.Currency : await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
                 var period = run is not null
                     ? new DateTime(run.Year, run.Month, 1).ToString("MMM yyyy")
                     : string.Empty;
@@ -256,6 +256,11 @@ public class EmployeeSelfServiceController : ControllerBase
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == slip.RunId, cancellationToken);
         var employee = await _db.Employees.AsNoTracking().Select(e => new { e.Id, e.Designation }).FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken);
         var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
+        var slipCurrency = await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.EmployeeId == employeeId)
+            .Select(p => p.SalaryCurrency)
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
 
         var data = new PayslipData(
             PayslipNumber: payslip?.PayslipNumber ?? $"PS-{slip.EmployeeCode}",
@@ -265,7 +270,7 @@ public class EmployeeSelfServiceController : ControllerBase
             Designation: employee?.Designation ?? string.Empty,
             PayYear: run?.Year ?? DateTime.UtcNow.Year,
             PayMonth: run?.Month ?? DateTime.UtcNow.Month,
-            Currency: "USD",
+            Currency: slipCurrency,
             Items: items,
             CompanyName: tenant?.Name ?? "KynexOne Technologies"
         );

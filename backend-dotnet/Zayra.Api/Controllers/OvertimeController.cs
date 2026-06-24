@@ -339,7 +339,8 @@ public class OvertimeController : ControllerBase
         if (multiplier <= 0) multiplier = dayCategory == "PublicHoliday" ? 2m : dayCategory == "Weekend" ? 1.5m : 1.25m;
         var approvedHours = Math.Round(request.ApprovedMinutes / 60m, 2);
         var amount = Math.Round(approvedHours * hourlyRate * multiplier, 2);
-        return new OvertimeCalculation { TenantId = tenantId, OvertimeRequestId = request.Id, EmployeeId = request.EmployeeId, ApprovedHours = approvedHours, HourlyRate = hourlyRate, Multiplier = multiplier, Amount = amount, Currency = salary?.Currency ?? "USD", CalculationJson = $"{{\"dayCategory\":\"{dayCategory}\",\"basis\":\"{policy.HourlyRateBasis}\"}}" };
+        var currency = !string.IsNullOrWhiteSpace(salary?.Currency) ? salary.Currency : await _db.ResolveTenantCurrencyAsync(tenantId, ct);
+        return new OvertimeCalculation { TenantId = tenantId, OvertimeRequestId = request.Id, EmployeeId = request.EmployeeId, ApprovedHours = approvedHours, HourlyRate = hourlyRate, Multiplier = multiplier, Amount = amount, Currency = currency, CalculationJson = $"{{\"dayCategory\":\"{dayCategory}\",\"basis\":\"{policy.HourlyRateBasis}\"}}" };
     }
 
     private Task<bool> IsPublicHoliday(Guid tenantId, DateOnly date, CancellationToken ct) =>

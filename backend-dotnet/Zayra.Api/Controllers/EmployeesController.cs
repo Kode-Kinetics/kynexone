@@ -1145,6 +1145,9 @@ public class EmployeesController : ControllerBase
         if (employee is null) return NotFound();
         var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
         var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.IsActive).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(cancellationToken);
+        var apptCurrency = !string.IsNullOrWhiteSpace(salary?.Currency)
+            ? salary.Currency
+            : await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
         var data = new LetterData(
             EmployeeName: employee.FullName,
             EmployeeCode: employee.EmployeeCode,
@@ -1153,7 +1156,7 @@ public class EmployeesController : ControllerBase
             JoiningDate: employee.JoiningDate,
             LeavingDate: null,
             BasicSalary: salary?.BasicSalary ?? employee.Salary ?? 0m,
-            Currency: "USD",
+            Currency: apptCurrency,
             CompanyName: tenant?.Name ?? "KynexOne Technologies",
             IssuedBy: "HR Department",
             IssuedDate: DateTime.UtcNow
@@ -1172,6 +1175,9 @@ public class EmployeesController : ControllerBase
         if (employee is null) return NotFound();
         var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
         var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.IsActive).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(cancellationToken);
+        var expCurrency = !string.IsNullOrWhiteSpace(salary?.Currency)
+            ? salary.Currency
+            : await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
         var data = new LetterData(
             EmployeeName: employee.FullName,
             EmployeeCode: employee.EmployeeCode,
@@ -1180,7 +1186,7 @@ public class EmployeesController : ControllerBase
             JoiningDate: employee.JoiningDate,
             LeavingDate: employee.ContractEndDate.HasValue ? employee.ContractEndDate.Value.ToDateTime(TimeOnly.MinValue) : null,
             BasicSalary: salary?.BasicSalary ?? employee.Salary ?? 0m,
-            Currency: "USD",
+            Currency: expCurrency,
             CompanyName: tenant?.Name ?? "KynexOne Technologies",
             IssuedBy: "HR Department",
             IssuedDate: DateTime.UtcNow

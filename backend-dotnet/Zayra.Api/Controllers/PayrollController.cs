@@ -2041,25 +2041,8 @@ public class PayrollController : ControllerBase
         });
     }
 
-    /// <summary>
-    /// Resolves the tenant's payroll currency.
-    /// Priority: Company.DefaultCurrency → TenantLocalizationSetting.CurrencyCode → "USD"
-    /// </summary>
-    private async Task<string> ResolveCurrencyAsync(Guid tenantId, CancellationToken ct)
-    {
-        var company = await _db.Companies.AsNoTracking()
-            .Where(c => c.TenantId == tenantId)
-            .OrderByDescending(c => c.IsActive)
-            .Select(c => c.DefaultCurrency)
-            .FirstOrDefaultAsync(ct);
-        if (!string.IsNullOrWhiteSpace(company)) return company;
-
-        var loc = await _db.TenantLocalizationSettings.AsNoTracking()
-            .Where(l => l.TenantId == tenantId)
-            .Select(l => l.CurrencyCode)
-            .FirstOrDefaultAsync(ct);
-        return string.IsNullOrWhiteSpace(loc) ? "USD" : loc;
-    }
+    private Task<string> ResolveCurrencyAsync(Guid tenantId, CancellationToken ct)
+        => _db.ResolveTenantCurrencyAsync(tenantId, ct);
 
     // ── Payroll Command Center ────────────────────────────────────────────────────
 
