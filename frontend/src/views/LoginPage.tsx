@@ -21,6 +21,12 @@ const TRUST_POINTS = [
   { label: 'Finance', value: 'Cleaner payroll, stronger control' },
 ];
 
+const OUTCOME_POINTS = [
+  { value: '1 workspace', label: 'for people, payroll, and approvals' },
+  { value: 'Less friction', label: 'for managers and employees' },
+  { value: 'Built in control', label: 'with audit-ready access' },
+];
+
 const WORKFORCE_SIGNALS = [
   'No spreadsheet sprawl',
   'One source of truth',
@@ -350,6 +356,18 @@ export function LoginPage() {
                 </div>
 
                 <div className="grid gap-2 sm:grid-cols-3">
+                  {OUTCOME_POINTS.map((item, index) => (
+                    <div
+                      key={item.value}
+                      className={`rounded-2xl border border-blue-100/80 bg-white/76 px-4 py-3 shadow-[0_12px_24px_rgba(37,99,235,0.05)] backdrop-blur-xl kx-drift-soft ${index === 1 ? 'kx-delay-1' : ''} ${index === 2 ? 'kx-delay-2' : ''}`}
+                    >
+                      <p className="text-[17px] font-black tracking-tight text-slate-950">{item.value}</p>
+                      <p className="mt-1 text-[11px] leading-snug text-slate-500">{item.label}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-3">
                   {TRUST_POINTS.map((item, index) => (
                     <div
                       key={item.label}
@@ -377,9 +395,9 @@ export function LoginPage() {
 
                 <div className="rounded-[24px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.84),rgba(244,248,255,0.72))] p-3 shadow-[0_14px_26px_rgba(37,99,235,0.05)] backdrop-blur-xl">
                   <div className="flex items-center justify-between gap-3">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Operational flow</p>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">What this solves</p>
                     <span className="kx-pop rounded-full border border-cyan-200/80 bg-cyan-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-600">
-                      Simple
+                      Fast
                     </span>
                   </div>
                   <div className="kx-flow mt-3 flex items-center gap-2">
