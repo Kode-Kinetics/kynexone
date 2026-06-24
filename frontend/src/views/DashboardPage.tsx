@@ -536,7 +536,7 @@ export function DashboardPage() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="mx-auto flex max-w-[1600px] flex-col gap-5 px-1" aria-label="Workforce Command Center">
+    <div className="flex w-full min-w-0 flex-col gap-4" aria-label="Workforce Command Center">
 
       {/* ── Command header ─────────────────────────────────────────────────── */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -599,7 +599,7 @@ export function DashboardPage() {
           CSS grid auto-fit fills full width with no dead gaps. */}
       <section aria-label="Key metrics">
         <SLabel label="Key Metrics" icon={Activity} />
-        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-[repeat(7,1fr)]">
+        <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(170px,1fr))]">
           {kpiDefs.map((kpi) => (
             <KpiCard key={kpi.label} kpi={kpi} loading={loading} router={router} />
           ))}
@@ -610,7 +610,7 @@ export function DashboardPage() {
       {(!loading && kpis) && (
         <section aria-label="Operations queue">
           <SLabel label="Operations Queue" icon={Zap} />
-          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+          <div className="mt-3 grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
             {([
               { label: 'Pending Leave',    value: kpis.pendingLeaveRequests,        tone: 'amber' as const, to: '/leave'      },
               { label: 'Att. Corrections', value: kpis.pendingAttendanceCorrections, tone: 'amber' as const, to: '/attendance' },
@@ -658,17 +658,17 @@ export function DashboardPage() {
       {loading && (
         <section aria-hidden>
           <SLabel label="Operations Queue" icon={Zap} />
-          <div className="mt-3 grid grid-cols-3 gap-2 xl:grid-cols-6">
+          <div className="mt-3 grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
             {Array.from({ length: 6 }).map((_, i) => <Skel key={i} className="h-[88px] rounded-xl" />)}
           </div>
         </section>
       )}
 
       {/* ── Main canvas: 8-col + 4-col right rail ─────────────────────────── */}
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
 
         {/* ── Left: main canvas (8 cols) ─────────────────────────────────── */}
-        <div className="flex flex-col gap-5 xl:col-span-8">
+        <div className="flex min-w-0 flex-col gap-4 xl:col-span-8">
 
           {/* Action Queue */}
           <section aria-label="Approval queue">
@@ -839,7 +839,7 @@ export function DashboardPage() {
         </div>
 
         {/* ── Right rail (4 cols, persistent on xl) ─────────────────────── */}
-        <aside className="flex flex-col gap-4 xl:col-span-4" aria-label="Right panel">
+        <aside className="flex min-w-0 flex-col gap-4 xl:col-span-4" aria-label="Right panel">
 
           {/* Activity feed */}
           <Card title="Live Activity" titleRight={
