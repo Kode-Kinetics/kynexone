@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
@@ -15,7 +16,8 @@ public class OffersController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly ILetterService _letters;
-    public OffersController(ZayraDbContext db, ILetterService letters) { _db = db; _letters = letters; }
+    private readonly IRecruitmentService _svc;
+    public OffersController(ZayraDbContext db, ILetterService letters, IRecruitmentService svc) { _db = db; _letters = letters; _svc = svc; }
 
     private Guid GetTenantId() =>
         Guid.TryParse(User.FindFirst("tenant_id")?.Value, out var id) ? id : Guid.Empty;
@@ -148,17 +150,24 @@ public class OffersController : ControllerBase
         offer.Status = "Accepted";
         offer.AcceptedAtUtc = DateTime.UtcNow;
 
-        // Advance application to Hired
+        // Advance application to Hired and fill the opening seat.
         var app = await _db.JobApplications.FirstOrDefaultAsync(x => x.Id == offer.ApplicationId && x.TenantId == tid, ct);
         if (app != null)
         {
-            app.Stage = "Hired"; app.StageOrder = 6; app.Status = "Active"; app.HiredAtUtc = DateTime.UtcNow;
+            app.Stage = "Hired"; app.StageOrder = 6; app.Status = "Hired"; app.HiredAtUtc = DateTime.UtcNow;
             _db.ApplicationEvents.Add(new ApplicationEvent
             {
                 TenantId = tid, ApplicationId = app.Id, EventType = "OfferAccepted",
                 Stage = "Hired", Notes = "Candidate accepted offer — Hired",
                 PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
             });
+
+            var opening = await _db.JobOpenings.FirstOrDefaultAsync(j => j.Id == app.JobOpeningId && j.TenantId == tid, ct);
+            if (opening is not null)
+            {
+                opening.FilledCount++;
+                if (opening.FilledCount >= opening.HeadCount) opening.Status = "Closed";
+            }
         }
 
         _db.RecruitmentAuditLogs.Add(new RecruitmentAuditLog
@@ -167,8 +176,20 @@ public class OffersController : ControllerBase
             Action = "Accepted", PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
         });
 
+        // Trigger onboarding: convert the accepted offer into an employee draft. Without this
+        // the Offers-tab accept path marked the candidate Hired but never created the employee /
+        // started onboarding (only the application-drawer accept path did the conversion).
+        // Guard against double-conversion (ConvertToEmployeeDraftAsync is not idempotent):
+        // only convert when this application hasn't already been linked to a draft.
+        Guid? draftId = app?.OnboardingDraftId;
+        if (app is not null && app.OnboardingDraftId is null)
+        {
+            draftId = await _svc.ConvertToEmployeeDraftAsync(tid, id, GetUserId() ?? Guid.Empty, ct);
+            if (draftId.HasValue) app.OnboardingDraftId = draftId;
+        }
+
         await _db.SaveChangesAsync(ct);
-        return Ok(offer);
+        return Ok(new { offer, onboardingDraftId = draftId });
     }
 
     // PATCH /api/recruitment/offers/{id}/decline
