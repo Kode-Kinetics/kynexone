@@ -33,6 +33,8 @@ import type { DashboardFull, ActivityFeedItem } from '../api/dashboard';
 import { aiAssistantApi } from '../api/intelligence';
 import type { AIInsight } from '../api/intelligence';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { CalendarDays, Moon, Clock3 } from 'lucide-react';
 
 // ── Chart imports (SSR-safe) ──────────────────────────────────────────────────
 
@@ -365,12 +367,68 @@ function FeedItem({ item }: { item: ActivityFeedItem }) {
 
 // ── Section label ─────────────────────────────────────────────────────────────
 
-function SLabel({ label, icon: Icon }: { label: string; icon?: React.ElementType }) {
+function SLabel({ label, icon: Icon, right }: { label: string; icon?: React.ElementType; right?: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2 py-1">
       {Icon && <Icon className="h-3.5 w-3.5 text-slate-400 dark:text-slate-600" aria-hidden />}
       <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-600">{label}</span>
       <div className="flex-1 border-t border-slate-100 dark:border-white/[0.06]" />
+      {right}
+    </div>
+  );
+}
+
+// ── Calendar-aware date + live clock ────────────────────────────────────────────
+// Driven by the tenant's localisation settings: shows the Gregorian or Hijri date
+// per `calendarSystem`, and BOTH side-by-side when `hijriDatesEnabled` is on.
+
+function CalendarDate() {
+  const { calendarSystem, hijriDatesEnabled, defaultTimezone } = useTenantSettings();
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const tz = defaultTimezone || undefined;
+  const safe = (fn: () => string): string | null => { try { return fn(); } catch { return null; } };
+  const weekday = safe(() => new Intl.DateTimeFormat('en-GB', { weekday: 'long', timeZone: tz }).format(now)) ?? '';
+  const dateIn = (cal?: string) =>
+    safe(() => new Intl.DateTimeFormat(cal ? `en-GB-u-ca-${cal}` : 'en-GB',
+      { day: 'numeric', month: 'long', year: 'numeric', timeZone: tz }).format(now));
+  const greg = dateIn();
+  const hijri = dateIn('islamic-umalqura');
+  const time = safe(() => new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: tz }).format(now)) ?? '';
+
+  const wantHijri = calendarSystem === 'Hijri';
+  const showBoth = !!hijriDatesEnabled && !!hijri && !!greg;
+  const primary = wantHijri && hijri ? `${hijri} AH` : greg;
+  const secondary = showBoth ? (wantHijri ? greg : `${hijri} AH`) : null;
+  const PrimaryIcon = wantHijri ? Moon : CalendarDays;
+
+  return (
+    <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white sm:text-[26px]">{weekday}</h1>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+        <span className="inline-flex items-center gap-1.5 font-semibold text-slate-700 dark:text-slate-200">
+          <PrimaryIcon className="h-3.5 w-3.5 text-slate-400" aria-hidden />
+          {primary}
+        </span>
+        {secondary && (
+          <>
+            <span className="text-slate-300 dark:text-slate-600" aria-hidden>•</span>
+            <span className="inline-flex items-center gap-1.5 font-medium text-slate-500 dark:text-slate-400">
+              {wantHijri ? <CalendarDays className="h-3.5 w-3.5 text-slate-400" aria-hidden /> : <Moon className="h-3.5 w-3.5 text-slate-400" aria-hidden />}
+              {secondary}
+            </span>
+          </>
+        )}
+        <span className="text-slate-300 dark:text-slate-600" aria-hidden>•</span>
+        <span className="inline-flex items-center gap-1.5 font-mono font-semibold text-slate-600 dark:text-slate-300">
+          <Clock3 className="h-3.5 w-3.5 text-slate-400" aria-hidden />
+          {time}
+        </span>
+      </div>
     </div>
   );
 }
@@ -547,15 +605,10 @@ export function DashboardPage() {
               <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
             </span>
             <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400">Live</span>
+            <span className="text-slate-300 dark:text-slate-600" aria-hidden>·</span>
+            <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-400 dark:text-slate-500">Workforce Command Center</span>
           </div>
-          <h1 className="mt-1 text-xl font-extrabold tracking-tight text-slate-900 dark:text-white sm:text-2xl">
-            Workforce Command Center
-          </h1>
-          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-            {loading
-              ? 'Loading live data…'
-              : `${(s?.activeEmployees ?? 0).toLocaleString()} active · ${attendanceRate}% present${payroll ? ` · ${payroll.periodLabel} net ${fmtMoney(payroll.totalNet)}` : ''}`}
-          </p>
+          <CalendarDate />
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button
@@ -606,60 +659,66 @@ export function DashboardPage() {
         </div>
       </section>
 
-      {/* ── Ops queue strip ───────────────────────────────────────────────── */}
-      {(!loading && kpis) && (
-        <section aria-label="Operations queue">
-          <SLabel label="Operations Queue" icon={Zap} />
-          <div className="mt-3 grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
-            {([
-              { label: 'Pending Leave',    value: kpis.pendingLeaveRequests,        tone: 'amber' as const, to: '/leave'      },
-              { label: 'Att. Corrections', value: kpis.pendingAttendanceCorrections, tone: 'amber' as const, to: '/attendance' },
-              { label: 'Att. Exceptions',  value: kpis.attendanceExceptions,         tone: 'rose'  as const, to: '/attendance' },
-              { label: 'Expiring Docs',    value: kpis.expiringDocuments,            tone: 'amber' as const, to: '/compliance' },
-              { label: 'Expired Docs',     value: kpis.expiredDocuments,             tone: 'rose'  as const, to: '/compliance' },
-              { label: 'Missing Docs',     value: kpis.missingDocuments,             tone: kpis.missingDocuments > 0 ? 'rose' as const : 'green' as const, to: '/compliance' },
-            ] satisfies { label: string; value: number; tone: KpiTone; to: string }[]).map(({ label, value, tone, to }) => {
-              const DOT: Record<KpiTone, string> = { rose: 'bg-rose-500', amber: 'bg-amber-500', green: 'bg-emerald-500', blue: 'bg-blue-500', cyan: 'bg-cyan-500', neutral: 'bg-slate-400' };
-              const NUM: Record<KpiTone, string> = {
-                rose:    value > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-white',
-                amber:   value > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-900 dark:text-white',
-                green:   'text-emerald-600 dark:text-emerald-400',
-                blue:    'text-blue-600', cyan: 'text-cyan-600', neutral: 'text-slate-900 dark:text-white',
-              };
-              const BDR: Record<KpiTone, string> = {
-                rose:    value > 0 ? 'border-rose-500/30'   : 'border-slate-200 dark:border-white/[0.08]',
-                amber:   value > 0 ? 'border-amber-500/30'  : 'border-slate-200 dark:border-white/[0.08]',
-                green:   'border-emerald-500/30',
-                blue:    'border-blue-500/20', cyan: 'border-cyan-500/20', neutral: 'border-slate-200 dark:border-white/[0.08]',
-              };
-              return (
-                <button
-                  key={label}
-                  type="button"
-                  onClick={() => router.push(to)}
-                  className={`group flex flex-col gap-1.5 rounded-xl border bg-white px-3 py-3 text-left transition hover:shadow-md dark:bg-white/[0.03] ${BDR[tone]}`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span className={`h-1.5 w-1.5 rounded-full ${value > 0 ? DOT[tone] : 'bg-slate-300 dark:bg-slate-700'}`} />
-                    <span className="text-[10px] font-bold uppercase tracking-[0.10em] text-slate-500">{label}</span>
-                  </div>
-                  <span className={`font-mono text-2xl font-extrabold leading-none ${NUM[tone]}`}>
-                    {value.toLocaleString()}
-                  </span>
-                  <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400 opacity-0 transition-opacity group-hover:opacity-100">
-                    View <ChevronRight className="h-3 w-3" />
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-      )}
+      {/* ── Action Center ─────────────────────────────────────────────────────
+          Replaces the old "Operations Queue" grid of boxes with a compact,
+          severity-prioritised chip rail: items needing action surface first and in
+          colour; cleared items collapse to muted "0" chips. Wraps to fill the row,
+          so it costs ~1 row of height instead of a 6-card grid. */}
+      {(!loading && kpis) && (() => {
+        const ops = [
+          { label: 'Pending Leave',          value: kpis.pendingLeaveRequests,         tone: 'amber' as const, to: '/leave'      },
+          { label: 'Attendance Corrections', value: kpis.pendingAttendanceCorrections, tone: 'amber' as const, to: '/attendance' },
+          { label: 'Attendance Exceptions',  value: kpis.attendanceExceptions,         tone: 'rose'  as const, to: '/attendance' },
+          { label: 'Expiring Documents',     value: kpis.expiringDocuments,            tone: 'amber' as const, to: '/compliance' },
+          { label: 'Expired Documents',      value: kpis.expiredDocuments,             tone: 'rose'  as const, to: '/compliance' },
+          { label: 'Missing Documents',      value: kpis.missingDocuments,             tone: 'rose'  as const, to: '/compliance' },
+        ];
+        const sevRank = (t: 'rose' | 'amber') => (t === 'rose' ? 0 : 1);
+        const sorted = [...ops].sort((a, b) =>
+          (b.value > 0 ? 1 : 0) - (a.value > 0 ? 1 : 0) || sevRank(a.tone) - sevRank(b.tone) || b.value - a.value);
+        const openCount = ops.reduce((n, o) => n + (o.value > 0 ? 1 : 0), 0);
+        return (
+          <section aria-label="Action center">
+            <SLabel label="Action Center" icon={Zap} right={
+              <span className={`text-[10px] font-bold uppercase tracking-wide ${openCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                {openCount > 0 ? `${openCount} need${openCount === 1 ? 's' : ''} action` : 'All clear'}
+              </span>
+            } />
+            <div className="mt-3 flex flex-wrap gap-2">
+              {sorted.map(({ label, value, tone, to }) => {
+                const active = value > 0;
+                const chip = active
+                  ? (tone === 'rose'
+                      ? 'border-rose-300/70 bg-rose-50 text-rose-700 hover:bg-rose-100 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300'
+                      : 'border-amber-300/70 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300')
+                  : 'border-slate-200 bg-white text-slate-400 hover:bg-slate-50 dark:border-white/[0.08] dark:bg-white/[0.02] dark:text-slate-500';
+                const badge = active
+                  ? (tone === 'rose' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white')
+                  : 'bg-slate-100 text-slate-400 dark:bg-white/[0.06]';
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => router.push(to)}
+                    className={`group inline-flex items-center gap-2 rounded-xl border px-2.5 py-1.5 text-sm font-medium transition hover:shadow-sm ${chip}`}
+                  >
+                    <span className={`grid h-6 min-w-[1.5rem] place-items-center rounded-lg px-1.5 font-mono text-xs font-extrabold tabular-nums ${badge}`}>
+                      {value.toLocaleString()}
+                    </span>
+                    <span>{label}</span>
+                    <ChevronRight className="h-3.5 w-3.5 opacity-40 transition group-hover:translate-x-0.5 group-hover:opacity-90" />
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })()}
       {loading && (
         <section aria-hidden>
-          <SLabel label="Operations Queue" icon={Zap} />
-          <div className="mt-3 grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
-            {Array.from({ length: 6 }).map((_, i) => <Skel key={i} className="h-[88px] rounded-xl" />)}
+          <SLabel label="Action Center" icon={Zap} />
+          <div className="mt-3 flex flex-wrap gap-2">
+            {Array.from({ length: 6 }).map((_, i) => <Skel key={i} className="h-9 w-40 rounded-xl" />)}
           </div>
         </section>
       )}
@@ -713,7 +772,7 @@ export function DashboardPage() {
               type="button"
               onClick={() => setAnalyticsOpen((v) => !v)}
               className="flex w-full items-center gap-2 py-1"
-              aria-expanded={analyticsOpen ? 'true' : 'false'}
+              aria-expanded={analyticsOpen}
             >
               <Activity className="h-3.5 w-3.5 text-slate-400 dark:text-slate-600" aria-hidden />
               <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-600">Analytics</span>
