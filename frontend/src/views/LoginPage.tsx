@@ -183,67 +183,68 @@ export function LoginPage() {
         <div className="pointer-events-none absolute left-0 top-1/4 h-72 w-72 rounded-full bg-blue-300/25 blur-3xl dark:bg-blue-700/12 kx-float" />
         <div className="pointer-events-none absolute bottom-[-4rem] right-[-5rem] h-80 w-80 rounded-full bg-cyan-300/18 blur-3xl dark:bg-cyan-600/10 kx-float" />
 
-        <div className="relative z-10 grid min-h-[100svh] w-full lg:grid-cols-[1.08fr_0.92fr]">
-          <section className="relative flex min-h-[42svh] flex-col justify-between overflow-hidden bg-[linear-gradient(160deg,#06101d_0%,#07172c_48%,#09101c_100%)] px-6 py-6 text-white sm:px-10 sm:py-8 lg:min-h-[100svh] lg:px-12 lg:py-10">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(47,107,255,0.32),transparent_26%),radial-gradient(circle_at_88%_14%,rgba(94,235,255,0.18),transparent_18%),radial-gradient(circle_at_50%_100%,rgba(56,189,248,0.14),transparent_22%)]" />
-            <div className="pointer-events-none absolute inset-0 opacity-[0.18] [background-image:linear-gradient(rgba(255,255,255,0.09)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.09)_1px,transparent_1px)] [background-size:72px_72px]" />
-            <div className="pointer-events-none absolute -right-10 top-10 h-36 w-36 rounded-full border border-cyan-300/20 bg-cyan-300/8 blur-2xl kx-orbit" />
-            <div className="pointer-events-none absolute -left-12 bottom-20 h-44 w-44 rounded-full bg-blue-500/10 blur-3xl kx-glow" />
+        <div className="relative z-10 grid min-h-[100svh] w-full lg:grid-cols-[1.06fr_0.94fr]">
+          <section className="relative flex min-h-[42svh] flex-col justify-between overflow-hidden bg-[linear-gradient(160deg,#f8fbff_0%,#eef5ff_48%,#e5efff_100%)] px-6 py-5 text-slate-900 sm:px-10 sm:py-6 lg:min-h-[100svh] lg:px-12 lg:py-8">
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(47,107,255,0.18),transparent_26%),radial-gradient(circle_at_88%_14%,rgba(94,235,255,0.12),transparent_18%),radial-gradient(circle_at_50%_100%,rgba(56,189,248,0.10),transparent_22%)]" />
+            <div className="pointer-events-none absolute inset-0 opacity-[0.16] [background-image:linear-gradient(rgba(47,107,255,0.07)_1px,transparent_1px),linear-gradient(90deg,rgba(47,107,255,0.07)_1px,transparent_1px)] [background-size:72px_72px]" />
+            <div className="pointer-events-none absolute -right-10 top-10 h-36 w-36 rounded-full border border-cyan-300/20 bg-cyan-300/12 blur-2xl kx-orbit" />
+            <div className="pointer-events-none absolute -left-12 bottom-20 h-44 w-44 rounded-full bg-blue-500/12 blur-3xl kx-glow" />
 
             <div className="relative z-10 flex items-center gap-3">
-              <div className="rounded-[24px] border border-white/12 bg-white/[0.09] px-5 py-4 shadow-[0_20px_52px_rgba(0,0,0,0.30)] backdrop-blur-xl">
-                <Logo size="xl" theme="dark" />
+              <div className="rounded-[24px] border border-white/80 bg-white/82 px-5 py-4 shadow-[0_20px_52px_rgba(37,99,235,0.12)] backdrop-blur-xl">
+                <Logo size="xl" />
               </div>
-              <div className="h-10 w-px bg-white/[0.12]" />
+              <div className="h-10 w-px bg-slate-300/70" />
               <div>
-                <p className="text-[10px] font-bold tracking-[0.28em] uppercase text-cyan-200/60">
+                <p className="text-[10px] font-bold tracking-[0.28em] uppercase text-blue-500/70">
                   KynexOne
                 </p>
-                <p className="mt-1 text-[11px] font-semibold tracking-[0.22em] uppercase text-white/42">
+                <p className="mt-1 text-[11px] font-semibold tracking-[0.22em] uppercase text-slate-500">
                   Enterprise workforce platform
                 </p>
               </div>
             </div>
 
-            <div className="relative z-10 max-w-[720px] space-y-6 lg:pb-6">
-              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-200">
+            <div className="relative z-10 max-w-[640px] space-y-4 lg:pb-4">
+              <div className="inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-white/75 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 shadow-sm backdrop-blur">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 Secure workspace access
               </div>
               <div>
-                <h1 className="max-w-[560px] text-[52px] font-black leading-[1.02] tracking-tight text-white xl:text-[62px]">
-                  Where workforce operations come together.
+                <h1 className="max-w-[560px] text-[44px] font-black leading-[1.04] tracking-tight text-slate-950 xl:text-[52px]">
+                  Workforce operations,<br className="hidden sm:block" />
+                  brought into one place.
                 </h1>
-                <p className="mt-4 max-w-[540px] text-[16px] leading-relaxed text-white/68">
-                  A refined entry point for attendance, leave, payroll, approvals, and compliance - all tenant-isolated, auditable, and ready for real work.
+                <p className="mt-3 max-w-[520px] text-[15px] leading-relaxed text-slate-600">
+                  Attendance, leave, payroll, approvals, and compliance in a tenant-isolated workspace with production-grade controls.
                 </p>
               </div>
 
-              <div className="rounded-[28px] border border-white/10 bg-white/[0.05] p-4 shadow-[0_18px_60px_rgba(3,10,23,0.24)] backdrop-blur-2xl">
-                <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="rounded-[26px] border border-slate-200/80 bg-white/72 p-3 shadow-[0_14px_34px_rgba(37,99,235,0.08)] backdrop-blur-xl">
+                <div className="mb-2 flex items-center justify-between gap-3">
                   <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/38">Operational flow</p>
-                    <p className="mt-1 text-sm font-semibold text-white/86">From clock-in to closeout</p>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-400">Operational flow</p>
+                    <p className="mt-1 text-[13px] font-semibold text-slate-700">From clock-in to closeout</p>
                   </div>
-                  <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/55 sm:flex">
+                  <div className="hidden items-center gap-2 rounded-full border border-emerald-500/15 bg-emerald-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-600 sm:flex">
                     <div className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                     Active
                   </div>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-4">
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                   {WORKFLOW_STEPS.map((step, index) => (
                     <div
                       key={step.title}
-                      className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3"
+                      className="rounded-2xl border border-slate-200/80 bg-white/80 px-3 py-3"
                       style={{ animationDelay: `${index * 0.12}s` }}
                     >
                       <div className="mb-2 flex items-center gap-2">
                         <span className="h-2.5 w-2.5 rounded-full bg-gradient-to-br from-cyan-300 to-blue-500" />
-                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/74">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-700">
                           {step.title}
                         </span>
                       </div>
-                      <p className="text-[12px] leading-snug text-white/54">{step.detail}</p>
+                      <p className="text-[12px] leading-snug text-slate-500">{step.detail}</p>
                     </div>
                   ))}
                 </div>
@@ -252,54 +253,16 @@ export function LoginPage() {
 
               <div className="grid gap-3 sm:grid-cols-3">
                 {TRUST_POINTS.map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-white/10 bg-white/[0.06] px-4 py-4 shadow-[0_10px_28px_rgba(3,10,23,0.22)] backdrop-blur-xl">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-100/50">{item.label}</p>
-                    <p className="mt-2 text-[13px] leading-snug text-white/82">{item.value}</p>
+                  <div key={item.label} className="rounded-2xl border border-white/80 bg-white/75 px-4 py-3 shadow-[0_10px_28px_rgba(37,99,235,0.07)] backdrop-blur-xl">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{item.label}</p>
+                    <p className="mt-2 text-[13px] leading-snug text-slate-700">{item.value}</p>
                   </div>
                 ))}
               </div>
-
-              <div className="rounded-[32px] border border-white/10 bg-white/[0.05] p-5 shadow-[0_18px_60px_rgba(3,10,23,0.28)] backdrop-blur-2xl">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/38">Workforce signal</p>
-                    <p className="mt-1 text-sm font-semibold text-white/88">Live operational rhythm</p>
-                  </div>
-                  <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-200">
-                    Syncing
-                  </span>
-                </div>
-
-                <div className="mt-5 grid grid-cols-4 items-end gap-3">
-                  {[22, 56, 38, 68].map((height, index) => (
-                    <div key={height} className="flex h-[96px] items-end rounded-2xl bg-white/[0.03] p-2 ring-1 ring-white/[0.04]">
-                      <div
-                        className={`kx-rise w-full rounded-[16px] bg-[linear-gradient(180deg,rgba(94,235,255,0.96),rgba(47,107,255,0.88)_55%,rgba(29,78,216,0.78))] shadow-[0_14px_30px_rgba(47,107,255,0.25)]`}
-                        style={{
-                          height: `${height}px`,
-                          animationDelay: `${index * 0.28}s`,
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {WORKFORCE_SIGNALS.map((signal, index) => (
-                    <span
-                      key={signal}
-                      className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/66"
-                      style={{ animationDelay: `${index * 0.18}s` }}
-                    >
-                      {signal}
-                    </span>
-                  ))}
-                </div>
-              </div>
             </div>
 
-            <p className="relative z-10 text-[11px] text-white/44">
-              A <span className="font-semibold text-white/58">Kode Kinetics</span> product · secure access only
+            <p className="relative z-10 text-[11px] text-slate-500">
+              A <span className="font-semibold text-slate-600">Kode Kinetics</span> product · secure access only
             </p>
           </section>
 
