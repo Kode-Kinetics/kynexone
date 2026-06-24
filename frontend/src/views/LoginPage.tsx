@@ -175,6 +175,18 @@ export function LoginPage() {
           0%, 100% { transform: scale(0.96); opacity: 0.72; }
           50% { transform: scale(1); opacity: 1; }
         }
+        @keyframes kx-pop {
+          0%, 100% { transform: translateY(0); opacity: 1; }
+          50% { transform: translateY(-3px); opacity: 0.98; }
+        }
+        @keyframes kx-drift-soft {
+          0%, 100% { transform: translate3d(0, 0, 0); }
+          50% { transform: translate3d(0, -6px, 0); }
+        }
+        @keyframes kx-cta-shine {
+          0% { background-position: 0% 50%; }
+          100% { background-position: 200% 50%; }
+        }
         .kx-float { animation: kx-float 14s ease-in-out infinite; }
         .kx-drift { animation: kx-drift 18s ease-in-out infinite; }
         .kx-panel-in { animation: kx-panel-in 0.65s ease-out both; }
@@ -185,6 +197,32 @@ export function LoginPage() {
         .kx-line { animation: kx-line 10s ease-in-out infinite; transform-origin: center; }
         .kx-flow { animation: kx-flow 12s ease-in-out infinite; }
         .kx-node { animation: kx-node 3.6s ease-in-out infinite; }
+        .kx-pop { animation: kx-pop 4.5s ease-in-out infinite; }
+        .kx-drift-soft { animation: kx-drift-soft 8s ease-in-out infinite; }
+        .kx-cta-shine {
+          background-size: 220% 220%;
+          animation: kx-cta-shine 8s linear infinite;
+        }
+        .kx-delay-1 { animation-delay: 0.8s; }
+        .kx-delay-2 { animation-delay: 1.6s; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .kx-float,
+          .kx-drift,
+          .kx-panel-in,
+          .kx-sheen,
+          .kx-orbit,
+          .kx-rise,
+          .kx-glow,
+          .kx-line,
+          .kx-flow,
+          .kx-node,
+          .kx-pop,
+          .kx-drift-soft,
+          .kx-cta-shine {
+            animation: none !important;
+          }
+        }
       `}</style>
 
       <div className="relative min-h-[100svh] w-full overflow-hidden bg-[#eef2ff] text-slate-900 dark:bg-[#040814] dark:text-white">
@@ -193,6 +231,7 @@ export function LoginPage() {
         <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-[linear-gradient(90deg,transparent,rgba(47,107,255,0.24),rgba(94,235,255,0.28),transparent)] opacity-45 kx-line" />
         <div className="pointer-events-none absolute left-[10%] top-[14%] h-60 w-60 rounded-full bg-white/28 blur-3xl kx-drift" />
         <div className="pointer-events-none absolute right-[12%] bottom-[16%] h-64 w-64 rounded-full bg-cyan-200/12 blur-3xl kx-float" />
+        <div className="pointer-events-none absolute left-[18%] top-[58%] h-32 w-32 rounded-full bg-sky-300/15 blur-3xl kx-drift-soft" />
         <div className="pointer-events-none absolute inset-y-0 left-1/3 w-px bg-gradient-to-b from-transparent via-blue-300/14 to-transparent opacity-45" />
         <div className="pointer-events-none absolute left-0 top-1/4 h-56 w-56 rounded-full bg-blue-300/14 blur-3xl dark:bg-blue-700/8 kx-float" />
         <div className="pointer-events-none absolute bottom-[-4rem] right-[-5rem] h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl dark:bg-cyan-600/8 kx-float" />
@@ -221,7 +260,7 @@ export function LoginPage() {
 
             <div className="flex flex-1 items-center justify-center">
               <div className="relative z-10 max-w-[560px] space-y-3">
-                <div className="inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-white/78 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 shadow-sm backdrop-blur">
+                <div className="kx-pop inline-flex items-center gap-2 rounded-full border border-blue-300/30 bg-white/78 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-blue-600 shadow-sm backdrop-blur">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                   Secure workspace access
                 </div>
@@ -238,8 +277,11 @@ export function LoginPage() {
                 </div>
 
                 <div className="grid gap-2 sm:grid-cols-3">
-                  {TRUST_POINTS.map((item) => (
-                    <div key={item.label} className="rounded-2xl border border-white/80 bg-white/78 px-4 py-3 shadow-[0_10px_20px_rgba(37,99,235,0.05)] backdrop-blur-xl">
+                  {TRUST_POINTS.map((item, index) => (
+                    <div
+                      key={item.label}
+                      className={`rounded-2xl border border-white/80 bg-white/78 px-4 py-3 shadow-[0_10px_20px_rgba(37,99,235,0.05)] backdrop-blur-xl kx-drift-soft ${index === 1 ? 'kx-delay-1' : ''} ${index === 2 ? 'kx-delay-2' : ''}`}
+                    >
                       <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{item.label}</p>
                       <p className="mt-1.5 text-[12px] leading-snug text-slate-700">{item.value}</p>
                     </div>
@@ -263,7 +305,7 @@ export function LoginPage() {
                 <div className="rounded-[24px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.84),rgba(244,248,255,0.72))] p-3 shadow-[0_14px_26px_rgba(37,99,235,0.05)] backdrop-blur-xl">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Operational flow</p>
-                    <span className="rounded-full border border-cyan-200/80 bg-cyan-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-600">
+                    <span className="kx-pop rounded-full border border-cyan-200/80 bg-cyan-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-600">
                       Live
                     </span>
                   </div>
@@ -280,7 +322,7 @@ export function LoginPage() {
                           </p>
                         </div>
                         {index < WORKFORCE_FLOW.length - 1 && (
-                          <div className="hidden h-px flex-1 bg-gradient-to-r from-blue-200 via-cyan-200 to-transparent sm:block" />
+                      <div className="hidden h-px flex-1 bg-gradient-to-r from-blue-200 via-cyan-200 to-transparent sm:block kx-line" />
                         )}
                       </div>
                     ))}
@@ -362,7 +404,7 @@ export function LoginPage() {
                       <AuthFeedback error={error} info={info} />
 
                       <button type="submit" disabled={loading}
-                        className="auth-btn mt-6 disabled:cursor-not-allowed disabled:opacity-60">
+                    className="auth-btn mt-6 disabled:cursor-not-allowed disabled:opacity-60">
                         {loading
                           ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
                           : 'Sign in'}
@@ -573,6 +615,11 @@ export function LoginPage() {
             0 12px 30px rgba(47, 107, 255, 0.28),
             inset 0 1px 0 rgba(255,255,255,0.24);
           transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+        }
+        .auth-btn:not(:disabled) {
+          background-image: linear-gradient(120deg, #1d4ed8 0%, #2f6bff 42%, #5eebff 72%, #1d4ed8 100%);
+          background-size: 220% 220%;
+          animation: kx-cta-shine 8s linear infinite;
         }
         .auth-btn:hover:not(:disabled) {
           filter: saturate(1.05) brightness(1.02);
