@@ -874,6 +874,38 @@ public class PayrollController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Hard-deletes an unprocessed (Draft) payroll run. Only Draft runs qualify — they
+    /// carry no payslips, GL entries, or other financial records, so removing them raises
+    /// no audit-immutability concern. Processed/Locked/Approved runs must be Voided instead.
+    /// Use case: a run created for the wrong period (e.g. a typo'd year) can be removed cleanly.
+    /// </summary>
+    [HttpDelete("runs/{id:guid}")]
+    [Authorize(Roles = "Admin,Payroll Manager")]
+    public async Task<IActionResult> DeleteRun(Guid id, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
+        if (run is null) return NotFound();
+        if (run.Status != "Draft")
+            return BadRequest(new
+            {
+                error   = "not_deletable",
+                message = $"Only Draft runs can be deleted. A '{run.Status}' run must be voided instead to preserve the financial audit trail.",
+            });
+
+        // Defensive cleanup — a Draft run should have no children, but remove any stragglers.
+        _db.PayrollSlips.RemoveRange(_db.PayrollSlips.Where(s => s.TenantId == tenantId && s.RunId == id));
+        _db.PayrollRunEmployees.RemoveRange(_db.PayrollRunEmployees.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+        _db.PayrollEarnings.RemoveRange(_db.PayrollEarnings.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+        _db.PayrollDeductions.RemoveRange(_db.PayrollDeductions.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+        _db.PayrollValidationResults.RemoveRange(_db.PayrollValidationResults.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+        _db.PayrollRuns.Remove(run);
+        await PayrollAudit("payroll.run.deleted", "PayrollRun", id.ToString(), new { run.Year, run.Month }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
     [HttpGet("runs/{id:guid}/gl-journal")]
     [Authorize(Roles = "Admin,HR Manager,Finance Approver,Finance Controller,Payroll Manager")]
     public async Task<IActionResult> GlJournal(Guid id, CancellationToken cancellationToken)

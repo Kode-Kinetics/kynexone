@@ -5,7 +5,7 @@ import {
   AlertTriangle, BarChart2, ShieldCheck, BookOpen, Building2, Calculator,
   CheckCircle2, ChevronDown, ChevronRight, Download, FileText, Landmark, Layers3,
   Lock, Play, Plus, RefreshCw, RotateCcw,
-  Settings, TrendingUp, Users, WalletCards, X,
+  Settings, TrendingUp, Users, WalletCards, X, Trash2,
   Zap, Shield, Lightbulb, ArrowUpRight, Circle,
 } from 'lucide-react';
 import {
@@ -850,6 +850,19 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
     }
   };
 
+  const deleteRun = async (id: string) => {
+    if (!confirm('Delete this draft payroll run? This permanently removes it. (Processed/locked runs must be voided instead.)')) return;
+    setError('');
+    try {
+      await payrollApi.deleteRun(id);
+      setRuns(rs => rs.filter(r => r.id !== id));
+      if (selectedRunId === id) { setSelectedRunId(null); setSlips([]); }
+    } catch (e) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setError(msg ?? 'Failed to delete the payroll run.');
+    }
+  };
+
   const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return (
@@ -901,6 +914,13 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                     <button type="button" onClick={e => { e.stopPropagation(); onSelectRun(run, 'validation'); }} className={`${btn.sm} h-6 px-2 text-xs`}>
                       <AlertTriangle className="h-3 w-3" /> Validate
                     </button>
+                    {run.status === 'Draft' && (
+                      <button type="button" onClick={e => { e.stopPropagation(); deleteRun(run.id); }}
+                        aria-label="Delete draft run"
+                        className="inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs font-medium text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10">
+                        <Trash2 className="h-3 w-3" /> Delete
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

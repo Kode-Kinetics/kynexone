@@ -370,6 +370,10 @@ export const payrollApi = {
   lockRun: (id: string) =>
     client.post<PayrollRun>(`/api/payroll/runs/${id}/lock`).then((r) => r.data),
 
+  // Hard-delete a Draft (unprocessed) run. Processed/Locked runs must be voided instead.
+  deleteRun: (id: string) =>
+    client.delete(`/api/payroll/runs/${id}`).then((r) => r.data),
+
   approveRun: (id: string, notes?: string) =>
     client.post<PayrollRun>(`/api/payroll/runs/${id}/approve`, { notes }).then((r) => r.data),
 
