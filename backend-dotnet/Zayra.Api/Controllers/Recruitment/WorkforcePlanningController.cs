@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -66,6 +67,7 @@ public class WorkforcePlanningController : ControllerBase
         var year = req.PlanYear > 0 ? req.PlanYear : DateTime.UtcNow.Year;
         var count = await _db.WorkforcePlans.CountAsync(x => x.TenantId == tid && x.PlanYear == year, ct);
         var code = $"WFP-{year}-{(count + 1):D3}";
+        var planCurrency = !string.IsNullOrWhiteSpace(req.CurrencyCode) ? req.CurrencyCode : await _db.ResolveTenantCurrencyAsync(tid, ct);
 
         var plan = new WorkforcePlan
         {
@@ -79,7 +81,7 @@ public class WorkforcePlanningController : ControllerBase
             PlannedHeadcount = req.PlannedHeadcount,
             GapCount = req.PlannedHeadcount - req.CurrentHeadcount,
             BudgetAllocated = req.BudgetAllocated,
-            CurrencyCode = req.CurrencyCode ?? "USD",
+            CurrencyCode = planCurrency,
             Notes = req.Notes ?? string.Empty,
             CreatedByUserId = GetUserId(),
             CreatedByName = GetUserName(),

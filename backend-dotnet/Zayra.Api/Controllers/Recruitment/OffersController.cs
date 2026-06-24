@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
@@ -203,12 +204,13 @@ public class OffersController : ControllerBase
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
         var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tid, ct);
+        var offerCurrency = await _db.ResolveTenantCurrencyAsync(tid, ct);
         var data = new OfferLetterData(
             CandidateName: offer.CandidateName,
             Position: offer.OfferedJobTitle,
             Department: offer.OfferedDepartment,
             Salary: offer.GrossSalary,
-            Currency: "USD",
+            Currency: offerCurrency,
             StartDate: offer.StartDate.ToDateTime(TimeOnly.MinValue),
             CompanyName: tenant?.Name ?? "KynexOne Technologies",
             IssuedBy: GetUserName(),

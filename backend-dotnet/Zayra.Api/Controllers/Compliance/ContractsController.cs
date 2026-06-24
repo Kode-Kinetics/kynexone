@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -122,6 +123,7 @@ public class ContractsController : ControllerBase
 
         var count = await _db.EmployeeContracts.CountAsync(x => x.TenantId == tid, ct);
         var contractNumber = $"CON-{DateTime.UtcNow.Year}-{(count + 1):D4}";
+        var contractCurrency = !string.IsNullOrWhiteSpace(req.CurrencyCode) ? req.CurrencyCode : await _db.ResolveTenantCurrencyAsync(tid, ct);
 
         string htmlEn = req.ContentHtmlEn ?? string.Empty;
         string htmlAr = req.ContentHtmlAr ?? string.Empty;
@@ -148,7 +150,7 @@ public class ContractsController : ControllerBase
             StartDate = req.StartDate,
             EndDate = req.EndDate,
             BasicSalary = req.BasicSalary,
-            CurrencyCode = req.CurrencyCode ?? "USD",
+            CurrencyCode = contractCurrency,
             ContentHtmlEn = htmlEn,
             ContentHtmlAr = htmlAr,
             Language = req.Language ?? "en",
