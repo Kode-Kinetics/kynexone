@@ -15,12 +15,33 @@ public class AttendanceService : IAttendanceService
     private readonly ZayraDbContext _db;
     private readonly INotificationService _notifications;
     private readonly IHttpClientFactory _httpClientFactory;
+    // Per-request cache of the resolved tenant timezone so the per-employee/day loop
+    // doesn't re-query localization settings on every call.
+    private readonly Dictionary<Guid, TimeZoneInfo> _tzCache = new();
 
     public AttendanceService(ZayraDbContext db, INotificationService notifications, IHttpClientFactory httpClientFactory)
     {
         _db = db;
         _notifications = notifications;
         _httpClientFactory = httpClientFactory;
+    }
+
+    /// <summary>
+    /// Resolves the tenant's IANA timezone (e.g. "Asia/Riyadh") for converting shift
+    /// wall-clock times to UTC. Falls back to UTC if unset or unrecognised.
+    /// </summary>
+    private async Task<TimeZoneInfo> ResolveTenantTimeZoneAsync(Guid tenantId, CancellationToken ct)
+    {
+        if (_tzCache.TryGetValue(tenantId, out var cached)) return cached;
+        var tzId = await _db.TenantLocalizationSettings.AsNoTracking()
+            .Where(l => l.TenantId == tenantId)
+            .Select(l => l.DefaultTimezone)
+            .FirstOrDefaultAsync(ct);
+        TimeZoneInfo tz;
+        try { tz = string.IsNullOrWhiteSpace(tzId) ? TimeZoneInfo.Utc : TimeZoneInfo.FindSystemTimeZoneById(tzId); }
+        catch { tz = TimeZoneInfo.Utc; }
+        _tzCache[tenantId] = tz;
+        return tz;
     }
 
     public async Task<PagedResult<AttendanceDevice>> GetDevicesAsync(Guid tenantId, int page, int pageSize, CancellationToken ct)
@@ -708,8 +729,32 @@ public class AttendanceService : IAttendanceService
         daily.MissingPunch = daily.FirstInUtc is null || daily.LastOutUtc is null;
         daily.BreakMinutes = daily.MissingPunch ? 0 : policy.BreakMinutes;
         daily.TotalWorkedMinutes = daily.FirstInUtc is not null && daily.LastOutUtc is not null ? Math.Max(0, (int)(daily.LastOutUtc.Value - daily.FirstInUtc.Value).TotalMinutes - policy.BreakMinutes) : 0;
-        var shiftStart = date.ToDateTime(new TimeOnly(9, 0), DateTimeKind.Utc);
-        var shiftEnd = shiftStart.AddMinutes(policy.StandardWorkMinutes + policy.BreakMinutes);
+        // Resolve the employee's scheduled shift for this date and convert its local
+        // wall-clock start/end to UTC. Previously this hardcoded 09:00 *UTC* and ignored
+        // the assigned shift entirely — for a GCC tenant (Asia/Riyadh) 09:00 UTC = noon
+        // local, so every employee showed bogus late/early minutes.
+        var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
+        var shift = await _db.ShiftAssignments.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.EmployeeId == employee.Id && a.AssignedDate == date)
+            .Join(_db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
+                  a => a.ShiftDefinitionId, d => d.Id, (a, d) => new { d.StartTime, d.EndTime })
+            .FirstOrDefaultAsync(ct);
+        var startLocalTime = shift?.StartTime ?? new TimeOnly(9, 0);
+        // Local wall-clock shift start on this date (Unspecified kind → interpret in tenant tz).
+        var startLocal = DateTime.SpecifyKind(date.ToDateTime(startLocalTime), DateTimeKind.Unspecified);
+        var shiftStart = TimeZoneInfo.ConvertTimeToUtc(startLocal, tz);
+        DateTime shiftEnd;
+        if (shift is not null)
+        {
+            // Overnight shift (end <= start) rolls into the next calendar day.
+            var endDate = shift.EndTime <= shift.StartTime ? date.AddDays(1) : date;
+            var endLocal = DateTime.SpecifyKind(endDate.ToDateTime(shift.EndTime), DateTimeKind.Unspecified);
+            shiftEnd = TimeZoneInfo.ConvertTimeToUtc(endLocal, tz);
+        }
+        else
+        {
+            shiftEnd = shiftStart.AddMinutes(policy.StandardWorkMinutes + policy.BreakMinutes);
+        }
         daily.LateMinutes = daily.FirstInUtc is null ? 0 : Math.Max(0, (int)(daily.FirstInUtc.Value - shiftStart).TotalMinutes - policy.GraceMinutes);
         daily.EarlyExitMinutes = daily.LastOutUtc is null ? 0 : Math.Max(0, (int)(shiftEnd - daily.LastOutUtc.Value).TotalMinutes - policy.EarlyExitThresholdMinutes);
         daily.OvertimeMinutes = Math.Max(0, daily.TotalWorkedMinutes - policy.StandardWorkMinutes);
