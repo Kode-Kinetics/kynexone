@@ -348,6 +348,36 @@ public class LeaveService : ILeaveService
         await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, request.TotalDays,
             request.StartDate.Year, "Used", request.Id.ToString(), approverName, ct);
 
+        // Unpaid leave (LeaveType.IsPaid == false) must reduce salary in the pay period the
+        // leave falls in. Payroll's Process() reads LeavePayrollImpact rows (ImpactType
+        // containing "Deduction") and subtracts the Amount — but nothing created those rows,
+        // so unpaid leave silently produced zero deduction. Produce the impact here on approval.
+        var leaveType = await _db.LeaveTypes.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == request.LeaveTypeId && t.TenantId == tenantId, ct);
+        if (leaveType is not null && !leaveType.IsPaid && request.TotalDays > 0
+            && !await _db.LeavePayrollImpacts.AnyAsync(x => x.TenantId == tenantId && x.LeaveRequestId == requestId, ct))
+        {
+            var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
+                .Where(s => s.TenantId == tenantId && s.EmployeeId == request.EmployeeId && s.IsActive)
+                .OrderByDescending(s => s.EffectiveDate)
+                .FirstOrDefaultAsync(ct);
+            // basic ÷ 30 per unpaid day — standard GCC day-rate convention, matches payroll's
+            // default LOP divisor. [FLAG-COMPLIANCE: confirm divisor per jurisdiction before filing.]
+            var basic = salary?.BasicSalary ?? 0m;
+            var amount = Math.Round(basic / 30m * request.TotalDays, 2);
+            _db.LeavePayrollImpacts.Add(new LeavePayrollImpact
+            {
+                TenantId = tenantId,
+                LeaveRequestId = requestId,
+                EmployeeId = request.EmployeeId,
+                PayPeriod = $"{request.StartDate.Year}-{request.StartDate.Month:00}",
+                ImpactType = "Leave Deduction (Unpaid)",
+                Days = request.TotalDays,
+                Amount = amount,
+                Status = "Pending",
+            });
+        }
+
         await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "Approved",
             previousStatus, "Approved", notes ?? string.Empty, approverName, ct);
 
@@ -463,6 +493,15 @@ public class LeaveService : ILeaveService
             };
             _db.LeaveBalanceTransactions.Add(txn);
         }
+
+        // Remove any unpaid-leave payroll deduction that has not yet been picked up by a run,
+        // so cancelling an approved unpaid leave does not still dock the employee's salary.
+        // Already-processed impacts (Status == "Processed") are left for audit integrity.
+        var pendingImpacts = await _db.LeavePayrollImpacts
+            .Where(x => x.TenantId == tenantId && x.LeaveRequestId == requestId && x.Status != "Processed")
+            .ToListAsync(ct);
+        if (pendingImpacts.Count > 0)
+            _db.LeavePayrollImpacts.RemoveRange(pendingImpacts);
 
         await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "Cancelled",
             previousStatus, "Cancelled", reason, cancelledByName, ct);

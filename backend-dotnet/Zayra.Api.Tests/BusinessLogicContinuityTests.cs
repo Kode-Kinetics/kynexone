@@ -180,6 +180,130 @@ public class BusinessLogicContinuityTests
         terminatedBal.Should().BeNull("terminated employees must not receive accruals");
     }
 
+    [Fact]
+    public async Task UnpaidLeave_WhenApproved_CreatesPayrollDeductionImpact()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+
+        // Unpaid leave type (IsPaid = false) → must dock salary in payroll.
+        var lt = new LeaveType { TenantId = tenantId, Code = "LWOP", NameEn = "Leave Without Pay", IsPaid = false, IsActive = true };
+        var emp = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "EMP-LWOP-1", FullName = "Faisal Al-Harbi",
+            Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1)
+        };
+        db.LeaveTypes.Add(lt); db.Employees.Add(emp);
+        await db.SaveChangesAsync();
+
+        // Basic salary 3000 → daily rate 3000/30 = 100 per unpaid day.
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 3000m, EffectiveDate = DateOnly.FromDateTime(DateTime.Today.AddMonths(-6)), IsActive = true
+        });
+        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, LeaveTypeId = lt.Id,
+            LeaveTypeName = lt.NameEn, EmployeeName = emp.FullName,
+            Year = DateTime.UtcNow.Year, Entitled = 30, Accrued = 30
+        });
+        await db.SaveChangesAsync();
+
+        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var start = DateOnly.FromDateTime(DateTime.Today.AddDays(3));
+        var request = new LeaveRequest
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName, LeaveTypeId = lt.Id,
+            StartDate = start, EndDate = start.AddDays(2), DayType = "Full", Reason = "Personal",
+        };
+        var submitted = await svc.SubmitRequestAsync(tenantId, request, CancellationToken.None);
+        await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
+
+        var impact = await db.LeavePayrollImpacts.FirstOrDefaultAsync(x => x.LeaveRequestId == submitted.Id);
+        impact.Should().NotBeNull("approving unpaid leave must create a payroll deduction impact");
+        impact!.ImpactType.Should().Contain("Deduction", "payroll only sums impacts whose type contains 'Deduction'");
+        impact.PayPeriod.Should().Be($"{start.Year}-{start.Month:00}", "impact must target the leave's pay period");
+        impact.Amount.Should().BeGreaterThan(0m, "unpaid days must produce a non-zero deduction (basic/30 * days)");
+        impact.Status.Should().Be("Pending");
+    }
+
+    [Fact]
+    public async Task PaidLeave_WhenApproved_CreatesNoPayrollDeduction()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+
+        var lt = new LeaveType { TenantId = tenantId, Code = "AL", NameEn = "Annual Leave", IsPaid = true, IsActive = true };
+        var emp = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "EMP-PAID-1", FullName = "Noura Al-Qahtani",
+            Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1)
+        };
+        db.LeaveTypes.Add(lt); db.Employees.Add(emp);
+        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, LeaveTypeId = lt.Id,
+            LeaveTypeName = lt.NameEn, EmployeeName = emp.FullName,
+            Year = DateTime.UtcNow.Year, Entitled = 21, Accrued = 21
+        });
+        await db.SaveChangesAsync();
+
+        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var start = DateOnly.FromDateTime(DateTime.Today.AddDays(5));
+        var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName, LeaveTypeId = lt.Id,
+            StartDate = start, EndDate = start.AddDays(1), DayType = "Full",
+        }, CancellationToken.None);
+        await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
+
+        (await db.LeavePayrollImpacts.AnyAsync(x => x.LeaveRequestId == submitted.Id))
+            .Should().BeFalse("paid leave must not create any payroll deduction");
+    }
+
+    [Fact]
+    public async Task UnpaidLeave_WhenCancelledBeforePayroll_RemovesPendingDeduction()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+
+        var lt = new LeaveType { TenantId = tenantId, Code = "LWOP", NameEn = "Leave Without Pay", IsPaid = false, IsActive = true };
+        var emp = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "EMP-LWOP-2", FullName = "Omar Al-Subaie",
+            Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1)
+        };
+        db.LeaveTypes.Add(lt); db.Employees.Add(emp);
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 6000m, EffectiveDate = DateOnly.FromDateTime(DateTime.Today.AddMonths(-3)), IsActive = true
+        });
+        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, LeaveTypeId = lt.Id,
+            LeaveTypeName = lt.NameEn, EmployeeName = emp.FullName,
+            Year = DateTime.UtcNow.Year, Entitled = 30, Accrued = 30
+        });
+        await db.SaveChangesAsync();
+
+        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var start = DateOnly.FromDateTime(DateTime.Today.AddDays(4));
+        var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName, LeaveTypeId = lt.Id,
+            StartDate = start, EndDate = start.AddDays(1), DayType = "Full",
+        }, CancellationToken.None);
+        await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
+        (await db.LeavePayrollImpacts.AnyAsync(x => x.LeaveRequestId == submitted.Id)).Should().BeTrue();
+
+        await svc.CancelRequestAsync(tenantId, submitted.Id, "Manager", "Plans changed", CancellationToken.None);
+
+        (await db.LeavePayrollImpacts.AnyAsync(x => x.LeaveRequestId == submitted.Id && x.Status != "Processed"))
+            .Should().BeFalse("cancelling an unprocessed unpaid leave must remove its pending deduction");
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 3. LOAN LIFECYCLE: Apply (no-approval type) → Installments Generated
     // ─────────────────────────────────────────────────────────────────────────
