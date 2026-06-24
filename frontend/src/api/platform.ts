@@ -173,6 +173,24 @@ export interface PlatformTenantDetail {
   employeeCount: number;
 }
 
+export interface BulkOpResultItem {
+  tenantId: string;
+  name: string | null;
+  status: 'ok' | 'skipped' | 'failed';
+  reason: string | null;
+}
+
+export interface BulkOpResult {
+  operation: string;
+  featureKey: string | null;
+  appliedToAll: boolean | null;
+  requested: number;
+  succeeded: number;
+  skipped: number;
+  failed: number;
+  results: BulkOpResultItem[];
+}
+
 export interface PlatformAuditLog {
   id: string;
   tenantId: string;
@@ -539,6 +557,25 @@ export const platformApi = {
 
   deleteTenant: (tenantId: string) =>
     platform.delete(`/api/platform/tenants/${tenantId}?confirm=DELETE`).then(r => r.data),
+
+  // ── Bulk tenant operations ────────────────────────────────────────────────
+  bulkSuspendTenants: (tenantIds: string[], reason?: string) =>
+    platform.post<BulkOpResult>('/api/platform/tenants/bulk/suspend', { tenantIds, reason }).then(r => r.data),
+
+  bulkReactivateTenants: (tenantIds: string[], reason?: string) =>
+    platform.post<BulkOpResult>('/api/platform/tenants/bulk/reactivate', { tenantIds, reason }).then(r => r.data),
+
+  bulkDeleteTenants: (tenantIds: string[]) =>
+    platform.post<BulkOpResult>('/api/platform/tenants/bulk/delete', { tenantIds, confirm: 'DELETE' }).then(r => r.data),
+
+  /** Enable/disable one feature across selected tenants, or platform-wide with applyToAll. */
+  bulkSetFeature: (args: { tenantIds?: string[]; applyToAll?: boolean; featureKey: string; isEnabled: boolean }) =>
+    platform.post<BulkOpResult>('/api/platform/tenants/bulk/features', {
+      tenantIds: args.tenantIds ?? null,
+      applyToAll: args.applyToAll ?? false,
+      featureKey: args.featureKey,
+      isEnabled: args.isEnabled,
+    }).then(r => r.data),
 
   getAuditLogs: (tenantId?: string, page = 1, pageSize = 50, filters?: {
     action?: string;

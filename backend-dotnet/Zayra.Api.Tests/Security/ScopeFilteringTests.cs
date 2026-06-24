@@ -231,7 +231,7 @@ public class ScopeFilteringTests
         var controller = EssController(db, tenantId, empA.Id);
         var result = await controller.MyHrRequests(CancellationToken.None);
 
-        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var ok = Assert.IsType<OkObjectResult>(result);
         var requests = (ok.Value as IEnumerable<object>)?.ToList();
         requests.Should().NotBeNull();
 

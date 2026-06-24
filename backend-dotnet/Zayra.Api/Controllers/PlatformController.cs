@@ -1040,6 +1040,202 @@ public class PlatformController : ControllerBase
         return Ok(new { tenantId, status = "Active" });
     }
 
+    // ── Bulk Tenant Operations ────────────────────────────────────────────────
+    // All bulk endpoints are idempotent per-tenant and return a per-tenant result
+    // breakdown so the console can surface partial successes. They reuse the exact
+    // status/audit semantics of the single-tenant endpoints above.
+
+    [HttpPost("tenants/bulk/suspend")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> BulkSuspendTenants([FromBody] BulkTenantActionRequest req, CancellationToken ct)
+    {
+        var ids = NormalizeTenantIds(req.TenantIds);
+        if (ids.Count == 0) return BadRequest(new { message = "No tenants selected." });
+
+        var results = new List<BulkOpItem>();
+        foreach (var id in ids)
+        {
+            var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == id, ct);
+            if (tenant is null) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
+            var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == id, ct);
+            if (sub is null) { results.Add(BulkOpItem.Skip(id, "No subscription record.")); continue; }
+            if (sub.Status == "Suspended") { results.Add(BulkOpItem.Skip(id, "Already suspended.")); continue; }
+
+            var oldStatus = sub.Status;
+            sub.Status = "Suspended";
+            sub.UpdatedAtUtc = DateTime.UtcNow;
+            tenant.IsActive = false;
+            AuditTenant(id, "Suspended", new { status = oldStatus }, new { status = "Suspended", reason = req.Reason });
+            results.Add(BulkOpItem.Ok(id, tenant.Name));
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(BulkSummary("suspend", results));
+    }
+
+    [HttpPost("tenants/bulk/reactivate")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> BulkReactivateTenants([FromBody] BulkTenantActionRequest req, CancellationToken ct)
+    {
+        var ids = NormalizeTenantIds(req.TenantIds);
+        if (ids.Count == 0) return BadRequest(new { message = "No tenants selected." });
+
+        var results = new List<BulkOpItem>();
+        foreach (var id in ids)
+        {
+            var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == id, ct);
+            if (tenant is null) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
+            var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == id, ct);
+            if (sub is null) { results.Add(BulkOpItem.Skip(id, "No subscription record.")); continue; }
+
+            var oldStatus = sub.Status;
+            sub.Status = "Active";
+            sub.UpdatedAtUtc = DateTime.UtcNow;
+            tenant.IsActive = true;
+            AuditTenant(id, "Reactivated", new { status = oldStatus }, new { status = "Active", reason = req.Reason });
+            results.Add(BulkOpItem.Ok(id, tenant.Name));
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(BulkSummary("reactivate", results));
+    }
+
+    [HttpPost("tenants/bulk/delete")]
+    [RequirePlatformRole(PlatformRoles.Owner)]
+    public async Task<IActionResult> BulkDeleteTenants([FromBody] BulkDeleteTenantsRequest req, CancellationToken ct)
+    {
+        if (req.Confirm != "DELETE")
+            return BadRequest(new { message = "Pass confirm=DELETE to confirm permanent deletion." });
+
+        var ids = NormalizeTenantIds(req.TenantIds);
+        if (ids.Count == 0) return BadRequest(new { message = "No tenants selected." });
+
+        var results = new List<BulkOpItem>();
+        foreach (var id in ids)
+        {
+            var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == id, ct);
+            if (tenant is null) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
+            if (!tenant.IsActive && tenant.Slug.Contains("__deleted_")) { results.Add(BulkOpItem.Skip(id, "Already deleted.")); continue; }
+
+            var originalSlug = tenant.Slug;
+            tenant.IsActive = false;
+            // Free the slug (unique index covers inactive rows too) so it can be reused.
+            tenant.Slug = $"{originalSlug}__deleted_{id.ToString("N")[..8]}";
+
+            // Deactivate all users + revoke their sessions (tracked updates so this is
+            // provider-agnostic and unit-testable, unlike the single-tenant ExecuteUpdate path).
+            var users = await _db.Users.Where(u => u.TenantId == id && !u.IsDeleted).ToListAsync(ct);
+            foreach (var u in users)
+            {
+                u.IsActive = false;
+                u.Status = "Deactivated";
+                u.UpdatedAtUtc = DateTime.UtcNow;
+            }
+            var userIds = users.Select(u => u.Id).ToHashSet();
+            if (userIds.Count > 0)
+            {
+                var tokens = await _db.RefreshTokens
+                    .Where(t => t.RevokedAtUtc == null && userIds.Contains(t.UserId)).ToListAsync(ct);
+                foreach (var tk in tokens) tk.RevokedAtUtc = DateTime.UtcNow;
+            }
+
+            var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == id, ct);
+            if (sub is not null) sub.Status = "Cancelled";
+
+            AuditTenant(id, "TenantDeleted",
+                new { tenantName = tenant.Name, slug = originalSlug },
+                new { status = "Deactivated", slugFreed = originalSlug, usersDeactivated = users.Count });
+            results.Add(BulkOpItem.Ok(id, tenant.Name));
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(BulkSummary("delete", results));
+    }
+
+    /// <summary>Enable/disable a single feature across many tenants at once, or platform-wide.
+    /// Pass either an explicit TenantIds list or ApplyToAll=true (every active tenant).</summary>
+    [HttpPost("tenants/bulk/features")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> BulkSetFeatureFlag([FromBody] BulkFeatureFlagRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.FeatureKey))
+            return BadRequest(new { message = "featureKey is required." });
+
+        List<Guid> ids;
+        if (req.ApplyToAll)
+            ids = await _db.Tenants.Where(t => t.IsActive).Select(t => t.Id).ToListAsync(ct);
+        else
+            ids = NormalizeTenantIds(req.TenantIds);
+
+        if (ids.Count == 0) return BadRequest(new { message = "No tenants selected." });
+
+        var results = new List<BulkOpItem>();
+        foreach (var id in ids)
+        {
+            var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, ct);
+            if (tenant is null) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
+
+            var flag = await _db.TenantFeatureFlags
+                .FirstOrDefaultAsync(f => f.TenantId == id && f.FeatureKey == req.FeatureKey, ct);
+            if (flag is null)
+            {
+                flag = new TenantFeatureFlag { TenantId = id, FeatureKey = req.FeatureKey };
+                _db.TenantFeatureFlags.Add(flag);
+            }
+
+            var oldEnabled = flag.IsEnabled;
+            flag.IsEnabled = req.IsEnabled;
+            if (req.ConfigJson is not null) flag.ConfigJson = req.ConfigJson;
+            flag.UpdatedAtUtc = DateTime.UtcNow;
+
+            AuditTenant(id, req.IsEnabled ? "FeatureEnabled" : "FeatureDisabled",
+                new { featureKey = req.FeatureKey, isEnabled = oldEnabled },
+                new { featureKey = req.FeatureKey, isEnabled = req.IsEnabled },
+                entityType: "FeatureFlag", entityId: $"{id}/{req.FeatureKey}");
+            results.Add(BulkOpItem.Ok(id, tenant.Name));
+        }
+
+        await _db.SaveChangesAsync(ct);
+        foreach (var item in results.Where(r => r.Status == "ok"))
+            FeatureFlagGuardFilter.InvalidateCache(_cache, item.TenantId, req.FeatureKey);
+
+        return Ok(BulkSummary(req.IsEnabled ? "feature-enable" : "feature-disable", results, featureKey: req.FeatureKey, appliedToAll: req.ApplyToAll));
+    }
+
+    // ── Bulk helpers ──────────────────────────────────────────────────────────
+
+    private static List<Guid> NormalizeTenantIds(IEnumerable<Guid>? ids)
+        => ids is null ? new() : ids.Where(g => g != Guid.Empty).Distinct().ToList();
+
+    private void AuditTenant(Guid tenantId, string action, object oldVals, object newVals,
+        string entityType = "Tenant", string? entityId = null)
+    {
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId = tenantId,
+            EntityType = entityType,
+            EntityId = entityId ?? tenantId.ToString(),
+            Action = action,
+            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(oldVals),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(newVals),
+            PerformedByName = "platform_admin",
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+        });
+    }
+
+    private static object BulkSummary(string operation, List<BulkOpItem> results,
+        string? featureKey = null, bool? appliedToAll = null) => new
+    {
+        operation,
+        featureKey,
+        appliedToAll,
+        requested = results.Count,
+        succeeded = results.Count(r => r.Status == "ok"),
+        skipped   = results.Count(r => r.Status == "skipped"),
+        failed    = results.Count(r => r.Status == "failed"),
+        results
+    };
+
     // ── Tenant Profile Edit ───────────────────────────────────────────────────
 
     [HttpPatch("tenants/{tenantId:guid}")]
@@ -3522,6 +3718,29 @@ public record CreateTenantRequest(
 
 public record AddTenantAdminRequest(string Email, string? FullName, string Password);
 public record TenantActionRequest(string? Reason);
+
+// ── Bulk tenant operation DTOs ──────────────────────────────────────────────
+public record BulkTenantActionRequest(List<Guid> TenantIds, string? Reason);
+public record BulkDeleteTenantsRequest(List<Guid> TenantIds, string Confirm);
+public record BulkFeatureFlagRequest(
+    List<Guid>? TenantIds,
+    bool ApplyToAll,
+    string FeatureKey,
+    bool IsEnabled,
+    string? ConfigJson);
+
+/// <summary>Per-tenant outcome of a bulk operation. Status is "ok" | "skipped" | "failed".</summary>
+public sealed class BulkOpItem
+{
+    public Guid TenantId { get; init; }
+    public string? Name { get; init; }
+    public string Status { get; init; } = "ok";
+    public string? Reason { get; init; }
+
+    public static BulkOpItem Ok(Guid id, string? name) => new() { TenantId = id, Name = name, Status = "ok" };
+    public static BulkOpItem Skip(Guid id, string reason) => new() { TenantId = id, Status = "skipped", Reason = reason };
+    public static BulkOpItem Fail(Guid id, string reason) => new() { TenantId = id, Status = "failed", Reason = reason };
+}
 public record UpdateTenantRequest(string? Name);
 public record ForcePasswordResetRequest(string TempPassword);
 public record StartSupportAccessRequest(string TenantId, string UserId, string Reason);
