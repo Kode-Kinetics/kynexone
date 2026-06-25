@@ -34,7 +34,28 @@ public class LogisticsSeeder : ILogisticsSeeder
 
     private async Task SeedTenantAsync(Guid tenantId, string slug, CancellationToken ct)
     {
-        if (await _db.DispatchOrders.AnyAsync(x => x.TenantId == tenantId, ct)) return;
+        if (await _db.DispatchOrders.AnyAsync(x => x.TenantId == tenantId, ct))
+        {
+            var existingStops = await _db.LastMileStops.Where(x => x.TenantId == tenantId).ToListAsync(ct);
+            var touched = false;
+            foreach (var stop in existingStops)
+            {
+                if (!string.IsNullOrWhiteSpace(stop.Country) && !string.IsNullOrWhiteSpace(stop.Region) && !string.IsNullOrWhiteSpace(stop.SaudiNationalAddressBuildingNo))
+                    continue;
+
+                stop.Region = string.IsNullOrWhiteSpace(stop.Region) ? stop.City : stop.Region;
+                stop.PostalCode = string.IsNullOrWhiteSpace(stop.PostalCode) ? "12211" : stop.PostalCode;
+                stop.Country = string.IsNullOrWhiteSpace(stop.Country) ? "Saudi Arabia" : stop.Country;
+                stop.SaudiNationalAddressBuildingNo = string.IsNullOrWhiteSpace(stop.SaudiNationalAddressBuildingNo) ? "100" : stop.SaudiNationalAddressBuildingNo;
+                stop.SaudiNationalAddressAdditionalNo = string.IsNullOrWhiteSpace(stop.SaudiNationalAddressAdditionalNo) ? "10" : stop.SaudiNationalAddressAdditionalNo;
+                stop.SaudiNationalAddressDistrict = string.IsNullOrWhiteSpace(stop.SaudiNationalAddressDistrict) ? "Business District" : stop.SaudiNationalAddressDistrict;
+                stop.UpdatedAtUtc = DateTime.UtcNow;
+                touched = true;
+            }
+
+            if (touched) await _db.SaveChangesAsync(ct);
+            return;
+        }
 
         var employees = await _db.Employees
             .AsNoTracking()
@@ -140,6 +161,12 @@ public class LogisticsSeeder : ILogisticsSeeder
                 CustomerName = customer,
                 AddressLine = $"{100 + i} {city} Business Road",
                 City = city,
+                Region = city == "Riyadh" ? "Riyadh" : city == "Jeddah" ? "Makkah" : "Eastern Province",
+                PostalCode = city == "Jeddah" ? "21411" : city == "Dammam" || city == "Khobar" ? "31411" : "12211",
+                Country = "Saudi Arabia",
+                SaudiNationalAddressBuildingNo = $"{100 + i}",
+                SaudiNationalAddressAdditionalNo = $"2{i}",
+                SaudiNationalAddressDistrict = i % 2 == 0 ? "Business District" : "Logistics Zone",
                 Status = status is "Delivered" ? "Delivered" : status is "Exception" ? "Attempted" : "OutForDelivery",
                 ProofStatus = status == "Delivered" ? proofStatuses[(i + 1) % proofStatuses.Length] : "None",
                 RecipientName = status == "Delivered" ? $"{customer.Split(' ')[0]} Receiver" : string.Empty,

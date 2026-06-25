@@ -94,8 +94,26 @@ export const logisticsApi = {
   orders: (params: { status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ total: number; page: number; pageSize: number; items: LogisticsOrder[] }>('/api/logistics/orders', { params }).then((r) => r.data),
 
+  order: (id: string) =>
+    client.get<LogisticsOrder>(`/api/logistics/orders/${id}`).then((r) => r.data),
+
+  createOrder: (body: Partial<LogisticsOrder> & { orderNumber: string; customerName: string }) =>
+    client.post<LogisticsOrder>('/api/logistics/orders', body).then((r) => r.data),
+
+  updateOrder: (id: string, body: Partial<LogisticsOrder>) =>
+    client.put<LogisticsOrder>(`/api/logistics/orders/${id}`, body).then((r) => r.data),
+
   routes: (params: { status?: string } = {}) =>
     client.get<{ items: LogisticsRoute[] }>('/api/logistics/routes', { params }).then((r) => r.data),
+
+  createRoute: (body: Partial<LogisticsRoute> & { routeCode: string }) =>
+    client.post<LogisticsRoute>('/api/logistics/routes', body).then((r) => r.data),
+
+  updateRoute: (id: string, body: Partial<LogisticsRoute>) =>
+    client.put<LogisticsRoute>(`/api/logistics/routes/${id}`, body).then((r) => r.data),
+
+  routeStops: (id: string) =>
+    client.get<{ items: LogisticsStop[] }>(`/api/logistics/routes/${id}/stops`).then((r) => r.data),
 
   lastMile: (params: { status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ total: number; page: number; pageSize: number; items: LogisticsStop[] }>('/api/logistics/last-mile', { params }).then((r) => r.data),
@@ -108,4 +126,10 @@ export const logisticsApi = {
 
   confirmDelivery: (id: string, body: { recipientName?: string; proofStatus?: string; exceptionReason?: string }) =>
     client.post<LogisticsStop>(`/api/logistics/stops/${id}/deliver`, body).then((r) => r.data),
+
+  recordAttempt: (id: string, body: { status?: string; proofStatus?: string; exceptionReason?: string; nextEtaUtc?: string; nextStop?: string }) =>
+    client.post<LogisticsStop>(`/api/logistics/stops/${id}/attempt`, body).then((r) => r.data),
+
+  rescheduleStop: (id: string, body: { nextEtaUtc?: string; timeWindow?: string; reason?: string }) =>
+    client.post<LogisticsStop>(`/api/logistics/stops/${id}/reschedule`, body).then((r) => r.data),
 };

@@ -72,8 +72,52 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
   const [orders, setOrders] = useState<LogisticsOrder[]>([]);
   const [routes, setRoutes] = useState<LogisticsRoute[]>([]);
   const [stops, setStops] = useState<LogisticsStop[]>([]);
+  const [routeStops, setRouteStops] = useState<LogisticsStop[]>([]);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [orderForm, setOrderForm] = useState({
+    orderNumber: '',
+    customerName: '',
+    city: 'Riyadh',
+    area: 'City Core',
+    priority: 'Normal',
+    routeCode: '',
+    itemCount: '3',
+    orderValue: '250',
+  });
+  const [routeForm, setRouteForm] = useState({
+    routeCode: '',
+    hub: 'Central Hub',
+    territory: 'City Core',
+    driverName: '',
+    vehicleNumber: '',
+    plannedStops: '8',
+    distanceKm: '42',
+  });
+  const [lastMileForm, setLastMileForm] = useState({
+    recipientName: '',
+    exceptionReason: 'Customer requested another delivery slot.',
+    nextStop: '',
+    timeWindow: '16:00-19:00',
+  });
+
+  const refreshWorkspace = async (activeMode: DispatchMode = mode) => {
+    const [ov, orderRes, routeRes, stopRes] = await Promise.all([
+      logisticsApi.overview(),
+      activeMode === 'dispatch' || activeMode === 'orders' ? logisticsApi.orders({ pageSize: 12 }) : Promise.resolve(null),
+      activeMode === 'dispatch' || activeMode === 'routes' || activeMode === 'delivery' ? logisticsApi.routes() : Promise.resolve(null),
+      activeMode === 'dispatch' || activeMode === 'delivery' ? logisticsApi.lastMile({ pageSize: 12 }) : Promise.resolve(null),
+    ]);
+    setOverview(ov);
+    setOrders(orderRes?.items ?? ov.orderCards);
+    setRoutes(routeRes?.items ?? ov.routeCards);
+    setStops(stopRes?.items ?? ov.liveStops);
+    if (!selectedRouteId) {
+      setSelectedRouteId((routeRes?.items ?? ov.routeCards)[0]?.id ?? null);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +135,7 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
         setOrders(orderRes?.items ?? ov.orderCards);
         setRoutes(routeRes?.items ?? ov.routeCards);
         setStops(stopRes?.items ?? ov.liveStops);
+        setSelectedRouteId((routeRes?.items ?? ov.routeCards)[0]?.id ?? null);
       } catch (err) {
         if (!cancelled) notifyApiError(err, 'Unable to load logistics workspace.');
       } finally {
@@ -99,6 +144,23 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
     })();
     return () => { cancelled = true; };
   }, [mode]);
+
+  useEffect(() => {
+    if (!selectedRouteId) {
+      setRouteStops([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await logisticsApi.routeStops(selectedRouteId);
+        if (!cancelled) setRouteStops(response.items);
+      } catch (err) {
+        if (!cancelled) notifyApiError(err, 'Unable to load route stops.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedRouteId]);
 
   const stats = useMemo(() => {
     if (!overview) return [];
@@ -149,11 +211,7 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
         vehicleNumber: order.vehicleNumber,
         notes: order.dispatchNotes,
       });
-      const refreshed = await logisticsApi.overview();
-      setOverview(refreshed);
-      setOrders(refreshed.orderCards.length > 0 ? refreshed.orderCards : orders);
-      setRoutes(refreshed.routeCards.length > 0 ? refreshed.routeCards : routes);
-      setStops(refreshed.liveStops.length > 0 ? refreshed.liveStops : stops);
+      await refreshWorkspace();
     } catch (err) {
       notifyApiError(err, 'Unable to dispatch this order.');
     } finally {
@@ -170,9 +228,7 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
         nextStop: route.nextStop,
         notes: 'Route advanced from the command center.',
       });
-      const refreshed = await logisticsApi.overview();
-      setOverview(refreshed);
-      setRoutes(refreshed.routeCards.length > 0 ? refreshed.routeCards : routes);
+      await refreshWorkspace();
     } catch (err) {
       notifyApiError(err, 'Unable to advance the route.');
     } finally {
@@ -184,17 +240,101 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
     setSavingId(stop.id);
     try {
       await logisticsApi.confirmDelivery(stop.id, {
-        recipientName: stop.recipientName || stop.customerName.split(' ')[0],
+        recipientName: lastMileForm.recipientName || stop.recipientName || stop.customerName.split(' ')[0],
         proofStatus: 'POD',
       });
-      const refreshed = await logisticsApi.overview();
-      setOverview(refreshed);
-      setStops(refreshed.liveStops.length > 0 ? refreshed.liveStops : stops);
-      setRoutes(refreshed.routeCards.length > 0 ? refreshed.routeCards : routes);
+      await refreshWorkspace();
     } catch (err) {
       notifyApiError(err, 'Unable to confirm delivery.');
     } finally {
       setSavingId(null);
+    }
+  };
+
+  const handleAttempt = async (stop: LogisticsStop) => {
+    setSavingId(stop.id);
+    try {
+      await logisticsApi.recordAttempt(stop.id, {
+        status: 'Attempted',
+        proofStatus: 'None',
+        exceptionReason: lastMileForm.exceptionReason,
+        nextEtaUtc: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+        nextStop: lastMileForm.nextStop || stop.customerName,
+      });
+      await refreshWorkspace();
+    } catch (err) {
+      notifyApiError(err, 'Unable to record delivery attempt.');
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleReschedule = async (stop: LogisticsStop) => {
+    setSavingId(stop.id);
+    try {
+      await logisticsApi.rescheduleStop(stop.id, {
+        timeWindow: lastMileForm.timeWindow,
+        reason: lastMileForm.exceptionReason,
+        nextEtaUtc: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+      });
+      await refreshWorkspace();
+    } catch (err) {
+      notifyApiError(err, 'Unable to reschedule stop.');
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleCreateOrder = async () => {
+    setCreating(true);
+    try {
+      await logisticsApi.createOrder({
+        orderNumber: orderForm.orderNumber,
+        customerName: orderForm.customerName,
+        city: orderForm.city,
+        area: orderForm.area,
+        priority: orderForm.priority,
+        routeCode: orderForm.routeCode,
+        itemCount: Number(orderForm.itemCount),
+        orderValue: Number(orderForm.orderValue),
+        status: 'Queued',
+        customerSegment: 'Retail',
+        salesChannel: 'Portal',
+      });
+      setOrderForm((current) => ({ ...current, orderNumber: '', customerName: '' }));
+      await refreshWorkspace('orders');
+    } catch (err) {
+      notifyApiError(err, 'Unable to create order.');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleCreateRoute = async () => {
+    setCreating(true);
+    try {
+      await logisticsApi.createRoute({
+        routeCode: routeForm.routeCode,
+        hub: routeForm.hub,
+        territory: routeForm.territory,
+        driverName: routeForm.driverName,
+        vehicleNumber: routeForm.vehicleNumber,
+        plannedStops: Number(routeForm.plannedStops),
+        distanceKm: Number(routeForm.distanceKm),
+        completedStops: 0,
+        completionPercent: 0,
+        status: 'Planned',
+        currentStop: '',
+        nextStop: '',
+        departureTimeUtc: new Date().toISOString(),
+        plannedForDate: new Date().toISOString(),
+      });
+      setRouteForm((current) => ({ ...current, routeCode: '' }));
+      await refreshWorkspace('routes');
+    } catch (err) {
+      notifyApiError(err, 'Unable to create route.');
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -337,11 +477,11 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
                   <div className="space-y-3">
                     {mode === 'routes' ? (
                       routes.slice(0, 4).map((route) => (
-                        <ActionRouteCard key={route.id} route={route} saving={savingId === route.id} onAdvance={() => handleProgress(route)} />
+                        <ActionRouteCard key={route.id} route={route} saving={savingId === route.id} onAdvance={() => handleProgress(route)} onInspect={() => setSelectedRouteId(route.id)} />
                       ))
                     ) : mode === 'delivery' ? (
                       stops.slice(0, 6).map((stop) => (
-                        <ActionStopCard key={stop.id} stop={stop} saving={savingId === stop.id} onConfirm={() => handleConfirm(stop)} />
+                        <ActionStopCard key={stop.id} stop={stop} saving={savingId === stop.id} onConfirm={() => handleConfirm(stop)} onAttempt={() => handleAttempt(stop)} onReschedule={() => handleReschedule(stop)} />
                       ))
                     ) : (
                       orders.slice(0, 6).map((order) => (
@@ -445,11 +585,55 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
 
                 <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
                   <div className="flex items-center justify-between">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/50">Last-mile visibility</p>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/50">
+                      {mode === 'orders' ? 'Create job or order' : mode === 'routes' ? 'Create route' : mode === 'delivery' ? 'Delivery exception notes' : 'Create dispatch order'}
+                    </p>
+                    <Package className="h-4 w-4 text-sky-300/80" />
+                  </div>
+                  <div className="mt-3 space-y-3">
+                    {(mode === 'dispatch' || mode === 'orders') && (
+                      <>
+                        <input value={orderForm.orderNumber} onChange={(e) => setOrderForm((current) => ({ ...current, orderNumber: e.target.value }))} placeholder="Order number" className="w-full rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500" />
+                        <input value={orderForm.customerName} onChange={(e) => setOrderForm((current) => ({ ...current, customerName: e.target.value }))} placeholder="Customer name" className="w-full rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500" />
+                        <div className="grid grid-cols-2 gap-2">
+                          <input value={orderForm.city} onChange={(e) => setOrderForm((current) => ({ ...current, city: e.target.value }))} placeholder="City" className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500" />
+                          <input value={orderForm.routeCode} onChange={(e) => setOrderForm((current) => ({ ...current, routeCode: e.target.value }))} placeholder="Route code" className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500" />
+                        </div>
+                        <button onClick={handleCreateOrder} disabled={creating} className="inline-flex w-full items-center justify-center rounded-2xl bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(47,107,255,0.26)] transition hover:brightness-105 disabled:opacity-60">
+                          {creating ? 'Creating...' : 'Create order'}
+                        </button>
+                      </>
+                    )}
+                    {mode === 'routes' && (
+                      <>
+                        <input value={routeForm.routeCode} onChange={(e) => setRouteForm((current) => ({ ...current, routeCode: e.target.value }))} placeholder="Route code" className="w-full rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500" />
+                        <div className="grid grid-cols-2 gap-2">
+                          <input value={routeForm.driverName} onChange={(e) => setRouteForm((current) => ({ ...current, driverName: e.target.value }))} placeholder="Driver name" className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500" />
+                          <input value={routeForm.vehicleNumber} onChange={(e) => setRouteForm((current) => ({ ...current, vehicleNumber: e.target.value }))} placeholder="Vehicle number" className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500" />
+                        </div>
+                        <button onClick={handleCreateRoute} disabled={creating} className="inline-flex w-full items-center justify-center rounded-2xl bg-gradient-to-r from-sky-600 via-cyan-500 to-teal-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(47,107,255,0.26)] transition hover:brightness-105 disabled:opacity-60">
+                          {creating ? 'Creating...' : 'Create route'}
+                        </button>
+                      </>
+                    )}
+                    {mode === 'delivery' && (
+                      <>
+                        <input value={lastMileForm.recipientName} onChange={(e) => setLastMileForm((current) => ({ ...current, recipientName: e.target.value }))} placeholder="Recipient name override" className="w-full rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500" />
+                        <textarea value={lastMileForm.exceptionReason} onChange={(e) => setLastMileForm((current) => ({ ...current, exceptionReason: e.target.value }))} rows={3} placeholder="Attempt / reschedule reason" className="w-full rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-500" />
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/50">
+                      {mode === 'routes' ? 'Stops on selected route' : 'Last-mile visibility'}
+                    </p>
                     <Truck className="h-4 w-4 text-sky-300/80" />
                   </div>
                   <div className="mt-3 space-y-2">
-                    {stops.slice(0, 4).map((stop) => (
+                    {(mode === 'routes' ? routeStops : stops).slice(0, 4).map((stop) => (
                       <div key={stop.id} className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
@@ -515,7 +699,7 @@ function ActionOrderCard({ order, onDispatch, saving }: { order: LogisticsOrder;
   );
 }
 
-function ActionRouteCard({ route, onAdvance, saving }: { route: LogisticsRoute; onAdvance: () => void; saving: boolean }) {
+function ActionRouteCard({ route, onAdvance, onInspect, saving }: { route: LogisticsRoute; onAdvance: () => void; onInspect: () => void; saving: boolean }) {
   return (
     <div className="rounded-[24px] border border-slate-200/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(245,248,255,0.78))] p-4 shadow-[0_10px_24px_rgba(37,99,235,0.05)] dark:border-white/10 dark:bg-white/[0.04]">
       <div className="flex items-start justify-between gap-3">
@@ -532,20 +716,29 @@ function ActionRouteCard({ route, onAdvance, saving }: { route: LogisticsRoute; 
         <span>{route.distanceKm.toFixed(1)} km</span>
         <span>{route.driverName}</span>
       </div>
-      <button
-        type="button"
-        onClick={onAdvance}
-        disabled={saving}
-        className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-sky-600 via-cyan-500 to-teal-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(47,107,255,0.26)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {saving ? 'Advancing...' : 'Advance route'}
-        <ArrowRight className="h-4 w-4" />
-      </button>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={onInspect}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200/70 bg-white px-4 py-3 text-[12px] font-bold text-slate-700 transition hover:border-sky-300 hover:text-sky-700 dark:border-white/10 dark:bg-white/[0.05] dark:text-white"
+        >
+          Inspect stops
+        </button>
+        <button
+          type="button"
+          onClick={onAdvance}
+          disabled={saving}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-sky-600 via-cyan-500 to-teal-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(47,107,255,0.26)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {saving ? 'Advancing...' : 'Advance route'}
+          <ArrowRight className="h-4 w-4" />
+        </button>
+      </div>
     </div>
   );
 }
 
-function ActionStopCard({ stop, onConfirm, saving }: { stop: LogisticsStop; onConfirm: () => void; saving: boolean }) {
+function ActionStopCard({ stop, onConfirm, onAttempt, onReschedule, saving }: { stop: LogisticsStop; onConfirm: () => void; onAttempt: () => void; onReschedule: () => void; saving: boolean }) {
   return (
     <div className="rounded-[24px] border border-slate-200/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(245,248,255,0.78))] p-4 shadow-[0_10px_24px_rgba(37,99,235,0.05)] dark:border-white/10 dark:bg-white/[0.04]">
       <div className="flex items-start justify-between gap-3">
@@ -564,15 +757,32 @@ function ActionStopCard({ stop, onConfirm, saving }: { stop: LogisticsStop; onCo
         <span>•</span>
         <span>{stop.proofStatus}</span>
       </div>
-      <button
-        type="button"
-        onClick={onConfirm}
-        disabled={saving}
-        className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-500 to-cyan-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(47,107,255,0.22)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {saving ? 'Confirming...' : 'Confirm delivery'}
-        <CheckCircle2 className="h-4 w-4" />
-      </button>
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        <button
+          type="button"
+          onClick={onAttempt}
+          disabled={saving}
+          className="inline-flex w-full items-center justify-center rounded-2xl border border-amber-200/70 bg-amber-50 px-3 py-3 text-[11px] font-bold text-amber-700 transition hover:border-amber-300 disabled:opacity-60"
+        >
+          Attempt
+        </button>
+        <button
+          type="button"
+          onClick={onReschedule}
+          disabled={saving}
+          className="inline-flex w-full items-center justify-center rounded-2xl border border-slate-200/70 bg-white px-3 py-3 text-[11px] font-bold text-slate-700 transition hover:border-sky-300 disabled:opacity-60 dark:border-white/10 dark:bg-white/[0.05] dark:text-white"
+        >
+          Reschedule
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={saving}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-500 to-cyan-400 px-3 py-3 text-[11px] font-bold text-white shadow-[0_14px_30px_rgba(47,107,255,0.22)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {saving ? 'Saving...' : 'Deliver'}
+        </button>
+      </div>
     </div>
   );
 }
