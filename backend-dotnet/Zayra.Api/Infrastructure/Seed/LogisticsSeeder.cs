@@ -63,11 +63,18 @@ public class LogisticsSeeder : ILogisticsSeeder
             .OrderBy(e => e.EmployeeCode)
             .ToListAsync(ct);
 
+        var driverNames = employees.Count > 0
+            ? employees.Select(e => e.FullName).Where(name => !string.IsNullOrWhiteSpace(name)).ToArray()
+            : new[]
+            {
+                "Ammar Al-Harbi",
+                "Nasser Al-Qahtani",
+                "Huda Al-Mutairi",
+                "Faisal Al-Dosari",
+            };
+
         if (employees.Count == 0)
-        {
-            _logger.LogInformation("LogisticsSeeder: tenant {TenantId} ({Slug}) has no active employees — skipping.", tenantId, slug);
-            return;
-        }
+            _logger.LogInformation("LogisticsSeeder: tenant {TenantId} ({Slug}) has no active employees — seeding fallback logistics operators.", tenantId, slug);
 
         var hubNames = new[] { "North Hub", "Central Hub", "South Hub" };
         var territories = new[] { "City Core", "Business District", "Residential Loop", "Industrial Edge" };
@@ -95,7 +102,7 @@ public class LogisticsSeeder : ILogisticsSeeder
                 RouteCode = $"RT-{today:yyMMdd}-{i + 1:02}",
                 Hub = hubNames[i % hubNames.Length],
                 Territory = territories[i % territories.Length],
-                DriverName = employees[(i + 1) % employees.Count].FullName,
+                DriverName = driverNames[(i + 1) % driverNames.Length],
                 VehicleNumber = $"VAN-{(i + 3) * 14}",
                 Status = routeStatuses[i % routeStatuses.Length],
                 PlannedStops = planned,

@@ -40,11 +40,20 @@ public class FleetTmsSeeder : IFleetTmsSeeder
             .OrderBy(e => e.EmployeeCode)
             .ToListAsync(ct);
 
+        var operatorNames = employees.Count > 0
+            ? employees.Select(e => e.FullName).Where(name => !string.IsNullOrWhiteSpace(name)).ToArray()
+            : new[]
+            {
+                "Ammar Al-Harbi",
+                "Nasser Al-Qahtani",
+                "Huda Al-Mutairi",
+                "Faisal Al-Dosari",
+                "Salman Al-Otaibi",
+                "Rania Al-Shehri",
+            };
+
         if (employees.Count == 0)
-        {
-            _logger.LogInformation("FleetTmsSeeder: tenant {TenantId} ({Slug}) has no active employees — skipping.", tenantId, slug);
-            return;
-        }
+            _logger.LogInformation("FleetTmsSeeder: tenant {TenantId} ({Slug}) has no active employees — seeding fallback fleet operators.", tenantId, slug);
 
         var hasFleetSeed = await _db.FleetShipments.AnyAsync(x => x.TenantId == tenantId, ct);
         if (hasFleetSeed)
@@ -79,7 +88,7 @@ public class FleetTmsSeeder : IFleetTmsSeeder
                 PlateNumber = $"KSA-{6000 + i * 17}",
                 Type = vehicleTypes[i % vehicleTypes.Length],
                 Status = i % 4 == 0 ? "Maintenance" : i % 3 == 0 ? "OnTrip" : "Available",
-                DriverName = employees[(i + 1) % employees.Count].FullName,
+                DriverName = operatorNames[(i + 1) % operatorNames.Length],
                 CapacityKg = 1200m + (i * 320m),
                 CapacityCbm = 6.5m + (i * 1.4m),
                 CurrentLoadKg = 280m + (i * 150m),
@@ -771,6 +780,103 @@ public class FleetTmsSeeder : IFleetTmsSeeder
 
         var tenantShipments = shipments ?? await _db.FleetShipments.AsNoTracking().Where(x => x.TenantId == tenantId).OrderBy(x => x.CreatedAtUtc).Take(4).ToListAsync(ct);
         var complianceDocs = new List<FleetReadinessDocument>();
+        var driverDocs = employees.Count > 0
+            ? new[]
+            {
+                new
+                {
+                    SubjectId = employees[0].Id.ToString(),
+                    SubjectName = employees[0].FullName,
+                    EmployeeCode = employees[0].EmployeeCode,
+                    CountryCode = employees[0].CountryCode,
+                    City = "Riyadh",
+                    Region = "Riyadh",
+                    PostalCode = "12211",
+                    DocumentType = "Driver License",
+                    Prefix = "DL",
+                    PermitPrefix = "IQAMA",
+                    ExpiryStatus = "Healthy",
+                    Notes = "Driver permit and licence readiness record.",
+                },
+                new
+                {
+                    SubjectId = employees[Math.Min(1, employees.Count - 1)].Id.ToString(),
+                    SubjectName = employees[Math.Min(1, employees.Count - 1)].FullName,
+                    EmployeeCode = employees[Math.Min(1, employees.Count - 1)].EmployeeCode,
+                    CountryCode = employees[Math.Min(1, employees.Count - 1)].CountryCode,
+                    City = "Jeddah",
+                    Region = "Makkah",
+                    PostalCode = "21411",
+                    DocumentType = "Work Permit",
+                    Prefix = "WP",
+                    PermitPrefix = "MOL",
+                    ExpiryStatus = "Healthy",
+                    Notes = "Driver work permit readiness example.",
+                },
+                new
+                {
+                    SubjectId = employees[Math.Min(2, employees.Count - 1)].Id.ToString(),
+                    SubjectName = employees[Math.Min(2, employees.Count - 1)].FullName,
+                    EmployeeCode = employees[Math.Min(2, employees.Count - 1)].EmployeeCode,
+                    CountryCode = employees[Math.Min(2, employees.Count - 1)].CountryCode,
+                    City = "Dammam",
+                    Region = "Eastern Province",
+                    PostalCode = "31411",
+                    DocumentType = "GCC Permit",
+                    Prefix = "GCC",
+                    PermitPrefix = "GCCP",
+                    ExpiryStatus = "ExpiringSoon",
+                    Notes = "GCC movement permit example.",
+                },
+            }
+            : new[]
+            {
+                new
+                {
+                    SubjectId = $"{slug}-driver-1",
+                    SubjectName = "Ammar Al-Harbi",
+                    EmployeeCode = "DRV001",
+                    CountryCode = "SA",
+                    City = "Riyadh",
+                    Region = "Riyadh",
+                    PostalCode = "12211",
+                    DocumentType = "Driver License",
+                    Prefix = "DL",
+                    PermitPrefix = "IQAMA",
+                    ExpiryStatus = "Healthy",
+                    Notes = "Fallback driver licence readiness record.",
+                },
+                new
+                {
+                    SubjectId = $"{slug}-driver-2",
+                    SubjectName = "Nasser Al-Qahtani",
+                    EmployeeCode = "DRV002",
+                    CountryCode = "SA",
+                    City = "Jeddah",
+                    Region = "Makkah",
+                    PostalCode = "21411",
+                    DocumentType = "Work Permit",
+                    Prefix = "WP",
+                    PermitPrefix = "MOL",
+                    ExpiryStatus = "Healthy",
+                    Notes = "Fallback driver permit readiness record.",
+                },
+                new
+                {
+                    SubjectId = $"{slug}-driver-3",
+                    SubjectName = "Huda Al-Mutairi",
+                    EmployeeCode = "DRV003",
+                    CountryCode = "SA",
+                    City = "Dammam",
+                    Region = "Eastern Province",
+                    PostalCode = "31411",
+                    DocumentType = "GCC Permit",
+                    Prefix = "GCC",
+                    PermitPrefix = "GCCP",
+                    ExpiryStatus = "ExpiringSoon",
+                    Notes = "Fallback GCC permit readiness record.",
+                },
+            };
 
         complianceDocs.AddRange(new[]
         {
@@ -846,67 +952,30 @@ public class FleetTmsSeeder : IFleetTmsSeeder
                 GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(17)),
                 Notes = "Warehouse permit used for GCC-ready logistics staging.",
             },
-            new FleetReadinessDocument
-            {
-                TenantId = tenantId,
-                Kind = "Driver",
-                SubjectType = "Driver",
-                SubjectId = employees[0].Id.ToString(),
-                SubjectName = employees[0].FullName,
-                DocumentType = "Driver License",
-                DocumentNumber = $"DL-{slug.ToUpperInvariant()}-{employees[0].EmployeeCode}",
-                PermitNo = $"IQAMA-{employees[0].EmployeeCode}",
-                CountryCode = employees[0].CountryCode,
-                City = "Riyadh",
-                Region = "Riyadh",
-                PostalCode = "12211",
-                DocumentStatus = "Active",
-                ExpiryStatus = "Healthy",
-                IssueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-2)),
-                GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(14)),
-                Notes = "Driver permit and licence readiness record.",
-            },
-            new FleetReadinessDocument
-            {
-                TenantId = tenantId,
-                Kind = "Driver",
-                SubjectType = "Driver",
-                SubjectId = employees[Math.Min(1, employees.Count - 1)].Id.ToString(),
-                SubjectName = employees[Math.Min(1, employees.Count - 1)].FullName,
-                DocumentType = "Work Permit",
-                DocumentNumber = $"WP-{slug.ToUpperInvariant()}-{employees[Math.Min(1, employees.Count - 1)].EmployeeCode}",
-                PermitNo = $"MOL-{employees[Math.Min(1, employees.Count - 1)].EmployeeCode}",
-                CountryCode = employees[Math.Min(1, employees.Count - 1)].CountryCode,
-                City = "Jeddah",
-                Region = "Makkah",
-                PostalCode = "21411",
-                DocumentStatus = "Active",
-                ExpiryStatus = "Healthy",
-                IssueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(-8)),
-                GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(6)),
-                Notes = "Driver work permit readiness example.",
-            },
-            new FleetReadinessDocument
-            {
-                TenantId = tenantId,
-                Kind = "Driver",
-                SubjectType = "Driver",
-                SubjectId = employees[Math.Min(2, employees.Count - 1)].Id.ToString(),
-                SubjectName = employees[Math.Min(2, employees.Count - 1)].FullName,
-                DocumentType = "GCC Permit",
-                DocumentNumber = $"GCC-{slug.ToUpperInvariant()}-{employees[Math.Min(2, employees.Count - 1)].EmployeeCode}",
-                PermitNo = $"GCCP-{employees[Math.Min(2, employees.Count - 1)].EmployeeCode}",
-                CountryCode = employees[Math.Min(2, employees.Count - 1)].CountryCode,
-                City = "Dammam",
-                Region = "Eastern Province",
-                PostalCode = "31411",
-                DocumentStatus = "Active",
-                ExpiryStatus = "ExpiringSoon",
-                IssueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(-10)),
-                GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(24)),
-                Notes = "GCC movement permit example.",
-            }
         });
+
+        complianceDocs.AddRange(driverDocs.Select((driver, index) => new FleetReadinessDocument
+        {
+            TenantId = tenantId,
+            Kind = "Driver",
+            SubjectType = "Driver",
+            SubjectId = driver.SubjectId,
+            SubjectName = driver.SubjectName,
+            DocumentType = driver.DocumentType,
+            DocumentNumber = $"{driver.Prefix}-{slug.ToUpperInvariant()}-{driver.EmployeeCode}",
+            PermitNo = $"{driver.PermitPrefix}-{driver.EmployeeCode}",
+            CountryCode = driver.CountryCode,
+            City = driver.City,
+            Region = driver.Region,
+            PostalCode = driver.PostalCode,
+            DocumentStatus = "Active",
+            ExpiryStatus = driver.ExpiryStatus,
+            IssueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(-(10 - index * 2))),
+            GregorianExpiryDate = driver.ExpiryStatus == "ExpiringSoon"
+                ? DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(24))
+                : DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(14 - index * 4)),
+            Notes = driver.Notes,
+        }));
 
         _db.FleetReadinessDocuments.AddRange(complianceDocs);
 
