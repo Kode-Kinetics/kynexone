@@ -1796,9 +1796,14 @@ function EmailConfigTab() {
   const testConnection = async () => {
     setTesting(true); setTestResult(null);
     try {
-      await systemSettingsApi.upsert({ category: 'Email', settingKey: 'Smtp.Host', settingValue: cfg['Smtp.Host'], dataType: 'string', description: 'Smtp.Host' });
-      setTestResult({ ok: true, message: 'Settings saved. Send a test email from the notification system to verify SMTP connectivity.' });
-    } catch { setTestResult({ ok: false, message: 'Failed to save settings.' }); } finally { setTesting(false); }
+      // Persist all fields first so the backend tests against the latest values…
+      for (const key of KEYS) {
+        await systemSettingsApi.upsert({ category: 'Email', settingKey: key, settingValue: cfg[key], dataType: 'string', description: key });
+      }
+      // …then send a real test email through the configured SMTP server.
+      const result = await systemSettingsApi.testSmtp();
+      setTestResult(result);
+    } catch { setTestResult({ ok: false, message: 'Failed to save settings or reach the server.' }); } finally { setTesting(false); }
   };
 
   if (loading) return <div className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>;
@@ -1859,7 +1864,7 @@ function EmailConfigTab() {
 
       <div className="flex gap-3">
         <button type="button" className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Settings'}</button>
-        <button type="button" className="btn-secondary" onClick={testConnection} disabled={testing}>{testing ? 'Saving…' : 'Save & Verify'}</button>
+        <button type="button" className="btn-secondary" onClick={testConnection} disabled={testing}>{testing ? 'Sending test…' : 'Save & Send Test Email'}</button>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/[0.03]">

@@ -170,6 +170,9 @@ export const systemSettingsApi = {
 
   upsert: (body: { category: string; settingKey: string; settingValue: string; dataType?: string; description?: string }) =>
     client.post<SystemSetting>('/api/admin/system-settings', body).then(r => r.data),
+
+  testSmtp: () =>
+    client.post<{ ok: boolean; message: string }>('/api/admin/system-settings/smtp/test').then(r => r.data),
 };
 
 export const gccSettingsApi = {

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Admin;
@@ -91,6 +92,34 @@ public class SetupSettingsController : ControllerBase
         _db.SystemSettings.Add(s);
         await _db.SaveChangesAsync(ct);
         return Ok(s);
+    }
+
+    // Sends a real test email through the configured SMTP server so admins can
+    // verify connectivity (host/port/credentials/TLS) instead of guessing.
+    [HttpPost("api/admin/system-settings/smtp/test")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> TestSmtp([FromServices] IEmailService email, CancellationToken ct)
+    {
+        if (!await email.IsConfiguredAsync(ct))
+            return Ok(new { ok = false, message = "SMTP is not configured. Enter and save the host and from-address first." });
+
+        var to = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                 ?? User.FindFirst("email")?.Value;
+        if (string.IsNullOrWhiteSpace(to))
+            return Ok(new { ok = false, message = "Your account has no email address on file to send the test to." });
+
+        try
+        {
+            await email.SendAsync(to, "KynexOne Admin", "KynexOne — SMTP test",
+                "<p>This is a test message confirming your KynexOne SMTP settings are working.</p>"
+                + "<p>If you received this, outbound email (payslips, alerts, letters) is configured correctly.</p>",
+                null, ct);
+            return Ok(new { ok = true, message = $"Test email sent to {to}. Check that inbox to confirm delivery." });
+        }
+        catch (Exception ex)
+        {
+            return Ok(new { ok = false, message = $"SMTP test failed: {ex.Message}" });
+        }
     }
 
     // ── GCC Compliance Settings ─────────────────────────────────────────────
