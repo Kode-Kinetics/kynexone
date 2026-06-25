@@ -90,6 +90,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Live Tracking', icon: MapPinned, path: '/fleet/tracking', requiredPermissions: ['fleet.read'] },
       { label: 'Maintenance', icon: Wrench, path: '/fleet/maintenance', requiredPermissions: ['fleet.read'] },
       { label: 'Fuel Analytics', icon: Fuel, path: '/fleet/fuel', requiredPermissions: ['fleet.read'] },
+      { label: 'Carriers & Quotes', icon: BriefcaseBusiness, path: '/fleet/carriers', requiredPermissions: ['fleet.read'] },
     ],
   },
   {

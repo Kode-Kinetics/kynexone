@@ -9,6 +9,7 @@ import {
   BadgeInfo,
   CheckCircle2,
   ChevronRight,
+  ClipboardList,
   Fuel,
   MapPinned,
   Package,
@@ -18,9 +19,22 @@ import {
 } from 'lucide-react';
 import { Logo } from '../components/Logo';
 import { notifyApiError } from '../api/client';
-import { fleetApi, type FleetFuelEvent, type FleetMaintenanceTicket, type FleetOverview, type FleetShipment, type FleetTrackingPoint, type FleetVehicle } from '../api/fleet';
+import {
+  fleetApi,
+  fleetCommercialApi,
+  type BookingRequest,
+  type Carrier,
+  type FleetFuelEvent,
+  type FleetMaintenanceTicket,
+  type FleetOverview,
+  type FleetShipment,
+  type FleetTrackingPoint,
+  type FleetVehicle,
+  type QuoteRequest,
+} from '../api/fleet';
+import { ShipmentLifecycleDrawer } from '../components/fleet/ShipmentLifecycleDrawer';
 
-type FleetMode = 'command' | 'shipments' | 'vehicles' | 'tracking' | 'maintenance' | 'fuel';
+type FleetMode = 'command' | 'shipments' | 'vehicles' | 'tracking' | 'maintenance' | 'fuel' | 'carriers';
 
 const MODULES: Record<FleetMode, {
   label: string;
@@ -78,9 +92,17 @@ const MODULES: Record<FleetMode, {
     path: '/fleet/fuel',
     summary: 'Fuel should read like business intelligence, not a monthly surprise.',
   },
+  carriers: {
+    label: 'Carriers & Quotes',
+    title: 'Manage subcontractors, ratings, bookings, and quote flow in one place.',
+    subtitle: 'Keep carrier performance, open quote demand, and booking intake visible so external capacity stays governed instead of ad hoc.',
+    accent: 'from-violet-600 via-fuchsia-500 to-cyan-400',
+    path: '/fleet/carriers',
+    summary: 'External capacity is part of the operating model, not a side spreadsheet.',
+  },
 };
 
-const MODE_ORDER: FleetMode[] = ['command', 'shipments', 'vehicles', 'tracking', 'maintenance', 'fuel'];
+const MODE_ORDER: FleetMode[] = ['command', 'shipments', 'vehicles', 'tracking', 'maintenance', 'fuel', 'carriers'];
 
 export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
   const pathname = usePathname();
@@ -91,17 +113,24 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
   const [tracking, setTracking] = useState<FleetTrackingPoint[]>([]);
   const [maintenance, setMaintenance] = useState<FleetMaintenanceTicket[]>([]);
   const [fuel, setFuel] = useState<FleetFuelEvent[]>([]);
+  const [carriers, setCarriers] = useState<Carrier[]>([]);
+  const [bookings, setBookings] = useState<BookingRequest[]>([]);
+  const [quotes, setQuotes] = useState<QuoteRequest[]>([]);
+  const [selectedShipment, setSelectedShipment] = useState<FleetShipment | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
 
   const refreshAll = async () => {
-    const [ov, shipmentRes, vehicleRes, trackingRes, maintenanceRes, fuelRes] = await Promise.all([
+    const [ov, shipmentRes, vehicleRes, trackingRes, maintenanceRes, fuelRes, carrierRes, bookingRes, quoteRes] = await Promise.all([
       fleetApi.overview(),
       fleetApi.shipments({ pageSize: 12 }),
       fleetApi.vehicles(),
       fleetApi.tracking({ pageSize: 12 }),
       fleetApi.maintenance({ pageSize: 12 }),
       fleetApi.fuel({ pageSize: 12 }),
+      fleetCommercialApi.carriers().catch(() => ({ items: [] as Carrier[] })),
+      fleetCommercialApi.bookingRequests().catch(() => ({ items: [] as BookingRequest[] })),
+      fleetCommercialApi.quoteRequests().catch(() => ({ items: [] as QuoteRequest[] })),
     ]);
     setOverview(ov);
     setShipments(shipmentRes.items);
@@ -109,6 +138,9 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
     setTracking(trackingRes.items);
     setMaintenance(maintenanceRes.items);
     setFuel(fuelRes.items);
+    setCarriers(carrierRes.items);
+    setBookings(bookingRes.items);
+    setQuotes(quoteRes.items);
   };
 
   useEffect(() => {
@@ -116,13 +148,16 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
     setLoading(true);
     (async () => {
       try {
-        const [ov, shipmentRes, vehicleRes, trackingRes, maintenanceRes, fuelRes] = await Promise.all([
+        const [ov, shipmentRes, vehicleRes, trackingRes, maintenanceRes, fuelRes, carrierRes, bookingRes, quoteRes] = await Promise.all([
           fleetApi.overview(),
           fleetApi.shipments({ pageSize: 12 }),
           fleetApi.vehicles(),
           fleetApi.tracking({ pageSize: 12 }),
           fleetApi.maintenance({ pageSize: 12 }),
           fleetApi.fuel({ pageSize: 12 }),
+          fleetCommercialApi.carriers().catch(() => ({ items: [] as Carrier[] })),
+          fleetCommercialApi.bookingRequests().catch(() => ({ items: [] as BookingRequest[] })),
+          fleetCommercialApi.quoteRequests().catch(() => ({ items: [] as QuoteRequest[] })),
         ]);
         if (cancelled) return;
         setOverview(ov);
@@ -131,6 +166,9 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
         setTracking(trackingRes.items);
         setMaintenance(maintenanceRes.items);
         setFuel(fuelRes.items);
+        setCarriers(carrierRes.items);
+        setBookings(bookingRes.items);
+        setQuotes(quoteRes.items);
       } catch (err) {
         if (!cancelled) notifyApiError(err, 'Unable to load fleet workspace.');
       } finally {
@@ -186,13 +224,21 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
         status: event.anomalyFlag ? 'Review' : event.eventType,
       }));
     }
+    if (mode === 'carriers') {
+      return carriers.slice(0, 5).map((carrier) => ({
+        id: carrier.id,
+        title: carrier.name,
+        subtitle: `${carrier.region} · ${carrier.serviceType}`,
+        status: carrier.status,
+      }));
+    }
     return shipments.slice(0, 5).map((shipment) => ({
       id: shipment.id,
       title: shipment.shipmentNumber,
       subtitle: `${shipment.customerName} · ${shipment.destination}`,
       status: shipment.status,
     }));
-  }, [fuel, maintenance, mode, shipments, tracking, vehicles]);
+  }, [carriers, fuel, maintenance, mode, shipments, tracking, vehicles]);
 
   const exceptionRows = useMemo(() => {
     const rows = [] as Array<{ id: string; label: string; detail: string; tone: string }>;
@@ -205,8 +251,14 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
     if (overview?.summary.enRoute) {
       rows.push({ id: 'movement', label: 'Freight in motion', detail: `${overview.summary.enRoute} shipments are currently on the road.`, tone: 'blue' });
     }
+    if (mode === 'carriers' && bookings.length) {
+      rows.push({ id: 'bookings', label: 'Booking intake', detail: `${bookings.length} open booking requests need carrier allocation.`, tone: 'amber' });
+    }
+    if (mode === 'carriers' && quotes.length) {
+      rows.push({ id: 'quotes', label: 'Quote pipeline', detail: `${quotes.length} quote requests are waiting for commercial review.`, tone: 'orange' });
+    }
     return rows.slice(0, 4);
-  }, [overview]);
+  }, [bookings.length, mode, overview, quotes.length]);
 
   const deliveredRateText = overview ? `${overview.summary.deliveredRate.toFixed(1)}%` : '0%';
   const avgFuelLevelText = overview ? `${overview.summary.avgFuelLevel.toFixed(1)}%` : '0%';
@@ -226,6 +278,10 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
     } finally {
       setSavingId(null);
     }
+  };
+
+  const handleOpenLifecycle = (shipment: FleetShipment) => {
+    setSelectedShipment(shipment);
   };
 
   const handleService = async (vehicle: FleetVehicle) => {
@@ -404,6 +460,8 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
                               ? 'Maintenance queue'
                               : mode === 'fuel'
                                 ? 'Fuel spend and anomaly review'
+                                : mode === 'carriers'
+                                  ? 'Carrier performance and demand'
                                 : 'Shipments, loads, and proof'}
                       </p>
                     </div>
@@ -421,8 +479,10 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
                       <ActionMaintenanceCard key={ticket.id} ticket={ticket} saving={savingId === ticket.id} onClose={() => handleCloseMaintenance(ticket)} />
                     )) : mode === 'fuel' ? fuel.slice(0, 5).map((eventRow) => (
                       <ActionFuelCard key={eventRow.id} eventRow={eventRow} saving={savingId === eventRow.id} onFlag={() => handleFlagFuel(eventRow)} />
+                    )) : mode === 'carriers' ? carriers.slice(0, 5).map((carrier) => (
+                      <ActionCarrierCard key={carrier.id} carrier={carrier} />
                     )) : shipments.slice(0, 5).map((shipment) => (
-                      <ActionShipmentCard key={shipment.id} shipment={shipment} saving={savingId === shipment.id} onDispatch={() => handleDispatch(shipment)} />
+                      <ActionShipmentCard key={shipment.id} shipment={shipment} saving={savingId === shipment.id} onDispatch={() => handleDispatch(shipment)} onOpenLifecycle={() => handleOpenLifecycle(shipment)} />
                     ))}
                   </div>
                 </div>
@@ -539,9 +599,24 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
                           </span>
                         </div>
                       </div>
-                    ))}
+                      ))}
                   </div>
                 </div>
+
+                {mode === 'carriers' && (
+                  <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/50">Carrier demand</p>
+                      <Package className="h-4 w-4 text-fuchsia-300/80" />
+                    </div>
+                    <div className="mt-3 space-y-2 text-[12px] text-slate-300/85">
+                      <p>Carriers on record: <span className="font-bold text-white">{carriers.length}</span></p>
+                      <p>Open booking requests: <span className="font-bold text-white">{bookings.length}</span></p>
+                      <p>Open quote requests: <span className="font-bold text-white">{quotes.length}</span></p>
+                      <p>Average carrier score: <span className="font-bold text-white">{carriers.length ? (carriers.reduce((sum, item) => sum + ((item.onTimeScore + item.damageScore + item.costScore) / 3), 0) / carriers.length).toFixed(0) : '0'}</span></p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="mt-6 rounded-[26px] border border-white/10 bg-gradient-to-r from-emerald-500/12 via-cyan-400/10 to-transparent p-4">
@@ -567,6 +642,10 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
                 </div>
               </div>
             </div>
+
+            {selectedShipment && (
+              <ShipmentLifecycleDrawer shipment={selectedShipment} onClose={() => setSelectedShipment(null)} />
+            )}
           </section>
         </div>
       </div>
@@ -574,7 +653,7 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
   );
 }
 
-function ActionShipmentCard({ shipment, onDispatch, saving }: { shipment: FleetShipment; onDispatch: () => void; saving: boolean }) {
+function ActionShipmentCard({ shipment, onDispatch, onOpenLifecycle, saving }: { shipment: FleetShipment; onDispatch: () => void; onOpenLifecycle: () => void; saving: boolean }) {
   return (
     <div className="rounded-[24px] border border-slate-200/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(245,248,255,0.78))] p-4 shadow-[0_10px_24px_rgba(16,185,129,0.05)] dark:border-white/10 dark:bg-white/[0.04]">
       <div className="flex items-start justify-between gap-3">
@@ -593,10 +672,44 @@ function ActionShipmentCard({ shipment, onDispatch, saving }: { shipment: FleetS
         <span>•</span>
         <span>{shipment.mode}</span>
       </div>
-      <button type="button" onClick={onDispatch} disabled={saving} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-cyan-500 to-sky-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(16,185,129,0.26)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60">
-        {saving ? 'Dispatching...' : 'Dispatch shipment'}
-        <ArrowRight className="h-4 w-4" />
-      </button>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+        <button type="button" onClick={onDispatch} disabled={saving} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-cyan-500 to-sky-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(16,185,129,0.26)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60">
+          {saving ? 'Dispatching...' : 'Dispatch'}
+          <ArrowRight className="h-4 w-4" />
+        </button>
+        <button type="button" onClick={onOpenLifecycle} className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200/80 bg-white px-4 py-3 text-[12px] font-bold text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-200">
+          Lifecycle
+          <ClipboardList className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ActionCarrierCard({ carrier }: { carrier: Carrier }) {
+  const score = Math.round((carrier.onTimeScore + carrier.damageScore + carrier.costScore) / 3);
+  return (
+    <div className="rounded-[24px] border border-slate-200/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(245,248,255,0.78))] p-4 shadow-[0_10px_24px_rgba(16,185,129,0.05)] dark:border-white/10 dark:bg-white/[0.04]">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[12px] font-black tracking-tight text-slate-950 dark:text-white">{carrier.name}</p>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">{carrier.region} · {carrier.serviceType}</p>
+        </div>
+        <span className="rounded-full border border-slate-200/70 bg-white px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:border-white/10 dark:bg-white/[0.05] dark:text-slate-300">
+          {carrier.status}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2 text-[10px] text-slate-400">
+        <span>On-time {carrier.onTimeScore.toFixed(0)}</span>
+        <span>Damage {carrier.damageScore.toFixed(0)}</span>
+        <span>Cost {carrier.costScore.toFixed(0)}</span>
+      </div>
+      <div className="mt-4 flex items-center gap-2">
+        <div className="h-2 flex-1 rounded-full bg-slate-200/80 dark:bg-white/10">
+          <div className="h-2 rounded-full bg-gradient-to-r from-violet-500 via-fuchsia-500 to-cyan-400" style={{ width: `${score}%` }} />
+        </div>
+        <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300">{score}</span>
+      </div>
     </div>
   );
 }

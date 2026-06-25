@@ -226,6 +226,17 @@ public class ZayraDbContext : DbContext
     public DbSet<FleetTrackingPoint> FleetTrackingPoints => Set<FleetTrackingPoint>();
     public DbSet<FleetMaintenanceTicket> FleetMaintenanceTickets => Set<FleetMaintenanceTicket>();
     public DbSet<FleetFuelEvent> FleetFuelEvents => Set<FleetFuelEvent>();
+    public DbSet<ShipmentStop> ShipmentStops => Set<ShipmentStop>();
+    public DbSet<ProofOfDelivery> ProofOfDeliveries => Set<ProofOfDelivery>();
+    public DbSet<CustomerTrackingLink> CustomerTrackingLinks => Set<CustomerTrackingLink>();
+    public DbSet<ShipmentEvent> ShipmentEvents => Set<ShipmentEvent>();
+    public DbSet<DriverTask> DriverTasks => Set<DriverTask>();
+    public DbSet<Carrier> Carriers => Set<Carrier>();
+    public DbSet<CarrierContact> CarrierContacts => Set<CarrierContact>();
+    public DbSet<CarrierPerformanceScore> CarrierPerformanceScores => Set<CarrierPerformanceScore>();
+    public DbSet<ShipmentCarrierAssignment> ShipmentCarrierAssignments => Set<ShipmentCarrierAssignment>();
+    public DbSet<BookingRequest> BookingRequests => Set<BookingRequest>();
+    public DbSet<QuoteRequest> QuoteRequests => Set<QuoteRequest>();
     // ── Performance & Appraisals ─────────────────────────────────────────────
     public DbSet<PerformanceCycle> PerformanceCycles => Set<PerformanceCycle>();
     public DbSet<PerformanceScorecardTemplate> PerformanceScorecardTemplates => Set<PerformanceScorecardTemplate>();
@@ -1272,6 +1283,112 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.ShipmentNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.RouteCode });
+        });
+
+        modelBuilder.Entity<ShipmentStop>(entity =>
+        {
+            entity.ToTable("shipment_stops");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Latitude).HasPrecision(10, 7);
+            entity.Property(x => x.Longitude).HasPrecision(10, 7);
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId, x.SequenceNo }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId, x.Status });
+        });
+
+        modelBuilder.Entity<ProofOfDelivery>(entity =>
+        {
+            entity.ToTable("proofs_of_delivery");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CapturedLatitude).HasPrecision(10, 7);
+            entity.Property(x => x.CapturedLongitude).HasPrecision(10, 7);
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId });
+            entity.HasIndex(x => new { x.TenantId, x.StopId });
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<CustomerTrackingLink>(entity =>
+        {
+            entity.ToTable("customer_tracking_links");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId });
+            entity.HasIndex(x => new { x.TenantId, x.Token }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.IsRevoked, x.ExpiresAtUtc });
+        });
+
+        modelBuilder.Entity<ShipmentEvent>(entity =>
+        {
+            entity.ToTable("shipment_events");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId, x.OccurredAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.Visibility });
+        });
+
+        modelBuilder.Entity<DriverTask>(entity =>
+        {
+            entity.ToTable("driver_tasks");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId });
+            entity.HasIndex(x => new { x.TenantId, x.DriverName, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.DueAtUtc });
+        });
+
+        modelBuilder.Entity<Carrier>(entity =>
+        {
+            entity.ToTable("carriers");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.OnTimeScore).HasPrecision(5, 2);
+            entity.Property(x => x.DamageScore).HasPrecision(5, 2);
+            entity.Property(x => x.CostScore).HasPrecision(5, 2);
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<CarrierContact>(entity =>
+        {
+            entity.ToTable("carrier_contacts");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.CarrierId });
+        });
+
+        modelBuilder.Entity<CarrierPerformanceScore>(entity =>
+        {
+            entity.ToTable("carrier_performance_scores");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.OnTimePct).HasPrecision(5, 2);
+            entity.Property(x => x.DamagePct).HasPrecision(5, 2);
+            entity.Property(x => x.AcceptancePct).HasPrecision(5, 2);
+            entity.Property(x => x.OverallScore).HasPrecision(5, 2);
+            entity.HasIndex(x => new { x.TenantId, x.CarrierId, x.ScoredAtUtc });
+        });
+
+        modelBuilder.Entity<ShipmentCarrierAssignment>(entity =>
+        {
+            entity.ToTable("shipment_carrier_assignments");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.QuotedAmount).HasPrecision(14, 2);
+            entity.Property(x => x.AgreedAmount).HasPrecision(14, 2);
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CarrierId });
+        });
+
+        modelBuilder.Entity<BookingRequest>(entity =>
+        {
+            entity.ToTable("booking_requests");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.EstimatedWeightKg).HasPrecision(12, 2);
+            entity.Property(x => x.EstimatedVolumeCbm).HasPrecision(12, 2);
+            entity.HasIndex(x => new { x.TenantId, x.RequestNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<QuoteRequest>(entity =>
+        {
+            entity.ToTable("quote_requests");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.EstimatedAmount).HasPrecision(14, 2);
+            entity.Property(x => x.MarginPct).HasPrecision(5, 2);
+            entity.HasIndex(x => new { x.TenantId, x.QuoteNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.Status });
         });
 
         modelBuilder.Entity<FleetVehicle>(entity =>

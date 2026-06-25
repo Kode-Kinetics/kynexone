@@ -41,23 +41,26 @@ export function Logo({ collapsed, size = 'md', theme = 'light' }: LogoProps) {
             <stop offset="0%" stopColor="#ffffff" stopOpacity="0.30" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
           </linearGradient>
+          <filter id={id('shadow')} x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="2" stdDeviation="2.2" floodColor="#07111f" floodOpacity="0.24" />
+            <feDropShadow dx="0" dy="8" stdDeviation="10" floodColor="#2563eb" floodOpacity="0.18" />
+          </filter>
         </defs>
 
-        {/* tile */}
-        <rect x="4" y="4" width="32" height="32" rx="9" fill={`url(#${id('bg')})`} />
-        {/* soft top-left highlight */}
-        <rect x="4" y="4" width="32" height="32" rx="9" fill={`url(#${id('hi')})`} />
-
-        {/* crisp K */}
-        <path
-          d="M15.5 12 V28 M15.5 20.2 L25 12 M16.4 19.6 L25.4 28"
-          stroke="#ffffff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"
-        />
-        {/* accent node */}
-        <circle cx="28.4" cy="11.6" r="2.5" fill="#22D3EE" />
-
-        {/* hairline rim for crispness on dark bg */}
-        <rect x="4.5" y="4.5" width="31" height="31" rx="8.5" fill="none" stroke="#ffffff" strokeOpacity={inverse ? 0.16 : 0.1} strokeWidth="1" />
+        <g filter={`url(#${id('shadow')})`}>
+          <rect x="4" y="4" width="32" height="32" rx="9" fill={`url(#${id('bg')})`} />
+          <rect x="4" y="4" width="32" height="32" rx="9" fill={`url(#${id('hi')})`} />
+          <rect x="5.25" y="5.75" width="30" height="29.5" rx="8.5" fill="#0f172a" opacity="0.10" />
+          <path
+            d="M15.5 12 V28 M15.5 20.2 L25 12 M16.4 19.6 L25.4 28"
+            stroke="#ffffff"
+            strokeWidth="2.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <circle cx="28.4" cy="11.6" r="2.5" fill="#22D3EE" />
+          <rect x="4.5" y="4.5" width="31" height="31" rx="8.5" fill="none" stroke="#ffffff" strokeOpacity={inverse ? 0.16 : 0.1} strokeWidth="1" />
+        </g>
 
         <style>{`
           .kx-logo { transition: transform .25s cubic-bezier(.2,.8,.2,1); }

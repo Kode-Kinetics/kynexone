@@ -197,12 +197,224 @@ public class FleetTmsSeeder : IFleetTmsSeeder
 
         _db.FleetShipments.AddRange(shipments);
         _db.FleetTrackingPoints.AddRange(trackingPoints);
+        await _db.SaveChangesAsync(ct);
+
+        var stops = new List<ShipmentStop>();
+        var pods = new List<ProofOfDelivery>();
+        var links = new List<CustomerTrackingLink>();
+        var events = new List<ShipmentEvent>();
+        var tasks = new List<DriverTask>();
+        var carriers = new List<Carrier>();
+        var assignments = new List<ShipmentCarrierAssignment>();
+        var bookingRequests = new List<BookingRequest>();
+        var quoteRequests = new List<QuoteRequest>();
+
+        var carrierNames = new[] { "Rapid Freight", "Desert Haul", "Gulf Connect" };
+        for (var i = 0; i < carrierNames.Length; i++)
+        {
+            var carrier = new Carrier
+            {
+                TenantId = tenantId,
+                Name = carrierNames[i],
+                Code = $"CR-{today:yyMMdd}-{i + 1:02}",
+                Status = "Active",
+                Region = i == 0 ? "Central" : i == 1 ? "Western" : "Eastern",
+                ServiceType = i == 0 ? "Road" : i == 1 ? "Cold Chain" : "Express",
+                OnTimeScore = 92m - i * 2.2m,
+                DamageScore = 1.5m + i * 0.4m,
+                CostScore = 88m - i * 1.8m,
+                Notes = "Seed carrier record for operational demo.",
+                CreatedAtUtc = DateTime.UtcNow.AddDays(-12 - i),
+            };
+            carriers.Add(carrier);
+            assignments.Add(new ShipmentCarrierAssignment
+            {
+                TenantId = tenantId,
+                ShipmentId = shipments[i].Id,
+                CarrierId = carrier.Id,
+                Status = "Assigned",
+                QuotedAmount = 1200m + (i * 180m),
+                AgreedAmount = 1150m + (i * 170m),
+                Notes = "Assigned from carrier management demo.",
+                AssignedAtUtc = DateTime.UtcNow.AddHours(-6 - i),
+            });
+        }
+
+        for (var i = 0; i < 3; i++)
+        {
+            bookingRequests.Add(new BookingRequest
+            {
+                TenantId = tenantId,
+                RequestNumber = $"BKG-{today:yyMMdd}-{300 + i}",
+                CustomerName = customers[i],
+                Origin = origins[i],
+                Destination = destinations[i],
+                Status = i == 0 ? "Open" : "Quoted",
+                EstimatedWeightKg = 500m + i * 140m,
+                EstimatedVolumeCbm = 2.4m + i * 0.8m,
+                RequestedAtUtc = DateTime.UtcNow.AddDays(-2 - i),
+                Notes = "Seed booking request.",
+            });
+            quoteRequests.Add(new QuoteRequest
+            {
+                TenantId = tenantId,
+                QuoteNumber = $"QTE-{today:yyMMdd}-{400 + i}",
+                CustomerName = customers[i],
+                Origin = origins[i],
+                Destination = destinations[i],
+                Status = i == 0 ? "Draft" : "Sent",
+                EstimatedAmount = 2400m + i * 480m,
+                MarginPct = 12m + i * 2m,
+                RequestedAtUtc = DateTime.UtcNow.AddDays(-1 - i),
+                Notes = "Seed quote request.",
+            });
+        }
+
+        for (var i = 0; i < shipments.Count; i++)
+        {
+            var shipment = shipments[i];
+            var stop1 = new ShipmentStop
+            {
+                TenantId = tenantId,
+                ShipmentId = shipment.Id,
+                StopType = "Pickup",
+                SequenceNo = 1,
+                LocationName = shipment.Origin,
+                ContactName = shipment.CustomerName,
+                ContactPhone = "+966500000000",
+                AddressLine1 = $"{100 + i} {shipment.Origin} Street",
+                City = shipment.City,
+                Region = "Saudi Region",
+                PostalCode = "11411",
+                Country = "Saudi Arabia",
+                SaudiNationalAddressBuildingNo = $"{100 + i}",
+                SaudiNationalAddressAdditionalNo = $"2{i}",
+                SaudiNationalAddressDistrict = "Business District",
+                PlannedArrivalAt = DateTime.UtcNow.AddHours(1 + i * 0.5),
+                Status = shipment.Status == "Delivered" ? "Completed" : "Planned",
+                Notes = "Pickup stop seeded.",
+                CreatedAt = DateTime.UtcNow.AddDays(-1),
+                UpdatedAt = DateTime.UtcNow,
+            };
+            var stop2 = new ShipmentStop
+            {
+                TenantId = tenantId,
+                ShipmentId = shipment.Id,
+                StopType = "Delivery",
+                SequenceNo = 2,
+                LocationName = shipment.Destination,
+                ContactName = shipment.CustomerName + " Receiver",
+                ContactPhone = "+966500000001",
+                AddressLine1 = $"{200 + i} {shipment.Destination} Road",
+                City = shipment.City,
+                Region = "Saudi Region",
+                PostalCode = "11511",
+                Country = "Saudi Arabia",
+                SaudiNationalAddressBuildingNo = $"{200 + i}",
+                SaudiNationalAddressAdditionalNo = $"4{i}",
+                SaudiNationalAddressDistrict = "Retail Zone",
+                PlannedArrivalAt = DateTime.UtcNow.AddHours(4 + i * 0.5),
+                Status = shipment.Status == "Delivered" ? "Completed" : "Planned",
+                ActualArrivalAt = shipment.Status == "Delivered" ? DateTime.UtcNow.AddHours(-1) : null,
+                CompletedAt = shipment.Status == "Delivered" ? DateTime.UtcNow.AddMinutes(-45) : null,
+                Notes = "Delivery stop seeded.",
+                CreatedAt = DateTime.UtcNow.AddDays(-1),
+                UpdatedAt = DateTime.UtcNow,
+            };
+            stops.Add(stop1);
+            stops.Add(stop2);
+
+            if (shipment.Status == "Delivered")
+            {
+                pods.Add(new ProofOfDelivery
+                {
+                    TenantId = tenantId,
+                    ShipmentId = shipment.Id,
+                    StopId = stop2.Id,
+                    RecipientName = $"{shipment.CustomerName.Split(' ')[0]} Receiver",
+                    RecipientPhone = "+966500000002",
+                    SignatureUrl = "https://example.com/signature.png",
+                    PhotoUrl = "https://example.com/pod-photo.png",
+                    DocumentUrl = "https://example.com/pod.pdf",
+                    Notes = "Seed POD verified through customer handoff.",
+                    DeliveryCondition = i % 4 == 0 ? "Good" : "Good",
+                    CapturedLatitude = 24.71m + i * 0.01m,
+                    CapturedLongitude = 46.67m + i * 0.01m,
+                    CapturedAt = DateTime.UtcNow.AddHours(-1),
+                    VerifiedAt = DateTime.UtcNow.AddMinutes(-20),
+                    VerifiedByUserId = null,
+                    Status = "Verified",
+                    CreatedAt = DateTime.UtcNow.AddHours(-1),
+                    UpdatedAt = DateTime.UtcNow,
+                });
+            }
+
+            links.Add(new CustomerTrackingLink
+            {
+                TenantId = tenantId,
+                ShipmentId = shipment.Id,
+                Token = $"trk_{Guid.NewGuid():N}",
+                ExpiresAtUtc = DateTime.UtcNow.AddDays(5 + i),
+                SharedBy = "Fleet Ops",
+                CreatedAtUtc = DateTime.UtcNow.AddHours(-3),
+            });
+
+            events.Add(new ShipmentEvent
+            {
+                TenantId = tenantId,
+                ShipmentId = shipment.Id,
+                EventType = "ShipmentCreated",
+                Message = "Shipment created and queued for planning.",
+                ActorName = "Fleet Ops",
+                Visibility = "Public",
+                OccurredAtUtc = DateTime.UtcNow.AddDays(-2),
+                CreatedAtUtc = DateTime.UtcNow.AddDays(-2),
+            });
+            events.Add(new ShipmentEvent
+            {
+                TenantId = tenantId,
+                ShipmentId = shipment.Id,
+                EventType = "ShipmentPlanned",
+                Message = "Shipment planned onto operational route.",
+                ActorName = "Fleet Ops",
+                Visibility = "Public",
+                OccurredAtUtc = DateTime.UtcNow.AddDays(-1),
+                CreatedAtUtc = DateTime.UtcNow.AddDays(-1),
+            });
+
+            tasks.Add(new DriverTask
+            {
+                TenantId = tenantId,
+                ShipmentId = shipment.Id,
+                StopId = stop1.Id,
+                TaskType = "Pickup",
+                Title = $"Pickup {shipment.ShipmentNumber}",
+                Description = $"Collect freight from {shipment.Origin}.",
+                Status = shipment.Status == "Booked" ? "Open" : "Completed",
+                DriverName = shipment.DriverName,
+                VehicleNumber = shipment.VehicleNumber,
+                DueAtUtc = DateTime.UtcNow.AddHours(2 + i * 0.5),
+                CompletedAtUtc = shipment.Status == "Delivered" ? DateTime.UtcNow.AddHours(-2) : null,
+                Notes = "Driver task seeded.",
+                CreatedAtUtc = DateTime.UtcNow.AddDays(-1),
+            });
+        }
+
+        _db.Carriers.AddRange(carriers);
+        _db.ShipmentCarrierAssignments.AddRange(assignments);
+        _db.ShipmentStops.AddRange(stops);
+        _db.ProofOfDeliveries.AddRange(pods);
+        _db.CustomerTrackingLinks.AddRange(links.Take(3));
+        _db.ShipmentEvents.AddRange(events);
+        _db.DriverTasks.AddRange(tasks.Take(3));
+        _db.BookingRequests.AddRange(bookingRequests);
+        _db.QuoteRequests.AddRange(quoteRequests);
         _db.FleetMaintenanceTickets.AddRange(maintenance);
         _db.FleetFuelEvents.AddRange(fuelEvents);
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
-            "FleetTmsSeeder: seeded {Shipments} shipments, {Vehicles} vehicles, {TrackingPoints} tracking points, {Maintenance} maintenance tickets and {FuelEvents} fuel events for tenant {TenantId} ({Slug}).",
-            shipments.Count, vehicles.Count, trackingPoints.Count, maintenance.Count, fuelEvents.Count, tenantId, slug);
+            "FleetTmsSeeder: seeded {Shipments} shipments, {Vehicles} vehicles, {TrackingPoints} tracking points, {Maintenance} maintenance tickets, {FuelEvents} fuel events, {Stops} stops and {Pods} PODs for tenant {TenantId} ({Slug}).",
+            shipments.Count, vehicles.Count, trackingPoints.Count, maintenance.Count, fuelEvents.Count, stops.Count, pods.Count, tenantId, slug);
     }
 }
