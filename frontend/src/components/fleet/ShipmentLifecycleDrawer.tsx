@@ -154,6 +154,10 @@ export function ShipmentLifecycleDrawer({ shipment, onClose }: ShipmentLifecycle
   const latestPod = pods[0] ?? null;
   const carrierName = carriers.find((carrier) => carrier.id === carrierId)?.name ?? shipment.carrierName ?? 'Unassigned';
   const visibleEvents = useMemo(() => events.slice(0, 12), [events]);
+  const completedStops = stops.filter((stop) => stop.status === 'Completed').length;
+  const verifiedPods = pods.filter((pod) => pod.status === 'Verified').length;
+  const activeTrackingLinks = links.filter((link) => !link.isRevoked).length;
+  const openDriverTasks = tasks.filter((task) => task.status !== 'Completed').length;
 
   const handleCreateStop = async () => {
     if (!stopForm.locationName.trim()) return;
@@ -315,11 +319,31 @@ export function ShipmentLifecycleDrawer({ shipment, onClose }: ShipmentLifecycle
 
           <div className="relative z-10 grid flex-1 gap-4 overflow-hidden p-4 lg:grid-cols-[1.15fr_0.85fr]">
             <div className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+              <section className="rounded-[28px] border border-white/80 bg-white/78 p-4 shadow-[0_16px_36px_rgba(15,23,42,0.05)] backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.04]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-emerald-200/80 bg-emerald-50 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-700">
+                    Live shipment entity
+                  </span>
+                  <span className="rounded-full border border-cyan-200/80 bg-cyan-50 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-700">
+                    DB-backed lifecycle
+                  </span>
+                  <span className="rounded-full border border-slate-200/80 bg-white px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:border-white/10 dark:bg-white/[0.05] dark:text-slate-300">
+                    {shipment.routeCode || 'Route pending'}
+                  </span>
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <LifecycleStat label="Stops completed" value={`${completedStops}/${stops.length || 0}`} tone="emerald" />
+                  <LifecycleStat label="Verified PODs" value={verifiedPods.toString()} tone="cyan" />
+                  <LifecycleStat label="Open task count" value={openDriverTasks.toString()} tone="violet" />
+                  <LifecycleStat label="Tracking links" value={activeTrackingLinks.toString()} tone="amber" />
+                </div>
+              </section>
+
               <section className="rounded-[28px] border border-white/80 bg-white/80 p-4 shadow-[0_16px_36px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.04]">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400">Execution board</p>
-                    <h3 className="mt-1 text-[18px] font-black tracking-tight text-slate-950 dark:text-white">Stops, POD, and live control</h3>
+                    <h3 className="mt-1 text-[18px] font-black tracking-tight text-slate-950 dark:text-white">Stops, POD, and recovery control</h3>
                   </div>
                   <span className="rounded-full border border-cyan-200/70 bg-cyan-50 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-700">
                     {loading ? 'Loading live data' : `${stops.length} stops`}
@@ -332,6 +356,9 @@ export function ShipmentLifecycleDrawer({ shipment, onClose }: ShipmentLifecycle
                       <Route className="h-4 w-4 text-cyan-500" />
                       <p className="text-[10px] font-bold uppercase tracking-[0.22em]">Stops timeline</p>
                     </div>
+                    <p className="mt-2 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">
+                      Progress every pickup, handoff, and drop with timestamps the team can trust during escalations.
+                    </p>
                     <div className="mt-4 space-y-3">
                       {stops.map((stop) => (
                         <div key={stop.id} className="rounded-[22px] border border-slate-200/70 bg-white/85 p-3 dark:border-white/10 dark:bg-white/[0.04]">
@@ -369,6 +396,9 @@ export function ShipmentLifecycleDrawer({ shipment, onClose }: ShipmentLifecycle
                       <FileCheck2 className="h-4 w-4 text-emerald-500" />
                       <p className="text-[10px] font-bold uppercase tracking-[0.22em]">POD panel</p>
                     </div>
+                    <p className="mt-2 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">
+                      Capture proof cleanly, then move it through submit, verify, or reject without leaving the shipment context.
+                    </p>
                     <div className="mt-4 space-y-3">
                       <label className="space-y-1">
                         <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-400">Stop</span>
@@ -513,10 +543,13 @@ export function ShipmentLifecycleDrawer({ shipment, onClose }: ShipmentLifecycle
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400">New stop</p>
-                    <h3 className="mt-1 text-[18px] font-black tracking-tight text-slate-950 dark:text-white">Add execution details</h3>
+                    <h3 className="mt-1 text-[18px] font-black tracking-tight text-slate-950 dark:text-white">Add execution detail with address fidelity</h3>
                   </div>
                   <Package className="h-5 w-5 text-cyan-500" />
                 </div>
+                <p className="mt-2 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  Add stops with operational address detail so dispatch, driver, and compliance teams are all reading the same location truth.
+                </p>
                 <div className="mt-4 grid gap-3">
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="space-y-1">
@@ -606,8 +639,8 @@ export function ShipmentLifecycleDrawer({ shipment, onClose }: ShipmentLifecycle
                   </div>
                   <UserRound className="h-5 w-5 text-emerald-500" />
                 </div>
-                <div className="mt-4 space-y-2">
-                  {tasks.map((task) => (
+                  <div className="mt-4 space-y-2">
+                    {tasks.map((task) => (
                     <div key={task.id} className="rounded-[20px] border border-slate-200/70 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
                       <div className="flex items-start justify-between gap-3">
                         <div>
@@ -640,7 +673,7 @@ export function ShipmentLifecycleDrawer({ shipment, onClose }: ShipmentLifecycle
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400">Carrier assignment</p>
-                      <h4 className="mt-1 text-[14px] font-black tracking-tight text-slate-950 dark:text-white">Subcontracted capacity</h4>
+                      <h4 className="mt-1 text-[14px] font-black tracking-tight text-slate-950 dark:text-white">Subcontracted capacity and commercial control</h4>
                     </div>
                     <Link2 className="h-4 w-4 text-violet-500" />
                   </div>
@@ -695,6 +728,24 @@ function SummaryTile({ label, value }: { label: string; value: string }) {
     <div className="rounded-[18px] border border-slate-200/70 bg-slate-50/75 p-3 dark:border-white/10 dark:bg-white/[0.03]">
       <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400">{label}</p>
       <p className="mt-2 text-[13px] font-bold text-slate-900 dark:text-white">{value}</p>
+    </div>
+  );
+}
+
+function LifecycleStat({ label, value, tone }: { label: string; value: string; tone: 'emerald' | 'cyan' | 'violet' | 'amber' }) {
+  const toneClass =
+    tone === 'emerald'
+      ? 'border-emerald-200/70 bg-emerald-50/70 text-emerald-700'
+      : tone === 'cyan'
+        ? 'border-cyan-200/70 bg-cyan-50/70 text-cyan-700'
+        : tone === 'violet'
+          ? 'border-violet-200/70 bg-violet-50/70 text-violet-700'
+          : 'border-amber-200/70 bg-amber-50/70 text-amber-700';
+
+  return (
+    <div className={`rounded-[22px] border px-4 py-3 ${toneClass} dark:border-white/10 dark:bg-white/[0.04] dark:text-white`}>
+      <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-current/70">{label}</p>
+      <p className="mt-2 text-[22px] font-black tracking-tight text-current">{value}</p>
     </div>
   );
 }

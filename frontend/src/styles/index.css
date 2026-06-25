@@ -5,14 +5,20 @@
 :root {
   color-scheme: light;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #f0f4ff;
+  background:
+    radial-gradient(circle at 12% 16%, rgba(96, 165, 250, 0.20), transparent 28%),
+    radial-gradient(circle at 86% 10%, rgba(34, 211, 238, 0.14), transparent 22%),
+    linear-gradient(180deg, #f7fbff 0%, #eef4ff 48%, #edf2ff 100%);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 :root.dark {
   color-scheme: dark;
-  background: #090e1c;
+  background:
+    radial-gradient(circle at 12% 14%, rgba(59, 130, 246, 0.16), transparent 26%),
+    radial-gradient(circle at 82% 12%, rgba(34, 211, 238, 0.10), transparent 20%),
+    linear-gradient(180deg, #050915 0%, #08101f 54%, #070d19 100%);
 }
 
 * {
@@ -21,11 +27,17 @@
 
 html {
   min-width: 320px;
-  background: #f0f4ff;
+  background:
+    radial-gradient(circle at 12% 16%, rgba(96, 165, 250, 0.20), transparent 28%),
+    radial-gradient(circle at 86% 10%, rgba(34, 211, 238, 0.14), transparent 22%),
+    linear-gradient(180deg, #f7fbff 0%, #eef4ff 48%, #edf2ff 100%);
 }
 
 html.dark {
-  background: #090e1c;
+  background:
+    radial-gradient(circle at 12% 14%, rgba(59, 130, 246, 0.16), transparent 26%),
+    radial-gradient(circle at 82% 12%, rgba(34, 211, 238, 0.10), transparent 20%),
+    linear-gradient(180deg, #050915 0%, #08101f 54%, #070d19 100%);
 }
 
 body {
@@ -33,12 +45,18 @@ body {
   min-height: 100vh;
   margin: 0;
   color: #111827;
-  background: #f0f4ff;
+  background:
+    radial-gradient(circle at 12% 16%, rgba(96, 165, 250, 0.20), transparent 28%),
+    radial-gradient(circle at 86% 10%, rgba(34, 211, 238, 0.14), transparent 22%),
+    linear-gradient(180deg, #f7fbff 0%, #eef4ff 48%, #edf2ff 100%);
 }
 
 .dark body {
   color: #f0f4ff;
-  background: #090e1c;
+  background:
+    radial-gradient(circle at 12% 14%, rgba(59, 130, 246, 0.16), transparent 26%),
+    radial-gradient(circle at 82% 12%, rgba(34, 211, 238, 0.10), transparent 20%),
+    linear-gradient(180deg, #050915 0%, #08101f 54%, #070d19 100%);
 }
 
 button,
@@ -78,17 +96,45 @@ input:focus-visible {
    * clipped to the card's bounds instead of covering the full viewport.
    */
   .surface {
-    @apply rounded-xl border border-slate-200/80 bg-white shadow-panel
-      dark:border-white/[0.07] dark:bg-[#0d1225];
+    @apply rounded-[24px] border border-white/80
+      bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(246,249,255,0.82))]
+      shadow-[0_20px_50px_rgba(15,23,42,0.06),inset_0_1px_0_rgba(255,255,255,0.85)]
+      dark:border-white/[0.08]
+      dark:bg-[linear-gradient(180deg,rgba(14,18,34,0.92),rgba(9,13,26,0.88))]
+      dark:shadow-[0_24px_60px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.03)];
   }
 
   .surface-raised {
-    @apply rounded-xl border border-slate-200/90 bg-white shadow-soft
-      dark:border-white/[0.09] dark:bg-[#111827];
+    @apply rounded-[26px] border border-white/85
+      bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(244,248,255,0.88))]
+      shadow-[0_28px_70px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.92)]
+      dark:border-white/[0.1]
+      dark:bg-[linear-gradient(180deg,rgba(17,24,39,0.96),rgba(12,18,32,0.92))]
+      dark:shadow-[0_30px_80px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.04)];
   }
 
   .muted-text {
     @apply text-slate-500 dark:text-slate-400;
+  }
+
+  .workspace-main {
+    @apply mx-auto w-full max-w-[1680px];
+  }
+
+  .workspace-stack {
+    @apply rounded-[32px] border border-white/70
+      bg-[linear-gradient(180deg,rgba(255,255,255,0.58),rgba(255,255,255,0.32))]
+      p-3 shadow-[0_26px_90px_rgba(37,99,235,0.08)]
+      dark:border-white/[0.06]
+      dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.015))];
+  }
+
+  .workspace-panel {
+    @apply rounded-[28px] border border-white/70
+      bg-[linear-gradient(180deg,rgba(255,255,255,0.74),rgba(248,251,255,0.56))]
+      p-4 shadow-[0_16px_40px_rgba(15,23,42,0.04)]
+      dark:border-white/[0.06]
+      dark:bg-[linear-gradient(180deg,rgba(9,14,28,0.72),rgba(8,12,24,0.48))];
   }
 
   /* ─── Sidebar nav items ────────────────────────────────── */
@@ -169,6 +215,14 @@ input:focus-visible {
 }
 
 /* ── Animations ─────────────────────────────────────────────────────────── */
+@keyframes kx-ambient-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.85; }
+  50% { transform: translate3d(0, -18px, 0) scale(1.03); opacity: 1; }
+}
+@keyframes kx-grid-breathe {
+  0%, 100% { opacity: 0.14; }
+  50% { opacity: 0.22; }
+}
 @keyframes kx-fade-in-up {
   /* Opacity-only — transform would create a CSS stacking context on <main>,
      breaking position:fixed modals inside page content. */
@@ -183,11 +237,47 @@ input:focus-visible {
   from { opacity: 0; transform: translateX(-6px); }
   to   { opacity: 1; }
 }
+@keyframes kx-route-flow {
+  0% { stroke-dashoffset: 0; opacity: 0.35; }
+  50% { opacity: 0.95; }
+  100% { stroke-dashoffset: -140; opacity: 0.35; }
+}
+@keyframes kx-signal-pulse {
+  0% { transform: scale(0.92); opacity: 0.18; }
+  60% { transform: scale(1.42); opacity: 0.55; }
+  100% { transform: scale(1.68); opacity: 0; }
+}
+@keyframes kx-lane-drift {
+  0%, 100% { transform: translate3d(0, 0, 0); opacity: 0.45; }
+  50% { transform: translate3d(12px, -10px, 0); opacity: 0.9; }
+}
+.animate-ambient-drift { animation: kx-ambient-drift 14s ease-in-out infinite; }
+.animate-grid-breathe  { animation: kx-grid-breathe 10s ease-in-out infinite; }
 .animate-fade-in-up { animation: kx-fade-in-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both; }
 .animate-fade-in    { animation: kx-fade-in 0.25s ease-out both; }
 .animate-slide-in   { animation: kx-slide-in 0.25s ease-out both; }
+.animate-route-flow { animation: kx-route-flow 9s linear infinite; }
+.animate-signal-pulse { animation: kx-signal-pulse 3.6s ease-out infinite; }
+.animate-lane-drift { animation: kx-lane-drift 11s ease-in-out infinite; }
+
+.ops-route-line {
+  stroke-dasharray: 10 14;
+  stroke-linecap: round;
+}
+
+.ops-live-row {
+  @apply flex w-full items-center justify-between gap-3 rounded-xl bg-white/70 px-3 py-2 text-left transition hover:bg-white/95 dark:bg-white/[0.04] dark:hover:bg-white/[0.08];
+}
+
+.ops-live-row-static {
+  @apply cursor-default;
+}
+
+.ops-live-row-action {
+  @apply cursor-pointer hover:shadow-[0_14px_24px_rgba(15,23,42,0.06)] dark:hover:shadow-none;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-fade-in-up, .animate-fade-in, .animate-slide-in { animation: none; }
+  .animate-ambient-drift, .animate-grid-breathe, .animate-fade-in-up, .animate-fade-in, .animate-slide-in, .animate-route-flow, .animate-signal-pulse, .animate-lane-drift { animation: none; }
   .nav-item-idle:hover, .btn-primary:hover { transform: none; }
 }

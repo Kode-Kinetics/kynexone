@@ -31,35 +31,35 @@ const MODULES: Record<DispatchMode, {
 }> = {
   dispatch: {
     label: 'Dispatch Command Center',
-    title: 'Command the day from one live operations board.',
-    subtitle: 'See queued work, live routes, exceptions, and delivery progress in a single control room built for teams who own the floor.',
+    title: 'Protect service promises before delays become customer conversations.',
+    subtitle: 'Bring intake pressure, route movement, recovery actions, and proof visibility into one command surface that helps operators and decision-makers act from the same truth.',
     accent: 'from-blue-600 via-sky-500 to-cyan-400',
     path: '/dispatch',
-    summary: 'Reduce manual handoffs, protect SLAs, and surface exceptions before customers feel the delay.',
+    summary: 'When dispatch, customer service, and operations leadership all read the same live board, SLA risk becomes manageable instead of reactive.',
   },
   orders: {
     label: 'Jobs & Orders',
-    title: 'Turn inbound demand into an executable order pipeline.',
-    subtitle: 'One workspace for order intake, prioritisation, assignment, and dispatch decisions with business context visible at a glance.',
+    title: 'Turn incoming demand into an order pipeline your team can actually execute.',
+    subtitle: 'See who ordered, what matters most, where the work should flow next, and which commitments are putting margin or service at risk.',
     accent: 'from-indigo-600 via-blue-500 to-cyan-400',
     path: '/dispatch/jobs-orders',
-    summary: 'Keep intake, priority, route assignment, and fulfilment status in one place so teams stop chasing spreadsheets.',
+    summary: 'This is the intake layer clients expect to trust: visible priorities, visible ownership, and live status that moves with the operation.',
   },
   routes: {
     label: 'Route Planning',
-    title: 'Build routes that make operational sense, not just map sense.',
-    subtitle: 'Balance stops, vehicle load, distance, and SLA pressure with a planner that feels like a real logistics cockpit.',
+    title: 'Plan routes that respect operational pressure, not just road geometry.',
+    subtitle: 'Balance stop density, load, driver readiness, and completion pressure in a planner built for real tradeoffs instead of theoretical optimisation.',
     accent: 'from-sky-600 via-cyan-500 to-teal-400',
     path: '/dispatch/route-planning',
-    summary: 'See route density, stop completion, and live movement so planners can adjust the day without losing control.',
+    summary: 'Good routing is a commercial capability. This screen helps planners shape the day with fewer blind spots and faster recovery.',
   },
   delivery: {
     label: 'Last Mile Delivery',
-    title: 'Make every drop-off visible from handoff to proof of delivery.',
-    subtitle: 'Track rider progress, proof status, attempts, and customer exceptions in a clean delivery console built for scale.',
+    title: 'Make the last mile accountable all the way to the customer doorstep.',
+    subtitle: 'Track live delivery state, attempted drops, reschedules, recipient proof, and recovery notes in one surface built for operators who cannot afford ambiguity.',
     accent: 'from-cyan-600 via-sky-500 to-blue-400',
     path: '/dispatch/last-mile-delivery',
-    summary: 'Show proof, capture exceptions, and keep the last mile accountable all the way to the customer door.',
+    summary: 'The most visible part of the brand is the delivery moment. This workspace keeps that moment governed, traceable, and fast to recover.',
   },
 };
 
@@ -103,6 +103,19 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
     timeWindow: '16:00-19:00',
   });
 
+  const syncSelectedRoute = (routeList: LogisticsRoute[], stopList: LogisticsStop[]) => {
+    if (!routeList.length) {
+      setSelectedRouteId(null);
+      return;
+    }
+
+    setSelectedRouteId((current) => {
+      if (current && routeList.some((route) => route.id === current)) return current;
+      const routeCodeFromStops = stopList.find((stop) => stop.routeCode)?.routeCode;
+      return routeList.find((route) => route.routeCode === routeCodeFromStops)?.id ?? routeList[0].id;
+    });
+  };
+
   const refreshWorkspace = async (activeMode: DispatchMode = mode) => {
     const [ov, orderRes, routeRes, stopRes] = await Promise.all([
       logisticsApi.overview(),
@@ -111,12 +124,13 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
       activeMode === 'dispatch' || activeMode === 'delivery' ? logisticsApi.lastMile({ pageSize: 12 }) : Promise.resolve(null),
     ]);
     setOverview(ov);
-    setOrders(orderRes?.items ?? ov.orderCards);
-    setRoutes(routeRes?.items ?? ov.routeCards);
-    setStops(stopRes?.items ?? ov.liveStops);
-    if (!selectedRouteId) {
-      setSelectedRouteId((routeRes?.items ?? ov.routeCards)[0]?.id ?? null);
-    }
+    const nextOrders = orderRes?.items ?? ov.orderCards;
+    const nextRoutes = routeRes?.items ?? ov.routeCards;
+    const nextStops = stopRes?.items ?? ov.liveStops;
+    setOrders(nextOrders);
+    setRoutes(nextRoutes);
+    setStops(nextStops);
+    syncSelectedRoute(nextRoutes, nextStops);
   };
 
   useEffect(() => {
@@ -132,10 +146,13 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
         ]);
         if (cancelled) return;
         setOverview(ov);
-        setOrders(orderRes?.items ?? ov.orderCards);
-        setRoutes(routeRes?.items ?? ov.routeCards);
-        setStops(stopRes?.items ?? ov.liveStops);
-        setSelectedRouteId((routeRes?.items ?? ov.routeCards)[0]?.id ?? null);
+        const nextOrders = orderRes?.items ?? ov.orderCards;
+        const nextRoutes = routeRes?.items ?? ov.routeCards;
+        const nextStops = stopRes?.items ?? ov.liveStops;
+        setOrders(nextOrders);
+        setRoutes(nextRoutes);
+        setStops(nextStops);
+        syncSelectedRoute(nextRoutes, nextStops);
       } catch (err) {
         if (!cancelled) notifyApiError(err, 'Unable to load logistics workspace.');
       } finally {
@@ -173,6 +190,19 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
     ];
   }, [overview]);
 
+  const valuePillars = useMemo(() => {
+    switch (mode) {
+      case 'orders':
+        return ['Demand intake', 'Priority control', 'Assignment readiness'];
+      case 'routes':
+        return ['Territory balance', 'Stop density', 'ETA discipline'];
+      case 'delivery':
+        return ['Recipient proof', 'Attempt recovery', 'Doorstep visibility'];
+      default:
+        return ['SLA command', 'Exception recovery', 'Unified dispatch truth'];
+    }
+  }, [mode]);
+
   const liveRecordRows = useMemo(() => {
     if (mode === 'routes') {
       return routes.slice(0, 5).map((route) => ({
@@ -180,6 +210,8 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
         title: route.routeCode,
         subtitle: `${route.hub} · ${route.territory}`,
         status: route.status,
+        actionLabel: 'Focus route',
+        onClick: () => setSelectedRouteId(route.id),
       }));
     }
 
@@ -189,6 +221,11 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
         title: stop.customerName,
         subtitle: stop.addressLine,
         status: stop.status,
+        actionLabel: 'Focus stop',
+        onClick: () => {
+          const matchingRoute = routes.find((route) => route.routeCode === stop.routeCode);
+          if (matchingRoute) setSelectedRouteId(matchingRoute.id);
+        },
       }));
     }
 
@@ -197,10 +234,18 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
       title: order.orderNumber,
       subtitle: `${order.customerName} · ${order.city}`,
       status: order.status,
+      actionLabel: '',
+      onClick: undefined,
     }));
   }, [mode, orders, routes, stops]);
 
   const alerts = overview?.alerts ?? [];
+  const selectedRoute = routes.find((route) => route.id === selectedRouteId) ?? null;
+  const visibleStops = mode === 'routes'
+    ? routeStops
+    : mode === 'delivery' && routeStops.length
+      ? routeStops
+      : stops;
 
   const handleDispatch = async (order: LogisticsOrder) => {
     setSavingId(order.id);
@@ -340,36 +385,21 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
 
   return (
     <>
-      <style>{`
-        @keyframes kx-breathe {
-          0%, 100% { transform: translateY(0px); opacity: 0.75; }
-          50% { transform: translateY(-8px); opacity: 1; }
-        }
-        @keyframes kx-sweep {
-          0% { transform: translateX(-30%); }
-          100% { transform: translateX(30%); }
-        }
-        @keyframes kx-grid {
-          0%, 100% { opacity: 0.12; }
-          50% { opacity: 0.18; }
-        }
-        .kx-breathe { animation: kx-breathe 8s ease-in-out infinite; }
-        .kx-sweep { animation: kx-sweep 16s linear infinite; }
-        .kx-grid { animation: kx-grid 10s ease-in-out infinite; }
-        @media (prefers-reduced-motion: reduce) {
-          .kx-breathe,
-          .kx-sweep,
-          .kx-grid { animation: none !important; }
-        }
-      `}</style>
-
       <div className="relative min-h-[100svh] overflow-hidden bg-[#eef3ff] text-slate-900 dark:bg-[#040814] dark:text-white">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.16),transparent_28%),radial-gradient(circle_at_80%_18%,rgba(94,235,255,0.10),transparent_22%),linear-gradient(180deg,rgba(255,255,255,0.5),transparent_34%)] dark:bg-[radial-gradient(circle_at_top_left,rgba(47,107,255,0.20),transparent_28%),radial-gradient(circle_at_80%_18%,rgba(94,235,255,0.08),transparent_22%),linear-gradient(180deg,rgba(6,11,24,0.92),rgba(4,8,20,0.98))]" />
-        <div className="pointer-events-none absolute inset-0 opacity-[0.16] mix-blend-soft-light [background-image:linear-gradient(rgba(47,107,255,0.07)_1px,transparent_1px),linear-gradient(90deg,rgba(47,107,255,0.07)_1px,transparent_1px)] [background-size:72px_72px] kx-grid" />
-        <div className="pointer-events-none absolute left-[8%] top-[14%] h-56 w-56 rounded-full bg-white/35 blur-3xl kx-breathe" />
-        <div className="pointer-events-none absolute right-[8%] top-[18%] h-64 w-64 rounded-full bg-cyan-300/12 blur-3xl kx-breathe" />
-        <div className="pointer-events-none absolute bottom-[-5rem] left-[20%] h-72 w-72 rounded-full bg-blue-400/12 blur-3xl kx-breathe" />
-        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-[linear-gradient(90deg,transparent,rgba(47,107,255,0.20),rgba(94,235,255,0.24),transparent)] opacity-40 kx-sweep" />
+        <div className="pointer-events-none absolute inset-0 opacity-[0.16] mix-blend-soft-light [background-image:linear-gradient(rgba(47,107,255,0.07)_1px,transparent_1px),linear-gradient(90deg,rgba(47,107,255,0.07)_1px,transparent_1px)] [background-size:72px_72px] animate-grid-breathe" />
+        <div className="pointer-events-none absolute left-[8%] top-[14%] h-56 w-56 rounded-full bg-white/35 blur-3xl animate-ambient-drift" />
+        <div className="pointer-events-none absolute right-[8%] top-[18%] h-64 w-64 rounded-full bg-cyan-300/12 blur-3xl animate-ambient-drift" />
+        <div className="pointer-events-none absolute bottom-[-5rem] left-[20%] h-72 w-72 rounded-full bg-blue-400/12 blur-3xl animate-ambient-drift" />
+        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-[linear-gradient(90deg,transparent,rgba(47,107,255,0.20),rgba(94,235,255,0.24),transparent)] opacity-40 animate-lane-drift" />
+        <svg className="pointer-events-none absolute inset-0 h-full w-full opacity-50" viewBox="0 0 1440 1024" fill="none" aria-hidden="true">
+          <path className="ops-route-line animate-route-flow" d="M118 766C242 692 272 590 386 547C495 506 640 556 750 499C854 444 919 317 1046 298C1153 282 1231 335 1318 258" stroke="rgba(47,107,255,0.26)" strokeWidth="2.5" />
+          <path className="ops-route-line animate-route-flow" d="M160 872C302 812 395 858 531 792C668 724 707 611 821 565C953 513 1062 577 1216 494" stroke="rgba(94,235,255,0.24)" strokeWidth="2" style={{ animationDelay: '-3s' }} />
+          <circle cx="386" cy="547" r="8" fill="rgba(255,255,255,0.9)" />
+          <circle cx="386" cy="547" r="18" className="animate-signal-pulse" fill="rgba(47,107,255,0.22)" />
+          <circle cx="1046" cy="298" r="7" fill="rgba(94,235,255,0.88)" />
+          <circle cx="1046" cy="298" r="16" className="animate-signal-pulse" fill="rgba(94,235,255,0.18)" style={{ animationDelay: '-1.2s' }} />
+        </svg>
 
         <div className="relative z-10 mx-auto flex min-h-[100svh] w-full max-w-[1600px] flex-col px-4 py-3 sm:px-6 lg:px-8 lg:py-4">
           <div className="mb-4 flex items-center justify-between gap-4">
@@ -427,6 +457,13 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
                 <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-slate-500 dark:text-slate-500">
                   {config.summary}
                 </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {valuePillars.map((pillar) => (
+                    <span key={pillar} className="rounded-full border border-white/80 bg-white/78 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-600 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
+                      {pillar}
+                    </span>
+                  ))}
+                </div>
               </div>
 
               <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -521,7 +558,13 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
                     </div>
                     <div className="mt-3 space-y-2">
                       {liveRecordRows.map((item) => (
-                        <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl bg-white/70 px-3 py-2 dark:bg-white/[0.04]">
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={item.onClick}
+                          disabled={!item.onClick}
+                          className={`ops-live-row ${item.onClick ? 'ops-live-row-action' : 'ops-live-row-static'}`}
+                        >
                           <div className="min-w-0">
                             <p className="truncate text-[12px] font-semibold text-slate-800 dark:text-slate-200">{item.title}</p>
                             <p className="truncate text-[10px] text-slate-400 dark:text-slate-500">
@@ -531,8 +574,15 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
                           <span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:bg-white/[0.05] dark:text-slate-300">
                             {item.status}
                           </span>
-                          <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
-                        </div>
+                          {item.onClick ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-blue-500/80">
+                              {item.actionLabel}
+                              <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300">Synced</span>
+                          )}
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -552,10 +602,10 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
 
               <div className="mt-5">
                 <h2 className="text-[28px] font-black leading-tight text-white xl:text-[34px]">
-                  Built for the people who move the day forward.
+                  Built to impress on first look and hold up under live operational pressure.
                 </h2>
                 <p className="mt-3 max-w-xl text-[14px] leading-relaxed text-slate-300/80">
-                  This screen works as a premium sub-landing page and a control room at the same time: the story is strong, the data is live, and every action writes back to the database.
+                  Every panel on this workspace is telling the same business story: faster response, tighter SLA control, fewer customer surprises, and actions that update the real tenant dataset instead of a demo layer.
                 </p>
               </div>
 
@@ -633,7 +683,33 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
                     <Truck className="h-4 w-4 text-sky-300/80" />
                   </div>
                   <div className="mt-3 space-y-2">
-                    {(mode === 'routes' ? routeStops : stops).slice(0, 4).map((stop) => (
+                    {mode === 'delivery' && routes.length > 0 && (
+                      <div className="mb-3 flex flex-wrap gap-2">
+                        {routes.slice(0, 4).map((route) => {
+                          const active = route.id === selectedRouteId;
+                          return (
+                            <button
+                              key={route.id}
+                              type="button"
+                              onClick={() => setSelectedRouteId(route.id)}
+                              className={`rounded-full px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] transition ${
+                                active
+                                  ? 'bg-cyan-400 text-slate-950 shadow-[0_10px_24px_rgba(34,211,238,0.18)]'
+                                  : 'border border-white/10 bg-white/[0.04] text-white/65 hover:bg-white/[0.08]'
+                              }`}
+                            >
+                              {route.routeCode}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {mode === 'delivery' && selectedRoute && (
+                      <p className="mb-3 text-[10px] uppercase tracking-[0.18em] text-white/45">
+                        Showing stops for {selectedRoute.routeCode} · {selectedRoute.driverName || 'Assigned driver pending'}
+                      </p>
+                    )}
+                    {visibleStops.slice(0, 4).map((stop) => (
                       <div key={stop.id} className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
@@ -656,7 +732,7 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
                   <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/70">Connected backend</p>
                 </div>
                 <p className="mt-2 text-[13px] leading-relaxed text-slate-300/80">
-                  Actions on this page update the database: dispatching orders, advancing routes, and confirming proof of delivery all round-trip through the API.
+                  Actions on this page update real entities in the workflow: orders become dispatched, routes progress their completion state, and last-mile proof changes are persisted through the logistics API.
                 </p>
               </div>
             </div>

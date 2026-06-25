@@ -46,59 +46,59 @@ const MODULES: Record<FleetMode, {
 }> = {
   command: {
     label: 'Fleet Command Center',
-    title: 'Run freight, fleets, and service from one premium control room.',
-    subtitle: 'See shipment pressure, available fleet capacity, live tracking signals, maintenance risk, and fuel health in one executive cockpit.',
+    title: 'Run fleet health, safety posture, and shipment flow from one command surface.',
+    subtitle: 'Give operations leaders one credible view of movement, readiness, service risk, and cost pressure without bouncing between maintenance, tracking, and load spreadsheets.',
     accent: 'from-emerald-600 via-cyan-500 to-sky-400',
     path: '/fleet',
-    summary: 'One place to coordinate load planning, dispatch pressure, route balance, and the health of the operation.',
+    summary: 'This is the operational story clients want to see at first glance: moving freight, healthy assets, and the controls to keep service reliable.',
   },
   shipments: {
     label: 'Shipments & Loads',
-    title: 'Turn booked freight into an executable movement plan.',
-    subtitle: 'Track shipments from booking to proof of delivery with weights, volumes, priorities, and carrier assignments visible at a glance.',
+    title: 'Turn freight demand into a movement plan that is commercially and operationally credible.',
+    subtitle: 'Keep booked loads, route ownership, carrier alignment, proof readiness, and shipment state visible in one premium workspace.',
     accent: 'from-cyan-600 via-sky-500 to-blue-400',
     path: '/fleet/shipments',
-    summary: 'Keep load planning grounded in real capacity, real urgency, and the actual DB-backed movement state.',
+    summary: 'Customers trust movement visibility when the platform shows more than a list: it shows accountability, timing, and real shipment progression.',
   },
   vehicles: {
     label: 'Vehicle Management',
-    title: 'Keep the fleet visible, ready, and accounted for.',
-    subtitle: 'Monitor vehicle status, driver assignment, capacity, fuel, odometer, and service readiness in one operational panel.',
+    title: 'Make live vehicle status impossible to misread.',
+    subtitle: 'Surface assignment, readiness, service timing, fuel posture, and capacity in a way that helps transport teams act before asset issues damage execution.',
     accent: 'from-sky-600 via-indigo-500 to-violet-400',
     path: '/fleet/vehicles',
-    summary: 'Make fleet availability and maintenance posture obvious before the schedule gets tight.',
+    summary: 'The strongest fleet products make asset readiness feel obvious. This screen is designed to give that confidence immediately.',
   },
   tracking: {
     label: 'Live Tracking',
-    title: 'See every shipment move, pause, and arrive in real time.',
-    subtitle: 'GPS-style tracking cards surface location labels, geofences, speed, ETA, and exception signals without making the page feel noisy.',
+    title: 'Turn the live fleet map into an operating advantage, not a decorative widget.',
+    subtitle: 'Show movement, geofences, ETA risk, and tracking exceptions in a glassy surface that still feels grounded enough for daily dispatch use.',
     accent: 'from-blue-600 via-cyan-500 to-emerald-400',
     path: '/fleet/tracking',
-    summary: 'Shipping visibility is not a dashboard decoration here; it is the operational source of truth.',
+    summary: 'Visibility matters when it changes behaviour. This module is meant to help teams intervene faster, not just admire pins on a map.',
   },
   maintenance: {
     label: 'Maintenance',
-    title: 'Protect the fleet before the schedule gets expensive.',
-    subtitle: 'Track open work orders, due dates, vendors, downtime, and cost posture so maintenance becomes planned instead of disruptive.',
+    title: 'Make fleet safety and maintenance posture visible before downtime spreads.',
+    subtitle: 'Track work orders, service readiness, vendors, downtime, and cost posture so the fleet stays safe, available, and commercially usable.',
     accent: 'from-orange-500 via-amber-500 to-yellow-400',
     path: '/fleet/maintenance',
-    summary: 'A healthy fleet is a commercial advantage, not just a repair queue.',
+    summary: 'A healthy fleet is not back-office admin. It is one of the clearest drivers of operational trust and margin protection.',
   },
   fuel: {
     label: 'Fuel Analytics',
-    title: 'Turn fuel spend into a governed operating signal.',
-    subtitle: 'Review fuel events, anomalies, card usage, and vehicle trends to catch leakage early and keep spending explainable.',
+    title: 'Make fuel spend feel governed, explainable, and worth reviewing daily.',
+    subtitle: 'Expose anomalies, card usage, location context, and vehicle trends so teams can spot leakage early and back every number with real events.',
     accent: 'from-emerald-600 via-lime-500 to-teal-400',
     path: '/fleet/fuel',
-    summary: 'Fuel should read like business intelligence, not a monthly surprise.',
+    summary: 'Fuel is one of the fastest ways to lose confidence in a fleet operation. This surface turns it into business intelligence instead.',
   },
   carriers: {
     label: 'Carriers & Quotes',
-    title: 'Manage subcontractors, ratings, bookings, and quote flow in one place.',
-    subtitle: 'Keep carrier performance, open quote demand, and booking intake visible so external capacity stays governed instead of ad hoc.',
+    title: 'Keep external capacity disciplined instead of informal.',
+    subtitle: 'Bring carrier quality, quote demand, booking pressure, and commercial readiness into the same operating narrative as the rest of the fleet.',
     accent: 'from-violet-600 via-fuchsia-500 to-cyan-400',
     path: '/fleet/carriers',
-    summary: 'External capacity is part of the operating model, not a side spreadsheet.',
+    summary: 'Subcontracted capacity should feel governed and visible, not hidden in side channels or static documents.',
   },
 };
 
@@ -191,6 +191,25 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
     ];
   }, [overview]);
 
+  const valuePillars = useMemo(() => {
+    switch (mode) {
+      case 'shipments':
+        return ['Shipment accountability', 'Proof readiness', 'Load clarity'];
+      case 'vehicles':
+        return ['Live vehicle status', 'Service readiness', 'Asset utilisation'];
+      case 'tracking':
+        return ['Live fleet map', 'ETA discipline', 'Exception visibility'];
+      case 'maintenance':
+        return ['Fleet health', 'Safety posture', 'Downtime control'];
+      case 'fuel':
+        return ['Spend governance', 'Anomaly detection', 'Usage traceability'];
+      case 'carriers':
+        return ['Carrier governance', 'Commercial discipline', 'Capacity confidence'];
+      default:
+        return ['Fleet health', 'Service reliability', 'Operational truth'];
+    }
+  }, [mode]);
+
   const liveRows = useMemo(() => {
     if (mode === 'vehicles') {
       return vehicles.slice(0, 5).map((vehicle) => ({
@@ -198,6 +217,8 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
         title: vehicle.vehicleNumber,
         subtitle: `${vehicle.type} · ${vehicle.driverName || 'No driver'}`,
         status: vehicle.status,
+        actionLabel: '',
+        onClick: undefined,
       }));
     }
     if (mode === 'tracking') {
@@ -206,6 +227,11 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
         title: point.shipmentNumber,
         subtitle: `${point.locationLabel} · ${point.geofenceName}`,
         status: point.status,
+        actionLabel: 'Open shipment',
+        onClick: () => {
+          const matchingShipment = shipments.find((shipment) => shipment.shipmentNumber === point.shipmentNumber);
+          if (matchingShipment) setSelectedShipment(matchingShipment);
+        },
       }));
     }
     if (mode === 'maintenance') {
@@ -214,6 +240,8 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
         title: ticket.workOrderNumber,
         subtitle: `${ticket.vehicleNumber} · ${ticket.vendorName}`,
         status: ticket.status,
+        actionLabel: '',
+        onClick: undefined,
       }));
     }
     if (mode === 'fuel') {
@@ -222,6 +250,8 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
         title: event.vehicleNumber,
         subtitle: `${event.stationName} · ${event.city}`,
         status: event.anomalyFlag ? 'Review' : event.eventType,
+        actionLabel: '',
+        onClick: undefined,
       }));
     }
     if (mode === 'carriers') {
@@ -230,6 +260,8 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
         title: carrier.name,
         subtitle: `${carrier.region} · ${carrier.serviceType}`,
         status: carrier.status,
+        actionLabel: '',
+        onClick: undefined,
       }));
     }
     return shipments.slice(0, 5).map((shipment) => ({
@@ -237,6 +269,8 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
       title: shipment.shipmentNumber,
       subtitle: `${shipment.customerName} · ${shipment.destination}`,
       status: shipment.status,
+      actionLabel: 'Open lifecycle',
+      onClick: () => setSelectedShipment(shipment),
     }));
   }, [carriers, fuel, maintenance, mode, shipments, tracking, vehicles]);
 
@@ -334,34 +368,21 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
 
   return (
     <>
-      <style>{`
-        @keyframes kx-float {
-          0%, 100% { transform: translateY(0px) translateX(0px); opacity: 0.8; }
-          50% { transform: translateY(-10px) translateX(8px); opacity: 1; }
-        }
-        @keyframes kx-scan {
-          0% { transform: translateX(-28%); }
-          100% { transform: translateX(28%); }
-        }
-        @keyframes kx-grid {
-          0%, 100% { opacity: 0.12; }
-          50% { opacity: 0.2; }
-        }
-        .kx-float { animation: kx-float 10s ease-in-out infinite; }
-        .kx-scan { animation: kx-scan 18s linear infinite; }
-        .kx-grid { animation: kx-grid 12s ease-in-out infinite; }
-        @media (prefers-reduced-motion: reduce) {
-          .kx-float, .kx-scan, .kx-grid { animation: none !important; }
-        }
-      `}</style>
-
       <div className="relative min-h-[100svh] overflow-hidden bg-[#eef6f1] text-slate-900 dark:bg-[#03070f] dark:text-white">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.18),transparent_26%),radial-gradient(circle_at_80%_16%,rgba(14,165,233,0.12),transparent_22%),linear-gradient(180deg,rgba(255,255,255,0.55),transparent_32%)] dark:bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.20),transparent_26%),radial-gradient(circle_at_80%_16%,rgba(14,165,233,0.10),transparent_22%),linear-gradient(180deg,rgba(6,11,20,0.95),rgba(3,7,15,0.98))]" />
-        <div className="pointer-events-none absolute inset-0 opacity-[0.16] mix-blend-soft-light [background-image:linear-gradient(rgba(16,185,129,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(16,185,129,0.08)_1px,transparent_1px)] [background-size:74px_74px] kx-grid" />
-        <div className="pointer-events-none absolute left-[9%] top-[16%] h-60 w-60 rounded-full bg-white/40 blur-3xl kx-float" />
-        <div className="pointer-events-none absolute right-[10%] top-[20%] h-72 w-72 rounded-full bg-cyan-300/12 blur-3xl kx-float" />
-        <div className="pointer-events-none absolute bottom-[-6rem] left-[18%] h-80 w-80 rounded-full bg-emerald-400/12 blur-3xl kx-float" />
-        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-[linear-gradient(90deg,transparent,rgba(16,185,129,0.18),rgba(14,165,233,0.26),transparent)] opacity-45 kx-scan" />
+        <div className="pointer-events-none absolute inset-0 opacity-[0.16] mix-blend-soft-light [background-image:linear-gradient(rgba(16,185,129,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(16,185,129,0.08)_1px,transparent_1px)] [background-size:74px_74px] animate-grid-breathe" />
+        <div className="pointer-events-none absolute left-[9%] top-[16%] h-60 w-60 rounded-full bg-white/40 blur-3xl animate-ambient-drift" />
+        <div className="pointer-events-none absolute right-[10%] top-[20%] h-72 w-72 rounded-full bg-cyan-300/12 blur-3xl animate-ambient-drift" />
+        <div className="pointer-events-none absolute bottom-[-6rem] left-[18%] h-80 w-80 rounded-full bg-emerald-400/12 blur-3xl animate-ambient-drift" />
+        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-[linear-gradient(90deg,transparent,rgba(16,185,129,0.18),rgba(14,165,233,0.26),transparent)] opacity-45 animate-lane-drift" />
+        <svg className="pointer-events-none absolute inset-0 h-full w-full opacity-50" viewBox="0 0 1440 1024" fill="none" aria-hidden="true">
+          <path className="ops-route-line animate-route-flow" d="M126 262C256 196 362 184 504 237C646 292 731 394 871 426C1002 456 1142 420 1310 492" stroke="rgba(16,185,129,0.24)" strokeWidth="2.5" />
+          <path className="ops-route-line animate-route-flow" d="M182 728C320 658 455 704 572 648C711 582 774 476 903 451C1035 426 1149 490 1268 621" stroke="rgba(34,211,238,0.24)" strokeWidth="2" style={{ animationDelay: '-2.4s' }} />
+          <circle cx="504" cy="237" r="8" fill="rgba(255,255,255,0.9)" />
+          <circle cx="504" cy="237" r="18" className="animate-signal-pulse" fill="rgba(16,185,129,0.2)" />
+          <circle cx="903" cy="451" r="7" fill="rgba(34,211,238,0.88)" />
+          <circle cx="903" cy="451" r="16" className="animate-signal-pulse" fill="rgba(34,211,238,0.18)" style={{ animationDelay: '-1s' }} />
+        </svg>
 
         <div className="relative z-10 mx-auto flex min-h-[100svh] w-full max-w-[1640px] flex-col px-4 py-3 sm:px-6 lg:px-8 lg:py-4">
           <div className="mb-4 flex items-center justify-between gap-4">
@@ -419,6 +440,13 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
                 <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-slate-500 dark:text-slate-500">
                   {config.summary}
                 </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {valuePillars.map((pillar) => (
+                    <span key={pillar} className="rounded-full border border-white/80 bg-white/78 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-600 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
+                      {pillar}
+                    </span>
+                  ))}
+                </div>
               </div>
 
               <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -521,7 +549,13 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
                     </div>
                     <div className="mt-3 space-y-2">
                       {liveRows.map((item) => (
-                        <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl bg-white/70 px-3 py-2 dark:bg-white/[0.04]">
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={item.onClick}
+                          disabled={!item.onClick}
+                          className={`ops-live-row ${item.onClick ? 'ops-live-row-action' : 'ops-live-row-static'}`}
+                        >
                           <div className="min-w-0">
                             <p className="truncate text-[12px] font-semibold text-slate-800 dark:text-slate-200">{item.title}</p>
                             <p className="truncate text-[10px] text-slate-400 dark:text-slate-500">{item.subtitle}</p>
@@ -529,8 +563,15 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
                           <span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:bg-white/[0.05] dark:text-slate-300">
                             {item.status}
                           </span>
-                          <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
-                        </div>
+                          {item.onClick ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-600/80 dark:text-emerald-300/80">
+                              {item.actionLabel}
+                              <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300">Synced</span>
+                          )}
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -550,10 +591,10 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
 
               <div className="mt-5">
                 <h2 className="text-[28px] font-black leading-tight text-white xl:text-[34px]">
-                  Built for fleet leaders who need confidence in the first glance.
+                  Built to win confidence in the first glance and still satisfy the operator on the second.
                 </h2>
                 <p className="mt-3 max-w-xl text-[14px] leading-relaxed text-slate-300/80">
-                  This is a working control room and a client-facing product story at the same time: the visuals are premium, the movement is subtle, and the data round-trips to the database.
+                  This workspace is intentionally doing two jobs well: it sells the strength of the platform immediately, and it gives transport teams a live control surface they can trust for daily decisions.
                 </p>
               </div>
 
@@ -625,7 +666,7 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
                   <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/70">Operationally honest</p>
                 </div>
                 <p className="mt-2 text-[13px] leading-relaxed text-slate-300/80">
-                  Shipments, vehicles, tracking, maintenance, and fuel all use the live tenant database. The interface is designed to feel like a premium landing page without sacrificing the working workflow underneath.
+                  Shipments, vehicles, tracking, maintenance, and fuel all round-trip to live tenant entities. The polish is there to elevate trust, not to hide a static demo.
                 </p>
               </div>
 
