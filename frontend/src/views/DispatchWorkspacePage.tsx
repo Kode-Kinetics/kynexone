@@ -83,7 +83,7 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
         const [ov, orderRes, routeRes, stopRes] = await Promise.all([
           logisticsApi.overview(),
           mode === 'dispatch' || mode === 'orders' ? logisticsApi.orders({ pageSize: 12 }) : Promise.resolve(null),
-          mode === 'dispatch' || mode === 'routes' ? logisticsApi.routes() : Promise.resolve(null),
+          mode === 'dispatch' || mode === 'routes' || mode === 'delivery' ? logisticsApi.routes() : Promise.resolve(null),
           mode === 'dispatch' || mode === 'delivery' ? logisticsApi.lastMile({ pageSize: 12 }) : Promise.resolve(null),
         ]);
         if (cancelled) return;
@@ -190,6 +190,7 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
       const refreshed = await logisticsApi.overview();
       setOverview(refreshed);
       setStops(refreshed.liveStops.length > 0 ? refreshed.liveStops : stops);
+      setRoutes(refreshed.routeCards.length > 0 ? refreshed.routeCards : routes);
     } catch (err) {
       notifyApiError(err, 'Unable to confirm delivery.');
     } finally {
