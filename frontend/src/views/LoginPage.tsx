@@ -3,61 +3,26 @@
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  AlertCircle, CheckCircle2, Clock, Eye, EyeOff, KeyRound, Lock, Mail,
-  ShieldCheck, Smartphone, TrendingUp, Users,
+  AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound, Lock, Mail,
+  ShieldCheck, Smartphone,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 
-// Feature-specific marketing ticker — a scrolling marquee of real modules/capabilities.
-const FEATURE_TICKER = [
-  'WPS / SIF export', 'GOSI & social insurance', 'EOSB gratuity', 'Qiwa & Mudad',
-  'Shift & roster planning', 'Overtime & time-off', 'Loans & advances', 'Payslip designer',
-  'Performance & calibration', 'Recruitment & onboarding', 'Org chart', 'Employee self-service',
-  'Multi-company & multi-currency', 'Approval workflows', 'Saudization tracking', 'Hijri calendar',
-  'Document & visa compliance', 'Bank file generation', 'Role-based access', 'Audit trails',
+const OPERATING_LANES = [
+  'Workforce',
+  'Payroll',
+  'Compliance',
+  'Dispatch',
+  'Last mile',
+  'Fleet',
 ];
 
-// Illustrative product-preview slides (a UI glimpse, like a product screenshot) — the
-// carousel cycles these to show the platform's breadth at a glance.
-const PREVIEW_SLIDES = [
-  {
-    tag: 'Payroll · June 2026', value: '$1.31M', delta: '+3.2%',
-    bars: [40, 54, 46, 68, 60, 82, 74],
-    stats: [
-      { icon: Users, label: 'Employees', value: '1,248' },
-      { icon: Clock, label: 'On-time', value: '99.9%' },
-      { icon: CheckCircle2, label: 'Approved', value: '96%' },
-    ],
-  },
-  {
-    tag: 'Attendance · Today', value: '1,194 in', delta: '+96%',
-    bars: [70, 82, 60, 88, 74, 90, 84],
-    stats: [
-      { icon: Users, label: 'Present', value: '96%' },
-      { icon: Clock, label: 'Late', value: '18' },
-      { icon: CheckCircle2, label: 'Synced', value: '42' },
-    ],
-  },
-  {
-    tag: 'Leave · This month', value: '84 requests', delta: '−12%',
-    bars: [30, 44, 38, 52, 40, 58, 48],
-    stats: [
-      { icon: CheckCircle2, label: 'Approved', value: '71' },
-      { icon: Clock, label: 'Pending', value: '9' },
-      { icon: Users, label: 'Avg days', value: '1.2' },
-    ],
-  },
-  {
-    tag: 'Headcount · Q2', value: '1,248', delta: '+23',
-    bars: [50, 58, 55, 66, 70, 76, 80],
-    stats: [
-      { icon: Users, label: 'New hires', value: '23' },
-      { icon: TrendingUp, label: 'Attrition', value: '1.4%' },
-      { icon: CheckCircle2, label: 'Open roles', value: '12' },
-    ],
-  },
+const TRUST_MESSAGES = [
+  'One operating layer across HR, payroll, compliance, dispatch, and delivery.',
+  'Move from isolated approvals and trackers into one governed workspace.',
+  'Give every operator, manager, and decision maker the same source of truth.',
 ];
 
 const SECURITY_POINTS = [
@@ -74,7 +39,6 @@ export function LoginPage() {
   const searchParams = useSearchParams();
   const from         = searchParams?.get('from') ?? '/dashboard';
 
-  const [slide,        setSlide]        = useState(0);
   const [mode,         setMode]         = useState<Mode>('login');
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
@@ -89,6 +53,7 @@ export function LoginPage() {
   const [newPw,        setNewPw]        = useState('');
   const [confirmPw,    setConfirmPw]    = useState('');
   const [totpCode,     setTotpCode]     = useState('');
+  const [messageIndex, setMessageIndex] = useState(0);
 
   useEffect(() => {
     // Platform-admin impersonation: ?impersonate=<tenant-audience-jwt>
@@ -140,9 +105,8 @@ export function LoginPage() {
     if (mfaPending && mode !== 'mfa') setMode('mfa');
   }, [mfaPending, mode]);
 
-  // Auto-advance the product-preview carousel.
   useEffect(() => {
-    const id = setInterval(() => setSlide((s) => (s + 1) % PREVIEW_SLIDES.length), 3800);
+    const id = setInterval(() => setMessageIndex((s) => (s + 1) % TRUST_MESSAGES.length), 3400);
     return () => clearInterval(id);
   }, []);
 
@@ -179,39 +143,51 @@ export function LoginPage() {
           to   { opacity: 1; transform: translateY(0); }
         }
         .auth-fade { animation: auth-fade 0.4s ease-out both; }
-        @keyframes aurora-a {
+        @keyframes ambient-a {
           0%, 100% { transform: translate3d(0,0,0) scale(1); }
-          50% { transform: translate3d(6%, 8%, 0) scale(1.15); }
+          50% { transform: translate3d(4%, 7%, 0) scale(1.12); }
         }
-        @keyframes aurora-b {
+        @keyframes ambient-b {
           0%, 100% { transform: translate3d(0,0,0) scale(1.1); }
-          50% { transform: translate3d(-8%, -6%, 0) scale(1); }
+          50% { transform: translate3d(-7%, -6%, 0) scale(1); }
         }
-        @keyframes aurora-c {
+        @keyframes ambient-c {
           0%, 100% { transform: translate3d(0,0,0) scale(1); }
-          50% { transform: translate3d(5%, -7%, 0) scale(1.2); }
+          50% { transform: translate3d(5%, -7%, 0) scale(1.18); }
         }
-        .aurora-a { animation: aurora-a 19s ease-in-out infinite; }
-        .aurora-b { animation: aurora-b 23s ease-in-out infinite; }
-        .aurora-c { animation: aurora-c 27s ease-in-out infinite; }
+        .ambient-a { animation: ambient-a 18s ease-in-out infinite; }
+        .ambient-b { animation: ambient-b 24s ease-in-out infinite; }
+        .ambient-c { animation: ambient-c 28s ease-in-out infinite; }
         .brand-spot {
-          background: radial-gradient(520px circle at var(--mx, 30%) var(--my, 22%), rgba(86,148,255,0.22), transparent 62%);
+          background: radial-gradient(540px circle at var(--mx, 36%) var(--my, 34%), rgba(90,164,255,0.18), transparent 60%);
           transition: background 0.18s ease-out;
         }
-        @keyframes bar-rise {
-          0%, 100% { transform: scaleY(0.78); }
-          50% { transform: scaleY(1); }
+        @keyframes orbit-slow {
+          0% { transform: rotate(0deg) translateY(-8px) rotate(0deg); }
+          100% { transform: rotate(360deg) translateY(-8px) rotate(-360deg); }
         }
-        .pv-bar { transform-origin: bottom; animation: bar-rise 2.8s ease-in-out infinite; }
-        @keyframes ticker-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-        .ticker-track { animation: ticker-scroll 38s linear infinite; }
-        .ticker-mask:hover .ticker-track { animation-play-state: paused; }
+        @keyframes orbit-reverse {
+          0% { transform: rotate(360deg) translateY(-10px) rotate(-360deg); }
+          100% { transform: rotate(0deg) translateY(-10px) rotate(0deg); }
+        }
+        @keyframes pulse-ring {
+          0%, 100% { transform: scale(1); opacity: 0.6; }
+          50% { transform: scale(1.06); opacity: 1; }
+        }
+        @keyframes chip-float {
+          0%, 100% { transform: translateY(0px); }
+          50% { transform: translateY(-8px); }
+        }
+        .orbit-slow { animation: orbit-slow 22s linear infinite; }
+        .orbit-reverse { animation: orbit-reverse 28s linear infinite; }
+        .pulse-ring { animation: pulse-ring 4.6s ease-in-out infinite; }
+        .chip-float { animation: chip-float 5.4s ease-in-out infinite; }
         @media (prefers-reduced-motion: reduce) {
-          .auth-fade, .aurora-a, .aurora-b, .aurora-c, .pv-bar, .ticker-track { animation: none !important; }
+          .auth-fade, .ambient-a, .ambient-b, .ambient-c, .orbit-slow, .orbit-reverse, .pulse-ring, .chip-float { animation: none !important; }
         }
       `}</style>
 
-      <div className="grid min-h-[100svh] w-full lg:grid-cols-2">
+      <div className="grid min-h-[100svh] w-full overflow-hidden bg-[linear-gradient(135deg,#f7fbff_0%,#eef5ff_38%,#f9fbff_100%)] lg:grid-cols-[minmax(0,1.06fr)_minmax(420px,0.94fr)]">
         {/* ── Brand panel ───────────────────────────────────────────────── */}
         <section
           onMouseMove={(e) => {
@@ -219,171 +195,157 @@ export function LoginPage() {
             e.currentTarget.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`);
             e.currentTarget.style.setProperty('--my', `${((e.clientY - r.top) / r.height) * 100}%`);
           }}
-          className="relative hidden flex-col overflow-hidden bg-[#060a17] px-12 py-14 text-white lg:flex"
+          className="relative hidden items-center overflow-hidden px-10 py-12 lg:flex"
         >
-          {/* Aurora mesh */}
-          <div className="pointer-events-none absolute -left-1/4 -top-1/4 h-[70%] w-[70%] rounded-full bg-[radial-gradient(circle,rgba(47,107,255,0.55),transparent_60%)] blur-3xl aurora-a" />
-          <div className="pointer-events-none absolute bottom-[-20%] right-[-15%] h-[65%] w-[65%] rounded-full bg-[radial-gradient(circle,rgba(56,189,248,0.30),transparent_60%)] blur-3xl aurora-b" />
-          <div className="pointer-events-none absolute left-[20%] top-[35%] h-[55%] w-[55%] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.34),transparent_60%)] blur-3xl aurora-c" />
-          {/* Iso dot-grid */}
-          <div className="pointer-events-none absolute inset-0 opacity-[0.18] [background-image:radial-gradient(rgba(255,255,255,0.5)_1px,transparent_1px)] [background-size:26px_26px] [mask-image:radial-gradient(ellipse_at_center,black,transparent_75%)]" />
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(66,153,255,0.28),transparent_34%),radial-gradient(circle_at_bottom_right,rgba(34,211,238,0.16),transparent_26%),linear-gradient(180deg,rgba(255,255,255,0.84),rgba(242,247,255,0.72))]" />
+          <div className="pointer-events-none absolute -left-24 top-10 h-80 w-80 rounded-full bg-[radial-gradient(circle,rgba(54,112,255,0.24),transparent_64%)] blur-3xl ambient-a" />
+          <div className="pointer-events-none absolute bottom-0 right-0 h-96 w-96 rounded-full bg-[radial-gradient(circle,rgba(76,201,240,0.20),transparent_66%)] blur-3xl ambient-b" />
+          <div className="pointer-events-none absolute left-[22%] top-[18%] h-72 w-72 rounded-full bg-[radial-gradient(circle,rgba(15,23,42,0.06),transparent_70%)] blur-3xl ambient-c" />
+          <div className="pointer-events-none absolute inset-0 opacity-[0.42] [background-image:linear-gradient(rgba(71,108,171,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(71,108,171,0.08)_1px,transparent_1px)] [background-size:28px_28px] [mask-image:radial-gradient(circle_at_center,black,transparent_84%)]" />
           {/* Cursor spotlight */}
           <div className="brand-spot pointer-events-none absolute inset-0" />
-          {/* Film grain */}
-          <div
-            className="pointer-events-none absolute inset-0 opacity-[0.06] mix-blend-overlay"
-            style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")" }}
-          />
-          {/* Top edge fade for depth */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[0.06] to-transparent" />
 
-          {/* Brand */}
-          <div className="relative z-10 mx-auto flex w-full max-w-[440px] items-center gap-3">
-            <div className="rounded-2xl border border-white/15 bg-white/[0.07] p-2.5 shadow-[0_8px_30px_rgba(8,18,55,0.5)] backdrop-blur-md">
-              <Logo size="md" collapsed theme="dark" />
-            </div>
-            <div>
-              <p className="text-sm font-bold tracking-tight text-white">KynexOne</p>
-              <p className="text-xs text-slate-400">Enterprise Workforce Platform</p>
-            </div>
-          </div>
-
-          {/* Hero + product glimpse — grows to fill the panel and centers vertically */}
-          <div className="relative z-10 mx-auto flex w-full max-w-[440px] flex-1 flex-col justify-center py-10">
-            <div className="inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-[11px] font-medium tracking-wide text-slate-300 backdrop-blur">
-              <span className="relative flex h-1.5 w-1.5">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
-              </span>
-              Built for HR, payroll &amp; finance teams
-            </div>
-
-            <h1 className="mt-5 text-[2rem] font-bold leading-[1.1] tracking-tight xl:text-[2.4rem]">
-              Run your entire workforce from{' '}
-              <span className="bg-gradient-to-r from-sky-300 via-blue-300 to-indigo-300 bg-clip-text text-transparent">
-                one trusted system.
-              </span>
-            </h1>
-            <p className="mt-3.5 text-[14.5px] leading-relaxed text-slate-300/90">
-              People, payroll, leave, attendance, and compliance — unified, tenant-isolated,
-              and audit-ready from day one.
-            </p>
-
-            {/* Product preview carousel — cycles modules to show platform breadth */}
-            {(() => {
-              const s = PREVIEW_SLIDES[slide];
-              const negative = s.delta.startsWith('−');
-              return (
-                <div className="mt-7 rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4 shadow-[0_24px_70px_rgba(4,10,30,0.55)] backdrop-blur-xl">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full bg-white/15" />
-                      <span className="h-2 w-2 rounded-full bg-white/15" />
-                      <span className="h-2 w-2 rounded-full bg-white/15" />
-                    </div>
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Live
-                    </span>
-                  </div>
-
-                  {/* slide body — re-keyed so it cross-fades on change */}
-                  <div key={slide} className="auth-fade">
-                    <div className="mt-3 flex items-end justify-between">
-                      <div>
-                        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">{s.tag}</p>
-                        <p className="mt-0.5 text-2xl font-bold tracking-tight text-white">{s.value}</p>
-                      </div>
-                      <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-semibold ${negative ? 'bg-rose-400/10 text-rose-300' : 'bg-emerald-400/10 text-emerald-300'}`}>
-                        <TrendingUp className={`h-3.5 w-3.5 ${negative ? 'rotate-180' : ''}`} /> {s.delta.replace(/[+−]/, '')}
-                      </span>
-                    </div>
-
-                    {/* animated sparkline bars */}
-                    <div className="mt-3 flex h-12 items-end gap-1.5">
-                      {s.bars.map((b, i) => (
-                        <span
-                          key={i}
-                          className="pv-bar flex-1 rounded-sm bg-gradient-to-t from-blue-500/70 to-sky-300/80"
-                          style={{ height: `${b}%`, animationDelay: `${i * 0.12}s` }}
-                        />
-                      ))}
-                    </div>
-
-                    {/* KPI row */}
-                    <div className="mt-4 grid grid-cols-3 gap-2 border-t border-white/[0.07] pt-3">
-                      {s.stats.map((st) => (
-                        <div key={st.label} className="flex flex-col">
-                          <span className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                            <st.icon className="h-3 w-3" /> {st.label}
-                          </span>
-                          <span className="mt-0.5 text-sm font-bold text-white">{st.value}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* carousel dots */}
-                  <div className="mt-4 flex items-center justify-center gap-1.5">
-                    {PREVIEW_SLIDES.map((sl, i) => (
-                      <button
-                        key={sl.tag}
-                        type="button"
-                        aria-label={`Show ${sl.tag}`}
-                        onClick={() => setSlide(i)}
-                        className={`h-1.5 rounded-full transition-all ${i === slide ? 'w-5 bg-sky-300' : 'w-1.5 bg-white/20 hover:bg-white/40'}`}
-                      />
-                    ))}
-                  </div>
+          <div className="relative z-10 flex w-full max-w-[560px] flex-1 flex-col justify-center">
+            <div className="flex items-center gap-4">
+              <div className="relative">
+                <div className="pulse-ring absolute inset-[-12px] rounded-[24px] border border-blue-300/45 bg-white/35 blur-[0.4px]" />
+                <div className="absolute inset-[-22px] rounded-[30px] bg-[radial-gradient(circle,rgba(59,130,246,0.22),transparent_70%)] blur-xl" />
+                <div className="relative rounded-[22px] border border-white/85 bg-white/68 p-3 shadow-[0_28px_70px_rgba(37,99,235,0.18),inset_0_1px_0_rgba(255,255,255,0.95)] backdrop-blur-2xl">
+                  <Logo size="xl" collapsed />
                 </div>
-              );
-            })()}
-
-            {/* Feature ticker — scrolling marquee of platform capabilities */}
-            <div className="ticker-mask relative mt-6 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_8%,black_92%,transparent)]">
-              <div className="ticker-track flex w-max items-center gap-2.5">
-                {[...FEATURE_TICKER, ...FEATURE_TICKER].map((f, i) => (
-                  <span
-                    key={i}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-slate-300"
-                  >
-                    <span className="h-1 w-1 rounded-full bg-sky-400/80" />
-                    {f}
-                  </span>
-                ))}
+              </div>
+              <div>
+                <p className="text-[29px] font-black tracking-[-0.04em] text-slate-950">
+                  Kynex<span className="bg-gradient-to-r from-blue-600 via-sky-500 to-cyan-500 bg-clip-text text-transparent">One</span>
+                </p>
+                <p className="text-[13px] font-medium tracking-[0.22em] text-slate-500">ENTERPRISE WORKFORCE PLATFORM</p>
               </div>
             </div>
-          </div>
 
-          <p className="relative z-10 mx-auto w-full max-w-[440px] text-xs text-slate-500">
-            A <span className="font-semibold text-slate-400">Kode Kinetics</span> product
-          </p>
+            <div className="mt-8 inline-flex w-fit items-center gap-2 rounded-full border border-white/75 bg-white/55 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-blue-700 shadow-[0_18px_40px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+              </span>
+              Unified operating access
+            </div>
+
+            <div className="mt-7 max-w-[520px]">
+              <h1 className="text-[3rem] font-black leading-[0.96] tracking-[-0.05em] text-slate-950 xl:text-[3.55rem]">
+                One secure entry point for
+                <span className="mt-2 block bg-gradient-to-r from-blue-700 via-sky-500 to-cyan-500 bg-clip-text text-transparent">
+                  workforce and field operations.
+                </span>
+              </h1>
+              <p className="mt-5 max-w-[470px] text-[18px] leading-[1.65] text-slate-600">
+                Stop switching between disconnected HR tools, payroll files, compliance trackers,
+                dispatch boards, and delivery views. KynexOne brings the operating surface together
+                in one controlled workspace.
+              </p>
+            </div>
+
+            <div className="auth-fade mt-5 min-h-[52px] max-w-[500px] rounded-2xl border border-white/70 bg-white/52 px-5 py-4 text-[15px] leading-7 text-slate-600 shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur-xl">
+              {TRUST_MESSAGES[messageIndex]}
+            </div>
+
+            <div className="relative mt-8 h-[265px] max-w-[540px] overflow-hidden rounded-[28px] border border-white/75 bg-[linear-gradient(145deg,rgba(255,255,255,0.78),rgba(240,247,255,0.56))] shadow-[0_28px_80px_rgba(37,99,235,0.12)] backdrop-blur-2xl">
+              <div className="absolute inset-5 rounded-[24px] border border-slate-200/70 bg-[linear-gradient(180deg,rgba(245,249,255,0.92),rgba(231,240,255,0.74))]" />
+              <div className="absolute left-1/2 top-1/2 h-[184px] w-[184px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-blue-200/80 bg-[radial-gradient(circle,rgba(255,255,255,0.96),rgba(231,241,255,0.78))] shadow-[inset_0_1px_0_rgba(255,255,255,1),0_24px_60px_rgba(37,99,235,0.14)]" />
+              <div className="orbit-slow absolute left-1/2 top-1/2 h-[244px] w-[244px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-blue-200/60" />
+              <div className="orbit-reverse absolute left-1/2 top-1/2 h-[194px] w-[194px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-200/70" />
+              <div className="absolute left-1/2 top-1/2 z-10 flex h-[184px] w-[184px] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center">
+                <div className="rounded-[26px] border border-white/90 bg-white/88 p-4 shadow-[0_20px_50px_rgba(37,99,235,0.16)]">
+                  <Logo size="xl" collapsed />
+                </div>
+                <p className="mt-3 text-[12px] font-semibold uppercase tracking-[0.26em] text-slate-500">Control Layer</p>
+              </div>
+
+              {OPERATING_LANES.map((lane, index) => {
+                const positions = [
+                  'left-[11%] top-[18%]',
+                  'right-[12%] top-[15%]',
+                  'right-[9%] top-[47%]',
+                  'right-[18%] bottom-[12%]',
+                  'left-[17%] bottom-[10%]',
+                  'left-[9%] top-[50%]',
+                ];
+                const delays = ['0s', '0.8s', '1.5s', '2.1s', '2.8s', '3.4s'];
+                return (
+                  <div
+                    key={lane}
+                    className={`chip-float absolute ${positions[index]} rounded-full border border-white/90 bg-white/78 px-4 py-2 text-[12px] font-semibold text-slate-700 shadow-[0_16px_40px_rgba(15,23,42,0.10)] backdrop-blur-xl`}
+                    style={{ animationDelay: delays[index] }}
+                  >
+                    <span className="mr-2 inline-block h-2 w-2 rounded-full bg-gradient-to-r from-blue-500 to-cyan-400" />
+                    {lane}
+                  </div>
+                );
+              })}
+
+              <div className="absolute left-[20%] top-[24%] h-px w-[24%] rotate-[11deg] bg-gradient-to-r from-blue-300/0 via-blue-300/55 to-blue-300/0" />
+              <div className="absolute right-[19%] top-[24%] h-px w-[21%] -rotate-[10deg] bg-gradient-to-r from-cyan-300/0 via-cyan-300/55 to-cyan-300/0" />
+              <div className="absolute right-[18%] top-[53%] h-px w-[18%] bg-gradient-to-r from-blue-300/0 via-blue-300/55 to-blue-300/0" />
+              <div className="absolute right-[24%] bottom-[24%] h-px w-[16%] rotate-[18deg] bg-gradient-to-r from-cyan-300/0 via-cyan-300/55 to-cyan-300/0" />
+              <div className="absolute left-[24%] bottom-[22%] h-px w-[18%] -rotate-[18deg] bg-gradient-to-r from-blue-300/0 via-blue-300/55 to-blue-300/0" />
+              <div className="absolute left-[18%] top-[57%] h-px w-[16%] bg-gradient-to-r from-cyan-300/0 via-cyan-300/55 to-cyan-300/0" />
+            </div>
+
+            <div className="mt-7 flex max-w-[560px] flex-wrap gap-3">
+              {[
+                'Tenant-scoped access',
+                'Governed approvals',
+                'Audit-ready operations',
+                'Shared data backbone',
+              ].map((item) => (
+                <span
+                  key={item}
+                  className="rounded-full border border-white/85 bg-white/60 px-4 py-2 text-[12px] font-semibold text-slate-600 shadow-[0_10px_30px_rgba(15,23,42,0.06)] backdrop-blur-lg"
+                >
+                  {item}
+                </span>
+              ))}
+            </div>
+
+            <p className="mt-8 text-sm text-slate-500">
+              A <span className="font-semibold text-slate-700">Kode Kinetics</span> product
+            </p>
+          </div>
         </section>
 
         {/* ── Form panel ────────────────────────────────────────────────── */}
-        <section className="flex items-center justify-center bg-slate-50 px-5 py-10 dark:bg-[#0a0f1e] sm:px-8">
-          <div className="auth-fade w-full max-w-[420px]">
+        <section className="relative flex items-center justify-center px-5 py-10 sm:px-8">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.92),rgba(248,251,255,0.88)_35%,rgba(236,244,255,0.72))]" />
+          <div className="auth-fade relative w-full max-w-[470px] rounded-[32px] border border-white/80 bg-white/62 p-8 shadow-[0_32px_90px_rgba(15,23,42,0.10)] backdrop-blur-2xl sm:p-10">
             {/* Mobile brand */}
             <div className="mb-8 flex items-center gap-3 lg:hidden">
-              <div className="rounded-xl border border-slate-200 bg-white p-2.5 shadow-sm dark:border-white/10 dark:bg-white/5">
-                <Logo size="md" collapsed />
+              <div className="rounded-2xl border border-white/90 bg-white/80 p-3 shadow-[0_16px_40px_rgba(37,99,235,0.14)]">
+                <Logo size="lg" collapsed />
               </div>
               <div>
-                <p className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">KynexOne</p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">Enterprise Workforce Platform</p>
+                <p className="text-sm font-bold tracking-tight text-slate-900">KynexOne</p>
+                <p className="text-xs text-slate-500">Enterprise Workforce Platform</p>
               </div>
             </div>
 
             {mode === 'login' && (
               <>
-                <h2 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">Sign in</h2>
-                <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
-                  Enter your work email, password, and workspace to continue.
+                <div className="mb-7 flex items-center justify-between gap-3">
+                  <div className="rounded-full border border-emerald-200 bg-emerald-50/90 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-700">
+                    Secure access
+                  </div>
+                  <div className="rounded-full border border-blue-100 bg-blue-50/90 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-700">
+                    Production workspace
+                  </div>
+                </div>
+                <h2 className="text-[2.2rem] font-black tracking-[-0.04em] text-slate-950">Sign in</h2>
+                <p className="mt-2 text-[15px] leading-7 text-slate-500">
+                  Enter your work email, password, and workspace identifier to continue into your operational environment.
                 </p>
 
                 <form onSubmit={handleLogin} noValidate className="mt-8 space-y-5">
                   <FormField label="Work email">
                     <input id="li-em" type="email" value={email} onChange={e => setEmail(e.target.value)}
-                      className="auth-input" placeholder="you@company.com" autoComplete="email" required />
+                      className="auth-input" placeholder="you@company.com" autoComplete="username" required />
                   </FormField>
 
                   <FormField label="Password" labelRight={
@@ -413,7 +375,7 @@ export function LoginPage() {
                     hint="Your company or tenant workspace identifier"
                   >
                     <input id="li-ws" type="text" value={tenantSlug} onChange={e => setTenantSlug(e.target.value)}
-                      className="auth-input" placeholder="your-workspace" autoComplete="organization" required />
+                      className="auth-input" placeholder="your-workspace" autoComplete="organization" spellCheck={false} required />
                   </FormField>
 
                   <AuthFeedback error={error} info={info} />
@@ -576,44 +538,43 @@ export function LoginPage() {
       <style>{`
         .auth-input {
           display: block; width: 100%;
-          border-radius: 10px;
-          border: 1px solid rgb(203 213 225);
-          background: #ffffff;
-          padding: 11px 14px;
-          font-size: 14px;
+          border-radius: 16px;
+          border: 1px solid rgba(186, 200, 228, 0.92);
+          background: rgba(255,255,255,0.82);
+          padding: 13px 16px;
+          font-size: 15px;
           color: #0f172a;
-          transition: border-color 0.15s, box-shadow 0.15s;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.88);
+          transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
           outline: none;
         }
         .auth-input::placeholder { color: #94a3b8; }
         .auth-input:focus {
           border-color: #2f6bff;
-          box-shadow: 0 0 0 3px rgba(47, 107, 255, 0.14);
+          background: rgba(255,255,255,0.95);
+          box-shadow: 0 0 0 4px rgba(47, 107, 255, 0.12), inset 0 1px 0 rgba(255,255,255,0.95);
         }
-        @media (prefers-color-scheme: dark) {
-          .auth-input {
-            background: rgba(255,255,255,0.04);
-            border-color: rgba(255,255,255,0.12);
-            color: #f1f5f9;
-          }
-          .auth-input::placeholder { color: rgba(255,255,255,0.28); }
-          .auth-input:focus {
-            border-color: #5eebff;
-            box-shadow: 0 0 0 3px rgba(94, 235, 255, 0.16);
-          }
+        .auth-input:-webkit-autofill,
+        .auth-input:-webkit-autofill:hover,
+        .auth-input:-webkit-autofill:focus {
+          -webkit-text-fill-color: #0f172a;
+          -webkit-box-shadow: 0 0 0px 1000px rgba(255, 252, 214, 0.12) inset;
+          box-shadow: 0 0 0px 1000px rgba(255, 255, 255, 0.84) inset;
+          transition: background-color 99999s ease-in-out 0s;
         }
         .auth-btn {
           position: relative;
           display: flex; align-items: center; justify-content: center; gap: 8px;
           width: 100%;
           overflow: hidden;
-          border-radius: 10px;
-          background: linear-gradient(180deg, #3b78ff 0%, #2f6bff 55%, #1f54e6 100%);
-          padding: 12px 20px;
-          font-size: 14px;
-          font-weight: 600;
+          border-radius: 18px;
+          background: linear-gradient(135deg, #1f5eff 0%, #3b82f6 52%, #4cc9f0 100%);
+          padding: 14px 20px;
+          font-size: 15px;
+          font-weight: 700;
           color: white;
-          box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 8px 20px rgba(31, 84, 230, 0.30);
+          letter-spacing: -0.01em;
+          box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 18px 34px rgba(31, 84, 230, 0.28);
           transition: box-shadow 0.18s ease, transform 0.18s ease, filter 0.18s ease;
         }
         /* hover sheen sweep */
@@ -627,7 +588,7 @@ export function LoginPage() {
         }
         .auth-btn:hover:not(:disabled) {
           filter: brightness(1.04);
-          box-shadow: 0 1px 0 rgba(255,255,255,0.3) inset, 0 12px 26px rgba(31, 84, 230, 0.42);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.3) inset, 0 22px 42px rgba(31, 84, 230, 0.34);
           transform: translateY(-1px);
         }
         .auth-btn:hover:not(:disabled)::after { left: 120%; }
