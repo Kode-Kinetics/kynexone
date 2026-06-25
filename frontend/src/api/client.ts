@@ -9,6 +9,7 @@ function normalizeApiOrigin(raw: string): string {
 // Production Vercel builds should call the API directly; relying on an edge
 // rewrite is brittle when the backend host changes infrastructure/providers.
 export function resolveApiBaseUrl(): string {
+  if (typeof window !== 'undefined') return '';
   const raw = process.env.NEXT_PUBLIC_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL;
   if (raw) return normalizeApiOrigin(raw);
   return 'http://localhost:5117';
