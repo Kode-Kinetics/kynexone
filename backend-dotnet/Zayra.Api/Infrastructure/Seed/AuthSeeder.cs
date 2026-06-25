@@ -134,9 +134,9 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") || x.Key.StartsWith("compliance.") || x.Key.StartsWith("reports.") ||
-            x.Key.StartsWith("recruitment.") || x.Key.StartsWith("logistics.") || x.Key is "payroll.read" or "loans.read" or "audit.read" or
-            "roles.manage" or "users.manage" or "manager.read" or "manager.approve" or
-            "qiwa.read" or "qiwa.sync"
+            x.Key.StartsWith("recruitment.") || x.Key.StartsWith("logistics.") || x.Key.StartsWith("fleet.") ||
+            x.Key is "payroll.read" or "loans.read" or "audit.read" or "roles.manage" or "users.manage" or
+            "manager.read" or "manager.approve" or "qiwa.read" or "qiwa.sync"
         ).ToList(), 2, true, cancellationToken);
 
         // Level 3 — HR Manager: operational HR management
@@ -144,27 +144,27 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("employees.") || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
-            x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or "logistics.read" or "logistics.write"
+            x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or "logistics.read" or "logistics.write" or "fleet.read" or "fleet.write"
         ).ToList(), 3, true, cancellationToken);
 
         // Level 4 — Payroll Manager: payroll + finance + employees
         await EnsureRole(tenantId, "Payroll Manager", "Manages payroll processing and WPS submissions", Ps(new[] {
             "dashboard.read", "employees.read", "employees.sensitive", "attendance.read", "leave.read",
             "overtime.read", "payroll.read", "payroll.write", "payroll.approve", "loans.read", "loans.approve",
-            "approvals.read", "approvals.decide", "reports.read", "notifications.read"
+            "approvals.read", "approvals.decide", "reports.read", "notifications.read", "fleet.read"
         }), 4, true, cancellationToken);
 
         // Level 5 — HR Officer: HR operations specialist
         await EnsureRole(tenantId, "HR Officer", "HR operations specialist", Ps(new[] {
             "dashboard.read", "employees.read", "employees.write", "employees.documents", "employees.templates",
             "organization.read", "approvals.read", "approvals.write", "notifications.read", "localization.read",
-            "leave.read", "leave.write", "attendance.read", "overtime.read", "profile.read", "logistics.read", "logistics.write"
+            "leave.read", "leave.write", "attendance.read", "overtime.read", "profile.read", "logistics.read", "logistics.write", "fleet.read", "fleet.write"
         }), 5, true, cancellationToken);
 
         // Level 6 — Payroll Officer: payroll processing
         await EnsureRole(tenantId, "Payroll Officer", "Payroll and WPS specialist", Ps(new[] {
             "dashboard.read", "employees.read", "employees.sensitive", "attendance.read",
-            "payroll.read", "payroll.write", "loans.read", "notifications.read", "reports.read", "logistics.read", "logistics.write"
+            "payroll.read", "payroll.write", "loans.read", "notifications.read", "reports.read", "logistics.read", "logistics.write", "fleet.read"
         }), 6, true, cancellationToken);
 
         // Level 7 — Finance Approver: finance approvals
@@ -183,13 +183,13 @@ public class AuthSeeder : IAuthSeeder
         await EnsureRole(tenantId, "Manager", "People manager with team oversight and approval authority", Ps(new[] {
             "dashboard.read", "employees.read", "approvals.read", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
-            "attendance.read", "overtime.read", "overtime.approve", "profile.read", "logistics.read", "logistics.write"
+            "attendance.read", "overtime.read", "overtime.approve", "profile.read", "logistics.read", "logistics.write", "fleet.read", "fleet.write"
         }), 9, true, cancellationToken);
 
         // Level 10 — Supervisor: front-line supervision
         await EnsureRole(tenantId, "Supervisor", "Front-line supervisor for operational staff", Ps(new[] {
             "dashboard.read", "employees.read", "attendance.read", "attendance.write",
-            "manager.read", "manager.approve", "leave.read", "overtime.read", "ess.read", "ess.write", "profile.read", "logistics.read", "logistics.write"
+            "manager.read", "manager.approve", "leave.read", "overtime.read", "ess.read", "ess.write", "profile.read", "logistics.read", "logistics.write", "fleet.read", "fleet.write"
         }), 10, true, cancellationToken);
 
         // Level 11 — Recruiter: talent acquisition
@@ -339,6 +339,8 @@ public class AuthSeeder : IAuthSeeder
             // Logistics
             ("logistics.read", "Logistics", "Read dispatch, order, route and delivery operations"),
             ("logistics.write", "Logistics", "Manage dispatch actions and delivery progress"),
+            ("fleet.read", "Fleet", "Read fleet, shipment, tracking and maintenance operations"),
+            ("fleet.write", "Fleet", "Manage fleet, shipment, service and fuel operations"),
             // Performance
             ("performance.read", "Performance", "Read appraisal and performance data"),
             ("performance.write", "Performance", "Create and update performance reviews"),

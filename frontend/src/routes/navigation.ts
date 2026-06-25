@@ -27,6 +27,8 @@ import {
   Route,
   Package,
   MapPinned,
+  Fuel,
+  Wrench,
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 
@@ -77,6 +79,17 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Jobs & Orders', icon: Package, path: '/dispatch/jobs-orders', requiredPermissions: ['logistics.read'] },
       { label: 'Route Planning', icon: MapPinned, path: '/dispatch/route-planning', requiredPermissions: ['logistics.read'] },
       { label: 'Last Mile Delivery', icon: Route, path: '/dispatch/last-mile-delivery', requiredPermissions: ['logistics.read'] },
+    ],
+  },
+  {
+    label: 'Fleet & TMS',
+    items: [
+      { label: 'Fleet Command Center', icon: Truck, path: '/fleet', requiredPermissions: ['fleet.read'] },
+      { label: 'Shipments & Loads', icon: Package, path: '/fleet/shipments', requiredPermissions: ['fleet.read'] },
+      { label: 'Vehicle Management', icon: Wrench, path: '/fleet/vehicles', requiredPermissions: ['fleet.read'] },
+      { label: 'Live Tracking', icon: MapPinned, path: '/fleet/tracking', requiredPermissions: ['fleet.read'] },
+      { label: 'Maintenance', icon: Wrench, path: '/fleet/maintenance', requiredPermissions: ['fleet.read'] },
+      { label: 'Fuel Analytics', icon: Fuel, path: '/fleet/fuel', requiredPermissions: ['fleet.read'] },
     ],
   },
   {

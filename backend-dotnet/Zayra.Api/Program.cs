@@ -177,6 +177,7 @@ builder.Services.AddScoped<IApprovalPolicyService, ApprovalPolicyService>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
 builder.Services.AddScoped<IEmployeeModuleSchemaBootstrapper, EmployeeModuleSchemaBootstrapper>();
 builder.Services.AddScoped<ILogisticsSeeder, LogisticsSeeder>();
+builder.Services.AddScoped<IFleetTmsSeeder, FleetTmsSeeder>();
 builder.Services.AddScoped<IDocumentStorage, LocalDocumentStorage>();
 builder.Services.AddScoped<IHijriDateService, HijriDateService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
@@ -541,6 +542,7 @@ using (var scope = app.Services.CreateScope())
         logger), logger);
 
     await TrySeedAsync("LogisticsSeeder", () => scope.ServiceProvider.GetRequiredService<ILogisticsSeeder>().SeedAsync(), logger);
+    await TrySeedAsync("FleetTmsSeeder", () => scope.ServiceProvider.GetRequiredService<IFleetTmsSeeder>().SeedAsync(), logger);
 
     if (isMigrateMode)
     {

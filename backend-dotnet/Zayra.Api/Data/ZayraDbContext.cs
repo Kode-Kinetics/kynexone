@@ -221,6 +221,11 @@ public class ZayraDbContext : DbContext
     public DbSet<DispatchOrder> DispatchOrders => Set<DispatchOrder>();
     public DbSet<DeliveryRoute> DeliveryRoutes => Set<DeliveryRoute>();
     public DbSet<LastMileStop> LastMileStops => Set<LastMileStop>();
+    public DbSet<FleetShipment> FleetShipments => Set<FleetShipment>();
+    public DbSet<FleetVehicle> FleetVehicles => Set<FleetVehicle>();
+    public DbSet<FleetTrackingPoint> FleetTrackingPoints => Set<FleetTrackingPoint>();
+    public DbSet<FleetMaintenanceTicket> FleetMaintenanceTickets => Set<FleetMaintenanceTicket>();
+    public DbSet<FleetFuelEvent> FleetFuelEvents => Set<FleetFuelEvent>();
     // ── Performance & Appraisals ─────────────────────────────────────────────
     public DbSet<PerformanceCycle> PerformanceCycles => Set<PerformanceCycle>();
     public DbSet<PerformanceScorecardTemplate> PerformanceScorecardTemplates => Set<PerformanceScorecardTemplate>();
@@ -1255,6 +1260,69 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.RouteCode });
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EtaUtc });
+        });
+
+        modelBuilder.Entity<FleetShipment>(entity =>
+        {
+            entity.ToTable("fleet_shipments");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.WeightKg).HasPrecision(12, 2);
+            entity.Property(x => x.VolumeCbm).HasPrecision(12, 2);
+            entity.Property(x => x.DeclaredValue).HasPrecision(12, 2);
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.RouteCode });
+        });
+
+        modelBuilder.Entity<FleetVehicle>(entity =>
+        {
+            entity.ToTable("fleet_vehicles");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CapacityKg).HasPrecision(12, 2);
+            entity.Property(x => x.CapacityCbm).HasPrecision(12, 2);
+            entity.Property(x => x.CurrentLoadKg).HasPrecision(12, 2);
+            entity.Property(x => x.FuelLevelPercent).HasPrecision(5, 2);
+            entity.Property(x => x.OdometerKm).HasPrecision(12, 2);
+            entity.Property(x => x.TemperatureCelsius).HasPrecision(5, 2);
+            entity.HasIndex(x => new { x.TenantId, x.VehicleNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.DriverName });
+        });
+
+        modelBuilder.Entity<FleetTrackingPoint>(entity =>
+        {
+            entity.ToTable("fleet_tracking_points");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Latitude).HasPrecision(10, 7);
+            entity.Property(x => x.Longitude).HasPrecision(10, 7);
+            entity.Property(x => x.SpeedKph).HasPrecision(8, 2);
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentNumber });
+            entity.HasIndex(x => new { x.TenantId, x.VehicleNumber });
+            entity.HasIndex(x => new { x.TenantId, x.RecordedAtUtc });
+        });
+
+        modelBuilder.Entity<FleetMaintenanceTicket>(entity =>
+        {
+            entity.ToTable("fleet_maintenance_tickets");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.EstimatedCost).HasPrecision(14, 2);
+            entity.Property(x => x.ActualCost).HasPrecision(14, 2);
+            entity.Property(x => x.DowntimeHours).HasPrecision(8, 2);
+            entity.HasIndex(x => new { x.TenantId, x.WorkOrderNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.VehicleNumber });
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<FleetFuelEvent>(entity =>
+        {
+            entity.ToTable("fleet_fuel_events");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Liters).HasPrecision(12, 2);
+            entity.Property(x => x.Cost).HasPrecision(12, 2);
+            entity.Property(x => x.OdometerKm).HasPrecision(12, 2);
+            entity.HasIndex(x => new { x.TenantId, x.VehicleNumber });
+            entity.HasIndex(x => new { x.TenantId, x.AnomalyFlag });
+            entity.HasIndex(x => new { x.TenantId, x.RecordedAtUtc });
         });
 
         modelBuilder.Entity<ShiftDefinition>(entity =>
