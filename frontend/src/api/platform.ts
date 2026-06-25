@@ -1,6 +1,7 @@
 import axios from 'axios';
+import { BASE_URL } from './client';
 
-const platform = axios.create({ baseURL: '' });
+const platform = axios.create({ baseURL: BASE_URL });
 
 platform.interceptors.request.use(cfg => {
   const token = typeof window !== 'undefined' ? localStorage.getItem('platform_access_token') : null;

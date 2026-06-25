@@ -1,15 +1,19 @@
 import axios from 'axios';
 
-// In the browser, use relative URLs so Next.js proxy handles CORS.
-// On the server (SSR), we need the absolute URL since there's no proxy.
-function resolveBaseUrl(): string {
-  if (typeof window !== 'undefined') return '';
-  const raw = process.env.NEXT_PUBLIC_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL;
-  if (!raw) return 'http://localhost:5117';
+function normalizeApiOrigin(raw: string): string {
   if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
   return `https://${raw}`;
 }
-export const BASE_URL = resolveBaseUrl();
+
+// Resolve the backend origin for both browser and SSR.
+// Production Vercel builds should call the API directly; relying on an edge
+// rewrite is brittle when the backend host changes infrastructure/providers.
+export function resolveApiBaseUrl(): string {
+  const raw = process.env.NEXT_PUBLIC_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL;
+  if (raw) return normalizeApiOrigin(raw);
+  return 'http://localhost:5117';
+}
+export const BASE_URL = resolveApiBaseUrl();
 
 const client = axios.create({ baseURL: BASE_URL });
 
@@ -81,7 +85,7 @@ client.interceptors.response.use(
     try {
       const refreshToken = localStorage.getItem('zayra_refresh_token');
       if (!refreshToken) throw new Error('No refresh token');
-      const { data } = await axios.post(`${resolveBaseUrl()}/api/auth/refresh`, { refreshToken });
+      const { data } = await axios.post(`${resolveApiBaseUrl()}/api/auth/refresh`, { refreshToken });
       localStorage.setItem('zayra_access_token', data.accessToken);
       localStorage.setItem('zayra_refresh_token', data.refreshToken);
       pending.forEach((cb) => cb(data.accessToken));

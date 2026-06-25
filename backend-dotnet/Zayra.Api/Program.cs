@@ -98,14 +98,33 @@ builder.Services.AddControllers(options =>
     options.JsonSerializerOptions.Converters.Add(new Zayra.Api.Infrastructure.Json.UtcDateTimeConverter());
     options.JsonSerializerOptions.NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString;
 });
-// CORS: explicit allowlist from config + optional CORS_EXTRA_ORIGINS env var for production deployments
+// CORS: explicit allowlist from config + predictable hosted frontend origins.
+static bool IsAllowedFrontendOrigin(string origin, IReadOnlySet<string> configuredOrigins)
+{
+    if (configuredOrigins.Contains(origin))
+        return true;
+    if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
+        return false;
+
+    var host = uri.Host.ToLowerInvariant();
+    if (host is "localhost" or "127.0.0.1")
+        return uri.Scheme is "http" or "https";
+    if (uri.Scheme != "https")
+        return false;
+
+    return host == "opstrax.vercel.app"
+        || host == "kynexone.vercel.app"
+        || host.EndsWith("-kode-kinetics-projects.vercel.app", StringComparison.OrdinalIgnoreCase);
+}
+
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
     ?? new[] { "http://localhost:5173" };
 var extraOrigins = (builder.Configuration["CORS_EXTRA_ORIGINS"] ?? string.Empty)
     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 allowedOrigins = allowedOrigins.Concat(extraOrigins).Distinct().ToArray();
+var allowedOriginSet = new HashSet<string>(allowedOrigins, StringComparer.OrdinalIgnoreCase);
 builder.Services.AddCors(options => options.AddPolicy("kynexone", policy => policy
-    .WithOrigins(allowedOrigins)
+    .SetIsOriginAllowed(origin => IsAllowedFrontendOrigin(origin, allowedOriginSet))
     .AllowAnyMethod()
     .AllowAnyHeader()));
 

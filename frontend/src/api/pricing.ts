@@ -1,6 +1,7 @@
 import axios from 'axios';
+import { BASE_URL } from './client';
 
-const api = axios.create({ baseURL: '' });
+const api = axios.create({ baseURL: BASE_URL });
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
