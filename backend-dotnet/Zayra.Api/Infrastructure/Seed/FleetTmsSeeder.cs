@@ -50,6 +50,7 @@ public class FleetTmsSeeder : IFleetTmsSeeder
         if (hasFleetSeed)
         {
             await SeedSaudiReadinessAsync(tenantId, slug, employees, null, ct);
+            await SeedColdChainAndAssetsAsync(tenantId, slug, null, null, ct);
             return;
         }
 
@@ -442,10 +443,314 @@ public class FleetTmsSeeder : IFleetTmsSeeder
         await _db.SaveChangesAsync(ct);
 
         await SeedSaudiReadinessAsync(tenantId, slug, employees, shipments, ct);
+        await SeedColdChainAndAssetsAsync(tenantId, slug, shipments, vehicles, ct);
 
         _logger.LogInformation(
-            "FleetTmsSeeder: seeded {Shipments} shipments, {Vehicles} vehicles, {TrackingPoints} tracking points, {Maintenance} maintenance tickets, {FuelEvents} fuel events, {Stops} stops and {Pods} PODs for tenant {TenantId} ({Slug}).",
+            "FleetTmsSeeder: seeded {Shipments} shipments, {Vehicles} vehicles, {TrackingPoints} tracking points, {Maintenance} maintenance tickets, {FuelEvents} fuel events, {Stops} stops, {Pods} PODs, cold-chain telemetry and asset controls for tenant {TenantId} ({Slug}).",
             shipments.Count, vehicles.Count, trackingPoints.Count, maintenance.Count, fuelEvents.Count, stops.Count, pods.Count, tenantId, slug);
+    }
+
+    private async Task SeedColdChainAndAssetsAsync(Guid tenantId, string slug, IReadOnlyList<FleetShipment>? shipments, IReadOnlyList<FleetVehicle>? vehicles, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var shipmentList = shipments?.ToList() ?? await _db.FleetShipments.AsNoTracking().Where(x => x.TenantId == tenantId).OrderByDescending(x => x.CreatedAtUtc).Take(6).ToListAsync(ct);
+        var vehicleList = vehicles?.ToList() ?? await _db.FleetVehicles.AsNoTracking().Where(x => x.TenantId == tenantId).OrderBy(x => x.VehicleNumber).Take(6).ToListAsync(ct);
+
+        var zones = await _db.TemperatureZones.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(ct);
+        if (zones.Count == 0)
+        {
+            zones = new List<TemperatureZone>
+            {
+                new() { TenantId = tenantId, Code = "CHILLED", Name = "Chilled Goods", MinCelsius = 2m, MaxCelsius = 8m, Color = "#38bdf8", Notes = "Milk, produce, pharmaceuticals, and other chilled goods.", CreatedAtUtc = now },
+                new() { TenantId = tenantId, Code = "FROZEN", Name = "Frozen Goods", MinCelsius = -25m, MaxCelsius = -10m, Color = "#8b5cf6", Notes = "Frozen inventory with strict temperature control.", CreatedAtUtc = now },
+                new() { TenantId = tenantId, Code = "CONTROLLED", Name = "Controlled Ambient", MinCelsius = 15m, MaxCelsius = 25m, Color = "#14b8a6", Notes = "Controlled ambient handling for sensitive freight.", CreatedAtUtc = now },
+            };
+            _db.TemperatureZones.AddRange(zones);
+        }
+
+        var devices = await _db.TemperatureDevices.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(ct);
+        if (devices.Count == 0)
+        {
+            var devVehicle = vehicleList.FirstOrDefault();
+            var devShipment = shipmentList.FirstOrDefault(x => string.Equals(x.Mode, "Refrigerated", StringComparison.OrdinalIgnoreCase));
+            devices = new List<TemperatureDevice>
+            {
+                new()
+                {
+                    TenantId = tenantId,
+                    DeviceCode = $"TDEV-{slug.ToUpperInvariant()}-01",
+                    Name = "North Line Sensor",
+                    ZoneId = zones.FirstOrDefault(x => x.Code == "CHILLED")?.Id,
+                    ShipmentId = devShipment?.Id,
+                    VehicleNumber = devVehicle?.VehicleNumber ?? "FLEET-UNIT-01",
+                    Status = "Active",
+                    LastReportedTemperatureCelsius = 4.2m,
+                    BatteryPercent = 87m,
+                    LastPingAtUtc = now.AddMinutes(-12),
+                    Notes = "Cabin probe for chilled movement.",
+                    CreatedAtUtc = now,
+                },
+                new()
+                {
+                    TenantId = tenantId,
+                    DeviceCode = $"TDEV-{slug.ToUpperInvariant()}-02",
+                    Name = "Frozen Bay Sensor",
+                    ZoneId = zones.FirstOrDefault(x => x.Code == "FROZEN")?.Id,
+                    ShipmentId = shipmentList.Skip(1).FirstOrDefault()?.Id,
+                    VehicleNumber = vehicleList.Skip(1).FirstOrDefault()?.VehicleNumber ?? "FLEET-UNIT-02",
+                    Status = "Active",
+                    LastReportedTemperatureCelsius = -16.8m,
+                    BatteryPercent = 72m,
+                    LastPingAtUtc = now.AddMinutes(-9),
+                    Notes = "Pallet bay probe for frozen freight.",
+                    CreatedAtUtc = now,
+                },
+            };
+            _db.TemperatureDevices.AddRange(devices);
+        }
+
+        var readings = await _db.TemperatureReadings.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(ct);
+        if (readings.Count == 0)
+        {
+            var deviceRows = devices.Count > 0 ? devices : await _db.TemperatureDevices.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(ct);
+            var readingSeed = new List<TemperatureReading>();
+            for (var i = 0; i < Math.Max(6, deviceRows.Count * 6); i++)
+            {
+                var device = deviceRows[i % deviceRows.Count];
+                var zone = zones.FirstOrDefault(x => x.Id == device.ZoneId) ?? zones[i % zones.Count];
+                var breach = i % 7 == 5;
+                var value = breach
+                    ? zone.MaxCelsius + 2.5m
+                    : zone.Code == "FROZEN" ? -17.5m + (i % 3) * 0.4m : zone.Code == "CONTROLLED" ? 20.5m + (i % 3) * 0.3m : 4.0m + (i % 3) * 0.2m;
+
+                readingSeed.Add(new TemperatureReading
+                {
+                    TenantId = tenantId,
+                    DeviceId = device.Id,
+                    ShipmentId = device.ShipmentId ?? shipmentList.Skip(i % Math.Max(1, shipmentList.Count)).FirstOrDefault()?.Id,
+                    ZoneId = zone.Id,
+                    TemperatureCelsius = value,
+                    HumidityPercent = 46m + (i % 4) * 3m,
+                    Latitude = 24.55m + i * 0.012m,
+                    Longitude = 46.65m + i * 0.015m,
+                    Source = i % 2 == 0 ? "Sensor" : "Gateway",
+                    Status = breach ? "Breach" : "Normal",
+                    Notes = breach ? "Temperature moved outside the allowed band." : "In-range telemetry sample.",
+                    RecordedAtUtc = now.AddMinutes(-90 + i * 8),
+                    CreatedAtUtc = now.AddMinutes(-90 + i * 8),
+                });
+            }
+            readings = readingSeed;
+            _db.TemperatureReadings.AddRange(readings);
+        }
+
+        var alerts = await _db.TemperatureAlerts.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(ct);
+        if (alerts.Count == 0)
+        {
+            var breachReadings = readings.Where(x => x.Status == "Breach").Take(3).ToList();
+            var alertRows = new List<TemperatureAlert>();
+            for (var i = 0; i < breachReadings.Count; i++)
+            {
+                var reading = breachReadings[i];
+                var zone = zones.FirstOrDefault(x => x.Id == reading.ZoneId) ?? zones[0];
+                alertRows.Add(new TemperatureAlert
+                {
+                    TenantId = tenantId,
+                    DeviceId = reading.DeviceId,
+                    ShipmentId = reading.ShipmentId,
+                    ReadingId = reading.Id,
+                    AlertType = "TemperatureBreach",
+                    Severity = i == 0 ? "Critical" : "High",
+                    Status = i == 0 ? "Resolved" : "Open",
+                    ThresholdMin = zone.MinCelsius,
+                    ThresholdMax = zone.MaxCelsius,
+                    MeasuredTemperature = reading.TemperatureCelsius,
+                    TriggeredAtUtc = reading.RecordedAtUtc.AddMinutes(2),
+                    ResolvedAtUtc = i == 0 ? now.AddMinutes(-18) : null,
+                    ResolvedBy = i == 0 ? "Operations Desk" : string.Empty,
+                    ResolutionNotes = i == 0 ? "Route was re-iced and device recalibrated." : string.Empty,
+                    Notes = "Seed cold-chain alert generated from the demo telemetry stream.",
+                });
+            }
+            alerts = alertRows;
+            _db.TemperatureAlerts.AddRange(alerts);
+        }
+
+        if (!await _db.ColdChainReports.AnyAsync(x => x.TenantId == tenantId, ct))
+        {
+            var reportShipments = shipmentList.Take(2).ToList();
+            var reportRows = new List<ColdChainReport>();
+            foreach (var shipment in reportShipments)
+            {
+                var shipmentReadings = readings.Where(x => x.ShipmentId == shipment.Id).ToList();
+                if (shipmentReadings.Count == 0) continue;
+                var breachCount = shipmentReadings.Count(x => x.Status == "Breach");
+                reportRows.Add(new ColdChainReport
+                {
+                    TenantId = tenantId,
+                    ShipmentId = shipment.Id,
+                    ShipmentNumber = shipment.ShipmentNumber,
+                    GeneratedAtUtc = now,
+                    CompliancePercent = Math.Round((1m - (breachCount / (decimal)shipmentReadings.Count)) * 100m, 1),
+                    MinTemperatureCelsius = shipmentReadings.Min(x => x.TemperatureCelsius),
+                    MaxTemperatureCelsius = shipmentReadings.Max(x => x.TemperatureCelsius),
+                    TotalReadings = shipmentReadings.Count,
+                    BreachCount = breachCount,
+                    SummaryJson = $"{{\"shipment\":\"{shipment.ShipmentNumber}\",\"deviceCount\":{shipmentReadings.Select(x => x.DeviceId).Distinct().Count()},\"breachCount\":{breachCount}}}",
+                    Notes = "Generated cold-chain compliance view for shipment review.",
+                });
+            }
+            _db.ColdChainReports.AddRange(reportRows);
+        }
+
+        if (!await _db.RefrigerationUnitHealthRecords.AnyAsync(x => x.TenantId == tenantId, ct))
+        {
+            var healthRows = vehicleList.Take(3).Select((vehicle, index) => new RefrigerationUnitHealth
+            {
+                TenantId = tenantId,
+                VehicleNumber = vehicle.VehicleNumber,
+                UnitSerial = $"REF-{slug.ToUpperInvariant()}-{index + 1:02}",
+                Status = index == 0 ? "ServiceDue" : index == 1 ? "Healthy" : "Monitor",
+                CompressorHours = 120m + index * 42m,
+                LastServiceAtUtc = now.AddDays(-16 - index * 4),
+                NextServiceDueAtUtc = now.AddDays(12 + index * 5),
+                TemperatureDeviationCount = index + 1,
+                Notes = "Refrigeration unit seeded for preventive monitoring.",
+                CreatedAtUtc = now,
+            }).ToList();
+            _db.RefrigerationUnitHealthRecords.AddRange(healthRows);
+        }
+
+        if (!await _db.AssetTypes.AnyAsync(x => x.TenantId == tenantId, ct))
+        {
+            var createdTypes = new List<AssetType>
+            {
+                new() { TenantId = tenantId, Code = "PALLET", Name = "Pallet", Description = "Reusable freight pallet", IsReturnable = true, CreatedAtUtc = now },
+                new() { TenantId = tenantId, Code = "CRATE", Name = "Crate", Description = "Stackable storage crate", IsReturnable = true, CreatedAtUtc = now },
+                new() { TenantId = tenantId, Code = "CAGE", Name = "Security Cage", Description = "Returnable security cage", IsReturnable = true, CreatedAtUtc = now },
+            };
+            _db.AssetTypes.AddRange(createdTypes);
+        }
+
+        var assetTypes = await _db.AssetTypes.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(ct);
+        if (assetTypes.Count == 0)
+        {
+            assetTypes = _db.AssetTypes.Local.Where(x => x.TenantId == tenantId).ToList();
+        }
+
+        var createdAssets = new List<Asset>();
+        if (!await _db.Assets.AnyAsync(x => x.TenantId == tenantId, ct))
+        {
+            var rows = new List<Asset>();
+            for (var i = 0; i < 6; i++)
+            {
+                var assetType = assetTypes[i % assetTypes.Count];
+                rows.Add(new Asset
+                {
+                    TenantId = tenantId,
+                    AssetTypeId = assetType.Id,
+                    AssetTag = $"AST-{slug.ToUpperInvariant()}-{700 + i}",
+                    Name = i % 2 == 0 ? "Cold Chain Pallet" : i % 3 == 0 ? "Security Cage" : "Shipping Crate",
+                    Status = i % 4 == 0 ? "Assigned" : "Available",
+                    CurrentLocation = shipmentList.Skip(i % Math.Max(1, shipmentList.Count)).FirstOrDefault()?.Destination ?? "Main Warehouse",
+                    Condition = i % 5 == 0 ? "Monitor" : "Good",
+                    IsReturnable = true,
+                    Quantity = 1 + (i % 3),
+                    UnitOfMeasure = "Each",
+                    Notes = "Seed asset record tied to live logistics usage.",
+                    LastSeenAtUtc = now.AddMinutes(-25 - i * 6),
+                    CreatedAtUtc = now,
+                });
+            }
+            _db.Assets.AddRange(rows);
+            createdAssets = rows;
+        }
+
+        var assets = await _db.Assets.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(ct);
+        if (assets.Count == 0)
+        {
+            assets = createdAssets.Count > 0 ? createdAssets : _db.Assets.Local.Where(x => x.TenantId == tenantId).ToList();
+        }
+        if (!await _db.AssetAssignments.AnyAsync(x => x.TenantId == tenantId, ct))
+        {
+            var assignments = new List<AssetAssignment>();
+            for (var i = 0; i < Math.Min(4, assets.Count); i++)
+            {
+                var asset = assets[i];
+                var shipment = shipmentList.Count > 0 ? shipmentList[i % shipmentList.Count] : null;
+                assignments.Add(new AssetAssignment
+                {
+                    TenantId = tenantId,
+                    AssetId = asset.Id,
+                    ShipmentId = shipment?.Id,
+                    CarrierId = null,
+                    AssigneeType = shipment is null ? "Warehouse" : "Shipment",
+                    AssigneeName = shipment is null ? "Main Warehouse" : shipment.ShipmentNumber,
+                    Quantity = 1,
+                    Status = i % 3 == 0 ? "CheckedOut" : "Assigned",
+                    AssignedAtUtc = now.AddHours(-10 - i),
+                    ReleasedAtUtc = i % 3 == 0 ? now.AddHours(-2 - i) : null,
+                    Notes = "Seed assignment for asset control demo.",
+                });
+                asset.Status = i % 3 == 0 ? "InUse" : "Assigned";
+                asset.CurrentLocation = shipment?.Destination ?? "Main Warehouse";
+                asset.LastSeenAtUtc = now.AddMinutes(-15 - i * 5);
+                asset.UpdatedAtUtc = now;
+            }
+            _db.AssetAssignments.AddRange(assignments);
+        }
+
+        if (!await _db.AssetEvents.AnyAsync(x => x.TenantId == tenantId, ct))
+        {
+            var assetEvents = assets.Take(4).Select((asset, index) => new AssetEvent
+            {
+                TenantId = tenantId,
+                AssetId = asset.Id,
+                EventType = index % 2 == 0 ? "CheckOut" : "CheckIn",
+                Quantity = 1,
+                Location = index % 2 == 0 ? "Dispatch Yard" : "Receiving Bay",
+                ActorName = "Operations Desk",
+                OccurredAtUtc = now.AddHours(-12 + index * 2),
+                Notes = "Seed asset event stream.",
+            }).ToList();
+            _db.AssetEvents.AddRange(assetEvents);
+        }
+
+        if (!await _db.BarcodeScanEvents.AnyAsync(x => x.TenantId == tenantId, ct))
+        {
+            var barcodeScans = assets.Take(3).Select((asset, index) => new BarcodeScanEvent
+            {
+                TenantId = tenantId,
+                AssetId = asset.Id,
+                ShipmentId = shipmentList.Count > 0 ? shipmentList[index % shipmentList.Count].Id : null,
+                ScannedValue = asset.AssetTag,
+                ScannerId = $"SCAN-{slug.ToUpperInvariant()}-{index + 1:02}",
+                EventType = "Scan",
+                Status = "Captured",
+                RecordedAtUtc = now.AddMinutes(-35 - index * 7),
+                Notes = "Barcode scan captured in the warehouse.",
+            }).ToList();
+            _db.BarcodeScanEvents.AddRange(barcodeScans);
+        }
+
+        if (!await _db.RfidEvents.AnyAsync(x => x.TenantId == tenantId, ct))
+        {
+            var rfidEvents = assets.Take(3).Select((asset, index) => new RfidEvent
+            {
+                TenantId = tenantId,
+                AssetId = asset.Id,
+                ShipmentId = shipmentList.Count > 0 ? shipmentList[index % shipmentList.Count].Id : null,
+                TagId = $"RFID-{slug.ToUpperInvariant()}-{asset.AssetTag}",
+                ReaderId = $"RDR-{slug.ToUpperInvariant()}-{index + 1:02}",
+                EventType = index % 2 == 0 ? "Read" : "Exit",
+                Status = "Captured",
+                RecordedAtUtc = now.AddMinutes(-20 - index * 11),
+                Notes = "RFID gate event seeded for live operations.",
+            }).ToList();
+            _db.RfidEvents.AddRange(rfidEvents);
+        }
+
+        await _db.SaveChangesAsync(ct);
     }
 
     private async Task SeedSaudiReadinessAsync(Guid tenantId, string slug, IReadOnlyList<Employee> employees, IReadOnlyList<FleetShipment>? shipments, CancellationToken ct)

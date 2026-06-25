@@ -237,6 +237,18 @@ public class ZayraDbContext : DbContext
     public DbSet<ShipmentCarrierAssignment> ShipmentCarrierAssignments => Set<ShipmentCarrierAssignment>();
     public DbSet<BookingRequest> BookingRequests => Set<BookingRequest>();
     public DbSet<QuoteRequest> QuoteRequests => Set<QuoteRequest>();
+    public DbSet<TemperatureZone> TemperatureZones => Set<TemperatureZone>();
+    public DbSet<TemperatureDevice> TemperatureDevices => Set<TemperatureDevice>();
+    public DbSet<TemperatureReading> TemperatureReadings => Set<TemperatureReading>();
+    public DbSet<TemperatureAlert> TemperatureAlerts => Set<TemperatureAlert>();
+    public DbSet<ColdChainReport> ColdChainReports => Set<ColdChainReport>();
+    public DbSet<RefrigerationUnitHealth> RefrigerationUnitHealthRecords => Set<RefrigerationUnitHealth>();
+    public DbSet<AssetType> AssetTypes => Set<AssetType>();
+    public DbSet<Asset> Assets => Set<Asset>();
+    public DbSet<AssetAssignment> AssetAssignments => Set<AssetAssignment>();
+    public DbSet<AssetEvent> AssetEvents => Set<AssetEvent>();
+    public DbSet<BarcodeScanEvent> BarcodeScanEvents => Set<BarcodeScanEvent>();
+    public DbSet<RfidEvent> RfidEvents => Set<RfidEvent>();
     public DbSet<SaudiRegionReference> SaudiRegionReferences => Set<SaudiRegionReference>();
     public DbSet<FleetReadinessDocument> FleetReadinessDocuments => Set<FleetReadinessDocument>();
     // ── Performance & Appraisals ─────────────────────────────────────────────
@@ -1468,6 +1480,177 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.MarginPct).HasPrecision(5, 2);
             entity.HasIndex(x => new { x.TenantId, x.QuoteNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<TemperatureZone>(entity =>
+        {
+            entity.ToTable("temperature_zones");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Code).HasMaxLength(40);
+            entity.Property(x => x.Name).HasMaxLength(120);
+            entity.Property(x => x.MinCelsius).HasPrecision(5, 2);
+            entity.Property(x => x.MaxCelsius).HasPrecision(5, 2);
+            entity.Property(x => x.Color).HasMaxLength(40);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.IsActive });
+        });
+
+        modelBuilder.Entity<TemperatureDevice>(entity =>
+        {
+            entity.ToTable("temperature_devices");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.DeviceCode).HasMaxLength(60);
+            entity.Property(x => x.Name).HasMaxLength(120);
+            entity.Property(x => x.VehicleNumber).HasMaxLength(40);
+            entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.LastReportedTemperatureCelsius).HasPrecision(5, 2);
+            entity.Property(x => x.BatteryPercent).HasPrecision(5, 2);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.DeviceCode }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.ZoneId });
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId });
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<TemperatureReading>(entity =>
+        {
+            entity.ToTable("temperature_readings");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.TemperatureCelsius).HasPrecision(5, 2);
+            entity.Property(x => x.HumidityPercent).HasPrecision(5, 2);
+            entity.Property(x => x.Latitude).HasPrecision(10, 7);
+            entity.Property(x => x.Longitude).HasPrecision(10, 7);
+            entity.Property(x => x.Source).HasMaxLength(40);
+            entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.DeviceId, x.RecordedAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId, x.RecordedAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.ZoneId, x.RecordedAtUtc });
+        });
+
+        modelBuilder.Entity<TemperatureAlert>(entity =>
+        {
+            entity.ToTable("temperature_alerts");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.AlertType).HasMaxLength(60);
+            entity.Property(x => x.Severity).HasMaxLength(20);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.ThresholdMin).HasPrecision(5, 2);
+            entity.Property(x => x.ThresholdMax).HasPrecision(5, 2);
+            entity.Property(x => x.MeasuredTemperature).HasPrecision(5, 2);
+            entity.Property(x => x.ResolvedBy).HasMaxLength(120);
+            entity.Property(x => x.ResolutionNotes).HasMaxLength(500);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.DeviceId, x.TriggeredAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<ColdChainReport>(entity =>
+        {
+            entity.ToTable("cold_chain_reports");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ShipmentNumber).HasMaxLength(80);
+            entity.Property(x => x.CompliancePercent).HasPrecision(5, 2);
+            entity.Property(x => x.MinTemperatureCelsius).HasPrecision(5, 2);
+            entity.Property(x => x.MaxTemperatureCelsius).HasPrecision(5, 2);
+            entity.Property(x => x.SummaryJson).HasColumnType("json");
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.GeneratedAtUtc });
+        });
+
+        modelBuilder.Entity<RefrigerationUnitHealth>(entity =>
+        {
+            entity.ToTable("refrigeration_unit_health");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.VehicleNumber).HasMaxLength(40);
+            entity.Property(x => x.UnitSerial).HasMaxLength(80);
+            entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.CompressorHours).HasPrecision(12, 2);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.VehicleNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<AssetType>(entity =>
+        {
+            entity.ToTable("asset_types");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Code).HasMaxLength(40);
+            entity.Property(x => x.Name).HasMaxLength(120);
+            entity.Property(x => x.Description).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+        });
+
+        modelBuilder.Entity<Asset>(entity =>
+        {
+            entity.ToTable("assets");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.AssetTag).HasMaxLength(80);
+            entity.Property(x => x.Name).HasMaxLength(120);
+            entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.CurrentLocation).HasMaxLength(180);
+            entity.Property(x => x.Condition).HasMaxLength(40);
+            entity.Property(x => x.Quantity).HasPrecision(12, 2);
+            entity.Property(x => x.UnitOfMeasure).HasMaxLength(40);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.AssetTag }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.AssetTypeId });
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<AssetAssignment>(entity =>
+        {
+            entity.ToTable("asset_assignments");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.AssigneeType).HasMaxLength(40);
+            entity.Property(x => x.AssigneeName).HasMaxLength(160);
+            entity.Property(x => x.Quantity).HasPrecision(12, 2);
+            entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.AssetId, x.AssignedAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId });
+            entity.HasIndex(x => new { x.TenantId, x.CarrierId });
+        });
+
+        modelBuilder.Entity<AssetEvent>(entity =>
+        {
+            entity.ToTable("asset_events");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.EventType).HasMaxLength(60);
+            entity.Property(x => x.Quantity).HasPrecision(12, 2);
+            entity.Property(x => x.Location).HasMaxLength(180);
+            entity.Property(x => x.ActorName).HasMaxLength(120);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.AssetId, x.OccurredAtUtc });
+        });
+
+        modelBuilder.Entity<BarcodeScanEvent>(entity =>
+        {
+            entity.ToTable("barcode_scan_events");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ScannedValue).HasMaxLength(120);
+            entity.Property(x => x.ScannerId).HasMaxLength(80);
+            entity.Property(x => x.EventType).HasMaxLength(60);
+            entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.AssetId, x.RecordedAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId, x.RecordedAtUtc });
+        });
+
+        modelBuilder.Entity<RfidEvent>(entity =>
+        {
+            entity.ToTable("rfid_events");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.TagId).HasMaxLength(120);
+            entity.Property(x => x.ReaderId).HasMaxLength(80);
+            entity.Property(x => x.EventType).HasMaxLength(60);
+            entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.AssetId, x.RecordedAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.ShipmentId, x.RecordedAtUtc });
         });
 
         modelBuilder.Entity<FleetVehicle>(entity =>

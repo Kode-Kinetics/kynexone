@@ -457,6 +457,276 @@ export const fleetCommercialApi = {
     client.post<QuoteRequest>('/api/fleet-tms/quote-requests', body).then((r) => r.data),
 };
 
+export interface TemperatureZone {
+  id: string;
+  code: string;
+  name: string;
+  minCelsius: number;
+  maxCelsius: number;
+  color: string;
+  isActive: boolean;
+  notes: string;
+  createdAtUtc: string;
+  updatedAtUtc?: string | null;
+}
+
+export interface TemperatureDevice {
+  id: string;
+  deviceCode: string;
+  name: string;
+  zoneId?: string | null;
+  zoneCode?: string | null;
+  zoneName?: string | null;
+  shipmentId?: string | null;
+  shipmentNumber?: string | null;
+  vehicleNumber: string;
+  status: string;
+  lastReportedTemperatureCelsius: number;
+  batteryPercent: number;
+  lastPingAtUtc?: string | null;
+  notes: string;
+  createdAtUtc?: string;
+  updatedAtUtc?: string | null;
+}
+
+export interface TemperatureReading {
+  id: string;
+  deviceId: string;
+  shipmentId?: string | null;
+  zoneId?: string | null;
+  temperatureCelsius: number;
+  humidityPercent?: number | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  source: string;
+  status: string;
+  notes: string;
+  recordedAtUtc: string;
+  createdAtUtc: string;
+}
+
+export interface TemperatureAlert {
+  id: string;
+  deviceId: string;
+  deviceCode?: string | null;
+  shipmentId?: string | null;
+  shipmentNumber?: string | null;
+  readingId: string;
+  alertType: string;
+  severity: string;
+  status: string;
+  thresholdMin: number;
+  thresholdMax: number;
+  measuredTemperature: number;
+  triggeredAtUtc: string;
+  resolvedAtUtc?: string | null;
+  resolvedBy: string;
+  resolutionNotes: string;
+  notes: string;
+}
+
+export interface ColdChainReport {
+  id: string;
+  shipmentId: string;
+  shipmentNumber: string;
+  generatedAtUtc: string;
+  compliancePercent: number;
+  minTemperatureCelsius: number;
+  maxTemperatureCelsius: number;
+  totalReadings: number;
+  breachCount: number;
+  summaryJson: string;
+  notes: string;
+}
+
+export interface RefrigerationUnitHealth {
+  id: string;
+  vehicleNumber: string;
+  unitSerial: string;
+  status: string;
+  compressorHours: number;
+  lastServiceAtUtc?: string | null;
+  nextServiceDueAtUtc?: string | null;
+  temperatureDeviationCount: number;
+  notes: string;
+}
+
+export interface AssetType {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  isReturnable: boolean;
+  createdAtUtc: string;
+  updatedAtUtc?: string | null;
+}
+
+export interface Asset {
+  id: string;
+  assetTypeId: string;
+  assetTypeCode?: string | null;
+  assetTypeName?: string | null;
+  assetTag: string;
+  name: string;
+  status: string;
+  currentLocation: string;
+  condition: string;
+  isReturnable: boolean;
+  quantity: number;
+  unitOfMeasure: string;
+  notes: string;
+  lastSeenAtUtc?: string | null;
+  createdAtUtc: string;
+  updatedAtUtc?: string | null;
+  assignmentCount?: number;
+}
+
+export interface AssetAssignment {
+  id: string;
+  assetId: string;
+  shipmentId?: string | null;
+  shipmentNumber?: string | null;
+  carrierId?: string | null;
+  carrierName?: string | null;
+  assigneeType: string;
+  assigneeName: string;
+  quantity: number;
+  status: string;
+  assignedAtUtc: string;
+  releasedAtUtc?: string | null;
+  notes: string;
+}
+
+export interface AssetEvent {
+  id: string;
+  type: string;
+  eventType: string;
+  quantity: number;
+  location: string;
+  actorName: string;
+  occurredAtUtc: string;
+  notes: string;
+}
+
+export interface BarcodeScanEvent {
+  id: string;
+  scannedValue: string;
+  scannerId: string;
+  eventType: string;
+  status: string;
+  recordedAtUtc: string;
+  notes: string;
+}
+
+export interface RfidEvent {
+  id: string;
+  tagId: string;
+  readerId: string;
+  eventType: string;
+  status: string;
+  recordedAtUtc: string;
+  notes: string;
+}
+
+export const fleetColdChainApi = {
+  summary: () =>
+    client.get<{
+      generatedAtUtc: string;
+      summary: {
+        activeDevices: number;
+        readingsToday: number;
+        openAlerts: number;
+        totalReadings: number;
+        breachReadings: number;
+        avgTemperatureCelsius: number;
+        compliancePercent: number;
+      };
+      zones: TemperatureZone[];
+      devices: Array<Pick<TemperatureDevice, 'id' | 'deviceCode' | 'name' | 'vehicleNumber' | 'status' | 'lastReportedTemperatureCelsius' | 'batteryPercent' | 'lastPingAtUtc' | 'notes'> & {
+        zoneCode?: string | null;
+        zoneName?: string | null;
+      }>;
+      alerts: Array<Pick<TemperatureAlert, 'id' | 'alertType' | 'severity' | 'status' | 'measuredTemperature' | 'thresholdMin' | 'thresholdMax' | 'triggeredAtUtc' | 'resolutionNotes'>>;
+      reports: ColdChainReport[];
+    }>('/api/fleet-tms/cold-chain/summary').then((r) => r.data),
+  devices: () => client.get<{ items: TemperatureDevice[] }>('/api/fleet-tms/cold-chain/devices').then((r) => r.data),
+  createDevice: (body: Partial<TemperatureDevice> & { deviceCode: string; name: string }) =>
+    client.post<TemperatureDevice>('/api/fleet-tms/cold-chain/devices', body).then((r) => r.data),
+  shipmentReadings: (shipmentId: string) => client.get<{ items: TemperatureReading[] }>(`/api/fleet-tms/cold-chain/shipments/${shipmentId}/readings`).then((r) => r.data),
+  createReading: (body: {
+    deviceId: string;
+    shipmentId?: string | null;
+    zoneId?: string | null;
+    temperatureCelsius: number;
+    humidityPercent?: number | null;
+    latitude?: number | null;
+    longitude?: number | null;
+    source?: string;
+    status?: string;
+    notes?: string;
+  }) => client.post<TemperatureReading>('/api/fleet-tms/cold-chain/readings', body).then((r) => r.data),
+  alerts: (status?: string) => client.get<{ items: TemperatureAlert[] }>('/api/fleet-tms/cold-chain/alerts', { params: status ? { status } : undefined }).then((r) => r.data),
+  resolveAlert: (id: string, body: { resolutionNotes?: string } = {}) =>
+    client.post<TemperatureAlert>(`/api/fleet-tms/cold-chain/alerts/${id}/resolve`, body).then((r) => r.data),
+  report: (shipmentId: string) => client.get<ColdChainReport>(`/api/fleet-tms/cold-chain/reports/${shipmentId}`).then((r) => r.data),
+};
+
+export const fleetAssetApi = {
+  assetTypes: () => client.get<{ items: AssetType[] }>('/api/fleet-tms/assets/types').then((r) => r.data),
+  createAssetType: (body: Partial<AssetType> & { code: string; name: string }) =>
+    client.post<AssetType>('/api/fleet-tms/assets/types', body).then((r) => r.data),
+  assets: () => client.get<{ items: Asset[] }>('/api/fleet-tms/assets').then((r) => r.data),
+  asset: (id: string) => client.get<{ asset: Asset; assignments: AssetAssignment[]; events: AssetEvent[] }>(`/api/fleet-tms/assets/${id}`).then((r) => r.data),
+  createAsset: (body: Partial<Asset> & { assetTypeId: string; assetTag: string; name: string }) =>
+    client.post<Asset>('/api/fleet-tms/assets', body).then((r) => r.data),
+  updateAsset: (id: string, body: Partial<Asset> & { assetTypeId?: string }) =>
+    client.put<Asset>(`/api/fleet-tms/assets/${id}`, body).then((r) => r.data),
+  assignAsset: (id: string, body: {
+    shipmentId?: string | null;
+    carrierId?: string | null;
+    assigneeType?: string;
+    assigneeName?: string;
+    quantity?: number;
+    status?: string;
+    currentLocation?: string;
+    releasedAtUtc?: string | null;
+    notes?: string;
+  }) => client.post<AssetAssignment>(`/api/fleet-tms/assets/${id}/assign`, body).then((r) => r.data),
+  checkInAsset: (id: string, body: {
+    location?: string;
+    condition?: string;
+    notes?: string;
+    shipmentId?: string | null;
+    carrierId?: string | null;
+    assigneeType?: string;
+    assigneeName?: string;
+    quantity?: number;
+  }) => client.post<Asset>(`/api/fleet-tms/assets/${id}/check-in`, body).then((r) => r.data),
+  checkOutAsset: (id: string, body: {
+    location?: string;
+    condition?: string;
+    notes?: string;
+    shipmentId?: string | null;
+    carrierId?: string | null;
+    assigneeType?: string;
+    assigneeName?: string;
+    quantity?: number;
+  }) => client.post<Asset>(`/api/fleet-tms/assets/${id}/check-out`, body).then((r) => r.data),
+  events: (id: string) => client.get<{ items: AssetEvent[] }>(`/api/fleet-tms/assets/${id}/events`).then((r) => r.data),
+  scan: (body: {
+    kind?: string;
+    assetId?: string | null;
+    shipmentId?: string | null;
+    scannedValue?: string;
+    tagId?: string;
+    scannerId?: string;
+    readerId?: string;
+    eventType?: string;
+    status?: string;
+    notes?: string;
+  }) => client.post<BarcodeScanEvent | RfidEvent>('/api/fleet-tms/assets/scan', body).then((r) => r.data),
+};
+
 export interface SaudiRegionReference {
   id: string;
   code: string;

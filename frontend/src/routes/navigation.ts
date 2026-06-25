@@ -29,6 +29,8 @@ import {
   MapPinned,
   Fuel,
   Wrench,
+  FlaskConical,
+  Boxes,
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 
@@ -90,6 +92,8 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Live Tracking', icon: MapPinned, path: '/fleet/tracking', requiredPermissions: ['fleet.read'] },
       { label: 'Maintenance', icon: Wrench, path: '/fleet/maintenance', requiredPermissions: ['fleet.read'] },
       { label: 'Fuel Analytics', icon: Fuel, path: '/fleet/fuel', requiredPermissions: ['fleet.read'] },
+      { label: 'Cold Chain', icon: FlaskConical, path: '/fleet/cold-chain', requiredPermissions: ['fleet_tms.cold_chain.view', 'fleet.read'] },
+      { label: 'Asset Management', icon: Boxes, path: '/fleet/assets', requiredPermissions: ['fleet_tms.assets.view', 'fleet.read'] },
       { label: 'Carriers & Quotes', icon: BriefcaseBusiness, path: '/fleet/carriers', requiredPermissions: ['fleet.read'] },
       { label: 'Saudi/GCC Readiness', icon: ShieldCheck, path: '/fleet/saudi-readiness', requiredPermissions: ['fleet.read'] },
     ],
