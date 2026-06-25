@@ -104,7 +104,9 @@ export function LoginPage() {
     const wsParam = searchParams?.get('workspace') ?? searchParams?.get('w');
     if (wsParam) { setTenantSlug(wsParam); setTenantLocked(true); return; }
     if (typeof window === 'undefined') return;
-    const parts = window.location.hostname.split('.');
+    const hostname = window.location.hostname.toLowerCase();
+    if (hostname.endsWith('.vercel.app') || hostname.endsWith('.vercel.com')) return;
+    const parts = hostname.split('.');
     const skip = new Set(['www', 'app', 'admin', 'mail', 'localhost']);
     const first = parts[0];
     const looksLikeSlug = /^[a-z][a-z0-9-]*$/i.test(first);
