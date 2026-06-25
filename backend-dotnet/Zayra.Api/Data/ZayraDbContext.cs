@@ -218,6 +218,9 @@ public class ZayraDbContext : DbContext
     public DbSet<ApplicationEvent> ApplicationEvents => Set<ApplicationEvent>();
     public DbSet<InterviewSchedule> InterviewSchedules => Set<InterviewSchedule>();
     public DbSet<OfferLetter> OfferLetters => Set<OfferLetter>();
+    public DbSet<DispatchOrder> DispatchOrders => Set<DispatchOrder>();
+    public DbSet<DeliveryRoute> DeliveryRoutes => Set<DeliveryRoute>();
+    public DbSet<LastMileStop> LastMileStops => Set<LastMileStop>();
     // ── Performance & Appraisals ─────────────────────────────────────────────
     public DbSet<PerformanceCycle> PerformanceCycles => Set<PerformanceCycle>();
     public DbSet<PerformanceScorecardTemplate> PerformanceScorecardTemplates => Set<PerformanceScorecardTemplate>();
@@ -1222,6 +1225,36 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.GrossSalary).HasPrecision(12, 2);
             entity.Property(x => x.ContentHtml).HasColumnType("text");
             entity.HasIndex(x => new { x.TenantId, x.ApplicationId });
+        });
+
+        modelBuilder.Entity<DispatchOrder>(entity =>
+        {
+            entity.ToTable("dispatch_orders");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.OrderValue).HasPrecision(12, 2);
+            entity.HasIndex(x => new { x.TenantId, x.OrderNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.RouteCode });
+        });
+
+        modelBuilder.Entity<DeliveryRoute>(entity =>
+        {
+            entity.ToTable("delivery_routes");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.DistanceKm).HasPrecision(10, 2);
+            entity.Property(x => x.CompletionPercent).HasPrecision(5, 2);
+            entity.HasIndex(x => new { x.TenantId, x.RouteCode }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<LastMileStop>(entity =>
+        {
+            entity.ToTable("last_mile_stops");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.OrderNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.RouteCode });
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.EtaUtc });
         });
 
         modelBuilder.Entity<ShiftDefinition>(entity =>

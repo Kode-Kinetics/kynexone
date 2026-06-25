@@ -23,6 +23,10 @@ import {
   WalletCards,
   KeyRound,
   CheckSquare2,
+  Truck,
+  Route,
+  Package,
+  MapPinned,
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 
@@ -64,6 +68,15 @@ export const navigationGroups: NavGroup[] = [
     items: [
       { label: 'Assistant', icon: MessageSquareText, path: '/ai-assistant', requiredPermissions: ['ai.query', 'ai.insights_view'], requiredFeatureKey: 'ai_assistant' },
       { label: 'Reports & Analytics', icon: Layers3, path: '/reports', requiredPermissions: ['reports.read', 'reports.schedule'] },
+    ],
+  },
+  {
+    label: 'Dispatch & Delivery',
+    items: [
+      { label: 'Dispatch Command Center', icon: Truck, path: '/dispatch', requiredPermissions: ['logistics.read'] },
+      { label: 'Jobs & Orders', icon: Package, path: '/dispatch/jobs-orders', requiredPermissions: ['logistics.read'] },
+      { label: 'Route Planning', icon: MapPinned, path: '/dispatch/route-planning', requiredPermissions: ['logistics.read'] },
+      { label: 'Last Mile Delivery', icon: Route, path: '/dispatch/last-mile-delivery', requiredPermissions: ['logistics.read'] },
     ],
   },
   {
