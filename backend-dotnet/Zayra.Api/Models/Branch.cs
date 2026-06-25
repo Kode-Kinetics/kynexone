@@ -13,6 +13,14 @@ public class Branch : ITenantOwned
     public string City { get; set; } = string.Empty;
     public string AddressLine1 { get; set; } = string.Empty;
     public string AddressLine2 { get; set; } = string.Empty;
+    public string VATNumber { get; set; } = string.Empty;
+    public string CommercialRegistrationNo { get; set; } = string.Empty;
+    public string NationalAddressBuildingNo { get; set; } = string.Empty;
+    public string NationalAddressAdditionalNo { get; set; } = string.Empty;
+    public string NationalAddressDistrict { get; set; } = string.Empty;
+    public string NationalAddressRegion { get; set; } = string.Empty;
+    public string NationalAddressPostalCode { get; set; } = string.Empty;
+    public string NationalAddressCountry { get; set; } = string.Empty;
     public string TimeZoneId { get; set; } = "America/New_York";
     public string LaborOfficeCode { get; set; } = string.Empty;
     public bool IsHeadOffice { get; set; }

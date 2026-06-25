@@ -47,6 +47,15 @@ export interface FleetShipment {
   volumeCbm: number;
   declaredValue: number;
   carrierName: string;
+  customerVATNumber: string;
+  customerCommercialRegistrationNo: string;
+  customerNationalAddressBuildingNo: string;
+  customerNationalAddressAdditionalNo: string;
+  customerNationalAddressDistrict: string;
+  customerNationalAddressCity: string;
+  customerNationalAddressRegion: string;
+  customerNationalAddressPostalCode: string;
+  customerNationalAddressCountry: string;
   driverName: string;
   vehicleNumber: string;
   routeCode: string;
@@ -265,6 +274,20 @@ export interface Carrier {
   status: string;
   region: string;
   serviceType: string;
+  vatNumber: string;
+  commercialRegistrationNo: string;
+  transportDocumentNo: string;
+  permitNo: string;
+  nationalAddressBuildingNo: string;
+  nationalAddressAdditionalNo: string;
+  district: string;
+  city: string;
+  postalCode: string;
+  country: string;
+  documentStatus: string;
+  expiryStatus: string;
+  hijriExpiryDate?: string | null;
+  gregorianExpiryDate?: string | null;
   onTimeScore: number;
   damageScore: number;
   costScore: number;
@@ -432,4 +455,134 @@ export const fleetCommercialApi = {
   quoteRequests: () => client.get<{ items: QuoteRequest[] }>('/api/fleet-tms/quote-requests').then((r) => r.data),
   createQuoteRequest: (body: Partial<QuoteRequest> & { quoteNumber: string; customerName: string; origin: string; destination: string }) =>
     client.post<QuoteRequest>('/api/fleet-tms/quote-requests', body).then((r) => r.data),
+};
+
+export interface SaudiRegionReference {
+  id: string;
+  code: string;
+  nameEn: string;
+  nameAr: string;
+  countryCode: string;
+  isGccReady: boolean;
+  cities: string[];
+}
+
+export interface FleetReadinessDocument {
+  id: string;
+  kind: string;
+  subjectType: string;
+  subjectId: string;
+  subjectName: string;
+  documentType: string;
+  documentNumber: string;
+  transportDocumentNo: string;
+  permitNo: string;
+  vatNumber: string;
+  commercialRegistrationNo: string;
+  countryCode: string;
+  nationalAddressBuildingNo: string;
+  nationalAddressAdditionalNo: string;
+  district: string;
+  city: string;
+  region: string;
+  postalCode: string;
+  documentStatus: string;
+  expiryStatus: string;
+  issueDate?: string | null;
+  hijriExpiryDate?: string | null;
+  gregorianExpiryDate?: string | null;
+  notes: string;
+  createdAtUtc: string;
+  updatedAtUtc?: string | null;
+}
+
+export interface FleetReadinessExpiry {
+  id: string;
+  kind: string;
+  subjectType: string;
+  subjectName: string;
+  documentType: string;
+  documentNumber: string;
+  documentStatus: string;
+  expiryStatus: string;
+  countryCode: string;
+  gregorianExpiryDate?: string | null;
+  hijriExpiryDate?: string | null;
+  daysRemaining: number;
+  notes: string;
+}
+
+export interface FleetInvoiceReadySummary {
+  generatedAtUtc: string;
+  summary: {
+    readyCount: number;
+    blockedCount: number;
+    readinessPercent: number;
+    carrierReady: number;
+    branchReady: number;
+  };
+  readyShipments: Array<{
+    id: string;
+    shipmentNumber: string;
+    customerName: string;
+    status: string;
+    customerVATNumber: string;
+    customerCommercialRegistrationNo: string;
+    invoiceReadyAtUtc?: string | null;
+    invoiceReadinessNotes: string;
+    origin: string;
+    destination: string;
+    carrierName: string;
+    routeCode: string;
+  }>;
+  blockedShipments: Array<{
+    id: string;
+    shipmentNumber: string;
+    customerName: string;
+    status: string;
+    invoiceReadinessNotes: string;
+    origin: string;
+    destination: string;
+    carrierName: string;
+    routeCode: string;
+  }>;
+}
+
+export interface FleetReadinessDocumentRequest {
+  kind: string;
+  subjectType: string;
+  subjectId?: string;
+  subjectName: string;
+  documentType: string;
+  documentNumber?: string;
+  transportDocumentNo?: string;
+  permitNo?: string;
+  vatNumber?: string;
+  commercialRegistrationNo?: string;
+  countryCode?: string;
+  nationalAddressBuildingNo?: string;
+  nationalAddressAdditionalNo?: string;
+  district?: string;
+  city?: string;
+  region?: string;
+  postalCode?: string;
+  documentStatus?: string;
+  issueDate?: string | null;
+  hijriExpiryDate?: string | null;
+  gregorianExpiryDate?: string | null;
+  notes?: string;
+  requiresExpiry?: boolean;
+}
+
+export const fleetReadinessApi = {
+  regions: () => client.get<{ items: SaudiRegionReference[] }>('/api/fleet-tms/saudi/regions').then((r) => r.data),
+  documents: (query?: { kind?: string; subjectType?: string }) =>
+    client.get<{ items: FleetReadinessDocument[] }>('/api/fleet-tms/compliance/documents', { params: query }).then((r) => r.data),
+  createDocument: (body: FleetReadinessDocumentRequest) =>
+    client.post<FleetReadinessDocument>('/api/fleet-tms/compliance/documents', body).then((r) => r.data),
+  updateDocument: (id: string, body: FleetReadinessDocumentRequest) =>
+    client.put<FleetReadinessDocument>(`/api/fleet-tms/compliance/documents/${id}`, body).then((r) => r.data),
+  expiries: () =>
+    client.get<{ generatedAtUtc: string; items: FleetReadinessExpiry[]; summary: { totalDocuments: number; expiringSoon: number; expired: number; healthy: number; windowDays: number } }>('/api/fleet-tms/compliance/expiries').then((r) => r.data),
+  invoiceReady: () => client.get<FleetInvoiceReadySummary>('/api/fleet-tms/vat/invoice-ready').then((r) => r.data),
 };

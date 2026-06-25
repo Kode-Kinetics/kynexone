@@ -237,6 +237,8 @@ public class ZayraDbContext : DbContext
     public DbSet<ShipmentCarrierAssignment> ShipmentCarrierAssignments => Set<ShipmentCarrierAssignment>();
     public DbSet<BookingRequest> BookingRequests => Set<BookingRequest>();
     public DbSet<QuoteRequest> QuoteRequests => Set<QuoteRequest>();
+    public DbSet<SaudiRegionReference> SaudiRegionReferences => Set<SaudiRegionReference>();
+    public DbSet<FleetReadinessDocument> FleetReadinessDocuments => Set<FleetReadinessDocument>();
     // ── Performance & Appraisals ─────────────────────────────────────────────
     public DbSet<PerformanceCycle> PerformanceCycles => Set<PerformanceCycle>();
     public DbSet<PerformanceScorecardTemplate> PerformanceScorecardTemplates => Set<PerformanceScorecardTemplate>();
@@ -754,6 +756,14 @@ public class ZayraDbContext : DbContext
         {
             entity.ToTable("branches");
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.VATNumber).HasMaxLength(40);
+            entity.Property(x => x.CommercialRegistrationNo).HasMaxLength(80);
+            entity.Property(x => x.NationalAddressBuildingNo).HasMaxLength(20);
+            entity.Property(x => x.NationalAddressAdditionalNo).HasMaxLength(20);
+            entity.Property(x => x.NationalAddressDistrict).HasMaxLength(120);
+            entity.Property(x => x.NationalAddressRegion).HasMaxLength(120);
+            entity.Property(x => x.NationalAddressPostalCode).HasMaxLength(40);
+            entity.Property(x => x.NationalAddressCountry).HasMaxLength(80);
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.CompanyId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
@@ -1267,6 +1277,12 @@ public class ZayraDbContext : DbContext
         {
             entity.ToTable("last_mile_stops");
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.PostalCode).HasMaxLength(40);
+            entity.Property(x => x.Country).HasMaxLength(80);
+            entity.Property(x => x.Region).HasMaxLength(120);
+            entity.Property(x => x.SaudiNationalAddressBuildingNo).HasMaxLength(20);
+            entity.Property(x => x.SaudiNationalAddressAdditionalNo).HasMaxLength(20);
+            entity.Property(x => x.SaudiNationalAddressDistrict).HasMaxLength(120);
             entity.HasIndex(x => new { x.TenantId, x.OrderNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.RouteCode });
             entity.HasIndex(x => new { x.TenantId, x.Status });
@@ -1280,6 +1296,15 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.WeightKg).HasPrecision(12, 2);
             entity.Property(x => x.VolumeCbm).HasPrecision(12, 2);
             entity.Property(x => x.DeclaredValue).HasPrecision(12, 2);
+            entity.Property(x => x.CustomerVATNumber).HasMaxLength(40);
+            entity.Property(x => x.CustomerCommercialRegistrationNo).HasMaxLength(80);
+            entity.Property(x => x.CustomerNationalAddressBuildingNo).HasMaxLength(20);
+            entity.Property(x => x.CustomerNationalAddressAdditionalNo).HasMaxLength(20);
+            entity.Property(x => x.CustomerNationalAddressDistrict).HasMaxLength(120);
+            entity.Property(x => x.CustomerNationalAddressCity).HasMaxLength(120);
+            entity.Property(x => x.CustomerNationalAddressRegion).HasMaxLength(120);
+            entity.Property(x => x.CustomerNationalAddressPostalCode).HasMaxLength(40);
+            entity.Property(x => x.CustomerNationalAddressCountry).HasMaxLength(80);
             entity.HasIndex(x => new { x.TenantId, x.ShipmentNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.RouteCode });
@@ -1336,11 +1361,65 @@ public class ZayraDbContext : DbContext
         {
             entity.ToTable("carriers");
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.VATNumber).HasMaxLength(40);
+            entity.Property(x => x.CommercialRegistrationNo).HasMaxLength(80);
+            entity.Property(x => x.TransportDocumentNo).HasMaxLength(80);
+            entity.Property(x => x.PermitNo).HasMaxLength(80);
+            entity.Property(x => x.NationalAddressBuildingNo).HasMaxLength(20);
+            entity.Property(x => x.NationalAddressAdditionalNo).HasMaxLength(20);
+            entity.Property(x => x.District).HasMaxLength(120);
+            entity.Property(x => x.City).HasMaxLength(120);
+            entity.Property(x => x.PostalCode).HasMaxLength(40);
+            entity.Property(x => x.Country).HasMaxLength(80);
             entity.Property(x => x.OnTimeScore).HasPrecision(5, 2);
             entity.Property(x => x.DamageScore).HasPrecision(5, 2);
             entity.Property(x => x.CostScore).HasPrecision(5, 2);
+            entity.Property(x => x.HijriExpiryDate).HasColumnType("date");
+            entity.Property(x => x.GregorianExpiryDate).HasColumnType("date");
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<SaudiRegionReference>(entity =>
+        {
+            entity.ToTable("saudi_region_references");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.Code).IsUnique();
+            entity.Property(x => x.CitiesJson).HasColumnType("json");
+            entity.Property(x => x.CountryCode).HasMaxLength(10);
+            entity.Property(x => x.NameEn).HasMaxLength(180);
+            entity.Property(x => x.NameAr).HasMaxLength(180);
+        });
+
+        modelBuilder.Entity<FleetReadinessDocument>(entity =>
+        {
+            entity.ToTable("fleet_readiness_documents");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Kind).HasMaxLength(40);
+            entity.Property(x => x.SubjectType).HasMaxLength(80);
+            entity.Property(x => x.SubjectName).HasMaxLength(180);
+            entity.Property(x => x.SubjectId).HasMaxLength(120);
+            entity.Property(x => x.DocumentType).HasMaxLength(120);
+            entity.Property(x => x.DocumentNumber).HasMaxLength(120);
+            entity.Property(x => x.TransportDocumentNo).HasMaxLength(120);
+            entity.Property(x => x.PermitNo).HasMaxLength(120);
+            entity.Property(x => x.VATNumber).HasMaxLength(40);
+            entity.Property(x => x.CommercialRegistrationNo).HasMaxLength(80);
+            entity.Property(x => x.CountryCode).HasMaxLength(10);
+            entity.Property(x => x.NationalAddressBuildingNo).HasMaxLength(20);
+            entity.Property(x => x.NationalAddressAdditionalNo).HasMaxLength(20);
+            entity.Property(x => x.District).HasMaxLength(120);
+            entity.Property(x => x.City).HasMaxLength(120);
+            entity.Property(x => x.Region).HasMaxLength(120);
+            entity.Property(x => x.PostalCode).HasMaxLength(40);
+            entity.Property(x => x.DocumentStatus).HasMaxLength(40);
+            entity.Property(x => x.ExpiryStatus).HasMaxLength(40);
+            entity.Property(x => x.IssueDate).HasColumnType("date");
+            entity.Property(x => x.HijriExpiryDate).HasColumnType("date");
+            entity.Property(x => x.GregorianExpiryDate).HasColumnType("date");
+            entity.HasIndex(x => new { x.TenantId, x.Kind, x.SubjectType, x.DocumentType });
+            entity.HasIndex(x => new { x.TenantId, x.DocumentStatus, x.ExpiryStatus });
+            entity.HasIndex(x => new { x.TenantId, x.GregorianExpiryDate });
         });
 
         modelBuilder.Entity<CarrierContact>(entity =>

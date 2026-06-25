@@ -58,6 +58,12 @@ public class LastMileStop : ITenantOwned
     public string CustomerName { get; set; } = string.Empty;
     public string AddressLine { get; set; } = string.Empty;
     public string City { get; set; } = string.Empty;
+    public string Region { get; set; } = string.Empty;
+    public string PostalCode { get; set; } = string.Empty;
+    public string Country { get; set; } = string.Empty;
+    public string SaudiNationalAddressBuildingNo { get; set; } = string.Empty;
+    public string SaudiNationalAddressAdditionalNo { get; set; } = string.Empty;
+    public string SaudiNationalAddressDistrict { get; set; } = string.Empty;
     public string Status { get; set; } = "OutForDelivery"; // OutForDelivery/Attempted/Delivered/Rescheduled/Failed
     public string ProofStatus { get; set; } = "None"; // None/POD/OTP/Signature
     public string RecipientName { get; set; } = string.Empty;

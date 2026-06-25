@@ -20,6 +20,15 @@ public class FleetShipment : ITenantOwned
     public decimal VolumeCbm { get; set; }
     public decimal DeclaredValue { get; set; }
     public string CarrierName { get; set; } = string.Empty;
+    public string CustomerVATNumber { get; set; } = string.Empty;
+    public string CustomerCommercialRegistrationNo { get; set; } = string.Empty;
+    public string CustomerNationalAddressBuildingNo { get; set; } = string.Empty;
+    public string CustomerNationalAddressAdditionalNo { get; set; } = string.Empty;
+    public string CustomerNationalAddressDistrict { get; set; } = string.Empty;
+    public string CustomerNationalAddressCity { get; set; } = string.Empty;
+    public string CustomerNationalAddressRegion { get; set; } = string.Empty;
+    public string CustomerNationalAddressPostalCode { get; set; } = string.Empty;
+    public string CustomerNationalAddressCountry { get; set; } = string.Empty;
     public string DriverName { get; set; } = string.Empty;
     public string VehicleNumber { get; set; } = string.Empty;
     public string RouteCode { get; set; } = string.Empty;
@@ -148,6 +157,20 @@ public class Carrier : ITenantOwned
     public string Status { get; set; } = "Active";
     public string Region { get; set; } = string.Empty;
     public string ServiceType { get; set; } = string.Empty;
+    public string VATNumber { get; set; } = string.Empty;
+    public string CommercialRegistrationNo { get; set; } = string.Empty;
+    public string TransportDocumentNo { get; set; } = string.Empty;
+    public string PermitNo { get; set; } = string.Empty;
+    public string NationalAddressBuildingNo { get; set; } = string.Empty;
+    public string NationalAddressAdditionalNo { get; set; } = string.Empty;
+    public string District { get; set; } = string.Empty;
+    public string City { get; set; } = string.Empty;
+    public string PostalCode { get; set; } = string.Empty;
+    public string Country { get; set; } = string.Empty;
+    public string DocumentStatus { get; set; } = "Active";
+    public string ExpiryStatus { get; set; } = "Healthy";
+    public DateOnly? HijriExpiryDate { get; set; }
+    public DateOnly? GregorianExpiryDate { get; set; }
     public decimal OnTimeScore { get; set; }
     public decimal DamageScore { get; set; }
     public decimal CostScore { get; set; }

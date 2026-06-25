@@ -52,6 +52,20 @@ public class FleetTmsCommercialController : ControllerBase
             Status = req.Status?.Trim() ?? "Active",
             Region = req.Region?.Trim() ?? string.Empty,
             ServiceType = req.ServiceType?.Trim() ?? string.Empty,
+            VATNumber = req.VATNumber?.Trim() ?? string.Empty,
+            CommercialRegistrationNo = req.CommercialRegistrationNo?.Trim() ?? string.Empty,
+            TransportDocumentNo = req.TransportDocumentNo?.Trim() ?? string.Empty,
+            PermitNo = req.PermitNo?.Trim() ?? string.Empty,
+            NationalAddressBuildingNo = req.NationalAddressBuildingNo?.Trim() ?? string.Empty,
+            NationalAddressAdditionalNo = req.NationalAddressAdditionalNo?.Trim() ?? string.Empty,
+            District = req.District?.Trim() ?? string.Empty,
+            City = req.City?.Trim() ?? string.Empty,
+            PostalCode = req.PostalCode?.Trim() ?? string.Empty,
+            Country = req.Country?.Trim() ?? string.Empty,
+            DocumentStatus = req.DocumentStatus?.Trim() ?? "Active",
+            ExpiryStatus = req.ExpiryStatus?.Trim() ?? "Healthy",
+            HijriExpiryDate = req.HijriExpiryDate,
+            GregorianExpiryDate = req.GregorianExpiryDate,
             OnTimeScore = req.OnTimeScore ?? 0,
             DamageScore = req.DamageScore ?? 0,
             CostScore = req.CostScore ?? 0,
@@ -77,6 +91,20 @@ public class FleetTmsCommercialController : ControllerBase
         carrier.Status = req.Status?.Trim() ?? carrier.Status;
         carrier.Region = req.Region?.Trim() ?? carrier.Region;
         carrier.ServiceType = req.ServiceType?.Trim() ?? carrier.ServiceType;
+        carrier.VATNumber = req.VATNumber?.Trim() ?? carrier.VATNumber;
+        carrier.CommercialRegistrationNo = req.CommercialRegistrationNo?.Trim() ?? carrier.CommercialRegistrationNo;
+        carrier.TransportDocumentNo = req.TransportDocumentNo?.Trim() ?? carrier.TransportDocumentNo;
+        carrier.PermitNo = req.PermitNo?.Trim() ?? carrier.PermitNo;
+        carrier.NationalAddressBuildingNo = req.NationalAddressBuildingNo?.Trim() ?? carrier.NationalAddressBuildingNo;
+        carrier.NationalAddressAdditionalNo = req.NationalAddressAdditionalNo?.Trim() ?? carrier.NationalAddressAdditionalNo;
+        carrier.District = req.District?.Trim() ?? carrier.District;
+        carrier.City = req.City?.Trim() ?? carrier.City;
+        carrier.PostalCode = req.PostalCode?.Trim() ?? carrier.PostalCode;
+        carrier.Country = req.Country?.Trim() ?? carrier.Country;
+        carrier.DocumentStatus = req.DocumentStatus?.Trim() ?? carrier.DocumentStatus;
+        carrier.ExpiryStatus = req.ExpiryStatus?.Trim() ?? carrier.ExpiryStatus;
+        carrier.HijriExpiryDate = req.HijriExpiryDate ?? carrier.HijriExpiryDate;
+        carrier.GregorianExpiryDate = req.GregorianExpiryDate ?? carrier.GregorianExpiryDate;
         carrier.OnTimeScore = req.OnTimeScore ?? carrier.OnTimeScore;
         carrier.DamageScore = req.DamageScore ?? carrier.DamageScore;
         carrier.CostScore = req.CostScore ?? carrier.CostScore;
@@ -227,6 +255,20 @@ public record CarrierRequest(
     string? Status,
     string? Region,
     string? ServiceType,
+    string? VATNumber,
+    string? CommercialRegistrationNo,
+    string? TransportDocumentNo,
+    string? PermitNo,
+    string? NationalAddressBuildingNo,
+    string? NationalAddressAdditionalNo,
+    string? District,
+    string? City,
+    string? PostalCode,
+    string? Country,
+    string? DocumentStatus,
+    string? ExpiryStatus,
+    DateOnly? HijriExpiryDate,
+    DateOnly? GregorianExpiryDate,
     decimal? OnTimeScore,
     decimal? DamageScore,
     decimal? CostScore,

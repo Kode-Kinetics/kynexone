@@ -91,6 +91,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Maintenance', icon: Wrench, path: '/fleet/maintenance', requiredPermissions: ['fleet.read'] },
       { label: 'Fuel Analytics', icon: Fuel, path: '/fleet/fuel', requiredPermissions: ['fleet.read'] },
       { label: 'Carriers & Quotes', icon: BriefcaseBusiness, path: '/fleet/carriers', requiredPermissions: ['fleet.read'] },
+      { label: 'Saudi/GCC Readiness', icon: ShieldCheck, path: '/fleet/saudi-readiness', requiredPermissions: ['fleet.read'] },
     ],
   },
   {

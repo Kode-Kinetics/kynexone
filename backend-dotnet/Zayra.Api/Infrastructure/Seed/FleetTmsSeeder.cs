@@ -34,8 +34,6 @@ public class FleetTmsSeeder : IFleetTmsSeeder
 
     private async Task SeedTenantAsync(Guid tenantId, string slug, CancellationToken ct)
     {
-        if (await _db.FleetShipments.AnyAsync(x => x.TenantId == tenantId, ct)) return;
-
         var employees = await _db.Employees
             .AsNoTracking()
             .Where(e => e.TenantId == tenantId && !e.IsDeleted && (e.Status == "Active" || e.Status == "Confirmed" || e.Status == "Probation"))
@@ -45,6 +43,13 @@ public class FleetTmsSeeder : IFleetTmsSeeder
         if (employees.Count == 0)
         {
             _logger.LogInformation("FleetTmsSeeder: tenant {TenantId} ({Slug}) has no active employees — skipping.", tenantId, slug);
+            return;
+        }
+
+        var hasFleetSeed = await _db.FleetShipments.AnyAsync(x => x.TenantId == tenantId, ct);
+        if (hasFleetSeed)
+        {
+            await SeedSaudiReadinessAsync(tenantId, slug, employees, null, ct);
             return;
         }
 
@@ -121,6 +126,15 @@ public class FleetTmsSeeder : IFleetTmsSeeder
                 VolumeCbm = Math.Round(0.85m + (i * 0.35m), 2),
                 DeclaredValue = Math.Round(1800m + (i * 612m), 2),
                 CarrierName = "Kynex Logistics",
+                CustomerVATNumber = $"3{tenantId.ToString("N")[..11]}",
+                CustomerCommercialRegistrationNo = $"7{tenantId.ToString("N")[..9]}",
+                CustomerNationalAddressBuildingNo = $"{300 + i}",
+                CustomerNationalAddressAdditionalNo = $"5{i}",
+                CustomerNationalAddressDistrict = i % 2 == 0 ? "Olaya" : "Al Hamra",
+                CustomerNationalAddressCity = city,
+                CustomerNationalAddressRegion = city == "Riyadh" ? "Riyadh" : city == "Jeddah" ? "Makkah" : "Eastern Province",
+                CustomerNationalAddressPostalCode = i % 2 == 0 ? "12211" : "21411",
+                CustomerNationalAddressCountry = "Saudi Arabia",
                 DriverName = vehicle.DriverName,
                 VehicleNumber = vehicle.VehicleNumber,
                 RouteCode = $"RT-{today:yyMMdd}-{(i % 4) + 1:02}",
@@ -220,6 +234,20 @@ public class FleetTmsSeeder : IFleetTmsSeeder
                 Status = "Active",
                 Region = i == 0 ? "Central" : i == 1 ? "Western" : "Eastern",
                 ServiceType = i == 0 ? "Road" : i == 1 ? "Cold Chain" : "Express",
+                VATNumber = $"3{tenantId.ToString("N")[..11]}",
+                CommercialRegistrationNo = $"7{tenantId.ToString("N")[..9]}",
+                TransportDocumentNo = $"TD-{today:yyMMdd}-{i + 1:02}",
+                PermitNo = $"PERM-{today:yyMMdd}-{i + 1:02}",
+                NationalAddressBuildingNo = $"{400 + i}",
+                NationalAddressAdditionalNo = $"6{i}",
+                District = i == 0 ? "Industrial City" : i == 1 ? "Al Aziziyah" : "Business District",
+                City = i == 0 ? "Riyadh" : i == 1 ? "Jeddah" : "Dammam",
+                PostalCode = i == 0 ? "12211" : i == 1 ? "21411" : "31411",
+                Country = "Saudi Arabia",
+                DocumentStatus = "Active",
+                ExpiryStatus = i == 2 ? "ExpiringSoon" : "Healthy",
+                HijriExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(9 - i)),
+                GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(9 - i)),
                 OnTimeScore = 92m - i * 2.2m,
                 DamageScore = 1.5m + i * 0.4m,
                 CostScore = 88m - i * 1.8m,
@@ -413,8 +441,192 @@ public class FleetTmsSeeder : IFleetTmsSeeder
         _db.FleetFuelEvents.AddRange(fuelEvents);
         await _db.SaveChangesAsync(ct);
 
+        await SeedSaudiReadinessAsync(tenantId, slug, employees, shipments, ct);
+
         _logger.LogInformation(
             "FleetTmsSeeder: seeded {Shipments} shipments, {Vehicles} vehicles, {TrackingPoints} tracking points, {Maintenance} maintenance tickets, {FuelEvents} fuel events, {Stops} stops and {Pods} PODs for tenant {TenantId} ({Slug}).",
             shipments.Count, vehicles.Count, trackingPoints.Count, maintenance.Count, fuelEvents.Count, stops.Count, pods.Count, tenantId, slug);
+    }
+
+    private async Task SeedSaudiReadinessAsync(Guid tenantId, string slug, IReadOnlyList<Employee> employees, IReadOnlyList<FleetShipment>? shipments, CancellationToken ct)
+    {
+        if (!await _db.SaudiRegionReferences.AnyAsync(ct))
+        {
+            _db.SaudiRegionReferences.AddRange(
+                new SaudiRegionReference { Code = "Riyadh", NameEn = "Riyadh", NameAr = "الرياض", CountryCode = "SA", CitiesJson = "[\"Riyadh\",\"Diriyah\",\"Al Kharj\",\"Dhurma\"]", SortOrder = 1, IsGccReady = true },
+                new SaudiRegionReference { Code = "Makkah", NameEn = "Makkah", NameAr = "مكة المكرمة", CountryCode = "SA", CitiesJson = "[\"Jeddah\",\"Makkah\",\"Taif\",\"Rabigh\"]", SortOrder = 2, IsGccReady = true },
+                new SaudiRegionReference { Code = "Eastern", NameEn = "Eastern Province", NameAr = "المنطقة الشرقية", CountryCode = "SA", CitiesJson = "[\"Dammam\",\"Khobar\",\"Dhahran\",\"Jubail\"]", SortOrder = 3, IsGccReady = true },
+                new SaudiRegionReference { Code = "Madinah", NameEn = "Madinah", NameAr = "المدينة المنورة", CountryCode = "SA", CitiesJson = "[\"Madinah\",\"Yanbu\",\"AlUla\"]", SortOrder = 4, IsGccReady = true },
+                new SaudiRegionReference { Code = "Asir", NameEn = "Asir", NameAr = "عسير", CountryCode = "SA", CitiesJson = "[\"Abha\",\"Khamis Mushait\",\"Bisha\"]", SortOrder = 5, IsGccReady = true }
+            );
+        }
+
+        if (await _db.FleetReadinessDocuments.AnyAsync(x => x.TenantId == tenantId, ct))
+            return;
+
+        var tenantShipments = shipments ?? await _db.FleetShipments.AsNoTracking().Where(x => x.TenantId == tenantId).OrderBy(x => x.CreatedAtUtc).Take(4).ToListAsync(ct);
+        var complianceDocs = new List<FleetReadinessDocument>();
+
+        complianceDocs.AddRange(new[]
+        {
+            new FleetReadinessDocument
+            {
+                TenantId = tenantId,
+                Kind = "Compliance",
+                SubjectType = "Branch",
+                SubjectId = $"{slug}-riyadh-hq",
+                SubjectName = $"{slug.ToUpperInvariant()} Riyadh HQ",
+                DocumentType = "Commercial Registration",
+                DocumentNumber = $"CR-{slug.ToUpperInvariant()}-001",
+                VATNumber = $"3{tenantId.ToString("N")[..11]}",
+                CommercialRegistrationNo = $"7{tenantId.ToString("N")[..9]}",
+                CountryCode = "SA",
+                NationalAddressBuildingNo = "7882",
+                NationalAddressAdditionalNo = "1345",
+                District = "Olaya",
+                City = "Riyadh",
+                Region = "Riyadh",
+                PostalCode = "12211",
+                DocumentStatus = "Active",
+                ExpiryStatus = "Healthy",
+                IssueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-1)),
+                GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(10)),
+                Notes = "Saudi/GCC readiness foundation record for head office compliance.",
+            },
+            new FleetReadinessDocument
+            {
+                TenantId = tenantId,
+                Kind = "Transport",
+                SubjectType = "Carrier",
+                SubjectId = "carrier-rapid-freight",
+                SubjectName = "Rapid Freight",
+                DocumentType = "Transport Permit",
+                DocumentNumber = $"TRN-{slug.ToUpperInvariant()}-118",
+                TransportDocumentNo = $"TD-{slug.ToUpperInvariant()}-9001",
+                PermitNo = $"PERM-{slug.ToUpperInvariant()}-522",
+                CountryCode = "SA",
+                NationalAddressBuildingNo = "205",
+                NationalAddressAdditionalNo = "19",
+                District = "Industrial City",
+                City = "Jeddah",
+                Region = "Makkah",
+                PostalCode = "21432",
+                DocumentStatus = "Active",
+                ExpiryStatus = "Healthy",
+                IssueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(-4)),
+                GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(8)),
+                Notes = "Transport document ready for cross-border and domestic movement.",
+            },
+            new FleetReadinessDocument
+            {
+                TenantId = tenantId,
+                Kind = "Compliance",
+                SubjectType = "Warehouse",
+                SubjectId = $"{slug}-warehouse-east",
+                SubjectName = $"{slug.ToUpperInvariant()} Eastern Warehouse",
+                DocumentType = "Warehouse Permit",
+                DocumentNumber = $"WH-{slug.ToUpperInvariant()}-044",
+                VATNumber = $"3{tenantId.ToString("N")[..11]}",
+                CommercialRegistrationNo = $"7{tenantId.ToString("N")[..9]}",
+                CountryCode = "SA",
+                NationalAddressBuildingNo = "12",
+                NationalAddressAdditionalNo = "7",
+                District = "Al Khalidiyah",
+                City = "Dammam",
+                Region = "Eastern Province",
+                PostalCode = "31411",
+                DocumentStatus = "Active",
+                ExpiryStatus = "ExpiringSoon",
+                IssueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-1)),
+                GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(17)),
+                Notes = "Warehouse permit used for GCC-ready logistics staging.",
+            },
+            new FleetReadinessDocument
+            {
+                TenantId = tenantId,
+                Kind = "Driver",
+                SubjectType = "Driver",
+                SubjectId = employees[0].Id.ToString(),
+                SubjectName = employees[0].FullName,
+                DocumentType = "Driver License",
+                DocumentNumber = $"DL-{slug.ToUpperInvariant()}-{employees[0].EmployeeCode}",
+                PermitNo = $"IQAMA-{employees[0].EmployeeCode}",
+                CountryCode = employees[0].CountryCode,
+                City = "Riyadh",
+                Region = "Riyadh",
+                PostalCode = "12211",
+                DocumentStatus = "Active",
+                ExpiryStatus = "Healthy",
+                IssueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-2)),
+                GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(14)),
+                Notes = "Driver permit and licence readiness record.",
+            },
+            new FleetReadinessDocument
+            {
+                TenantId = tenantId,
+                Kind = "Driver",
+                SubjectType = "Driver",
+                SubjectId = employees[Math.Min(1, employees.Count - 1)].Id.ToString(),
+                SubjectName = employees[Math.Min(1, employees.Count - 1)].FullName,
+                DocumentType = "Work Permit",
+                DocumentNumber = $"WP-{slug.ToUpperInvariant()}-{employees[Math.Min(1, employees.Count - 1)].EmployeeCode}",
+                PermitNo = $"MOL-{employees[Math.Min(1, employees.Count - 1)].EmployeeCode}",
+                CountryCode = employees[Math.Min(1, employees.Count - 1)].CountryCode,
+                City = "Jeddah",
+                Region = "Makkah",
+                PostalCode = "21411",
+                DocumentStatus = "Active",
+                ExpiryStatus = "Healthy",
+                IssueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(-8)),
+                GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(6)),
+                Notes = "Driver work permit readiness example.",
+            },
+            new FleetReadinessDocument
+            {
+                TenantId = tenantId,
+                Kind = "Driver",
+                SubjectType = "Driver",
+                SubjectId = employees[Math.Min(2, employees.Count - 1)].Id.ToString(),
+                SubjectName = employees[Math.Min(2, employees.Count - 1)].FullName,
+                DocumentType = "GCC Permit",
+                DocumentNumber = $"GCC-{slug.ToUpperInvariant()}-{employees[Math.Min(2, employees.Count - 1)].EmployeeCode}",
+                PermitNo = $"GCCP-{employees[Math.Min(2, employees.Count - 1)].EmployeeCode}",
+                CountryCode = employees[Math.Min(2, employees.Count - 1)].CountryCode,
+                City = "Dammam",
+                Region = "Eastern Province",
+                PostalCode = "31411",
+                DocumentStatus = "Active",
+                ExpiryStatus = "ExpiringSoon",
+                IssueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(-10)),
+                GregorianExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(24)),
+                Notes = "GCC movement permit example.",
+            }
+        });
+
+        _db.FleetReadinessDocuments.AddRange(complianceDocs);
+
+        var readyShipments = tenantShipments.Take(2).ToList();
+        for (var i = 0; i < readyShipments.Count; i++)
+        {
+            var shipment = readyShipments[i];
+            shipment.IsInvoiceReady = true;
+            shipment.InvoiceReadyAtUtc = DateTime.UtcNow.AddHours(-2 - i);
+            shipment.InvoiceReadinessNotes = "VAT and CR details are populated for invoice export.";
+            shipment.CustomerVATNumber = $"3{tenantId.ToString("N")[..11]}";
+            shipment.CustomerCommercialRegistrationNo = $"7{tenantId.ToString("N")[..9]}";
+            shipment.CustomerNationalAddressBuildingNo = $"{500 + i}";
+            shipment.CustomerNationalAddressAdditionalNo = $"8{i}";
+            shipment.CustomerNationalAddressDistrict = "Business District";
+            shipment.CustomerNationalAddressCity = i == 0 ? "Riyadh" : "Jeddah";
+            shipment.CustomerNationalAddressRegion = i == 0 ? "Riyadh" : "Makkah";
+            shipment.CustomerNationalAddressPostalCode = i == 0 ? "12211" : "21411";
+            shipment.CustomerNationalAddressCountry = "Saudi Arabia";
+            shipment.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        if (readyShipments.Count > 0)
+            _db.FleetShipments.UpdateRange(readyShipments);
+
+        await _db.SaveChangesAsync(ct);
     }
 }

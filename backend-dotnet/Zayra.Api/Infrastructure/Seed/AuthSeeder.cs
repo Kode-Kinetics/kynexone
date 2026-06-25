@@ -136,7 +136,8 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("performance.") || x.Key.StartsWith("compliance.") || x.Key.StartsWith("reports.") ||
             x.Key.StartsWith("recruitment.") || x.Key.StartsWith("logistics.") || x.Key.StartsWith("fleet.") ||
             x.Key is "payroll.read" or "loans.read" or "audit.read" or "roles.manage" or "users.manage" or
-            "manager.read" or "manager.approve" or "qiwa.read" or "qiwa.sync"
+            "manager.read" or "manager.approve" or "qiwa.read" or "qiwa.sync" or
+            "fleet_tms.compliance.view" or "fleet_tms.compliance.manage" or "fleet_tms.saudi_readiness.view" or "fleet_tms.saudi_readiness.manage"
         ).ToList(), 2, true, cancellationToken);
 
         // Level 3 — HR Manager: operational HR management
@@ -144,7 +145,8 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("employees.") || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
-            x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or "logistics.read" or "logistics.write" or "fleet.read" or "fleet.write"
+            x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or "logistics.read" or "logistics.write" or "fleet.read" or "fleet.write" or
+            "fleet_tms.compliance.view" or "fleet_tms.saudi_readiness.view"
         ).ToList(), 3, true, cancellationToken);
 
         // Level 4 — Payroll Manager: payroll + finance + employees
@@ -164,7 +166,7 @@ public class AuthSeeder : IAuthSeeder
         // Level 6 — Payroll Officer: payroll processing
         await EnsureRole(tenantId, "Payroll Officer", "Payroll and WPS specialist", Ps(new[] {
             "dashboard.read", "employees.read", "employees.sensitive", "attendance.read",
-            "payroll.read", "payroll.write", "loans.read", "notifications.read", "reports.read", "logistics.read", "logistics.write", "fleet.read"
+            "payroll.read", "payroll.write", "loans.read", "notifications.read", "reports.read", "logistics.read", "logistics.write", "fleet.read", "fleet_tms.saudi_readiness.view"
         }), 6, true, cancellationToken);
 
         // Level 7 — Finance Approver: finance approvals
@@ -183,13 +185,15 @@ public class AuthSeeder : IAuthSeeder
         await EnsureRole(tenantId, "Manager", "People manager with team oversight and approval authority", Ps(new[] {
             "dashboard.read", "employees.read", "approvals.read", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
-            "attendance.read", "overtime.read", "overtime.approve", "profile.read", "logistics.read", "logistics.write", "fleet.read", "fleet.write"
+            "attendance.read", "overtime.read", "overtime.approve", "profile.read", "logistics.read", "logistics.write", "fleet.read", "fleet.write",
+            "fleet_tms.compliance.view", "fleet_tms.saudi_readiness.view"
         }), 9, true, cancellationToken);
 
         // Level 10 — Supervisor: front-line supervision
         await EnsureRole(tenantId, "Supervisor", "Front-line supervisor for operational staff", Ps(new[] {
             "dashboard.read", "employees.read", "attendance.read", "attendance.write",
-            "manager.read", "manager.approve", "leave.read", "overtime.read", "ess.read", "ess.write", "profile.read", "logistics.read", "logistics.write", "fleet.read", "fleet.write"
+            "manager.read", "manager.approve", "leave.read", "overtime.read", "ess.read", "ess.write", "profile.read", "logistics.read", "logistics.write", "fleet.read", "fleet.write",
+            "fleet_tms.compliance.view", "fleet_tms.saudi_readiness.view"
         }), 10, true, cancellationToken);
 
         // Level 11 — Recruiter: talent acquisition
@@ -341,6 +345,10 @@ public class AuthSeeder : IAuthSeeder
             ("logistics.write", "Logistics", "Manage dispatch actions and delivery progress"),
             ("fleet.read", "Fleet", "Read fleet, shipment, tracking and maintenance operations"),
             ("fleet.write", "Fleet", "Manage fleet, shipment, service and fuel operations"),
+            ("fleet_tms.compliance.view", "Fleet TMS", "View Saudi/GCC readiness documents and expiry status"),
+            ("fleet_tms.compliance.manage", "Fleet TMS", "Create and update Saudi/GCC readiness documents"),
+            ("fleet_tms.saudi_readiness.view", "Fleet TMS", "View Saudi/GCC readiness dashboard"),
+            ("fleet_tms.saudi_readiness.manage", "Fleet TMS", "Manage Saudi/GCC readiness records"),
             // Performance
             ("performance.read", "Performance", "Read appraisal and performance data"),
             ("performance.write", "Performance", "Create and update performance reviews"),
