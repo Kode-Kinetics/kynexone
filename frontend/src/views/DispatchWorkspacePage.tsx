@@ -203,6 +203,100 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
     }
   }, [mode]);
 
+  const commandSignals = useMemo(() => {
+    const topRoute = routes[0];
+    const topStop = stops[0];
+    const topOrder = orders[0];
+
+    switch (mode) {
+      case 'orders':
+        return [
+          {
+            label: 'Intake under control',
+            value: `${orders.filter((order) => order.status === 'Queued').length}`,
+            note: 'Queued orders still waiting for operational ownership.',
+          },
+          {
+            label: 'High-priority exposure',
+            value: `${orders.filter((order) => order.priority === 'High' || order.priority === 'Critical').length}`,
+            note: 'Orders likely to become escalation calls if left untouched.',
+          },
+          {
+            label: 'Lead account in motion',
+            value: topOrder?.customerName ?? 'Awaiting fresh orders',
+            note: 'The account most visible to sales and customer service right now.',
+          },
+        ];
+      case 'routes':
+        return [
+          {
+            label: 'Most loaded route',
+            value: topRoute?.routeCode ?? 'No route selected',
+            note: topRoute ? `${topRoute.completedStops}/${topRoute.plannedStops} stops completed` : 'Route creation is available from this panel.',
+          },
+          {
+            label: 'Distance commitment',
+            value: `${routes.reduce((sum, route) => sum + route.distanceKm, 0).toFixed(0)} km`,
+            note: 'Total planned distance currently sitting with the dispatch desk.',
+          },
+          {
+            label: 'Planner pressure',
+            value: `${routes.filter((route) => route.status !== 'Completed').length}`,
+            note: 'Routes still active and likely to need monitoring or intervention.',
+          },
+        ];
+      case 'delivery':
+        return [
+          {
+            label: 'Proof-ready stops',
+            value: `${stops.filter((stop) => stop.proofStatus === 'POD' || stop.proofStatus === 'Verified').length}`,
+            note: 'Stops already carrying proof or ready for final verification.',
+          },
+          {
+            label: 'Customer-facing risk',
+            value: `${stops.filter((stop) => stop.status === 'Attempted' || stop.status === 'Rescheduled').length}`,
+            note: 'Last-mile exceptions likely to generate customer follow-up.',
+          },
+          {
+            label: 'Next doorstep moment',
+            value: topStop?.customerName ?? 'Awaiting route execution',
+            note: topStop ? `${topStop.routeCode} · ${topStop.timeWindow}` : 'No live stop selected yet.',
+          },
+        ];
+      default:
+        return [
+          {
+            label: 'Orders needing movement',
+            value: `${orders.filter((order) => order.status === 'Queued').length}`,
+            note: 'Open order load still waiting to enter execution.',
+          },
+          {
+            label: 'Routes under watch',
+            value: `${routes.filter((route) => route.status !== 'Completed').length}`,
+            note: 'Routes that remain active and commercially visible.',
+          },
+          {
+            label: 'Exception touchpoints',
+            value: `${stops.filter((stop) => stop.status === 'Attempted' || stop.status === 'Delayed').length}`,
+            note: 'Delivery moments most likely to turn into support conversations.',
+          },
+        ];
+    }
+  }, [mode, orders, routes, stops]);
+
+  const actionNarrative = useMemo(() => {
+    switch (mode) {
+      case 'orders':
+        return 'Order intake should read like a controlled funnel, not a pile-up. This page now frames demand by urgency, ownership readiness, and commercial visibility.';
+      case 'routes':
+        return 'Route planning is where service promises become operational commitments. The page now spotlights route pressure, completion risk, and the next routing move.';
+      case 'delivery':
+        return 'Last mile is the most emotionally visible part of the product experience. This surface is tuned to keep proof, attempts, and recovery actions impossible to miss.';
+      default:
+        return 'The command center should reassure leadership and help operators act. This workspace now emphasizes urgency, route motion, and exception containment in one read.';
+    }
+  }, [mode]);
+
   const liveRecordRows = useMemo(() => {
     if (mode === 'routes') {
       return routes.slice(0, 5).map((route) => ({
@@ -499,6 +593,16 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
 
               <div className="mt-4 grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
                 <div className="rounded-[28px] border border-white/80 bg-white/74 p-4 shadow-[0_18px_40px_rgba(37,99,235,0.06)] backdrop-blur-xl dark:border-white/[0.06] dark:bg-white/[0.04]">
+                  <div className="mb-4 grid gap-3 lg:grid-cols-3">
+                    {commandSignals.map((signal) => (
+                      <div key={signal.label} className="rounded-[22px] border border-slate-200/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(244,248,255,0.84))] p-3.5 dark:border-white/10 dark:bg-white/[0.03]">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">{signal.label}</p>
+                        <p className="mt-2 text-[24px] font-black tracking-tight text-slate-950 dark:text-white">{signal.value}</p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">{signal.note}</p>
+                      </div>
+                    ))}
+                  </div>
+
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Operational board</p>
@@ -530,6 +634,11 @@ export function DispatchWorkspacePage({ mode }: { mode: DispatchMode }) {
 
                 <div className="rounded-[28px] border border-white/80 bg-white/74 p-4 shadow-[0_18px_40px_rgba(37,99,235,0.06)] backdrop-blur-xl dark:border-white/[0.06] dark:bg-white/[0.04]">
                   <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Operational cues</p>
+                  <div className="mt-3 rounded-[22px] border border-slate-200/70 bg-[linear-gradient(135deg,rgba(19,30,56,0.96),rgba(31,87,184,0.86))] p-4 text-white shadow-[0_18px_40px_rgba(37,99,235,0.18)]">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60">Executive readout</p>
+                    <p className="mt-2 text-[16px] font-black leading-snug">{mode === 'delivery' ? 'Protect the customer moment.' : mode === 'routes' ? 'Shape the day before it shapes you.' : 'Keep service promises commercially safe.'}</p>
+                    <p className="mt-2 text-[12px] leading-relaxed text-white/78">{actionNarrative}</p>
+                  </div>
                   <div className="mt-3 space-y-3">
                     {alerts.length ? alerts.slice(0, 4).map((alert) => (
                       <div key={alert.orderNumber} className="rounded-2xl border border-amber-200/60 bg-amber-50/70 p-3 dark:border-amber-400/10 dark:bg-amber-400/8">
@@ -762,6 +871,11 @@ function ActionOrderCard({ order, onDispatch, saving }: { order: LogisticsOrder;
         <span>•</span>
         <span>{order.driverName}</span>
       </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+        {order.priority === 'High' || order.priority === 'Critical'
+          ? 'Priority order with visible service impact if dispatch slips.'
+          : 'Ready for operational assignment and route ownership.'}
+      </p>
       <button
         type="button"
         onClick={onDispatch}
@@ -792,6 +906,11 @@ function ActionRouteCard({ route, onAdvance, onInspect, saving }: { route: Logis
         <span>{route.distanceKm.toFixed(1)} km</span>
         <span>{route.driverName}</span>
       </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+        {route.nextStop
+          ? `Next operational handoff is ${route.nextStop}.`
+          : 'Planner view is ready for next-stop progression and route recovery.'}
+      </p>
       <div className="mt-4 grid grid-cols-2 gap-2">
         <button
           type="button"
@@ -833,6 +952,11 @@ function ActionStopCard({ stop, onConfirm, onAttempt, onReschedule, saving }: { 
         <span>•</span>
         <span>{stop.proofStatus}</span>
       </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+        {stop.status === 'Attempted' || stop.status === 'Rescheduled'
+          ? 'This doorstep interaction needs a recovery decision, not just a status update.'
+          : 'Use proof, attempt, or reschedule actions to keep customer visibility current.'}
+      </p>
       <div className="mt-4 grid grid-cols-3 gap-2">
         <button
           type="button"

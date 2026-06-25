@@ -210,6 +210,160 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
     }
   }, [mode]);
 
+  const commandSignals = useMemo(() => {
+    const topShipment = shipments[0];
+    const topVehicle = vehicles[0];
+    const topCarrier = carriers[0];
+
+    switch (mode) {
+      case 'shipments':
+        return [
+          {
+            label: 'Freight in motion',
+            value: `${shipments.filter((shipment) => shipment.status === 'In Transit').length}`,
+            note: 'Loads currently carrying customer and margin expectations.',
+          },
+          {
+            label: 'Proof exposure',
+            value: `${shipments.filter((shipment) => shipment.status !== 'Delivered').length}`,
+            note: 'Shipments still moving toward final proof or confirmation.',
+          },
+          {
+            label: 'Lead shipment',
+            value: topShipment?.shipmentNumber ?? 'Awaiting first load',
+            note: topShipment ? `${topShipment.customerName} · ${topShipment.destination}` : 'Once loads arrive, this board will prioritise them here.',
+          },
+        ];
+      case 'vehicles':
+        return [
+          {
+            label: 'Ready assets',
+            value: `${vehicles.filter((vehicle) => vehicle.status === 'Available').length}`,
+            note: 'Vehicles immediately usable for fresh assignments.',
+          },
+          {
+            label: 'Service exposure',
+            value: `${vehicles.filter((vehicle) => vehicle.healthStatus !== 'Healthy').length}`,
+            note: 'Assets likely to impact reliability or utilisation if ignored.',
+          },
+          {
+            label: 'Most visible unit',
+            value: topVehicle?.vehicleNumber ?? 'No active unit',
+            note: topVehicle ? `${topVehicle.type} · ${topVehicle.lastKnownLocation}` : 'Live status populates here when data is present.',
+          },
+        ];
+      case 'tracking':
+        return [
+          {
+            label: 'Live movement',
+            value: `${tracking.filter((point) => point.status === 'In Transit').length}`,
+            note: 'Tracking events currently showing movement on road.',
+          },
+          {
+            label: 'Alerted telemetry',
+            value: `${tracking.filter((point) => point.alertType).length}`,
+            note: 'Records already carrying alert semantics or exception risk.',
+          },
+          {
+            label: 'Fastest moving load',
+            value: `${Math.max(0, ...tracking.map((point) => point.speedKph)).toFixed(0)} km/h`,
+            note: 'A useful signal when dispatch wants to see whether the road is flowing.',
+          },
+        ];
+      case 'maintenance':
+        return [
+          {
+            label: 'Open work orders',
+            value: `${maintenance.filter((ticket) => ticket.status !== 'Closed').length}`,
+            note: 'Maintenance items still influencing downtime or readiness.',
+          },
+          {
+            label: 'Safety-critical pressure',
+            value: `${maintenance.filter((ticket) => ticket.priority === 'High' || ticket.priority === 'Critical').length}`,
+            note: 'Tickets that deserve immediate fleet leadership attention.',
+          },
+          {
+            label: 'Most exposed asset',
+            value: maintenance[0]?.vehicleNumber ?? 'No active ticket',
+            note: maintenance[0] ? `${maintenance[0].workOrderNumber} · ${maintenance[0].vendorName}` : 'Service pressure shows here once work enters the queue.',
+          },
+        ];
+      case 'fuel':
+        return [
+          {
+            label: 'Fuel events logged',
+            value: `${fuel.length}`,
+            note: 'Recorded fueling events visible to finance and fleet control.',
+          },
+          {
+            label: 'Anomaly review',
+            value: `${fuel.filter((event) => event.anomalyFlag).length}`,
+            note: 'Events already marked for manual or commercial review.',
+          },
+          {
+            label: 'Spend in sample',
+            value: `${fuel.reduce((sum, event) => sum + event.cost, 0).toFixed(0)}`,
+            note: 'Visible spend tied directly to the event rows on this page.',
+          },
+        ];
+      case 'carriers':
+        return [
+          {
+            label: 'Carrier panel',
+            value: `${carriers.length}`,
+            note: 'External capacity partners visible in the operating system.',
+          },
+          {
+            label: 'Booking pressure',
+            value: `${bookings.length}`,
+            note: 'Requests waiting for carrier commitment or allocation.',
+          },
+          {
+            label: 'Lead partner',
+            value: topCarrier?.name ?? 'No carrier selected',
+            note: topCarrier ? `${topCarrier.region} · ${topCarrier.serviceType}` : 'Carrier strength surfaces here when records are available.',
+          },
+        ];
+      default:
+        return [
+          {
+            label: 'Fleet on trip',
+            value: `${overview?.summary.onTripVehicles ?? 0}`,
+            note: 'Vehicles currently committed to active movement.',
+          },
+          {
+            label: 'Delivered today',
+            value: `${overview?.summary.deliveredToday ?? 0}`,
+            note: 'Loads already closed successfully in today’s operating cycle.',
+          },
+          {
+            label: 'Commercial confidence',
+            value: `${overview?.summary.deliveredRate.toFixed(1) ?? '0.0'}%`,
+            note: 'Delivery completion rate visible to operations leadership.',
+          },
+        ];
+    }
+  }, [bookings.length, carriers, fuel, maintenance, mode, overview, shipments, tracking, vehicles]);
+
+  const actionNarrative = useMemo(() => {
+    switch (mode) {
+      case 'shipments':
+        return 'The shipment board now reads like a real movement business: what is moving, what still needs proof, and where customer expectations are most exposed.';
+      case 'vehicles':
+        return 'Vehicle management should make asset readiness obvious. This pass strengthens the relationship between status, health, utilisation, and intervention.';
+      case 'tracking':
+        return 'A live map earns trust when it changes behaviour. This page now pushes movement, alerts, and ETA-relevant signals into one operating readout.';
+      case 'maintenance':
+        return 'Maintenance is not just engineering admin. It is uptime, safety, and service reliability made visible for leadership and fleet operations together.';
+      case 'fuel':
+        return 'Fuel review should feel governed and commercially intelligent. The workspace now surfaces event-level scrutiny instead of passive reporting.';
+      case 'carriers':
+        return 'Carrier management should look disciplined, not improvised. This module now frames outsourced capacity as a governed commercial system.';
+      default:
+        return 'The command center should reassure leadership instantly and still help operators move freight. This version pushes readiness, risk, and service truth into one read.';
+    }
+  }, [mode]);
+
   const liveRows = useMemo(() => {
     if (mode === 'vehicles') {
       return vehicles.slice(0, 5).map((vehicle) => ({
@@ -476,6 +630,16 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
 
               <div className="mt-4 grid gap-4 xl:grid-cols-[1.22fr_0.78fr]">
                 <div className="rounded-[28px] border border-white/80 bg-white/74 p-4 shadow-[0_18px_40px_rgba(16,185,129,0.06)] backdrop-blur-xl dark:border-white/[0.06] dark:bg-white/[0.04]">
+                  <div className="mb-4 grid gap-3 lg:grid-cols-3">
+                    {commandSignals.map((signal) => (
+                      <div key={signal.label} className="rounded-[22px] border border-slate-200/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(241,249,246,0.84))] p-3.5 dark:border-white/10 dark:bg-white/[0.03]">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">{signal.label}</p>
+                        <p className="mt-2 text-[24px] font-black tracking-tight text-slate-950 dark:text-white">{signal.value}</p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">{signal.note}</p>
+                      </div>
+                    ))}
+                  </div>
+
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Operational board</p>
@@ -517,6 +681,11 @@ export function FleetWorkspacePage({ mode }: { mode: FleetMode }) {
 
                 <div className="rounded-[28px] border border-white/80 bg-white/74 p-4 shadow-[0_18px_40px_rgba(16,185,129,0.06)] backdrop-blur-xl dark:border-white/[0.06] dark:bg-white/[0.04]">
                   <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">Operational cues</p>
+                  <div className="mt-3 rounded-[22px] border border-slate-200/70 bg-[linear-gradient(135deg,rgba(7,31,28,0.96),rgba(7,112,94,0.88))] p-4 text-white shadow-[0_18px_40px_rgba(16,185,129,0.18)]">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60">Executive readout</p>
+                    <p className="mt-2 text-[16px] font-black leading-snug">{mode === 'tracking' ? 'Make visibility actionable.' : mode === 'maintenance' ? 'Protect uptime before it becomes a cost story.' : 'Run fleet operations with visible control.'}</p>
+                    <p className="mt-2 text-[12px] leading-relaxed text-white/78">{actionNarrative}</p>
+                  </div>
                   <div className="mt-3 space-y-3">
                     {exceptionRows.length ? exceptionRows.map((item) => (
                       <div
@@ -713,6 +882,11 @@ function ActionShipmentCard({ shipment, onDispatch, onOpenLifecycle, saving }: {
         <span>•</span>
         <span>{shipment.mode}</span>
       </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+        {shipment.status === 'Delivered'
+          ? 'Delivery is closed, but lifecycle history remains available for audit and proof.'
+          : 'Dispatch and lifecycle controls keep this load visible from assignment to POD.'}
+      </p>
       <div className="mt-4 grid gap-2 sm:grid-cols-2">
         <button type="button" onClick={onDispatch} disabled={saving} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-cyan-500 to-sky-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(16,185,129,0.26)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60">
           {saving ? 'Dispatching...' : 'Dispatch'}
@@ -745,6 +919,9 @@ function ActionCarrierCard({ carrier }: { carrier: Carrier }) {
         <span>Damage {carrier.damageScore.toFixed(0)}</span>
         <span>Cost {carrier.costScore.toFixed(0)}</span>
       </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+        External capacity should read like governed supply, not a side spreadsheet.
+      </p>
       <div className="mt-4 flex items-center gap-2">
         <div className="h-2 flex-1 rounded-full bg-slate-200/80 dark:bg-white/10">
           <div className="h-2 rounded-full bg-gradient-to-r from-violet-500 via-fuchsia-500 to-cyan-400" style={{ width: `${score}%` }} />
@@ -772,6 +949,11 @@ function ActionVehicleCard({ vehicle, onService, saving }: { vehicle: FleetVehic
         <span>{vehicle.fuelLevelPercent.toFixed(0)}% fuel</span>
         <span>{vehicle.healthStatus}</span>
       </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+        {vehicle.healthStatus === 'Healthy'
+          ? 'This asset reads as ready for continued utilisation.'
+          : 'Service action is recommended before readiness becomes an execution issue.'}
+      </p>
       <button type="button" onClick={onService} disabled={saving} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-sky-600 via-indigo-500 to-violet-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(16,185,129,0.26)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60">
         {saving ? 'Updating...' : 'Send to service'}
         <Wrench className="h-4 w-4" />
@@ -799,6 +981,11 @@ function ActionTrackingCard({ point }: { point: FleetTrackingPoint }) {
         <span>•</span>
         <span>{point.alertType || 'No alert'}</span>
       </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+        {point.alertType
+          ? `Attention required: ${point.alertType.toLowerCase()} is now part of the movement record.`
+          : 'Movement telemetry is clean and available for fleet intervention if needed.'}
+      </p>
     </div>
   );
 }
@@ -820,6 +1007,9 @@ function ActionMaintenanceCard({ ticket, onClose, saving }: { ticket: FleetMaint
         <span>{ticket.downtimeHours.toFixed(1)} hrs</span>
         <span>{ticket.estimatedCost.toFixed(0)} cost</span>
       </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+        Close the work order only when the asset is genuinely ready to return to service.
+      </p>
       <button type="button" onClick={onClose} disabled={saving} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-orange-500 via-amber-500 to-yellow-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(16,185,129,0.26)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60">
         {saving ? 'Closing...' : 'Close work order'}
         <CheckCircle2 className="h-4 w-4" />
@@ -849,6 +1039,9 @@ function ActionFuelCard({ eventRow, onFlag, saving }: { eventRow: FleetFuelEvent
         <span>{eventRow.cost.toFixed(0)} cost</span>
         <span>{eventRow.fuelCardNumber}</span>
       </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+        Every fuel event should be explainable at a commercial review table, not just in transport ops.
+      </p>
       <button type="button" onClick={onFlag} disabled={saving || eventRow.anomalyFlag} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-cyan-500 to-sky-400 px-4 py-3 text-[12px] font-bold text-white shadow-[0_14px_30px_rgba(16,185,129,0.26)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60">
         {saving ? 'Flagging...' : eventRow.anomalyFlag ? 'Flagged for review' : 'Flag anomaly'}
         <Fuel className="h-4 w-4" />
