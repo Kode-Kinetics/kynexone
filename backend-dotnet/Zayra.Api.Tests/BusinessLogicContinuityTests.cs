@@ -741,7 +741,7 @@ public class BusinessLogicContinuityTests
 
     private static OffersController CreateOffersController(ZayraDbContext db, Guid tenantId)
     {
-        var ctrl = new OffersController(db, new NullLetterService());
+        var ctrl = new OffersController(db, new NullLetterService(), new Zayra.Api.Infrastructure.Recruitment.RecruitmentService(db));
         ctrl.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext { User = MakePrincipal(tenantId, Guid.NewGuid()) }

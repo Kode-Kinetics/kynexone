@@ -521,26 +521,30 @@ using (var scope = app.Services.CreateScope())
     // otherwise the platform-admin pricing/CPQ console is empty. Idempotent (skips when present).
     await TrySeedAsync("PricingConfigSeeder", () => DemoDataSeeder.SeedPricingConfigAsync(dbContext, logger, CancellationToken.None), logger);
 
-    // Deactivate garbage demo tenants and seed one clean KSA tenant.
-    // Idempotent: cleanup is a no-op when already deactivated; seed is a no-op when slug exists.
+    // Cleanup of garbage/corrupt demo tenants always runs (it only deactivates,
+    // never creates) — safe and useful even with demo seeding off.
     await TrySeedAsync("GarbageDemoCleanup", () => CleanDemoKsaSeeder.DeactivateGarbageDemoTenantsAsync(dbContext, logger), logger);
-    await TrySeedAsync("CleanDemoKsaSeeder", () => CleanDemoKsaSeeder.SeedAsync(
-        dbContext,
-        scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-        authSeeder,
-        logger), logger);
-
-    // Soft-delete the 5 split-tenant IntelliFlow fragments (SeedDemoData corruption).
-    // Idempotent: already-deactivated fragments are skipped; rasalmanar is explicitly guarded.
     await TrySeedAsync("IntelliFlowFragmentCleanup", () => IntelliFlowFragmentCleanup.RunAsync(dbContext, logger), logger);
 
-    // Seed one clean IntelliFlow Systems tenant (KSA, 12 employees, locked payroll).
-    // Idempotent: skips if active "intelliflow" slug already exists.
-    await TrySeedAsync("IntelliFlowDemoSeeder", () => IntelliFlowDemoSeeder.SeedAsync(
-        dbContext,
-        scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-        authSeeder,
-        logger), logger);
+    // Demo TENANT creation is gated behind SeedDemoData so a live environment
+    // (SeedAdmin__SeedDemoData=false) is never polluted with sample tenants.
+    if (seedDemoData)
+    {
+        // Seed one clean KSA tenant. Idempotent: no-op when slug exists.
+        await TrySeedAsync("CleanDemoKsaSeeder", () => CleanDemoKsaSeeder.SeedAsync(
+            dbContext,
+            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
+            authSeeder,
+            logger), logger);
+
+        // Seed one clean IntelliFlow Systems tenant (KSA, 12 employees, locked payroll).
+        // Idempotent: skips if active "intelliflow" slug already exists.
+        await TrySeedAsync("IntelliFlowDemoSeeder", () => IntelliFlowDemoSeeder.SeedAsync(
+            dbContext,
+            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
+            authSeeder,
+            logger), logger);
+    }
 
     if (isMigrateMode)
     {

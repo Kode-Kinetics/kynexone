@@ -23,7 +23,7 @@ public class AiAdvisoryServiceTests
     public async Task Query_RequiresAuthenticationTenantClaim()
     {
         await using var db = CreateDb();
-        var controller = new AIAssistantController(db, CreateService(db), new StubUnrestrictedScopeService(), new AiOptions("fallback", "", "", "", "", 4096, true, false));
+        var controller = new AIAssistantController(db, CreateService(db), new StubUnrestrictedScopeService(), new AiOptions("fallback", "", "", "", "", string.Empty, 4096, true, false));
         controller.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity()) }
@@ -92,7 +92,7 @@ public class AiAdvisoryServiceTests
 
         var audit = new CapturingAiAuditService();
         var llm = new StubLlmClient(new LlmResponse(true, "anthropic", "claude-test", "Please review with HR."));
-        var service = CreateService(db, llm, audit, options: new AiOptions("anthropic", "claude-test", "test-key", string.Empty, string.Empty, 4096, true, false));
+        var service = CreateService(db, llm, audit, options: new AiOptions("anthropic", "claude-test", "test-key", string.Empty, string.Empty, string.Empty, 4096, true, false));
 
         var response = await service.QueryAsync(
             new AiUserContext(tenantId, Guid.NewGuid(), new[] { "HR Manager" }, Array.Empty<string>(), null),
@@ -115,7 +115,7 @@ public class AiAdvisoryServiceTests
         SeedEmployee(db, tenantId, "A-1");
 
         var audit = new CapturingAiAuditService();
-        var service = CreateService(db, auditService: audit, options: new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false));
+        var service = CreateService(db, auditService: audit, options: new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false));
 
         var response = await service.QueryAsync(
             new AiUserContext(tenantId, Guid.NewGuid(), new[] { "Employee" }, Array.Empty<string>(), null),
@@ -138,7 +138,7 @@ public class AiAdvisoryServiceTests
 
         var audit = new CapturingAiAuditService();
         var llm = new StubLlmClient(new LlmResponse(false, "fallback", string.Empty, string.Empty));
-        var service = CreateService(db, llm, audit, options: new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false));
+        var service = CreateService(db, llm, audit, options: new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false));
 
         var first = await service.QueryAsync(
             new AiUserContext(tenantId, Guid.NewGuid(), new[] { "Employee" }, Array.Empty<string>(), null),
@@ -167,7 +167,7 @@ public class AiAdvisoryServiceTests
 
         var audit = new CapturingAiAuditService();
         var llm = new StubLlmClient(new LlmResponse(true, "ollama", "gpt-oss:120b-cloud", "There are 2 active employees."));
-        var service = CreateService(db, llm, audit, options: new AiOptions("ollama", "gpt-oss:120b-cloud", string.Empty, string.Empty, "http://ollama.local:11434", 4096, true, false));
+        var service = CreateService(db, llm, audit, options: new AiOptions("ollama", "gpt-oss:120b-cloud", string.Empty, string.Empty, "http://ollama.local:11434", string.Empty, 4096, true, false));
 
         var first = await service.QueryAsync(
             new AiUserContext(tenantId, Guid.NewGuid(), new[] { "Employee" }, Array.Empty<string>(), null),
@@ -195,7 +195,7 @@ public class AiAdvisoryServiceTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
-        var audit = new AiAuditService(db, new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, true), new AiRedactionService(), NullLogger<AiAuditService>.Instance);
+        var audit = new AiAuditService(db, new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, true), new AiRedactionService(), NullLogger<AiAuditService>.Instance);
 
         await audit.LogAsync(new AiAuditEntry(
             tenantId,
@@ -246,8 +246,8 @@ public class AiAdvisoryServiceTests
         await failingDb.SaveChangesAsync();
         failingDb.ShouldThrow = true;
 
-        var audit = new AiAuditService(failingDb, new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false), new AiRedactionService(), NullLogger<AiAuditService>.Instance);
-        var service = CreateService(db, auditService: audit, options: new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false));
+        var audit = new AiAuditService(failingDb, new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false), new AiRedactionService(), NullLogger<AiAuditService>.Instance);
+        var service = CreateService(db, auditService: audit, options: new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false));
 
         var response = await service.QueryAsync(
             new AiUserContext(tenantId, Guid.NewGuid(), new[] { "Employee" }, Array.Empty<string>(), null),
@@ -301,7 +301,7 @@ public class AiAdvisoryServiceTests
         });
 
         var httpClient = new HttpClient(handler);
-        var client = new LlmClient(httpClient, new AiOptions("ollama", string.Empty, string.Empty, string.Empty, "http://ollama.local:11434", 4096, true, false));
+        var client = new LlmClient(httpClient, new AiOptions("ollama", string.Empty, string.Empty, string.Empty, "http://ollama.local:11434", string.Empty, 4096, true, false));
 
         var response = await client.CompleteAsync(
             new LlmRequest("ollama", "llama3.1", "system prompt", "user prompt", 256),
@@ -328,7 +328,7 @@ public class AiAdvisoryServiceTests
         IAiResponseCacheService? cacheService = null,
         AiOptions? options = null)
     {
-        var resolvedOptions = options ?? new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false);
+        var resolvedOptions = options ?? new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false);
         return new AiAdvisoryService(
             db,
             new AiGovernanceService(),
