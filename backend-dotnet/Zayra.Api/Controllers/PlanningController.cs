@@ -35,9 +35,10 @@ public class PlanningController : ControllerBase
             .Where(c => c.TenantId == tenantId)
             .ToDictionaryAsync(c => c.Id, c => c.Name, ct);
 
-        // Pull active employees and open requisitions once, then aggregate in memory (cheap, avoids N queries).
+        // Pull employed staff and open requisitions once, then aggregate in memory (cheap, avoids N queries).
+        // "Offboarded" employees are serving notice — still employed, so they count toward current headcount.
         var emps = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.Status == "Active")
+            .Where(e => e.TenantId == tenantId && (e.Status == "Active" || e.Status == "Offboarded"))
             .Select(e => new { e.DepartmentId, e.Department, e.Salary })
             .ToListAsync(ct);
         var reqs = await _db.ManpowerRequisitions.AsNoTracking()
@@ -92,7 +93,7 @@ public class PlanningController : ControllerBase
             return Ok(new HeadcountCheckResult(false, 0, 0, 0, headCount, 0, true, "No establishment set for this department — no budget limit enforced."));
 
         var current = await _db.Employees.CountAsync(e =>
-            e.TenantId == tenantId && e.Status == "Active" &&
+            e.TenantId == tenantId && (e.Status == "Active" || e.Status == "Offboarded") &&
             (e.DepartmentId == dept.Id || (e.DepartmentId == null && e.Department == dept.NameEn)), ct);
         var openReq = await _db.ManpowerRequisitions
             .Where(r => r.TenantId == tenantId && OpenReqStatuses.Contains(r.Status) &&
