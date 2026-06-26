@@ -20,11 +20,14 @@ interface FeatureFlagContextValue {
    */
   isFeatureEnabled: (featureKey: string) => boolean;
   isLoading: boolean;
+  /** Re-fetch flags from the API. Call after toggling a feature so the nav updates without a full page reload. */
+  refresh: () => Promise<void>;
 }
 
 const FeatureFlagContext = createContext<FeatureFlagContextValue>({
   isFeatureEnabled: () => false,
   isLoading: true,
+  refresh: async () => {},
 });
 
 export function FeatureFlagProvider({ children }: { children: React.ReactNode }) {
@@ -57,7 +60,7 @@ export function FeatureFlagProvider({ children }: { children: React.ReactNode })
   );
 
   return (
-    <FeatureFlagContext.Provider value={{ isFeatureEnabled, isLoading: state.status === 'loading' }}>
+    <FeatureFlagContext.Provider value={{ isFeatureEnabled, isLoading: state.status === 'loading', refresh }}>
       {children}
     </FeatureFlagContext.Provider>
   );

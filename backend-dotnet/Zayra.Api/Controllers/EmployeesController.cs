@@ -826,6 +826,23 @@ public class EmployeesController : ControllerBase
             ProfileCompletenessScore = draft.ProfileCompletenessScore,
             ActivatedAtUtc = DateTime.UtcNow
         };
+
+        // Auto-hierarchy: if no manager was set during onboarding, default to the head of the
+        // department the employee is joining, and inherit that head's manager as second-level.
+        if (employee.ManagerEmployeeId is null && !string.IsNullOrWhiteSpace(employee.Department))
+        {
+            var deptHeadId = await _db.Departments.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.NameEn == employee.Department)
+                .Select(d => d.ManagerEmployeeId).FirstOrDefaultAsync(cancellationToken);
+            if (deptHeadId is { } headId && headId != 0)
+            {
+                employee.ManagerEmployeeId = headId;
+                employee.SecondLevelManagerEmployeeId = await _db.Employees.AsNoTracking()
+                    .Where(e => e.TenantId == tenantId && e.Id == headId)
+                    .Select(e => e.ManagerEmployeeId).FirstOrDefaultAsync(cancellationToken);
+            }
+        }
+
         _db.Employees.Add(employee);
         await _db.SaveChangesAsync(cancellationToken);
 

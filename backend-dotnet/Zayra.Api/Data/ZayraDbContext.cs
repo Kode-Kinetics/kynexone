@@ -211,6 +211,8 @@ public class ZayraDbContext : DbContext
     public DbSet<PayrollAuditLog> PayrollAuditLogs => Set<PayrollAuditLog>();
     public DbSet<ShiftDefinition> ShiftDefinitions => Set<ShiftDefinition>();
     public DbSet<ShiftAssignment> ShiftAssignments => Set<ShiftAssignment>();
+    public DbSet<ShiftPolicy> ShiftPolicies => Set<ShiftPolicy>();
+    public DbSet<EmployeeOffboarding> EmployeeOffboardings => Set<EmployeeOffboarding>();
     public DbSet<ManpowerRequisition> ManpowerRequisitions => Set<ManpowerRequisition>();
     public DbSet<JobOpening> JobOpenings => Set<JobOpening>();
     public DbSet<Candidate> Candidates => Set<Candidate>();
@@ -1240,6 +1242,25 @@ public class ZayraDbContext : DbContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.AssignedDate }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.AssignedDate });
+        });
+
+        modelBuilder.Entity<ShiftPolicy>(entity =>
+        {
+            entity.ToTable("shift_policies");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.TenantId).IsUnique(); // one policy row per tenant
+            entity.Property(x => x.GenderShiftRulesJson).HasColumnType("text");
+            entity.Property(x => x.VoluntaryShiftCodesJson).HasColumnType("text");
+            entity.Property(x => x.WeekendDemandJson).HasColumnType("text");
+            entity.Property(x => x.HolidayDemandJson).HasColumnType("text");
+        });
+
+        modelBuilder.Entity<EmployeeOffboarding>(entity =>
+        {
+            entity.ToTable("employee_offboardings");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId });
+            entity.HasIndex(x => new { x.TenantId, x.Status });
         });
 
         modelBuilder.Entity<Tenant>(entity =>

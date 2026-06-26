@@ -140,6 +140,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         return await GetAsync(tenantId, id, true, context, cancellationToken);
     }
 
+
     public async Task<EmployeeDocument> UploadDocumentAsync(Guid tenantId, int employeeId, EmployeeDocumentUploadMetadata request, IFormFile file, RequestContext context, CancellationToken cancellationToken)
     {
         if (!await _db.Employees.AnyAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, cancellationToken)) throw new InvalidOperationException("Employee not found.");

@@ -29,12 +29,13 @@ public class AIAssistantController : ControllerBase
     }
 
     // ── AI provider status — checked by the frontend before showing the UI ───
-    // Returns enabled=false when AI_PROVIDER=none or no API key is configured.
+    // Returns enabled=false when AI_PROVIDER=none/fallback or the chosen provider isn't usable
+    // (no API key for anthropic/openai, or no base URL for ollama).
     // No special permission required; any authenticated user may query this.
     [HttpGet("status")]
     [AllowAnonymous]  // front-end fetches this before the auth redirect cycle completes in some flows
     public IActionResult Status() =>
-        Ok(new { enabled = _aiOptions.HasAnyProviderKey && _aiOptions.EffectiveProvider != "fallback", provider = _aiOptions.EffectiveProvider });
+        Ok(new { enabled = _aiOptions.IsLiveProviderConfigured, provider = _aiOptions.EffectiveProvider });
 
     // ── AI HR Query (live DB context, advisory only) ─────────────────────────
 

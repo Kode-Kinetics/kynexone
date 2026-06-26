@@ -129,4 +129,15 @@ export const essApi = {
   askAi: (question: string) => client.post<{ answer: string }>('/api/ess/ai/ask', { question }).then((r) => r.data),
   notifications: () => client.get<EssNotification[]>('/api/ess/notifications').then((r) => r.data),
   markNotificationRead: (id: string) => client.patch(`/api/ess/notifications/${id}/read`),
+  myRoster: (from: string, to: string) =>
+    client.get<EssRosterEntry[]>('/api/ess/my-roster', { params: { from, to } }).then((r) => r.data),
 };
+
+export interface EssRosterEntry {
+  id: string;
+  date: string;
+  shiftDefinitionId: string;
+  shiftName: string;
+  shiftCode: string;
+  shiftColor: string;
+}

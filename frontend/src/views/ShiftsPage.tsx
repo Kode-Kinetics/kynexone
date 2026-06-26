@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight, Plus, Pencil, Trash2, Clock, X, Wand2, CheckCircle2, Coffee, CalendarDays } from 'lucide-react';
 import { shiftsApi } from '../api/shifts';
 import type { ShiftDefinition, RosterEmployee, RosterAssignment } from '../api/shifts';
+import { essApi } from '../api/ess';
+import type { EssRosterEntry } from '../api/ess';
 import { useAuth } from '../contexts/AuthContext';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -375,6 +377,209 @@ function AutoPlanModal({ definitions, onClose, onDone }: AutoPlanModalProps) {
   );
 }
 
+// ── AI Plan Modal (intelligent, preview-then-commit) ──────────────────────────
+
+interface AiPlanModalProps {
+  onClose: () => void;
+  onDone: () => void;
+}
+
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function AiPlanModal({ onClose, onDone }: AiPlanModalProps) {
+  const today = new Date().toISOString().slice(0, 10);
+  const nextMonth = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+
+  const [dateFrom, setDateFrom] = useState(today);
+  const [dateTo, setDateTo] = useState(nextMonth);
+  const [weekendDays, setWeekendDays] = useState<string[]>(['Friday', 'Saturday']);
+  const [overwriteExisting, setOverwriteExisting] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [error, setError] = useState('');
+  const [plan, setPlan] = useState<import('../api/shifts').RosterPlanResult | null>(null);
+  const [done, setDone] = useState<{ created: number; updated: number; skipped: number } | null>(null);
+
+  const toggleWeekend = (d: string) =>
+    setWeekendDays(s => s.includes(d) ? s.filter(x => x !== d) : [...s, d]);
+
+  const generate = async () => {
+    if (!dateFrom || !dateTo) { setError('Date range is required.'); return; }
+    setRunning(true); setError('');
+    try {
+      const r = await shiftsApi.aiPlan({ dateFrom, dateTo, weekendDays });
+      setPlan(r);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setError(msg ?? 'Could not generate a plan.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const commit = async () => {
+    if (!plan) return;
+    setCommitting(true); setError('');
+    try {
+      const r = await shiftsApi.commitPlan({
+        dateFrom, dateTo, overwriteExisting,
+        assignments: plan.assignments.map(a => ({ employeeId: a.employeeId, date: a.date, shiftDefinitionId: a.shiftDefinitionId })),
+      });
+      setDone(r);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setError(msg ?? 'Could not apply the plan.');
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-2xl dark:border-white/10 dark:bg-[#0D1221]">
+          <CheckCircle2 className="mx-auto mb-4 h-14 w-14 text-emerald-500" />
+          <h3 className="text-lg font-bold text-slate-900 dark:text-white">Roster Applied</h3>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            Created <span className="font-semibold text-sapphire dark:text-cyanAccent">{done.created}</span>
+            {done.updated > 0 && <>, updated <span className="font-semibold">{done.updated}</span></>}
+            {done.skipped > 0 && <>, skipped <span className="font-semibold">{done.skipped}</span></> } assignment(s).
+          </p>
+          <button type="button" className="btn-primary mt-6 w-full" onClick={() => { onDone(); onClose(); }}>View Roster</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="flex max-h-[88vh] w-full max-w-2xl flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#0D1221]">
+        <div className="flex items-start justify-between border-b border-slate-200 p-5 dark:border-white/10">
+          <div>
+            <h3 className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white">
+              <Wand2 className="h-4 w-4 text-sapphire dark:text-cyanAccent" /> AI Roster Planner
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+              Plans intelligently from your rostering policy (gender rules, voluntary shifts, demand, rest &amp; fairness), then you review before it saves.
+            </p>
+          </div>
+          <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">From</label>
+                <input type="date" className="input w-full" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPlan(null); }} aria-label="From date" />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">To</label>
+                <input type="date" className="input w-full" value={dateTo} onChange={e => { setDateTo(e.target.value); setPlan(null); }} aria-label="To date" />
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Weekend days (staffed by demand, not everyone)</label>
+              <div className="flex flex-wrap gap-1.5">
+                {WEEKDAY_NAMES.map(d => (
+                  <button key={d} type="button" onClick={() => toggleWeekend(d)}
+                    className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                      weekendDays.includes(d)
+                        ? 'border-transparent bg-sapphire text-white dark:bg-cyanAccent/80'
+                        : 'border-slate-200 text-slate-600 hover:border-slate-300 dark:border-white/10 dark:text-slate-300'
+                    }`}>
+                    {d.slice(0, 3)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {error && <p className="text-xs text-red-500">{error}</p>}
+
+            {plan && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-sapphire/10 px-2.5 py-1 text-xs font-medium text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent">
+                    {plan.engine}
+                  </span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400">{plan.summary}</span>
+                </div>
+
+                {plan.warnings.length > 0 && (
+                  <div className="rounded-lg border border-amber-300/50 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                    <p className="mb-1 font-semibold">{plan.warnings.length} warning(s)</p>
+                    <ul className="list-inside list-disc space-y-0.5">
+                      {plan.warnings.slice(0, 8).map((w, i) => <li key={i}>{w}</li>)}
+                      {plan.warnings.length > 8 && <li>…and {plan.warnings.length - 8} more.</li>}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-200 dark:border-white/10">
+                  <table className="w-full text-left text-xs">
+                    <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">Employee</th>
+                        <th className="px-3 py-2 font-medium">Date</th>
+                        <th className="px-3 py-2 font-medium">Shift</th>
+                        <th className="px-3 py-2 font-medium">Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {plan.assignments.map((a, i) => (
+                        <tr key={i} className="border-t border-slate-100 dark:border-white/5">
+                          <td className="px-3 py-1.5 text-slate-700 dark:text-slate-200">{a.employeeName}</td>
+                          <td className="px-3 py-1.5 text-slate-500 dark:text-slate-400">{a.date}</td>
+                          <td className="px-3 py-1.5">
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: a.shiftColor }} />
+                              {a.shiftName}
+                            </span>
+                          </td>
+                          <td className="px-3 py-1.5 text-slate-400 dark:text-slate-500">{a.reason}</td>
+                        </tr>
+                      ))}
+                      {plan.assignments.length === 0 && (
+                        <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-400">No assignments produced.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                  <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={overwriteExisting} onChange={e => setOverwriteExisting(e.target.checked)} />
+                  Overwrite existing assignments on these dates
+                </label>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-slate-200 p-4 dark:border-white/10">
+          <button type="button" className="btn-secondary text-sm" onClick={onClose}>Cancel</button>
+          {!plan ? (
+            <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={generate} disabled={running}>
+              <Wand2 className="h-3.5 w-3.5" />
+              {running ? 'Thinking…' : 'Generate Plan'}
+            </button>
+          ) : (
+            <>
+              <button type="button" className="btn-secondary text-sm" onClick={() => setPlan(null)} disabled={committing}>Regenerate</button>
+              <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={commit} disabled={committing || plan.assignments.length === 0}>
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                {committing ? 'Applying…' : 'Apply Plan'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Roster Tab ────────────────────────────────────────────────────────────────
 
 interface RosterTabProps {
@@ -556,7 +761,8 @@ function RosterTab({ definitions }: RosterTabProps) {
 
 function MyScheduleTab({ definitions }: { definitions: ShiftDefinition[] }) {
   const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()));
-  const [assignments, setAssignments] = useState<RosterAssignment[]>([]);
+  // Scoped to the signed-in employee only — never the whole tenant roster.
+  const [assignments, setAssignments] = useState<EssRosterEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   const from = toDateString(weekStart);
@@ -566,11 +772,11 @@ function MyScheduleTab({ definitions }: { definitions: ShiftDefinition[] }) {
 
   useEffect(() => {
     setLoading(true);
-    shiftsApi.getRoster(from, to)
-      .then(r => setAssignments(r.assignments))
+    essApi.myRoster(from, to)
+      .then(setAssignments)
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [from]);
+  }, [from, to]);
 
   const assignmentMap = new Map(assignments.map(a => [a.date as unknown as string, a]));
 
@@ -580,11 +786,11 @@ function MyScheduleTab({ definitions }: { definitions: ShiftDefinition[] }) {
 
   // Next 4 weeks for the upcoming strip
   const upcomingDays = Array.from({ length: 28 }, (_, i) => addDays(getWeekStart(new Date()), i + 7));
-  const [upcoming, setUpcoming] = useState<RosterAssignment[]>([]);
+  const [upcoming, setUpcoming] = useState<EssRosterEntry[]>([]);
   useEffect(() => {
     const f = toDateString(upcomingDays[0]);
     const t = toDateString(upcomingDays[upcomingDays.length - 1]);
-    shiftsApi.getRoster(f, t).then(r => setUpcoming(r.assignments)).catch(() => {});
+    essApi.myRoster(f, t).then(setUpcoming).catch(() => {});
   }, []);
   const upcomingMap = new Map(upcoming.map(a => [a.date as unknown as string, a]));
 
@@ -806,7 +1012,196 @@ function DefinitionsTab({ definitions, onRefresh }: DefinitionsTabProps) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type Tab = 'roster' | 'definitions' | 'autoPlan' | 'schedule';
+// ── Rostering Policy Tab ───────────────────────────────────────────────────────
+
+function PolicyTab({ definitions }: { definitions: ShiftDefinition[] }) {
+  const active = definitions.filter(d => d.isActive);
+  const [policy, setPolicy] = useState<import('../api/shifts').ShiftPolicy | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    shiftsApi.getPolicy()
+      .then(setPolicy)
+      .catch(() => setError('Could not load the rostering policy.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const codeName = (code: string) => active.find(d => d.code === code)?.name ?? code;
+
+  const save = async () => {
+    if (!policy) return;
+    setSaving(true); setError('');
+    try {
+      const updated = await shiftsApi.savePolicy(policy);
+      setPolicy(updated);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      setError('Could not save the policy.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading || !policy) {
+    return (
+      <div className="flex justify-center py-12">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" />
+      </div>
+    );
+  }
+
+  const toggleRuleCode = (idx: number, code: string) =>
+    setPolicy(p => {
+      if (!p) return p;
+      const rules = [...p.genderRules];
+      const codes = rules[idx].shiftCodes.includes(code)
+        ? rules[idx].shiftCodes.filter(c => c !== code)
+        : [...rules[idx].shiftCodes, code];
+      rules[idx] = { ...rules[idx], shiftCodes: codes };
+      return { ...p, genderRules: rules };
+    });
+
+  const toggleVoluntary = (code: string) =>
+    setPolicy(p => p ? {
+      ...p,
+      voluntaryShiftCodes: p.voluntaryShiftCodes.includes(code)
+        ? p.voluntaryShiftCodes.filter(c => c !== code)
+        : [...p.voluntaryShiftCodes, code],
+    } : p);
+
+  const setDemand = (key: 'weekendDemand' | 'holidayDemand', code: string, headcount: number) =>
+    setPolicy(p => {
+      if (!p) return p;
+      const list = p[key].filter(d => d.shiftCode !== code);
+      if (headcount > 0) list.push({ shiftCode: code, headcount });
+      return { ...p, [key]: list };
+    });
+
+  const demandFor = (key: 'weekendDemand' | 'holidayDemand', code: string) =>
+    policy[key].find(d => d.shiftCode === code)?.headcount ?? 0;
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
+        These rules drive the AI Roster Planner. Defaults are inferred from your shift names (morning / evening / night / afternoon); adjust them to fit your operation.
+      </p>
+
+      {/* Gender → shift rules */}
+      <section>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Gender shift rules</h3>
+          <button type="button" className="btn-secondary text-xs"
+            onClick={() => setPolicy(p => p ? { ...p, genderRules: [...p.genderRules, { gender: 'Female', shiftCodes: [], mode: 'required' }] } : p)}>
+            + Add rule
+          </button>
+        </div>
+        <div className="space-y-3">
+          {policy.genderRules.length === 0 && <p className="text-xs text-slate-400">No gender rules — everyone may work any non-voluntary shift.</p>}
+          {policy.genderRules.map((rule, idx) => (
+            <div key={idx} className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
+              <div className="mb-2 flex items-center gap-2">
+                <select className="select text-sm" value={rule.gender} aria-label="Gender"
+                  onChange={e => setPolicy(p => { if (!p) return p; const r = [...p.genderRules]; r[idx] = { ...r[idx], gender: e.target.value }; return { ...p, genderRules: r }; })}>
+                  <option>Female</option><option>Male</option><option>Other</option>
+                </select>
+                <select className="select text-sm" value={rule.mode} aria-label="Mode"
+                  onChange={e => setPolicy(p => { if (!p) return p; const r = [...p.genderRules]; r[idx] = { ...r[idx], mode: e.target.value as 'required' | 'preferred' }; return { ...p, genderRules: r }; })}>
+                  <option value="required">must work</option>
+                  <option value="preferred">prefers</option>
+                </select>
+                <button type="button" aria-label="Remove rule" className="ml-auto grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"
+                  onClick={() => setPolicy(p => p ? { ...p, genderRules: p.genderRules.filter((_, i) => i !== idx) } : p)}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {active.map(d => (
+                  <button key={d.id} type="button" onClick={() => toggleRuleCode(idx, d.code)}
+                    className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                      rule.shiftCodes.includes(d.code)
+                        ? 'border-transparent bg-sapphire text-white dark:bg-cyanAccent/80'
+                        : 'border-slate-200 text-slate-600 hover:border-slate-300 dark:border-white/10 dark:text-slate-300'
+                    }`}>
+                    {d.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Voluntary shifts */}
+      <section>
+        <h3 className="mb-2 text-sm font-semibold text-slate-900 dark:text-white">Voluntary shifts (never auto-assigned)</h3>
+        <div className="flex flex-wrap gap-1.5">
+          {active.map(d => (
+            <button key={d.id} type="button" onClick={() => toggleVoluntary(d.code)}
+              className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                policy.voluntaryShiftCodes.includes(d.code)
+                  ? 'border-transparent bg-amber-500 text-white'
+                  : 'border-slate-200 text-slate-600 hover:border-slate-300 dark:border-white/10 dark:text-slate-300'
+              }`}>
+              {d.name}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Demand targets */}
+      <section className="grid gap-6 sm:grid-cols-2">
+        {(['weekendDemand', 'holidayDemand'] as const).map(key => (
+          <div key={key}>
+            <h3 className="mb-2 text-sm font-semibold text-slate-900 dark:text-white">
+              {key === 'weekendDemand' ? 'Weekend demand' : 'Holiday demand'}
+            </h3>
+            <p className="mb-2 text-xs text-slate-400">Required staff per shift on {key === 'weekendDemand' ? 'weekends' : 'public holidays'}.</p>
+            <div className="space-y-2">
+              {active.map(d => (
+                <div key={d.id} className="flex items-center gap-2">
+                  <span className="flex-1 text-sm text-slate-600 dark:text-slate-300">{codeName(d.code)}</span>
+                  <input type="number" min={0} className="input w-20 text-sm" value={demandFor(key, d.code)}
+                    aria-label={`${key} for ${d.name}`}
+                    onChange={e => setDemand(key, d.code, Math.max(0, parseInt(e.target.value || '0', 10)))} />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
+
+      {/* Constraints */}
+      <section className="grid grid-cols-2 gap-4 sm:max-w-md">
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Min rest hours between shifts</label>
+          <input type="number" min={0} className="input w-full" value={policy.minRestHours} aria-label="Minimum rest hours between shifts"
+            onChange={e => setPolicy(p => p ? { ...p, minRestHours: Math.max(0, parseInt(e.target.value || '0', 10)) } : p)} />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Max consecutive days</label>
+          <input type="number" min={1} className="input w-full" value={policy.maxConsecutiveDays} aria-label="Maximum consecutive working days"
+            onChange={e => setPolicy(p => p ? { ...p, maxConsecutiveDays: Math.max(1, parseInt(e.target.value || '1', 10)) } : p)} />
+        </div>
+      </section>
+
+      {error && <p className="text-xs text-red-500">{error}</p>}
+
+      <div className="flex items-center gap-3">
+        <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : 'Save Policy'}
+        </button>
+        {saved && <span className="flex items-center gap-1 text-xs text-emerald-500"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>}
+      </div>
+    </div>
+  );
+}
+
+type Tab = 'roster' | 'definitions' | 'autoPlan' | 'schedule' | 'policy';
 
 export function ShiftsPage() {
   const { user } = useAuth();
@@ -818,6 +1213,8 @@ export function ShiftsPage() {
   const [definitions, setDefinitions] = useState<ShiftDefinition[]>([]);
   const [defsLoading, setDefsLoading] = useState(true);
   const [autoPlanOpen, setAutoPlanOpen] = useState(false);
+  const [aiPlanOpen, setAiPlanOpen] = useState(false);
+  const [rosterRefreshKey, setRosterRefreshKey] = useState(0);
 
   const loadDefinitions = () => {
     setDefsLoading(true);
@@ -844,11 +1241,18 @@ export function ShiftsPage() {
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>
         </div>
         {isAdmin && (
-          <button type="button" onClick={() => setAutoPlanOpen(true)}
-            className="btn-primary flex items-center gap-1.5 text-sm">
-            <Wand2 className="h-3.5 w-3.5" />
-            Auto Plan
-          </button>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setAutoPlanOpen(true)}
+              className="btn-secondary flex items-center gap-1.5 text-sm">
+              <Wand2 className="h-3.5 w-3.5" />
+              Auto Plan
+            </button>
+            <button type="button" onClick={() => setAiPlanOpen(true)}
+              className="btn-primary flex items-center gap-1.5 text-sm">
+              <Wand2 className="h-3.5 w-3.5" />
+              AI Plan
+            </button>
+          </div>
         )}
       </div>
 
@@ -871,6 +1275,12 @@ export function ShiftsPage() {
                 Shift Definitions
               </button>
             )}
+            {isAdmin && (
+              <button type="button" onClick={() => setTab('policy')}
+                className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${tab === 'policy' ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>
+                Rostering Policy
+              </button>
+            )}
           </>
         )}
       </div>
@@ -883,7 +1293,9 @@ export function ShiftsPage() {
       ) : isEmployee ? (
         <MyScheduleTab definitions={definitions} />
       ) : tab === 'roster' ? (
-        <RosterTab definitions={definitions} />
+        <RosterTab key={rosterRefreshKey} definitions={definitions} />
+      ) : tab === 'policy' ? (
+        <PolicyTab definitions={definitions} />
       ) : (
         <DefinitionsTab definitions={definitions} onRefresh={loadDefinitions} />
       )}
@@ -893,6 +1305,13 @@ export function ShiftsPage() {
           definitions={definitions}
           onClose={() => setAutoPlanOpen(false)}
           onDone={() => { setTab('roster'); setAutoPlanOpen(false); }}
+        />
+      )}
+
+      {aiPlanOpen && (
+        <AiPlanModal
+          onClose={() => setAiPlanOpen(false)}
+          onDone={() => { setTab('roster'); setRosterRefreshKey(k => k + 1); setAiPlanOpen(false); }}
         />
       )}
     </div>

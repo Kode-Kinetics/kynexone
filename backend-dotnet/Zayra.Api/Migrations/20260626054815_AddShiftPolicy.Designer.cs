@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260626054815_AddShiftPolicy")]
+    partial class AddShiftPolicy
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -5683,10 +5686,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<int>("ApprovedHeadcount")
-                        .HasColumnType("integer")
-                        .HasColumnName("approved_headcount");
-
                     b.Property<Guid?>("BranchId")
                         .HasColumnType("uuid")
                         .HasColumnName("branch_id");
@@ -5727,10 +5726,6 @@ namespace Zayra.Api.Migrations
                     b.Property<int?>("ManagerEmployeeId")
                         .HasColumnType("integer")
                         .HasColumnName("manager_employee_id");
-
-                    b.Property<decimal>("MonthlyBudgetAmount")
-                        .HasColumnType("numeric")
-                        .HasColumnName("monthly_budget_amount");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
@@ -8314,140 +8309,6 @@ namespace Zayra.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("employee_notification_preferences", (string)null);
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.EmployeeOffboarding", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<bool>("AccessRevoked")
-                        .HasColumnType("boolean")
-                        .HasColumnName("access_revoked");
-
-                    b.Property<bool>("AssetsReturned")
-                        .HasColumnType("boolean")
-                        .HasColumnName("assets_returned");
-
-                    b.Property<Guid?>("BackfillRequisitionId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("backfill_requisition_id");
-
-                    b.Property<DateTime?>("CompletedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("completed_at_utc");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("created_by_user_id");
-
-                    b.Property<string>("Department")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("department");
-
-                    b.Property<string>("Designation")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("designation");
-
-                    b.Property<string>("EmployeeCode")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("employee_code");
-
-                    b.Property<int>("EmployeeId")
-                        .HasColumnType("integer")
-                        .HasColumnName("employee_id");
-
-                    b.Property<string>("EmployeeName")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("employee_name");
-
-                    b.Property<DateOnly?>("ExitInterviewDate")
-                        .HasColumnType("date")
-                        .HasColumnName("exit_interview_date");
-
-                    b.Property<string>("ExitInterviewNotes")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("exit_interview_notes");
-
-                    b.Property<int>("ExitInterviewRating")
-                        .HasColumnType("integer")
-                        .HasColumnName("exit_interview_rating");
-
-                    b.Property<string>("ExitInterviewStatus")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("exit_interview_status");
-
-                    b.Property<string>("ExitReasonCategory")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("exit_reason_category");
-
-                    b.Property<bool>("FinalSettlementDone")
-                        .HasColumnType("boolean")
-                        .HasColumnName("final_settlement_done");
-
-                    b.Property<bool>("KnowledgeHandover")
-                        .HasColumnType("boolean")
-                        .HasColumnName("knowledge_handover");
-
-                    b.Property<DateOnly>("LastWorkingDay")
-                        .HasColumnType("date")
-                        .HasColumnName("last_working_day");
-
-                    b.Property<DateOnly>("NoticeDate")
-                        .HasColumnType("date")
-                        .HasColumnName("notice_date");
-
-                    b.Property<int>("NoticePeriodDays")
-                        .HasColumnType("integer")
-                        .HasColumnName("notice_period_days");
-
-                    b.Property<string>("Reason")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("reason");
-
-                    b.Property<bool>("RehireEligible")
-                        .HasColumnType("boolean")
-                        .HasColumnName("rehire_eligible");
-
-                    b.Property<string>("SeparationType")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("separation_type");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("status");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at_utc");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "EmployeeId");
-
-                    b.HasIndex("TenantId", "Status");
-
-                    b.ToTable("employee_offboardings", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeePayrollProfile", b =>
