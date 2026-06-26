@@ -8,6 +8,7 @@ public sealed record AiOptions(
     string AnthropicApiKey,
     string OpenAIApiKey,
     string OllamaBaseUrl,
+    string OllamaApiKey,
     int MaxContextTokens,
     bool RequireHumanReview,
     bool LogPrompts)
@@ -28,6 +29,7 @@ public sealed record AiOptions(
             AnthropicApiKey: Read(configuration, "ANTHROPIC_API_KEY").Trim(),
             OpenAIApiKey: Read(configuration, "OPENAI_API_KEY").Trim(),
             OllamaBaseUrl: NormalizeBaseUrl(Read(configuration, "OLLAMA_BASE_URL")),
+            OllamaApiKey: Read(configuration, "OLLAMA_API_KEY").Trim(),
             MaxContextTokens: ReadInt(configuration, "AI_MAX_CONTEXT_TOKENS", 4096),
             RequireHumanReview: ReadBool(configuration, "AI_REQUIRE_HUMAN_REVIEW", true),
             LogPrompts: ReadBool(configuration, "AI_LOG_PROMPTS", false));

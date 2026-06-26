@@ -119,6 +119,13 @@ public sealed class LlmClient : ILlmClient
             : _options.OllamaBaseUrl;
 
         using var message = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/chat");
+        // Ollama Cloud (https://ollama.com) requires a Bearer token; a local
+        // Ollama daemon needs none. Send the header only when a key is set.
+        if (!string.IsNullOrWhiteSpace(_options.OllamaApiKey))
+        {
+            message.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.OllamaApiKey);
+        }
         message.Content = new StringContent(JsonSerializer.Serialize(new
         {
             model = request.Model,
