@@ -1096,8 +1096,6 @@ public class PlatformController : ControllerBase
             return BadRequest(new { message = "Password must be at least 10 characters." });
 
         var normalizedEmail = AuthService.Normalize(req.Email);
-        if (await _db.Users.AsNoTracking().AnyAsync(u => u.TenantId == tenantId && u.NormalizedEmail == normalizedEmail && !u.IsDeleted, ct))
-            return Conflict(new { message = "A user with this email already exists in the tenant." });
 
         var roleName = string.IsNullOrWhiteSpace(req.RoleName) ? "Admin" : req.RoleName.Trim();
         var role = await _db.Roles.FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Name == roleName && !r.IsDeleted, ct);
@@ -1109,36 +1107,77 @@ public class PlatformController : ControllerBase
             if (role is null) return BadRequest(new { message = $"Role '{roleName}' not found for this tenant." });
         }
 
-        var user = new User
+        // There is a UNIQUE index on (TenantId, NormalizedEmail) that ignores IsDeleted,
+        // so a previously soft-deleted user with this email still occupies the slot.
+        // Match including soft-deleted rows: block live duplicates, but resurrect a removed one.
+        var existing = await _db.Users
+            .Include(u => u.UserRoles)
+            .FirstOrDefaultAsync(u => u.TenantId == tenantId && u.NormalizedEmail == normalizedEmail, ct);
+
+        if (existing is not null && !existing.IsDeleted)
+            return Conflict(new { message = "A user with this email already exists in the tenant." });
+
+        var fullName = string.IsNullOrWhiteSpace(req.FullName) ? req.Email.Trim() : req.FullName.Trim();
+        var displayEmail = req.Email.Trim().ToLowerInvariant();
+        User user;
+        bool restored = false;
+
+        if (existing is not null)
         {
-            TenantId = tenantId,
-            Email = req.Email.Trim().ToLowerInvariant(),
-            NormalizedEmail = normalizedEmail,
-            FullName = string.IsNullOrWhiteSpace(req.FullName) ? req.Email.Trim() : req.FullName.Trim(),
-            PasswordHash = _passwordHasher.Hash(req.Password),
-            AccessMode = "FullPortal",
-            Status = "Active",
-            IsActive = true,
-            IsEmailConfirmed = true,
-            MustChangePassword = req.MustChangePassword ?? false
-        };
-        user.UserRoles.Add(new UserRole { User = user, Role = role });
-        _db.Users.Add(user);
+            // Resurrect the soft-deleted row in place (avoids the unique-constraint collision).
+            restored = true;
+            user = existing;
+            user.IsDeleted = false;
+            user.DeletedAtUtc = null;
+            user.Email = displayEmail;
+            user.NormalizedEmail = normalizedEmail;
+            user.FullName = fullName;
+            user.PasswordHash = _passwordHasher.Hash(req.Password);
+            user.AccessMode = "FullPortal";
+            user.Status = "Active";
+            user.IsActive = true;
+            user.IsEmailConfirmed = true;
+            user.IsLocked = false;
+            user.LockoutEnd = null;
+            user.FailedLoginCount = 0;
+            user.MustChangePassword = req.MustChangePassword ?? false;
+            user.UpdatedAtUtc = DateTime.UtcNow;
+            _db.UserRoles.RemoveRange(user.UserRoles);
+            _db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
+        }
+        else
+        {
+            user = new User
+            {
+                TenantId = tenantId,
+                Email = displayEmail,
+                NormalizedEmail = normalizedEmail,
+                FullName = fullName,
+                PasswordHash = _passwordHasher.Hash(req.Password),
+                AccessMode = "FullPortal",
+                Status = "Active",
+                IsActive = true,
+                IsEmailConfirmed = true,
+                MustChangePassword = req.MustChangePassword ?? false
+            };
+            user.UserRoles.Add(new UserRole { User = user, Role = role });
+            _db.Users.Add(user);
+        }
 
         _db.AdminAuditLogs.Add(new AdminAuditLog
         {
             TenantId = tenantId,
             EntityType = "User",
             EntityId = user.Id.ToString(),
-            Action = "UserCreated",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { email = user.Email, fullName = user.FullName, role = roleName }),
+            Action = restored ? "UserRestored" : "UserCreated",
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { email = user.Email, fullName = user.FullName, role = roleName, restored }),
             PerformedByName = "platform_admin",
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
         await _db.SaveChangesAsync(ct);
 
-        return Ok(new { user.Id, user.Email, user.FullName, role = roleName, tenantSlug = tenant.Slug });
+        return Ok(new { user.Id, user.Email, user.FullName, role = roleName, restored, tenantSlug = tenant.Slug });
     }
 
     // ── Tenant Suspend / Reactivate ───────────────────────────────────────────
