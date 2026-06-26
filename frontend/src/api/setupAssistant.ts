@@ -33,9 +33,35 @@ export interface SetupDraft {
 
 export interface SetupPreviewResult { draft: SetupDraft; notes: string[]; engine: string; }
 
+const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+
+/**
+ * Coerce a raw preview response into a render-safe shape. LLM-generated JSON
+ * (or backend serialization) can omit/null any list; the UI maps over all of
+ * them during render, so a missing array would throw mid-render and blank the
+ * page. Every list defaults to []; workingWeek defaults to null.
+ */
+export function normalizeDraft(raw: unknown): SetupDraft {
+  const d = (raw ?? {}) as Partial<SetupDraft>;
+  return {
+    departments: asArray<DraftDepartment>(d.departments),
+    designations: asArray<DraftDesignation>(d.designations),
+    grades: asArray<DraftGrade>(d.grades),
+    leaveTypes: asArray<DraftLeaveType>(d.leaveTypes),
+    shifts: asArray<DraftShift>(d.shifts),
+    workingWeek: d.workingWeek ?? null,
+    payComponents: asArray<DraftPayComponent>(d.payComponents),
+    statutoryRules: asArray<DraftStatutoryRule>(d.statutoryRules),
+  };
+}
+
 export const setupAssistantApi = {
   preview: (profile: CompanyProfile) =>
-    client.post<SetupPreviewResult>('/api/setup-assistant/preview', profile).then(r => r.data),
+    client.post<SetupPreviewResult>('/api/setup-assistant/preview', profile).then(r => ({
+      draft: normalizeDraft(r.data?.draft),
+      notes: asArray<string>(r.data?.notes),
+      engine: r.data?.engine ?? '',
+    })),
 
   apply: (draft: SetupDraft, countryCode: string, currencyCode: string) =>
     client.post<{ applied: Record<string, number>; total: number }>(
