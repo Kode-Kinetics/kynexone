@@ -12,11 +12,11 @@
  * every reload is gated behind a short-lived sessionStorage timestamp.
  */
 
-const RELOAD_GUARD_KEY = 'chunk-reload-at';
-// If we already force-reloaded within this window, don't do it again — show the
-// error UI instead. Long enough to cover a fresh page load, short enough that a
-// genuine later deploy still recovers automatically.
-const RELOAD_GUARD_MS = 15_000;
+// Reload AT MOST ONCE per browser tab session. The flag is never auto-cleared,
+// so even if a chunk error keeps firing after the reload, we never loop — we
+// stop and let the error UI show. (A second genuine deploy in the same session
+// is recovered by a manual refresh; that trade-off is worth never looping.)
+const RELOAD_GUARD_KEY = 'chunk-reloaded-session';
 
 const CHUNK_ERROR_PATTERNS = [
   /ChunkLoadError/i,
@@ -51,27 +51,19 @@ export function attemptChunkReload(): boolean {
   if (typeof window === 'undefined') return false;
 
   try {
-    const last = Number(window.sessionStorage.getItem(RELOAD_GUARD_KEY) || 0);
-    if (last && Date.now() - last < RELOAD_GUARD_MS) {
-      // We just reloaded and still failed — stop, let the error UI show.
+    if (window.sessionStorage.getItem(RELOAD_GUARD_KEY)) {
+      // Already reloaded once this session and it still failed — STOP.
+      // Looping is never acceptable; let the error UI show instead.
       return false;
     }
-    window.sessionStorage.setItem(RELOAD_GUARD_KEY, String(Date.now()));
+    window.sessionStorage.setItem(RELOAD_GUARD_KEY, '1');
   } catch {
-    // sessionStorage unavailable (private mode quirks) — reload anyway, once.
+    // sessionStorage unavailable (private mode quirks). Reloading blindly here
+    // risks a loop, so do NOT reload — surface the error UI instead.
+    return false;
   }
 
   // Bypass the bfcache and any stale HTTP cache for the document.
   window.location.reload();
   return true;
-}
-
-/** Clear the guard once the app has mounted successfully on a fresh build. */
-export function clearChunkReloadGuard(): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.sessionStorage.removeItem(RELOAD_GUARD_KEY);
-  } catch {
-    /* no-op */
-  }
 }

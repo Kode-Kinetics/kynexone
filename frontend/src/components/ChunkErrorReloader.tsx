@@ -1,11 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import {
-  attemptChunkReload,
-  clearChunkReloadGuard,
-  isChunkLoadError,
-} from '@/src/lib/chunkReload';
+import { attemptChunkReload, isChunkLoadError } from '@/src/lib/chunkReload';
 
 /**
  * Catches chunk-load failures that happen OUTSIDE React's render tree — e.g. a
@@ -17,10 +13,9 @@ import {
  */
 export function ChunkErrorReloader() {
   useEffect(() => {
-    // We mounted successfully — this build's chunks loaded fine. Reset the guard
-    // so a future deploy can recover again.
-    clearChunkReloadGuard();
-
+    // NOTE: do NOT clear the reload guard on mount. Doing so re-armed the
+    // reloader on every page load, so a recurring chunk error looped forever.
+    // The once-per-session guard must persist for the whole tab session.
     const onError = (event: ErrorEvent) => {
       if (isChunkLoadError(event.error) || isChunkLoadError(event.message)) {
         attemptChunkReload();
