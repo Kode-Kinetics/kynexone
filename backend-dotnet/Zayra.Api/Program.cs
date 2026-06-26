@@ -467,6 +467,7 @@ app.MapGet("/health", async (ZayraDbContext db) =>
 // or via Render pre-deploy job. Set Database__RunMigrationsOnStartup=true ONLY
 // for local dev convenience (it defaults false in Production).
 var isMigrateMode = args.Contains("--migrate");
+var isPurgeDemoMode = args.Contains("--purge-demo");
 
 using (var scope = app.Services.CreateScope())
 {
@@ -481,6 +482,16 @@ using (var scope = app.Services.CreateScope())
     logger.LogInformation("Running EF Core migrations...");
     await dbContext.Database.MigrateAsync();
     logger.LogInformation("EF Core migrations complete.");
+
+    // One-off demo cleanup: `dotnet Zayra.Api.dll --purge-demo`. Deactivates all
+    // demo tenants (guarding the real SeedAdmin tenant) then exits — never seeds.
+    if (isPurgeDemoMode)
+    {
+        await Zayra.Api.Infrastructure.Seed.DemoPurgeRunner.RunAsync(
+            dbContext, app.Configuration["SeedAdmin:TenantSlug"], logger);
+        logger.LogInformation("--purge-demo mode complete. Exiting.");
+        return; // exit 0 — Render one-off job succeeds
+    }
 
     // Seed data — each step is independently non-fatal so one failure never
     // prevents subsequent seeders from running (GOSI/Statutory rules must run
