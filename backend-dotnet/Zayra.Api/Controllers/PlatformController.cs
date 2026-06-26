@@ -1081,6 +1081,66 @@ public class PlatformController : ControllerBase
         return Ok(new { user.Id, user.Email, user.FullName, tenantSlug = tenant.Slug });
     }
 
+    // ── Create Tenant User (any role) ─────────────────────────────────────────
+
+    [HttpPost("tenants/{tenantId:guid}/users")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> CreateTenantUser(Guid tenantId, [FromBody] CreateTenantUserRequest req, CancellationToken ct)
+    {
+        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+
+        if (string.IsNullOrWhiteSpace(req.Email) || !req.Email.Contains('@'))
+            return BadRequest(new { message = "A valid email is required." });
+        if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 10)
+            return BadRequest(new { message = "Password must be at least 10 characters." });
+
+        var normalizedEmail = AuthService.Normalize(req.Email);
+        if (await _db.Users.AsNoTracking().AnyAsync(u => u.TenantId == tenantId && u.NormalizedEmail == normalizedEmail && !u.IsDeleted, ct))
+            return Conflict(new { message = "A user with this email already exists in the tenant." });
+
+        var roleName = string.IsNullOrWhiteSpace(req.RoleName) ? "Admin" : req.RoleName.Trim();
+        var role = await _db.Roles.FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Name == roleName && !r.IsDeleted, ct);
+        if (role is null)
+        {
+            // Ensure the standard tenant roles exist, then re-resolve the requested role.
+            await _authSeeder.EnsureTenantRolesAsync(tenantId, ct);
+            role = await _db.Roles.FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Name == roleName && !r.IsDeleted, ct);
+            if (role is null) return BadRequest(new { message = $"Role '{roleName}' not found for this tenant." });
+        }
+
+        var user = new User
+        {
+            TenantId = tenantId,
+            Email = req.Email.Trim().ToLowerInvariant(),
+            NormalizedEmail = normalizedEmail,
+            FullName = string.IsNullOrWhiteSpace(req.FullName) ? req.Email.Trim() : req.FullName.Trim(),
+            PasswordHash = _passwordHasher.Hash(req.Password),
+            AccessMode = "FullPortal",
+            Status = "Active",
+            IsActive = true,
+            IsEmailConfirmed = true,
+            MustChangePassword = req.MustChangePassword ?? false
+        };
+        user.UserRoles.Add(new UserRole { User = user, Role = role });
+        _db.Users.Add(user);
+
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId = tenantId,
+            EntityType = "User",
+            EntityId = user.Id.ToString(),
+            Action = "UserCreated",
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { email = user.Email, fullName = user.FullName, role = roleName }),
+            PerformedByName = "platform_admin",
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+        });
+
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(new { user.Id, user.Email, user.FullName, role = roleName, tenantSlug = tenant.Slug });
+    }
+
     // ── Tenant Suspend / Reactivate ───────────────────────────────────────────
 
     [HttpPost("tenants/{tenantId:guid}/suspend")]
@@ -1629,6 +1689,56 @@ public class PlatformController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { userId, email = user.Email, fullName = user.FullName, status = user.Status, isActive = user.IsActive });
+    }
+
+    [HttpDelete("users/{userId:guid}")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> DeleteTenantUser(Guid userId, CancellationToken ct)
+    {
+        var user = await _db.Users
+            .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
+            .FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
+        if (user is null) return NotFound(new { message = "User not found." });
+        if (user.Email.Equals(PlatformAdminEmail, StringComparison.OrdinalIgnoreCase))
+            return Forbid();
+
+        var isAdmin = user.UserRoles.Any(ur => ur.Role != null && ur.Role.Name == "Admin");
+        if (isAdmin)
+        {
+            // Never strand a tenant without an admin — block removing the last active admin.
+            var otherAdmins = await _db.Users
+                .Where(u => u.TenantId == user.TenantId && u.Id != userId && !u.IsDeleted && u.IsActive
+                    && u.UserRoles.Any(ur => ur.Role != null && ur.Role.Name == "Admin"))
+                .CountAsync(ct);
+            if (otherAdmins == 0)
+                return BadRequest(new { message = "Cannot remove the last administrator. Add another admin first." });
+        }
+
+        user.IsDeleted = true;
+        user.DeletedAtUtc = DateTime.UtcNow;
+        user.IsActive = false;
+        user.Status = "Deactivated";
+        user.UpdatedAtUtc = DateTime.UtcNow;
+
+        // Terminate any active sessions for the removed user.
+        await _db.RefreshTokens
+            .Where(t => t.UserId == userId && t.RevokedAtUtc == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), ct);
+
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId = user.TenantId,
+            EntityType = "User",
+            EntityId = userId.ToString(),
+            Action = "UserDeleted",
+            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { userEmail = user.Email, fullName = user.FullName }),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { isDeleted = true, initiatedBy = "platform_admin" }),
+            PerformedByName = "platform_admin",
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+        });
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { userId, userEmail = user.Email, deleted = true });
     }
 
     [HttpPost("users/{userId:guid}/unlock")]
@@ -3903,6 +4013,7 @@ public record CreateTenantRequest(
     int? MaxAdminUsers = null);
 
 public record AddTenantAdminRequest(string Email, string? FullName, string Password);
+public record CreateTenantUserRequest(string Email, string? FullName, string Password, string? RoleName, bool? MustChangePassword);
 public record TenantActionRequest(string? Reason);
 
 // ── Bulk tenant operation DTOs ──────────────────────────────────────────────

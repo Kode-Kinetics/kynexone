@@ -6,7 +6,7 @@ import Link from 'next/link';
 import {
   ArrowLeft, Search, RefreshCw, UserCog, Key, X, Shield,
   LogOut, Unlock, ShieldOff, Edit2, Mail, Check, AlertTriangle,
-  ChevronDown, Eye, EyeOff,
+  ChevronDown, Eye, EyeOff, UserPlus, Trash2,
 } from 'lucide-react';
 import { platformApi, type TenantUser, type TenantRole } from '@/src/api/platform';
 
@@ -53,6 +53,14 @@ export default function TenantUsersPage() {
   // set-password form
   const [newPwd, setNewPwd]   = useState('');
   const [showPwd, setShowPwd] = useState(false);
+
+  // add-user form
+  const [addOpen, setAddOpen]   = useState(false);
+  const [addForm, setAddForm]   = useState({ email: '', fullName: '', password: '', roleName: 'Admin', mustChangePassword: false });
+  const [showAddPwd, setShowAddPwd] = useState(false);
+
+  // delete confirmation
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   // ── auth guard ──────────────────────────────────────────────────────────────
 
@@ -101,6 +109,52 @@ export default function TenantUsersPage() {
     setPanel(null);
     setNewPwd('');
     setShowPwd(false);
+    setConfirmDelete(false);
+  }
+
+  // ── add user ─────────────────────────────────────────────────────────────────
+
+  function openAdd() {
+    setAddForm({ email: '', fullName: '', password: '', roleName: roles.find(r => r.name === 'Admin') ? 'Admin' : (roles[0]?.name ?? 'Admin'), mustChangePassword: false });
+    setShowAddPwd(false);
+    setAddOpen(true);
+  }
+
+  async function createUser() {
+    if (!addForm.email.includes('@')) { notify('A valid email is required.', false); return; }
+    if (addForm.password.length < 10) { notify('Password must be at least 10 characters.', false); return; }
+    setSaving(true);
+    try {
+      await platformApi.createTenantUser(id, {
+        email: addForm.email.trim(),
+        fullName: addForm.fullName.trim() || undefined,
+        password: addForm.password,
+        roleName: addForm.roleName || undefined,
+        mustChangePassword: addForm.mustChangePassword,
+      });
+      notify(`User ${addForm.email.trim()} created.`);
+      setAddOpen(false);
+      await load();
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      notify(msg || 'Failed to create user.', false);
+    } finally { setSaving(false); }
+  }
+
+  // ── delete user ──────────────────────────────────────────────────────────────
+
+  async function deleteUser() {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      await platformApi.deleteTenantUser(selected.id);
+      notify(`${selected.email} removed.`);
+      closePanel();
+      await load();
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      notify(msg || 'Failed to remove user.', false);
+    } finally { setSaving(false); }
   }
 
   // ── actions ──────────────────────────────────────────────────────────────────
@@ -217,6 +271,11 @@ export default function TenantUsersPage() {
         <button type="button" title="Refresh" onClick={load} disabled={loading}
           className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-white border border-white/10 rounded-lg transition-colors disabled:opacity-40">
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+        </button>
+        <button type="button" onClick={openAdd}
+          className="ml-auto flex items-center gap-1.5 text-xs font-medium text-white bg-sapphire/90 hover:bg-sapphire px-3 py-1.5 rounded-lg transition-colors">
+          <UserPlus className="h-3.5 w-3.5" />
+          Add User
         </button>
       </div>
 
@@ -445,6 +504,97 @@ export default function TenantUsersPage() {
                   color="text-slate-400 border-slate-500/20 hover:border-slate-500/40"
                   onClick={() => { router.push(`/platform/tenants/${id}/audit`); closePanel(); }} />
               </div>
+
+              {/* ── Danger Zone ───────────────────────────────────────────── */}
+              <div className="border-t border-rose-500/15 pt-4 space-y-2">
+                <p className="text-[10px] font-semibold text-rose-500/70 uppercase tracking-wider">Danger Zone</p>
+                {!confirmDelete ? (
+                  <ActionButton icon={Trash2} label="Remove User" desc="Soft-delete this user and revoke all sessions"
+                    color="text-rose-400 border-rose-500/20 hover:border-rose-500/40"
+                    onClick={() => setConfirmDelete(true)} />
+                ) : (
+                  <div className="rounded-lg border border-rose-500/30 bg-rose-500/[0.06] p-3 space-y-3">
+                    <p className="text-xs text-rose-300">Remove <span className="font-medium text-white">{selected.email}</span>? They will lose access immediately. This is reversible by support.</p>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={deleteUser} disabled={saving}
+                        className="flex-1 flex items-center justify-center gap-1.5 bg-rose-600/90 hover:bg-rose-600 text-white text-xs font-medium py-2 rounded-lg transition-colors disabled:opacity-50">
+                        {saving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                        Confirm Remove
+                      </button>
+                      <button type="button" onClick={() => setConfirmDelete(false)} disabled={saving}
+                        className="px-3 py-2 text-xs text-slate-400 border border-white/10 rounded-lg hover:text-white transition-colors">
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Add User Panel (slide-in) ──────────────────────────────────────────── */}
+      {addOpen && (
+        <div className="fixed inset-0 z-50 flex">
+          <div className="flex-1 bg-black/60 backdrop-blur-sm" onClick={() => !saving && setAddOpen(false)} />
+          <div className="w-full max-w-md bg-[#0d1117] border-l border-white/[0.08] flex flex-col overflow-y-auto">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
+              <div className="flex items-center gap-2">
+                <UserPlus className="h-4 w-4 text-sapphire" />
+                <p className="text-sm font-semibold text-white">Add User</p>
+              </div>
+              <button type="button" title="Close panel" onClick={() => setAddOpen(false)} className="h-7 w-7 flex items-center justify-center rounded-lg hover:bg-white/[0.06] text-slate-500 hover:text-white transition-colors">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 px-5 py-5 space-y-4">
+              <Field label="Email Address">
+                <input value={addForm.email} onChange={e => setAddForm(f => ({ ...f, email: e.target.value }))}
+                  placeholder="user@company.com" title="Email address" type="email"
+                  className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60" />
+              </Field>
+              <Field label="Full Name">
+                <input value={addForm.fullName} onChange={e => setAddForm(f => ({ ...f, fullName: e.target.value }))}
+                  placeholder="Optional — defaults to email" title="Full name"
+                  className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60" />
+              </Field>
+              <Field label="Role">
+                <div className="relative">
+                  <select value={addForm.roleName} onChange={e => setAddForm(f => ({ ...f, roleName: e.target.value }))}
+                    title="Assign role" className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 appearance-none pr-7">
+                    {roles.length > 0
+                      ? roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)
+                      : <option value="Admin">Admin</option>}
+                  </select>
+                  <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
+                </div>
+              </Field>
+              <Field label="Temporary Password">
+                <div className="relative">
+                  <input type={showAddPwd ? 'text' : 'password'}
+                    value={addForm.password} onChange={e => setAddForm(f => ({ ...f, password: e.target.value }))}
+                    placeholder="Min. 10 characters"
+                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 pr-8" />
+                  <button type="button" title={showAddPwd ? 'Hide password' : 'Show password'} onClick={() => setShowAddPwd(v => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300 transition-colors">
+                    {showAddPwd ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+              </Field>
+              <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+                <input type="checkbox" checked={addForm.mustChangePassword}
+                  onChange={e => setAddForm(f => ({ ...f, mustChangePassword: e.target.checked }))}
+                  className="rounded border-white/20 bg-white/[0.04] text-sapphire focus:ring-sapphire/40" />
+                Require password change on first login
+              </label>
+
+              <button type="button" onClick={createUser} disabled={saving || !addForm.email.includes('@') || addForm.password.length < 10}
+                className="w-full flex items-center justify-center gap-2 bg-sapphire/90 hover:bg-sapphire text-white text-sm font-medium py-2 rounded-lg transition-colors disabled:opacity-50">
+                {saving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <UserPlus className="h-3.5 w-3.5" />}
+                Create User
+              </button>
             </div>
           </div>
         </div>

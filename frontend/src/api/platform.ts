@@ -529,6 +529,12 @@ export const platformApi = {
   listTenantUsers: (tenantId: string, search?: string) =>
     platform.get<TenantUser[]>(`/api/platform/tenants/${tenantId}/users`, { params: search ? { search } : {} }).then(r => r.data),
 
+  createTenantUser: (tenantId: string, body: { email: string; fullName?: string; password: string; roleName?: string; mustChangePassword?: boolean }) =>
+    platform.post(`/api/platform/tenants/${tenantId}/users`, body).then(r => r.data),
+
+  deleteTenantUser: (userId: string) =>
+    platform.delete(`/api/platform/users/${userId}`).then(r => r.data),
+
   sendPasswordReset: (userId: string) =>
     platform.post<PasswordResetResult>(`/api/platform/users/${userId}/send-password-reset`).then(r => r.data),
 
