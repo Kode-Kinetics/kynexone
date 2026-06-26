@@ -2,6 +2,7 @@
 
 import { Component, type ReactNode, type ErrorInfo } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { attemptChunkReload, isChunkLoadError } from '@/src/lib/chunkReload';
 
 interface Props { children: ReactNode; fallbackRoute?: string; }
 interface State { error: Error | null; }
@@ -17,10 +18,21 @@ export class PlatformErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
+    // Deployment skew: a stale chunk referenced by an old tab is gone after a
+    // new deploy. Recover with a single (loop-guarded) hard reload instead of
+    // stranding the admin on an error card.
+    if (isChunkLoadError(error)) {
+      attemptChunkReload();
+      return;
+    }
     console.error('[PlatformErrorBoundary]', error, info.componentStack);
   }
 
   render() {
+    // While a chunk-recovery reload is in flight, render nothing (avoids a flash
+    // of the error card right before the page reloads).
+    if (this.state.error && isChunkLoadError(this.state.error)) return null;
+
     if (this.state.error) {
       return (
         <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 text-center px-6">
