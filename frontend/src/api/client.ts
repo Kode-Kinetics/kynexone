@@ -39,13 +39,22 @@ client.interceptors.response.use(
       return Promise.reject(err);
     }
 
-    // 402 — subscription expired or inactive; redirect to tenant admin with alert.
-    if (err.response?.status === 402) {
-      // Guard on the BROWSER LOCATION, not the API URL: when the subscription is
-      // inactive, the /tenant-admin page's own (non-usage/subscription) API calls
-      // also 402, so a URL-only guard let it redirect to itself in an infinite
-      // loop. Only redirect when we're NOT already on the tenant-admin page.
-      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/tenant-admin')) {
+    // The tenant API client must never drive navigation or auth side-effects on
+    // the platform console — it has its own axios (platform.ts) and auth flow.
+    // Without this, the globally-mounted tenant providers' calls hijacked the
+    // platform area: a 402 redirected /platform/login → /tenant-admin, and a 401
+    // would clear localStorage (wiping the platform token) and bounce to /login.
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/platform')) {
+      return Promise.reject(err);
+    }
+
+    // 402 — subscription expired/inactive. Redirect tenant users to the tenant
+    // admin subscription alert, but NEVER from /tenant-admin itself: when the
+    // subscription is inactive the tenant-admin page's own calls also 402, so a
+    // self-redirect would loop infinitely. (Platform routes are already excluded
+    // by the guard above.)
+    if (err.response?.status === 402 && typeof window !== 'undefined') {
+      if (!window.location.pathname.startsWith('/tenant-admin')) {
         window.location.href = '/tenant-admin?alert=subscription';
       }
       return Promise.reject(err);
