@@ -499,3 +499,24 @@ export const applicationsApi = {
   getOfferHtml: (offerId: string) =>
     client.get<string>(`/api/recruitment/applications/offers/${offerId}/html`, { responseType: 'text' }).then(r => r.data),
 };
+
+// ── AI recruitment helpers (opt-in, advisory) ─────────────────────────────────
+
+export interface JobDescriptionResult { summary: string; responsibilities: string[]; requirements: string[]; engine: string; }
+export interface CandidateScore { candidateId: string; name: string; score: number; recommendation: string; rationale: string; }
+export interface ScreeningResult { ranked: CandidateScore[]; engine: string; notes: string[]; }
+export interface QuestionCategory { category: string; questions: string[]; }
+export interface InterviewQuestionsResult { categories: QuestionCategory[]; engine: string; }
+
+export const recruitmentAiApi = {
+  jobDescription: (body: {
+    title: string; departmentName?: string; designationTitle?: string;
+    employmentType: string; seniorityLevel?: string; countryCode?: string; notes?: string;
+  }) => client.post<JobDescriptionResult>('/api/recruitment/ai/job-description', body).then(r => r.data),
+
+  screen: (openingId: string) =>
+    client.post<ScreeningResult>('/api/recruitment/ai/screen', { openingId }).then(r => r.data),
+
+  interviewQuestions: (body: { openingId?: string; title?: string; seniorityLevel?: string; notes?: string }) =>
+    client.post<InterviewQuestionsResult>('/api/recruitment/ai/interview-questions', body).then(r => r.data),
+};

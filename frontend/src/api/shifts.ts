@@ -37,6 +37,37 @@ export interface RosterResponse {
   assignments: RosterAssignment[];
 }
 
+// ── Intelligent rostering policy + AI planner ─────────────────────────────────
+
+export interface GenderShiftRule { gender: string; shiftCodes: string[]; mode: 'required' | 'preferred'; }
+export interface DemandTarget { shiftCode: string; headcount: number; }
+export interface ShiftPolicy {
+  genderRules: GenderShiftRule[];
+  voluntaryShiftCodes: string[];
+  weekendDemand: DemandTarget[];
+  holidayDemand: DemandTarget[];
+  minRestHours: number;
+  maxConsecutiveDays: number;
+}
+
+export interface ProposedAssignment {
+  employeeId: number;
+  employeeName: string;
+  date: string;
+  shiftDefinitionId: string;
+  shiftCode: string;
+  shiftName: string;
+  shiftColor: string;
+  reason: string;
+}
+
+export interface RosterPlanResult {
+  assignments: ProposedAssignment[];
+  warnings: string[];
+  engine: string;
+  summary: string;
+}
+
 export const shiftsApi = {
   listDefinitions: () =>
     client.get<ShiftDefinition[]>('/api/shifts/definitions').then((r) => r.data),
@@ -74,4 +105,18 @@ export const shiftsApi = {
     overwriteExisting: boolean;
     employeeIds?: number[];
   }) => client.post<{ created: number; skipped: number; employees: number; days: number }>('/api/shifts/roster/auto-plan', body).then(r => r.data),
+
+  getPolicy: () => client.get<ShiftPolicy>('/api/shifts/policy').then(r => r.data),
+
+  savePolicy: (policy: ShiftPolicy) => client.put<ShiftPolicy>('/api/shifts/policy', policy).then(r => r.data),
+
+  aiPlan: (body: { dateFrom: string; dateTo: string; employeeIds?: number[]; weekendDays?: string[] }) =>
+    client.post<RosterPlanResult>('/api/shifts/roster/ai-plan', body).then(r => r.data),
+
+  commitPlan: (body: {
+    dateFrom: string;
+    dateTo: string;
+    overwriteExisting: boolean;
+    assignments: { employeeId: number; date: string; shiftDefinitionId: string }[];
+  }) => client.post<{ created: number; updated: number; skipped: number }>('/api/shifts/roster/ai-plan/commit', body).then(r => r.data),
 };

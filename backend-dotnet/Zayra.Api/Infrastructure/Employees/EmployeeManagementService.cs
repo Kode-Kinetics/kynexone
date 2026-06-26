@@ -135,9 +135,46 @@ public class EmployeeManagementService : IEmployeeManagementService
             ChangedByUserId = context.UserId
         });
         await AddHistory(employee, "StatusChange", "Status", oldStatus, request.Status, request.EffectiveDate, request.Reason, context, cancellationToken);
+        await TryCreateBackfillRequisitionAsync(tenantId, employee, oldStatus, request, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.status_changed", "Employee", id.ToString(), context, JsonSerializer.Serialize(new { oldStatus, request.Status, request.Reason }), cancellationToken);
         return await GetAsync(tenantId, id, true, context, cancellationToken);
+    }
+
+    private static readonly string[] LeaverStatuses = { "Terminated", "Resigned", "Exited", "Inactive" };
+
+    /// <summary>When an employee becomes a leaver, auto-create a Draft backfill requisition for their
+    /// role so the vacancy is captured immediately. HR reviews/submits it; duplicates are avoided.</summary>
+    private async Task TryCreateBackfillRequisitionAsync(
+        Guid tenantId, Employee employee, string oldStatus, EmployeeStatusChangeRequest request,
+        RequestContext context, CancellationToken cancellationToken)
+    {
+        if (!LeaverStatuses.Contains(request.Status, StringComparer.OrdinalIgnoreCase)) return;
+        if (LeaverStatuses.Contains(oldStatus, StringComparer.OrdinalIgnoreCase)) return; // already a leaver — don't duplicate
+
+        var marker = $"[backfill:{employee.EmployeeCode}]";
+        var exists = await _db.ManpowerRequisitions.AnyAsync(
+            r => r.TenantId == tenantId && r.Justification.Contains(marker), cancellationToken);
+        if (exists) return;
+
+        var year = DateTime.UtcNow.Year;
+        var seq = await _db.ManpowerRequisitions.CountAsync(r => r.TenantId == tenantId, cancellationToken) + 1;
+        _db.ManpowerRequisitions.Add(new ManpowerRequisition
+        {
+            TenantId = tenantId,
+            RequisitionNumber = $"MRQ-{year}-{seq:0000}",
+            DepartmentId = employee.DepartmentId,
+            DepartmentName = employee.Department ?? string.Empty,
+            DesignationId = employee.DesignationId,
+            DesignationTitle = employee.Designation ?? string.Empty,
+            HeadCount = 1,
+            EmploymentType = string.IsNullOrWhiteSpace(employee.ContractType) ? "Full-Time" : employee.ContractType,
+            Priority = "High",
+            Status = "Draft",
+            Justification = $"Backfill for {employee.FullName} ({employee.EmployeeCode}) — {request.Status.ToLowerInvariant()}" +
+                            (string.IsNullOrWhiteSpace(request.Reason) ? "" : $": {request.Reason}") + $" {marker}",
+            RequestedByUserId = context.UserId,
+        });
     }
 
     public async Task<EmployeeDocument> UploadDocumentAsync(Guid tenantId, int employeeId, EmployeeDocumentUploadMetadata request, IFormFile file, RequestContext context, CancellationToken cancellationToken)

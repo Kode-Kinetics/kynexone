@@ -172,6 +172,13 @@ public class RecruitmentService : IRecruitmentService
 
         var fullName = $"{candidate.FirstName} {candidate.LastName}".Trim();
 
+        // Auto-hierarchy: default the new joiner's reporting manager to the head of the
+        // department they're joining, so the org tree applies without manual entry. HR can override.
+        var deptHeadId = await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.NameEn == offer.OfferedDepartment)
+            .Select(d => d.ManagerEmployeeId)
+            .FirstOrDefaultAsync(ct);
+
         var draft = new EmployeeDraft
         {
             TenantId = tenantId,
@@ -184,6 +191,7 @@ public class RecruitmentService : IRecruitmentService
             Nationality = candidate.Nationality,
             Department = offer.OfferedDepartment,
             Designation = offer.OfferedJobTitle,
+            ManagerEmployeeId = deptHeadId,
             JoiningDate = offer.StartDate.ToDateTime(TimeOnly.MinValue),
             Salary = offer.BasicSalary,
             ContractType = "Permanent",

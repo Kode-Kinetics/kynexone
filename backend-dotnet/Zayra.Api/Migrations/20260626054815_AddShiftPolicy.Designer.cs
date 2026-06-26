@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260626054815_AddShiftPolicy")]
+    partial class AddShiftPolicy
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -5683,10 +5686,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<int>("ApprovedHeadcount")
-                        .HasColumnType("integer")
-                        .HasColumnName("approved_headcount");
-
                     b.Property<Guid?>("BranchId")
                         .HasColumnType("uuid")
                         .HasColumnName("branch_id");
@@ -5727,10 +5726,6 @@ namespace Zayra.Api.Migrations
                     b.Property<int?>("ManagerEmployeeId")
                         .HasColumnType("integer")
                         .HasColumnName("manager_employee_id");
-
-                    b.Property<decimal>("MonthlyBudgetAmount")
-                        .HasColumnType("numeric")
-                        .HasColumnName("monthly_budget_amount");
 
                     b.Property<string>("NameAr")
                         .IsRequired()

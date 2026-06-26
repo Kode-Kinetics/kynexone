@@ -14,6 +14,8 @@ import client from '../api/client';
 import { statutoryRulesApi, countryPacksApi } from '../api/countryPacks';
 import type { StatutoryRuleDto, CountryPackOption, CreateStatutoryRuleRequest } from '../api/countryPacks';
 import { HelpTextManager } from '../components/HelpTextManager';
+import { useTenantSettingsContext } from '../contexts/TenantSettingsContext';
+import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 
 type Tab = 'subscription' | 'features' | 'invoices' | 'localization' | 'branding' | 'security' | 'country-rules' | 'statutory-rules' | 'help-text';
 
@@ -148,6 +150,10 @@ function Toggle({ id, checked, onChange }: { id: string; checked: boolean; onCha
 }
 
 export default function TenantAdminPage() {
+  // Global providers loaded once on mount — re-sync them after a save so the rest of the
+  // app (sidebar nav, currency formatting, etc.) reflects the change without a full reload.
+  const { reload: reloadTenantSettings } = useTenantSettingsContext();
+  const { refresh: refreshFeatureFlags } = useFeatureFlags();
   const [tab, setTab] = useState<Tab>('subscription');
   const [subscription, setSubscription] = useState<TenantSubscription | null>(null);
   const [flags, setFlags] = useState<TenantFeatureFlag[]>([]);
@@ -267,6 +273,9 @@ export default function TenantAdminPage() {
         if (exists) return prev.map(f => f.featureKey === key ? updated : f);
         return [...prev, updated];
       });
+      // Sidebar nav reads enabled features from FeatureFlagContext — re-sync it so
+      // toggled modules show/hide immediately instead of after a browser refresh.
+      await refreshFeatureFlags();
     } catch {}
   }
 
@@ -280,6 +289,9 @@ export default function TenantAdminPage() {
     try {
       const updated = await tenantAdminApi.upsertLocalization(localization);
       setLocalization(updated);
+      // Currency/date/timezone formatting across the app reads from TenantSettingsContext —
+      // re-sync it so the new settings apply immediately instead of after a browser refresh.
+      await reloadTenantSettings();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {} finally {

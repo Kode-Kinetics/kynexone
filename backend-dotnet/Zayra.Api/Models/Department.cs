@@ -14,6 +14,13 @@ public class Department : ITenantOwned
     public int? ManagerEmployeeId { get; set; }
     public int SortOrder { get; set; }
     public bool IsActive { get; set; } = true;
+
+    // ── Establishment / budgeting (headcount + budget envelope) ──────────────
+    /// <summary>Approved/budgeted headcount for this department (0 = not set). Live current
+    /// headcount is computed from active employees; gap = approved − current.</summary>
+    public int ApprovedHeadcount { get; set; }
+    /// <summary>Approved monthly salary budget for this department (0 = not set).</summary>
+    public decimal MonthlyBudgetAmount { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }

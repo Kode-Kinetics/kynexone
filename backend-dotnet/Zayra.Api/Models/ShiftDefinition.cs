@@ -30,3 +30,35 @@ public class ShiftAssignment : ITenantOwned
     public string Notes { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
+
+/// <summary>
+/// Per-tenant rostering policy that drives the intelligent (Ollama-assisted) roster planner.
+/// Complex rule sets are stored as JSON strings so the schema stays stable as rules evolve.
+/// Exactly one row per tenant (upserted).
+/// </summary>
+public class ShiftPolicy : ITenantOwned
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+
+    /// <summary>JSON: [{ "gender": "Female", "shiftCodes": ["MORNING"], "mode": "required" }, ...]. mode = required|preferred.</summary>
+    public string GenderShiftRulesJson { get; set; } = "[]";
+
+    /// <summary>JSON: ["AFTERNOON"] — shifts that are opt-in/voluntary rather than auto-assigned.</summary>
+    public string VoluntaryShiftCodesJson { get; set; } = "[]";
+
+    /// <summary>JSON: [{ "shiftCode": "MORNING", "headcount": 2 }, ...] — required coverage on weekends.</summary>
+    public string WeekendDemandJson { get; set; } = "[]";
+
+    /// <summary>JSON: [{ "shiftCode": "MORNING", "headcount": 1 }, ...] — required coverage on public holidays.</summary>
+    public string HolidayDemandJson { get; set; } = "[]";
+
+    /// <summary>Minimum rest hours between two assigned shifts for the same employee.</summary>
+    public int MinRestHours { get; set; } = 8;
+
+    /// <summary>Maximum consecutive days an employee may be rostered before a day off is forced.</summary>
+    public int MaxConsecutiveDays { get; set; } = 6;
+
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedAtUtc { get; set; }
+}

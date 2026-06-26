@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight } from 'lucide-react';
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles } from 'lucide-react';
+import { AiSetupAssistant } from '../components/AiSetupAssistant';
+import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import {
   companiesApi,
   branchesApi,
@@ -53,17 +55,18 @@ import { useAutoTranslate } from '../hooks/useAutoTranslate';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 
-type Tab = 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
+type Tab = 'aiSetup' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
   | 'fiscalYears' | 'locations' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
+  { id: 'aiSetup', label: 'AI Setup', icon: Sparkles },
+  { id: 'establishment', label: 'Cost Centres & Budget', icon: Landmark },
   { id: 'companies', label: 'Companies', icon: Building2 },
   { id: 'branches', label: 'Branches', icon: GitBranch },
   { id: 'departments', label: 'Departments', icon: Layers },
   { id: 'designations', label: 'Designations', icon: Tag },
   { id: 'grades', label: 'Grades', icon: Award },
-  { id: 'costCenters', label: 'Cost Centers', icon: Landmark },
   { id: 'masterData', label: 'Master Data', icon: Database },
   { id: 'numberingRules', label: 'Numbering', icon: Hash },
   { id: 'systemSettings', label: 'System Settings', icon: Settings },
@@ -2024,7 +2027,7 @@ export function SetupPage() {
       <div>
         <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Setup & Administration</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-          Manage your organization structure, branches, and designations
+          Configure everything yourself, or use the <span className="font-medium text-sapphire dark:text-cyanAccent">AI Setup</span> tab to have a starter configuration drafted for you — your choice.
         </p>
       </div>
 
@@ -2049,6 +2052,8 @@ export function SetupPage() {
 
       {/* Tab content */}
       <div>
+        {activeTab === 'aiSetup' && <AiSetupAssistant />}
+        {activeTab === 'establishment' && <EstablishmentPanel />}
         {activeTab === 'companies' && <CompaniesTab />}
         {activeTab === 'branches' && <BranchesTab companies={companies} />}
         {activeTab === 'departments' && <DepartmentsTab costCenters={costCenters} />}

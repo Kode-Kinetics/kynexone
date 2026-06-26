@@ -6,7 +6,7 @@ import {
   Plus, ChevronLeft, Users, Briefcase, ClipboardList, UserPlus,
   CheckCircle, Clock, XCircle, ChevronRight, X, Star, Send,
   FileText, AlertCircle, ArrowRight, Calendar, BarChart3, Lightbulb,
-  Target, BookOpen, Award, TrendingUp, LayoutGrid,
+  Target, BookOpen, Award, TrendingUp, LayoutGrid, Wand2, Sparkles,
 } from 'lucide-react';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import client, { notifyApiError } from '../api/client';
@@ -28,8 +28,10 @@ const jobOpeningsImportExport = {
 import {
   requisitionsApi, openingsApi, candidatesApi, applicationsApi,
   workforcePlanningApi, interviewsApi, assessmentsApi, offersApi,
-  onboardingApi, recruitmentReportsApi,
+  onboardingApi, recruitmentReportsApi, recruitmentAiApi,
 } from '../api/recruitment';
+import { planningApi, type HeadcountCheckResult } from '../api/planning';
+import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import type {
   ManpowerRequisition, JobOpening, Candidate, JobApplication,
   ApplicationDetail, KanbanStage, OfferLetter,
@@ -193,7 +195,18 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [budgetCheck, setBudgetCheck] = useState<HeadcountCheckResult | null>(null);
   const set = (k: keyof typeof form, v: string | number) => setForm(f => ({ ...f, [k]: v }));
+
+  // Budget-aware: check the requested headcount against the department's approved establishment.
+  useEffect(() => {
+    if (!form.departmentName.trim() || form.headCount < 1) { setBudgetCheck(null); return; }
+    const t = setTimeout(() => {
+      planningApi.headcountCheck({ departmentName: form.departmentName.trim(), headCount: form.headCount })
+        .then(setBudgetCheck).catch(() => setBudgetCheck(null));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [form.departmentName, form.headCount]);
 
   const save = async () => {
     if (!form.departmentName || !form.designationTitle || !form.justification) {
@@ -263,6 +276,15 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
                 </select>
               </div>
             </div>
+
+            {budgetCheck?.hasEstablishment && (
+              <div className={`rounded-lg border px-3 py-2 text-xs ${budgetCheck.withinBudget
+                ? 'border-emerald-300/50 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300'
+                : 'border-rose-300/60 bg-rose-50 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300'}`}>
+                {budgetCheck.withinBudget ? '✓ ' : '⚠ '}{budgetCheck.message}
+              </div>
+            )}
+
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Justification *</label>
               <textarea className="input w-full resize-none" rows={3} placeholder="Business need and justification…" value={form.justification} onChange={e => set('justification', e.target.value)} />
@@ -430,7 +452,26 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
   const set = (k: keyof typeof form, v: string | number) => setForm(f => ({ ...f, [k]: v }));
+
+  const generateWithAi = async () => {
+    if (!form.title.trim()) { setError('Enter a job title first, then generate.'); return; }
+    setAiBusy(true); setError('');
+    try {
+      const r = await recruitmentAiApi.jobDescription({
+        title: form.title, departmentName: form.departmentName || undefined,
+        designationTitle: form.designationTitle || undefined, employmentType: form.employmentType,
+      });
+      setForm(f => ({
+        ...f,
+        description: r.summary || f.description,
+        responsibilities: r.responsibilities.length ? r.responsibilities.join('\n') : f.responsibilities,
+        requirements: r.requirements.length ? r.requirements.join('\n') : f.requirements,
+      }));
+    } catch { setError('Could not generate a description. You can still type it in.'); }
+    finally { setAiBusy(false); }
+  };
 
   const save = async () => {
     if (!form.title || !form.departmentName) { setError('Title and Department are required.'); return; }
@@ -474,8 +515,19 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
               </div>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Job Description</label>
+              <div className="mb-1 flex items-center justify-between">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">Job Description</label>
+                <button type="button" onClick={generateWithAi} disabled={aiBusy}
+                  className="flex items-center gap-1 rounded-md border border-sapphire/30 px-2 py-0.5 text-[11px] font-medium text-sapphire transition hover:bg-sapphire/10 disabled:opacity-50 dark:border-cyanAccent/30 dark:text-cyanAccent">
+                  <Wand2 className="h-3 w-3" />
+                  {aiBusy ? 'Generating…' : 'Generate with AI'}
+                </button>
+              </div>
               <textarea className="input w-full resize-none" rows={3} placeholder="Describe the role and responsibilities…" aria-label="Job description" value={form.description} onChange={e => set('description', e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Responsibilities (one per line)</label>
+              <textarea className="input w-full resize-none" rows={2} placeholder="Auto-filled by AI, or type your own…" aria-label="Responsibilities" value={form.responsibilities} onChange={e => set('responsibilities', e.target.value)} />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Requirements (one per line)</label>
@@ -514,6 +566,110 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
   );
 }
 
+// ── AI Tools modal (screen candidates + interview questions) ───────────────────
+
+function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onClose: () => void }) {
+  const [openingId, setOpeningId] = useState(openings[0]?.id ?? '');
+  const [mode, setMode] = useState<'screen' | 'questions'>('screen');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [screen, setScreen] = useState<import('../api/recruitment').ScreeningResult | null>(null);
+  const [questions, setQuestions] = useState<import('../api/recruitment').InterviewQuestionsResult | null>(null);
+
+  const run = async () => {
+    if (!openingId) { setError('Select a job opening first.'); return; }
+    setBusy(true); setError('');
+    try {
+      if (mode === 'screen') { setScreen(await recruitmentAiApi.screen(openingId)); }
+      else { setQuestions(await recruitmentAiApi.interviewQuestions({ openingId })); }
+    } catch { setError('Could not run the AI tool. Try again.'); }
+    finally { setBusy(false); }
+  };
+
+  const recTone = (r: string) => r === 'Shortlist'
+    ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400'
+    : r === 'Maybe' ? 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400'
+    : 'bg-rose-50 text-rose-500 dark:bg-rose-500/10 dark:text-rose-400';
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="flex max-h-[88vh] w-full max-w-2xl flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#0D1221]">
+        <div className="flex shrink-0 items-start justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
+          <div>
+            <h3 className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white"><Sparkles className="h-4 w-4 text-sapphire dark:text-cyanAccent" /> Recruitment AI Tools</h3>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Advisory only — AI assists, it never auto-rejects or hires.</p>
+          </div>
+          <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[220px] flex-1">
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Job opening</label>
+              <select className="select w-full" value={openingId} onChange={e => { setOpeningId(e.target.value); setScreen(null); setQuestions(null); }} aria-label="Job opening">
+                {openings.map(o => <option key={o.id} value={o.id}>{o.title}</option>)}
+              </select>
+            </div>
+            <div className="flex rounded-lg border border-slate-200 p-0.5 dark:border-white/10">
+              {(['screen', 'questions'] as const).map(m => (
+                <button key={m} type="button" onClick={() => setMode(m)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${mode === m ? 'bg-sapphire text-white dark:bg-cyanAccent/80' : 'text-slate-500 dark:text-slate-400'}`}>
+                  {m === 'screen' ? 'Screen candidates' : 'Interview questions'}
+                </button>
+              ))}
+            </div>
+            <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={run} disabled={busy}>
+              <Wand2 className="h-3.5 w-3.5" />{busy ? 'Thinking…' : 'Run'}
+            </button>
+          </div>
+
+          {error && <p className="mt-3 text-xs text-rose-500">{error}</p>}
+
+          {mode === 'screen' && screen && (
+            <div className="mt-4 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-sapphire/10 px-2.5 py-1 text-xs font-medium text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent">{screen.engine}</span>
+                {screen.notes.map((n, i) => <span key={i} className="text-xs text-amber-600 dark:text-amber-400">{n}</span>)}
+              </div>
+              {screen.ranked.length === 0 ? (
+                <p className="text-sm text-slate-400">No active candidates to screen for this opening.</p>
+              ) : screen.ranked.map((c, i) => (
+                <div key={c.candidateId} className="rounded-xl border border-slate-200 p-3 dark:border-white/10">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-500 dark:bg-white/10 dark:text-slate-300">{i + 1}</span>
+                    <span className="font-medium text-slate-800 dark:text-slate-200">{c.name}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${recTone(c.recommendation)}`}>{c.recommendation}</span>
+                    <div className="ml-auto flex items-center gap-2">
+                      <div className="h-1.5 w-24 rounded-full bg-slate-200 dark:bg-white/10"><div className="h-1.5 rounded-full bg-sapphire dark:bg-cyanAccent" style={{ width: `${c.score}%` }} /></div>
+                      <span className="w-9 text-right text-xs font-semibold text-slate-600 dark:text-slate-300">{c.score}</span>
+                    </div>
+                  </div>
+                  {c.rationale && <p className="mt-1.5 pl-9 text-xs text-slate-500 dark:text-slate-400">{c.rationale}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {mode === 'questions' && questions && (
+            <div className="mt-4 space-y-3">
+              <span className="rounded-full bg-sapphire/10 px-2.5 py-1 text-xs font-medium text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent">{questions.engine}</span>
+              {questions.categories.map((cat, i) => (
+                <div key={i} className="rounded-xl border border-slate-200 p-3 dark:border-white/10">
+                  <p className="mb-1.5 text-sm font-semibold text-slate-800 dark:text-slate-200">{cat.category}</p>
+                  <ul className="list-inside list-disc space-y-1 text-sm text-slate-600 dark:text-slate-300">
+                    {cat.questions.map((q, j) => <li key={j}>{q}</li>)}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // ── Job Openings Tab ───────────────────────────────────────────────────────────
 
 function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
@@ -525,6 +681,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
   const [items, setItems] = useState<JobOpening[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(!!requisitionToOpen);
+  const [aiOpen, setAiOpen] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -545,6 +702,9 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
             onDownloadTemplate={jobOpeningsImportExport.template}
             onImport={jobOpeningsImportExport.import}
           />
+          <button type="button" className="btn-secondary flex items-center gap-1.5 text-sm" onClick={() => setAiOpen(true)} disabled={items.length === 0}>
+            <Sparkles className="h-3.5 w-3.5" />AI Tools
+          </button>
           <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setCreateOpen(true)}>
             <Plus className="h-3.5 w-3.5" />New Opening
           </button>
@@ -594,6 +754,8 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
           onSaved={() => { setCreateOpen(false); load(); onOpeningCreated(); }}
         />
       )}
+
+      {aiOpen && <RecruitmentAiModal openings={items} onClose={() => setAiOpen(false)} />}
     </div>
   );
 }
@@ -1234,6 +1396,15 @@ function WorkforcePlanningTab() {
 
   return (
     <div className="space-y-5">
+      {/* Department establishment (budget & headcount) — read-only here; edited in Company Setup */}
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Department Headcount &amp; Budget</h3>
+          <span className="text-xs text-slate-400">Set in Company Setup → Headcount &amp; Budget</span>
+        </div>
+        <EstablishmentPanel readOnly />
+      </div>
+
       {summary && (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           {[

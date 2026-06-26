@@ -36,6 +36,16 @@ public sealed record AiOptions(
     public bool HasAnyProviderKey => !string.IsNullOrWhiteSpace(AnthropicApiKey) || !string.IsNullOrWhiteSpace(OpenAIApiKey);
     public string EffectiveProvider => string.IsNullOrWhiteSpace(Provider) ? "fallback" : Provider;
 
+    /// <summary>True when the effective provider is actually usable. Unlike <see cref="HasAnyProviderKey"/>,
+    /// this accounts for Ollama, which needs a base URL rather than an API key.</summary>
+    public bool IsLiveProviderConfigured => EffectiveProvider switch
+    {
+        "anthropic" => !string.IsNullOrWhiteSpace(AnthropicApiKey),
+        "openai"    => !string.IsNullOrWhiteSpace(OpenAIApiKey),
+        "ollama"    => !string.IsNullOrWhiteSpace(OllamaBaseUrl),
+        _           => false,
+    };
+
     private static string NormalizeBaseUrl(string value)
     {
         value = value.Trim();

@@ -225,6 +225,28 @@ public class EmployeeSelfServiceController : ControllerBase
         return Ok(slips);
     }
 
+    [HttpGet("my-roster")]
+    public async Task<ActionResult<IReadOnlyCollection<EssRosterEntryDto>>> MyRoster(
+        [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        var start = from ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var end = to ?? start.AddDays(28);
+
+        // Strictly scoped to the caller's own EmployeeId — an employee can never see another's roster.
+        var entries = await _db.ShiftAssignments.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.EmployeeId == employeeId
+                        && a.AssignedDate >= start && a.AssignedDate <= end)
+            .OrderBy(a => a.AssignedDate)
+            .Select(a => new EssRosterEntryDto(
+                a.Id, a.AssignedDate, a.ShiftDefinitionId, a.ShiftName, a.ShiftCode, a.ShiftColor))
+            .ToListAsync(cancellationToken);
+
+        return Ok(entries);
+    }
+
     [HttpGet("payslips/{id:guid}/download")]
     public async Task<IActionResult> DownloadPayslip(Guid id, CancellationToken cancellationToken)
     {
@@ -685,3 +707,4 @@ public record ESSHRRequestCreateDto(Guid? CategoryId, string? CategoryName, stri
 public record ESSCommentDto(string Comment);
 public record ESSAIQuestionDto(string Question);
 public record ESSAIAnswerDto(string Answer);
+public record EssRosterEntryDto(Guid Id, DateOnly Date, Guid ShiftDefinitionId, string ShiftName, string ShiftCode, string ShiftColor);

@@ -8,7 +8,7 @@ import {
   Star, Target, Calendar, BadgeCheck, User, X,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { essApi, type EssDashboard, type EssHrRequest, type EssHrRequestDetail } from '../api/ess';
+import { essApi, type EssDashboard, type EssHrRequest, type EssHrRequestDetail, type EssRosterEntry } from '../api/ess';
 import { useAuth } from '../contexts/AuthContext';
 import { StatusChip } from '../components/StatusChip';
 
@@ -152,6 +152,48 @@ function GoalsBar({ done, total }: { done: number; total: number }) {
         <div className="h-full rounded-full bg-sapphire dark:bg-cyanAccent transition-all duration-700" style={{ width: `${Math.min(100, pct)}%` }} />
       </div>
     </div>
+  );
+}
+
+// ── My Roster card (own shifts only) ──────────────────────────────────────────
+
+function MyShiftsCard() {
+  const [shifts, setShifts] = useState<EssRosterEntry[] | null>(null);
+
+  useEffect(() => {
+    const from = new Date().toISOString().slice(0, 10);
+    const to = new Date(Date.now() + 13 * 86400000).toISOString().slice(0, 10);
+    essApi.myRoster(from, to).then(setShifts).catch(() => setShifts([]));
+  }, []);
+
+  return (
+    <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
+      <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
+        <p className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+          <Calendar className="h-4 w-4" /> My Upcoming Shifts
+        </p>
+        <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Next 2 weeks</span>
+      </div>
+      <div className="p-5">
+        {shifts === null ? (
+          <p className="text-sm text-slate-400 dark:text-slate-500">Loading…</p>
+        ) : shifts.length === 0 ? (
+          <p className="text-sm text-slate-400 dark:text-slate-500">No shifts scheduled. Your roster will appear here once published.</p>
+        ) : (
+          <ul className="space-y-2">
+            {shifts.map((s) => (
+              <li key={s.id} className="flex items-center gap-3 rounded-lg border border-slate-100 px-3 py-2 dark:border-white/[0.06]">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: s.shiftColor || '#2F6BFF' }} />
+                <span className="text-sm font-medium text-slate-800 dark:text-slate-200">{s.shiftName}</span>
+                <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">
+                  {new Date(s.date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -637,6 +679,9 @@ export function EmployeeSelfServicePage() {
           )}
         </div>
       </section>
+
+      {/* ═══ My Roster (own shifts only) ═══════════════════════════════════ */}
+      <MyShiftsCard />
 
       {/* ═══ ROW 4: Announcements + Action items / AI + HR Request ══════════ */}
       <div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]">
