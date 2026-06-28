@@ -222,7 +222,13 @@ public class PayrollController : ControllerBase
             .Where(x => x.Category == "Payroll" && x.SettingKey == "IncomeTaxRate")
             .Select(x => x.SettingValue)
             .FirstOrDefaultAsync(cancellationToken);
-        decimal.TryParse(taxRateSetting, out var incomeTaxRate); // 0 if unset
+        decimal.TryParse(taxRateSetting, out var incomeTaxRate); // 0 if unset — legacy tenant-wide fallback
+
+        // Per-company tax policy (client-configurable, opt-in). When a company has a policy row it is
+        // authoritative (even if disabled ⇒ 0%); absent ⇒ fall back to the legacy tenant-wide rate above.
+        var taxPoliciesByCompany = await _db.CompanyTaxPolicies.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.CompanyId != null)
+            .ToDictionaryAsync(p => p.CompanyId!.Value, cancellationToken);
         var attendanceImpacts = await _db.AttendancePayrollImpacts.AsNoTracking().Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed").ToListAsync(cancellationToken);
         var leaveImpacts = await _db.LeavePayrollImpacts.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed").ToListAsync(cancellationToken);
 
@@ -361,16 +367,22 @@ public class PayrollController : ControllerBase
                 ? Math.Round(empOtImpacts.Sum(x =>
                     x.Hours * hourlyRate * (x.ApprovedMultiplier > 0m ? x.ApprovedMultiplier : otMultiplier)), 2)
                 : 0m;
-            // Tax deduction: apply income tax rate to taxable components only
+            // Tax deduction: apply income tax rate to taxable components only.
+            // Rate resolution: company tax policy (authoritative when a row exists) → else legacy tenant-wide rate.
+            var empCompanyId = e.CompanyId ?? run.CompanyId;
+            var empTaxPolicy = empCompanyId.HasValue && taxPoliciesByCompany.TryGetValue(empCompanyId.Value, out var tp) ? tp : null;
+            decimal empIncomeTaxRate = empTaxPolicy is not null
+                ? (empTaxPolicy.IsEnabled && empTaxPolicy.AppliesToSalary && empTaxPolicy.TaxMode == TaxModes.Flat ? empTaxPolicy.FlatRatePercent : 0m)
+                : incomeTaxRate;
             decimal taxDeduction = 0m;
-            if (incomeTaxRate > 0 && salary is not null)
+            if (empIncomeTaxRate > 0 && salary is not null)
             {
                 var structureComponents = salaryComponents.Where(c => c.SalaryStructureId == salary.SalaryStructureId && c.IsTaxable).ToList();
                 // If no explicit taxable components defined, treat basic salary as taxable
                 var taxableBase = structureComponents.Count > 0
                     ? structureComponents.Sum(c => c.CalculationType == "Percentage" ? basic * c.Percentage / 100m : c.Amount)
                     : basic;
-                taxDeduction = Math.Round(taxableBase * incomeTaxRate / 100m, 2);
+                taxDeduction = Math.Round(taxableBase * empIncomeTaxRate / 100m, 2);
             }
 
             // BONUS: collect this employee's approved bonuses for the period.
@@ -379,8 +391,12 @@ public class PayrollController : ControllerBase
             decimal gosiIncludedBonusTotal = empBonuses
                 .Where(b => bonusTypeMap.TryGetValue(b.BonusTypeId, out var bt) && bt.IsIncludedInGosiBase)
                 .Sum(b => b.GrossBonusAmount);
-            // Net bonus earnings added to employee take-home this period.
-            decimal totalBonusNet = empBonuses.Sum(b => b.BonusAmount);
+            // Gross bonus (employer expense, debited to GL) and the tax withheld on it.
+            // The slip carries the GROSS bonus in earnings and the withheld tax as a deduction so
+            // that GrossSalary - Deductions = NetSalary AND the double-entry GL balances at lock
+            // (GL debits the gross bonus expense; the withheld tax must be credited to tax payable).
+            decimal totalBonusGross      = empBonuses.Sum(b => b.GrossBonusAmount);
+            decimal bonusTaxWithheldTotal = Math.Round(empBonuses.Sum(b => b.TaxWithheld), 2);
 
             // Statutory deduction via country pack — rates from tenant-overridable StatutoryRule rows.
             // GosiCalculationService is retained for parity testing; it is no longer called in the run path.
@@ -403,9 +419,11 @@ public class PayrollController : ControllerBase
             var advEmi     = empAdv.Sum(a => Math.Min(a.InstallmentAmount, a.OutstandingBalance));
             var totalLoanDeduction = Math.Round(loanEmi + advEmi, 2);
 
-            var deductions = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction;
+            var deductions = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction + bonusTaxWithheldTotal;
             // C3: net salary cannot be negative (GCC labour law); engine Rule 3 will flag this.
-            var netSalary = Math.Max(0m, gross + overtimePay + totalBonusNet - deductions);
+            // Net is computed on the GROSS bonus less the withheld tax (folded into `deductions`),
+            // which equals the net bonus — keeping take-home unchanged while the GL stays balanced.
+            var netSalary = Math.Max(0m, gross + overtimePay + totalBonusGross - deductions);
 
             // COMPLIANCE: YTD — sum all locked slips for this employee earlier in the same year
             var empYtdSlips = ytdSlips.Where(s => s.EmployeeId == e.Id).ToList();
@@ -424,14 +442,14 @@ public class PayrollController : ControllerBase
                 BasicSalary = basic,
                 HousingAllowance = housing,
                 TransportAllowance = transport,
-                OtherAllowances = otherAllowances + overtimePay + totalBonusNet,
-                GrossSalary = gross + overtimePay + totalBonusNet,
+                OtherAllowances = otherAllowances + overtimePay + totalBonusGross,
+                GrossSalary = gross + overtimePay + totalBonusGross,
                 Deductions = deductions,
                 NetSalary = netSalary,
                 EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
                 EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
-                YtdGross = ytdGross + gross + overtimePay + totalBonusNet,
+                YtdGross = ytdGross + gross + overtimePay + totalBonusGross,
                 YtdDeductions = ytdDeduct + deductions,
                 YtdNet = ytdNet + netSalary,
                 Status = "Draft",
@@ -453,7 +471,10 @@ public class PayrollController : ControllerBase
                     overtimePay, "Overtime");
             }
             if (fixedDeduction > 0) AddDeduction(tenantId, id, e.Id, "FIXED_DEDUCTION", "Fixed deduction", fixedDeduction, "Salary");
-            if (taxDeduction > 0) AddDeduction(tenantId, id, e.Id, "INCOME_TAX", $"Income tax ({incomeTaxRate}%)", taxDeduction, "Tax");
+            if (taxDeduction > 0) AddDeduction(tenantId, id, e.Id, "INCOME_TAX", $"Income tax ({empIncomeTaxRate}%)", taxDeduction, "Tax");
+            // Bonus tax withheld is the gross-vs-net bonus delta; credited to tax payable so the GL
+            // (which debits the gross bonus expense) balances and the liability is not lost.
+            if (bonusTaxWithheldTotal > 0) AddDeduction(tenantId, id, e.Id, "BONUS_TAX", "Bonus tax withheld", bonusTaxWithheldTotal, "Tax");
             if (attendanceDeduction > 0) AddDeduction(tenantId, id, e.Id, "ATTENDANCE", "Late/early attendance deduction", attendanceDeduction, "Attendance");
             if (lopDeduction > 0)
                 AddDeduction(tenantId, id, e.Id, "LOP_DEDUCTION",

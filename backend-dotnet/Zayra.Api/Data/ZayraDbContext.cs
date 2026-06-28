@@ -337,6 +337,7 @@ public class ZayraDbContext : DbContext
     public DbSet<ComplianceAIInsight> ComplianceAIInsights => Set<ComplianceAIInsight>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<Company> Companies => Set<Company>();
+    public DbSet<CompanyTaxPolicy> CompanyTaxPolicies => Set<CompanyTaxPolicy>();
     public DbSet<Branch> Branches => Set<Branch>();
     public DbSet<Department> Departments => Set<Department>();
     public DbSet<Designation> Designations => Set<Designation>();
@@ -445,6 +446,17 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.DeadLetterReason).HasMaxLength(500);
             entity.Property(x => x.Status).HasMaxLength(20);
             entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<CompanyTaxPolicy>(entity =>
+        {
+            entity.Property(x => x.TaxMode).HasMaxLength(20);
+            entity.Property(x => x.CountryCode).HasMaxLength(10);
+            entity.Property(x => x.StateOrRegion).HasMaxLength(120);
+            entity.Property(x => x.Notes).HasMaxLength(500);
+            entity.Property(x => x.FlatRatePercent).HasPrecision(9, 4);
+            // One policy row per company (filtered unique — excludes soft-deleted rows).
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId }).IsUnique();
         });
 
         modelBuilder.Entity<GosiContributionRule>(entity =>

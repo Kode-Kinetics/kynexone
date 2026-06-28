@@ -17,7 +17,8 @@ public class BonusesController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
 
-    // Tax rates by region (used when IsTaxable = true)
+    // Legacy per-region default rates (fallback only — used when the employee's company has no
+    // configurable CompanyTaxPolicy). Retained for backward compatibility.
     private static decimal ResolveTaxRate(BonusType bonusType) => bonusType.TaxRegion switch
     {
         "US"     => 0.22m,                                                    // US: 22% federal supplemental withholding
@@ -25,6 +26,26 @@ public class BonusesController : ControllerBase
         "Custom" => bonusType.TaxRate / 100m,
         _        => 0m, // GCC (UAE/KSA/Qatar/Bahrain/Oman/Kuwait) — no personal income tax
     };
+
+    // Effective bonus tax rate (fraction). The client-configurable CompanyTaxPolicy is authoritative
+    // when a row exists for the employee's company; otherwise we fall back to the legacy region rate.
+    // Non-taxable bonus types are never taxed regardless of policy.
+    private static decimal ResolveBonusTaxRate(BonusType bonusType, CompanyTaxPolicy? policy) =>
+        !bonusType.IsTaxable ? 0m
+        : policy is not null ? policy.EffectiveBonusRateFraction
+        : ResolveTaxRate(bonusType);
+
+    // Loads the company's tax policy (or null) for a single employee, by the employee's int PK.
+    private async Task<CompanyTaxPolicy?> LoadPolicyForEmployeeAsync(Guid tenantId, int? employeeIntId, CancellationToken ct)
+    {
+        if (!employeeIntId.HasValue) return null;
+        var companyId = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.Id == employeeIntId.Value)
+            .Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
+        if (!companyId.HasValue) return null;
+        return await _db.CompanyTaxPolicies.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.CompanyId == companyId.Value, ct);
+    }
 
     public BonusesController(ZayraDbContext db, IDataScopeService scopeService)
     {
@@ -248,17 +269,21 @@ public class BonusesController : ControllerBase
             _ => req.CalculationValue,
         };
 
-        // Region-aware tax calculation — GCC countries have zero personal income tax on bonuses
-        decimal taxWithheld = (bonusType?.IsTaxable == true)
-            ? Math.Round(grossBonusAmount * ResolveTaxRate(bonusType!), 2)
+        // Resolve int PK + company for payroll-run matching (same bridge as Loans/Advances) and tax-policy lookup.
+        var linkedEmp = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tid && e.FullName == req.EmployeeName && !e.IsDeleted)
+            .Select(e => new { e.Id, e.CompanyId })
+            .FirstOrDefaultAsync(ct);
+        var linkedEmployee = (int?)linkedEmp?.Id;
+        var bonusPolicy = linkedEmp?.CompanyId is Guid addCid
+            ? await _db.CompanyTaxPolicies.AsNoTracking().FirstOrDefaultAsync(p => p.TenantId == tid && p.CompanyId == addCid, ct)
+            : null;
+
+        // Company tax policy is authoritative; GCC default is zero personal income tax on bonuses.
+        decimal taxWithheld = bonusType is not null
+            ? Math.Round(grossBonusAmount * ResolveBonusTaxRate(bonusType, bonusPolicy), 2)
             : 0m;
         decimal netBonusAmount = grossBonusAmount - taxWithheld;
-
-        // Resolve int PK (Employee.Id) for payroll-run matching — same bridge as Loans/Advances.
-        var linkedEmployee = await _db.Employees
-            .Where(e => e.TenantId == tid && e.FullName == req.EmployeeName && !e.IsDeleted)
-            .Select(e => (int?)e.Id)
-            .FirstOrDefaultAsync(ct);
 
         var eb = new EmployeeBonus
         {
@@ -325,7 +350,10 @@ public class BonusesController : ControllerBase
             .ToDictionaryAsync(x => x.EmployeeId, x => x.BasicSalary, ct);
 
         var minServiceCutoff = DateTime.UtcNow.AddMonths(-bonusType.MinServiceMonths);
-        decimal taxRate = ResolveTaxRate(bonusType);
+        // Preload per-company tax policies once (authoritative when present; else legacy region rate).
+        var policiesByCompany = await _db.CompanyTaxPolicies.AsNoTracking()
+            .Where(p => p.TenantId == tid && p.CompanyId != null)
+            .ToDictionaryAsync(p => p.CompanyId!.Value, ct);
 
         int added = 0; int skippedDuplicate = 0; int skippedMinService = 0; int skippedNoSalary = 0;
         decimal totalNetAdded = 0m;
@@ -356,7 +384,8 @@ public class BonusesController : ControllerBase
             var calcValue = req.OverrideCalculationValue.HasValue ? req.OverrideCalculationValue.Value : bonusType.DefaultCalculationValue;
             var method = bonusType.CalculationMethod;
             decimal gross = method == "PercentageSalary" ? Math.Round(basicSalary * (calcValue / 100m), 2) : calcValue;
-            decimal tax  = bonusType.IsTaxable ? Math.Round(gross * taxRate, 2) : 0m;
+            var empPolicy = emp.CompanyId.HasValue && policiesByCompany.TryGetValue(emp.CompanyId.Value, out var pp) ? pp : null;
+            decimal tax  = Math.Round(gross * ResolveBonusTaxRate(bonusType, empPolicy), 2);
             decimal net  = gross - tax;
 
             var eb = new EmployeeBonus
@@ -403,7 +432,8 @@ public class BonusesController : ControllerBase
         var value  = req.CalculationValue ?? eb.CalculationValue;
         var salary = req.BasicSalary ?? eb.BasicSalary;
         decimal gross = method == "PercentageSalary" ? Math.Round(salary * (value / 100m), 2) : value;
-        decimal tax   = (bonusType?.IsTaxable == true) ? Math.Round(gross * ResolveTaxRate(bonusType!), 2) : 0m;
+        var updatePolicy = await LoadPolicyForEmployeeAsync(tid, eb.EmployeeIntId, ct);
+        decimal tax   = bonusType is not null ? Math.Round(gross * ResolveBonusTaxRate(bonusType, updatePolicy), 2) : 0m;
         decimal net   = gross - tax;
 
         eb.CalculationMethod = method; eb.CalculationValue = value; eb.BasicSalary = salary;

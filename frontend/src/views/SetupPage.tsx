@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles } from 'lucide-react';
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Percent } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import {
@@ -15,6 +15,8 @@ import {
 } from '../api/organization';
 import { countryPacksApi, statutoryRulesApi } from '../api/countryPacks';
 import type { CountryPackOption, StatutorySummary } from '../api/countryPacks';
+import { taxPoliciesApi } from '../api/taxPolicies';
+import type { TaxPolicy } from '../api/taxPolicies';
 import type {
   CompanyDto,
   CompanyRequest,
@@ -56,7 +58,7 @@ import { ImportExportToolbar, downloadCsv } from '../components/ImportExportTool
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 
 type Tab = 'aiSetup' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
-  | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
+  | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings' | 'taxPolicy'
   | 'fiscalYears' | 'locations' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
@@ -71,6 +73,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'numberingRules', label: 'Numbering', icon: Hash },
   { id: 'systemSettings', label: 'System Settings', icon: Settings },
   { id: 'gccSettings', label: 'GCC Settings', icon: Globe },
+  { id: 'taxPolicy', label: 'Tax Policy', icon: Percent },
   { id: 'fiscalYears', label: 'Fiscal Years', icon: Calendar },
   { id: 'locations', label: 'Locations', icon: MapPin },
   { id: 'notificationTemplates', label: 'Notifications', icon: Bell },
@@ -896,6 +899,125 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
           <FormField label="Name" required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="HR Operations" /></FormField>
           <FormField label="Status"><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">Active</option><option value="false">Inactive</option></select></FormField>
         </div>
+      </Modal>
+    </>
+  );
+}
+
+// ─── Tax Policy ──────────────────────────────────────────────────────────────
+
+function TaxPolicyTab() {
+  const [items, setItems] = useState<TaxPolicy[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState<TaxPolicy | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setItems(await taxPoliciesApi.list()); } catch (e) { notifyApiError(e); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const openEdit = (p: TaxPolicy) => { setEditing({ ...p }); setError(''); setModalOpen(true); };
+  const f = (key: keyof TaxPolicy, v: string | number | boolean) =>
+    setEditing((x) => (x ? { ...x, [key]: v } : x));
+
+  const handleSave = async () => {
+    if (!editing) return;
+    if (editing.taxMode === 'Flat' && (editing.flatRatePercent < 0 || editing.flatRatePercent > 100)) {
+      setError('Flat rate must be between 0 and 100 percent.'); return;
+    }
+    setSaving(true); setError('');
+    try {
+      await taxPoliciesApi.upsert(editing.companyId, {
+        isEnabled: editing.isEnabled,
+        taxMode: editing.taxMode,
+        flatRatePercent: Number(editing.flatRatePercent) || 0,
+        appliesToSalary: editing.appliesToSalary,
+        appliesToBonus: editing.appliesToBonus,
+        stateOrRegion: editing.stateOrRegion,
+        notes: editing.notes,
+      });
+      setModalOpen(false); load();
+    } catch (err: unknown) {
+      setError((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to save. Please try again.');
+    } finally { setSaving(false); }
+  };
+
+  const summary = (p: TaxPolicy) =>
+    !p.isEnabled || p.taxMode === 'None' ? 'No tax' : `Flat ${p.flatRatePercent}%`;
+
+  return (
+    <>
+      <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">
+        Income tax is <strong>opt-in per company</strong> and drives both monthly payroll and bonus withholding.
+        Companies left disabled withhold no tax (the default for GCC jurisdictions with no personal income tax).
+      </p>
+      <TableShell columns={['Company', 'Country', 'Tax', 'Applies to', 'Status']} loading={loading} empty={items.length === 0} emptyLabel="No companies yet">
+        {items.map((p) => (
+          <tr key={p.companyId} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
+            <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{p.companyName}</td>
+            <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{p.countryCode || '—'}</td>
+            <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{summary(p)}</td>
+            <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">
+              {p.isEnabled ? [p.appliesToSalary && 'Salary', p.appliesToBonus && 'Bonuses'].filter(Boolean).join(' + ') || '—' : '—'}
+            </td>
+            <td className="px-4 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <ActiveBadge active={p.isEnabled} />
+                <button type="button" onClick={() => openEdit(p)} className="btn-secondary h-7 px-2 text-xs opacity-0 group-hover:opacity-100"><Pencil className="h-3 w-3" /> Configure</button>
+              </div>
+            </td>
+          </tr>
+        ))}
+      </TableShell>
+      <Modal isOpen={modalOpen} title={`Tax Policy — ${editing?.companyName ?? ''}`} onClose={() => setModalOpen(false)}
+        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+        <FormError error={error} />
+        {editing && (
+          <div className="space-y-3">
+            <FormField label="Charge income tax for this company">
+              <select aria-label="Charge income tax for this company" value={editing.isEnabled ? 'true' : 'false'} onChange={(e) => f('isEnabled', e.target.value === 'true')} className="select w-full">
+                <option value="false">No — do not withhold tax (GCC default)</option>
+                <option value="true">Yes — withhold tax</option>
+              </select>
+            </FormField>
+            {editing.isEnabled && (
+              <>
+                <FormField label="Tax mode">
+                  <select aria-label="Tax mode" value={editing.taxMode} onChange={(e) => f('taxMode', e.target.value)} className="select w-full">
+                    <option value="None">None</option>
+                    <option value="Flat">Flat percentage</option>
+                  </select>
+                </FormField>
+                {editing.taxMode === 'Flat' && (
+                  <FormField label="Flat rate (%)" required>
+                    <input type="number" min={0} max={100} step={0.25} value={editing.flatRatePercent}
+                      onChange={(e) => f('flatRatePercent', e.target.value === '' ? 0 : Number(e.target.value))}
+                      className="input w-full" placeholder="10" />
+                  </FormField>
+                )}
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+                    <input type="checkbox" checked={editing.appliesToSalary} onChange={(e) => f('appliesToSalary', e.target.checked)} /> Apply to salary
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+                    <input type="checkbox" checked={editing.appliesToBonus} onChange={(e) => f('appliesToBonus', e.target.checked)} /> Apply to bonuses
+                  </label>
+                </div>
+                <FormField label="State / region (optional)">
+                  <input value={editing.stateOrRegion} onChange={(e) => f('stateOrRegion', e.target.value)} className="input w-full" placeholder="e.g. California, DIFC" />
+                </FormField>
+                <FormField label="Notes (optional)">
+                  <input value={editing.notes} onChange={(e) => f('notes', e.target.value)} className="input w-full" placeholder="Statute / basis for audit" />
+                </FormField>
+              </>
+            )}
+          </div>
+        )}
       </Modal>
     </>
   );
@@ -1891,8 +2013,8 @@ function TableShell({
   columns, onAdd, addLabel, loading, empty, emptyLabel, filter, actions, children,
 }: {
   columns: string[];
-  onAdd: () => void;
-  addLabel: string;
+  onAdd?: () => void;
+  addLabel?: string;
   loading: boolean;
   empty: boolean;
   emptyLabel: string;
@@ -1906,10 +2028,12 @@ function TableShell({
         <div className="flex items-center gap-2">{filter}</div>
         <div className="flex items-center gap-2">
           {actions}
-          <button type="button" onClick={onAdd} className="btn-primary">
-            <Plus className="h-4 w-4" />
-            {addLabel}
-          </button>
+          {onAdd && (
+            <button type="button" onClick={onAdd} className="btn-primary">
+              <Plus className="h-4 w-4" />
+              {addLabel}
+            </button>
+          )}
         </div>
       </div>
       <div className="surface overflow-hidden">
@@ -2060,6 +2184,7 @@ export function SetupPage() {
         {activeTab === 'designations' && <DesignationsTab grades={grades} />}
         {activeTab === 'grades' && <GradesTab />}
         {activeTab === 'costCenters' && <CostCentersTab companies={companies} />}
+        {activeTab === 'taxPolicy' && <TaxPolicyTab />}
         {activeTab === 'masterData' && <MasterDataTab />}
         {activeTab === 'numberingRules' && <NumberingRulesTab />}
         {activeTab === 'systemSettings' && <SystemSettingsTab />}

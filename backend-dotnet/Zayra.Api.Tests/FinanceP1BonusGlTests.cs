@@ -801,6 +801,108 @@ public class FinanceP1BonusGlTests
         countAfterRelock.Should().Be(glEntries.Count,
             "re-locking a run with employer GOSI lines must not double-post");
     }
+
+    // ── Test 10: Taxed bonus keeps the GL balanced and posts the withheld tax ─────
+    // Regression for the bonus gross/net GL hole: a bonus with TaxWithheld > 0 used to debit
+    // the GROSS bonus with no offsetting credit → run could not lock (gl_unbalanced) and the
+    // tax liability vanished. The run path now posts a BONUS_TAX deduction so the GL balances.
+
+    [Fact]
+    public async Task Lock_TaxedBonus_GlBalancesAndPostsBonusTaxDeduction()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+
+        var tenantId = Guid.NewGuid();
+        var (emp, run, _) = await SeedMinimalRun(db, tenantId);
+        await SeedKsaCompany(db, tenantId, run); // required: Process fail-loud guard needs a resolvable company
+
+        var bonusType = new BonusType
+        {
+            TenantId = tenantId, Code = "TAXED", NameEn = "Taxed Bonus",
+            IsIncludedInGosiBase = false, IsIncludedInWps = false, IsIncludedInEosb = false,
+            TaxRegion = "Custom", IsTaxable = true, TaxRate = 20m, IsActive = true,
+        };
+        db.BonusTypes.Add(bonusType);
+        await db.SaveChangesAsync();
+
+        var batch = new BonusBatch
+        {
+            TenantId = tenantId, BatchNumber = "BON-TAX", BonusTypeId = bonusType.Id,
+            BonusTypeName = bonusType.NameEn, PaymentPeriod = "2026-06",
+            Status = "Approved", CreatedBy = null,
+        };
+        db.BonusBatches.Add(batch);
+        await db.SaveChangesAsync();
+
+        // Gross 1,000, 20% withheld → net 800. The withheld 200 must reach the GL as a credit.
+        db.EmployeeBonuses.Add(new EmployeeBonus
+        {
+            TenantId = tenantId, BonusBatchId = batch.Id,
+            EmployeeId = Guid.NewGuid(), EmployeeIntId = emp.Id,
+            EmployeeName = emp.FullName, BonusTypeId = bonusType.Id,
+            BonusTypeName = bonusType.NameEn, BasicSalary = 10_000m,
+            CalculationMethod = "Fixed", CalculationValue = 1_000m,
+            GrossBonusAmount = 1_000m, TaxWithheld = 200m, BonusAmount = 800m,
+            PaymentPeriod = "2026-06", Status = "Approved", TaxRegion = "Custom",
+        });
+        await db.SaveChangesAsync();
+
+        var ctrl = MakePayrollCtrl(db, tenantId);
+        (await ctrl.Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+
+        // A BONUS_TAX deduction must be created for the withheld amount.
+        var bonusTax = await db.PayrollDeductions
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == run.Id && d.ComponentCode == "BONUS_TAX")
+            .ToListAsync();
+        bonusTax.Sum(d => d.Amount).Should().Be(200m, "withheld bonus tax must be posted as a deduction");
+
+        run.Status = "Processed";
+        await db.SaveChangesAsync();
+        var lockResult = await ctrl.Lock(run.Id, CancellationToken.None);
+        lockResult.Should().BeOfType<OkObjectResult>("a taxed bonus must not break the GL balance");
+
+        var gl = await db.FinanceGlEntries
+            .Where(x => x.SourceModule == "Payroll" && x.SourceEntityId == run.Id).ToListAsync();
+        var dr = gl.Where(e => !string.IsNullOrEmpty(e.DebitAccount)).Sum(e => e.Amount);
+        var cr = gl.Where(e => !string.IsNullOrEmpty(e.CreditAccount)).Sum(e => e.Amount);
+        Math.Abs(dr - cr).Should().BeLessThan(0.01m, $"GL must balance with a taxed bonus: DR={dr}, CR={cr}");
+    }
+
+    // ── Test 11: Per-company tax policy drives configurable income tax ────────────
+    // Opt-in CompanyTaxPolicy (Flat 10%) must produce an INCOME_TAX deduction on the run,
+    // replacing the legacy tenant-wide flat setting.
+
+    [Fact]
+    public async Task Process_CompanyTaxPolicyFlatRate_AppliesConfiguredIncomeTax()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+
+        var tenantId = Guid.NewGuid();
+        var (emp, run, _) = await SeedMinimalRun(db, tenantId);
+        await SeedKsaCompany(db, tenantId, run); // sets run.CompanyId
+
+        db.CompanyTaxPolicies.Add(new CompanyTaxPolicy
+        {
+            TenantId = tenantId, CompanyId = run.CompanyId,
+            IsEnabled = true, TaxMode = TaxModes.Flat, FlatRatePercent = 10m,
+            AppliesToSalary = true, AppliesToBonus = true, CountryCode = "SAU",
+        });
+        await db.SaveChangesAsync();
+
+        var ctrl = MakePayrollCtrl(db, tenantId); // default resolver → zero statutory, isolates tax
+        (await ctrl.Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+
+        // No taxable salary components defined → taxable base = basic (10,000) → 10% = 1,000.
+        var incomeTax = await db.PayrollDeductions
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == run.Id && d.ComponentCode == "INCOME_TAX")
+            .ToListAsync();
+        incomeTax.Sum(d => d.Amount).Should().Be(1_000m,
+            "enabled flat 10% company tax policy must withhold 10% of the taxable base");
+    }
 }
 
 // ── Test doubles ──────────────────────────────────────────────────────────────
