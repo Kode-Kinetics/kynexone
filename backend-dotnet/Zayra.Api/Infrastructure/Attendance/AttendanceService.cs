@@ -352,12 +352,16 @@ public class AttendanceService : IAttendanceService
         _db.AttendanceDeviceSyncLogs.Add(syncLog);
 
         var punches = request.Punches ?? Array.Empty<DeviceIngestPunch>();
-        int accepted = 0, duplicates = 0, unmatched = 0;
+        int accepted = 0, duplicates = 0, unmatched = 0, rejected = 0;
         var matchedEmployees = new Dictionary<int, Employee>();
         var affectedDates = new HashSet<DateOnly>();
+        var futureCutoff = DateTime.UtcNow.AddDays(2); // clock-skew tolerance
 
         foreach (var punch in punches)
         {
+            // Integrity guard: reject implausible far-future timestamps so a misconfigured or
+            // compromised device cannot inject punches dated into future payroll periods.
+            if (punch.PunchTimestampUtc > futureCutoff || punch.PunchTimestampUtc.Year < 2000) { rejected++; continue; }
             var employee = await ResolveEmployee(tenantId, null, punch.EmployeeCode, ct);
             var direction = NormalizeDirection(punch.PunchDirection);
             // IgnoreQueryFilters: same null-tenantId context as above. Explicit
@@ -395,7 +399,11 @@ public class AttendanceService : IAttendanceService
 
         device.LastSyncStatus = "Completed";
         device.LastSyncAtUtc = DateTime.UtcNow;
-        device.ErrorLog = unmatched > 0 ? $"{unmatched} punch(es) had no matching employee code." : "";
+        device.ErrorLog = string.Join(" ", new[]
+        {
+            unmatched > 0 ? $"{unmatched} punch(es) had no matching employee code." : null,
+            rejected  > 0 ? $"{rejected} punch(es) rejected (implausible timestamp)." : null,
+        }.Where(s => s is not null));
         syncLog.Status = "Completed";
         syncLog.CompletedAtUtc = DateTime.UtcNow;
         syncLog.RawEventsReceived = punches.Count;
@@ -764,7 +772,7 @@ public class AttendanceService : IAttendanceService
         daily.UpdatedAtUtc = DateTime.UtcNow;
         foreach (var raw in events) raw.IsProcessed = true;
         await UpsertLegacyRecord(tenantId, daily, ct);
-        await UpsertImpacts(tenantId, daily, ct);
+        await UpsertImpacts(tenantId, daily, policy, ct);
         await UpsertExceptions(tenantId, daily, ct);
     }
 
@@ -794,13 +802,16 @@ public class AttendanceService : IAttendanceService
         record.Notes = daily.MissingPunch ? "Missing punch" : "";
     }
 
-    private async Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)
+    private async Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, AttendancePolicy policy, CancellationToken ct)
     {
         var existing = _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate);
         _db.AttendancePayrollImpacts.RemoveRange(existing);
         if (daily.LateMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Late deduction", Minutes = daily.LateMinutes, DailyRecordId = daily.Id });
         if (daily.EarlyExitMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Early exit deduction", Minutes = daily.EarlyExitMinutes, DailyRecordId = daily.Id });
-        if (daily.Status == "Absent") _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Absence deduction", Minutes = 480, DailyRecordId = daily.Id });
+        // Absence = one full standard working day (in minutes), from the tenant's policy — NOT a
+        // hardcoded 8h. Payroll converts these minutes to LOP days by dividing by its configured
+        // standard-day divisor, so a non-8h working day must carry the policy's actual standard day.
+        if (daily.Status == "Absent") _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Absence deduction", Minutes = policy.StandardWorkMinutes > 0 ? policy.StandardWorkMinutes : 480, DailyRecordId = daily.Id });
         if (daily.OvertimeMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Overtime payable", Minutes = daily.OvertimeMinutes, DailyRecordId = daily.Id });
     }
 
