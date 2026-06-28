@@ -1,9 +1,12 @@
+using System.Diagnostics;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.AI;
 using Zayra.Api.Application.Setup;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.AI;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -15,12 +18,98 @@ public class SetupAssistantController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly ISetupAssistantService _assistant;
+    private readonly ILlmClient _llm;
+    private readonly AiOptions _aiOptions;
 
-    public SetupAssistantController(ZayraDbContext db, ISetupAssistantService assistant)
+    public SetupAssistantController(ZayraDbContext db, ISetupAssistantService assistant, ILlmClient llm, AiOptions aiOptions)
     {
         _db = db;
         _assistant = assistant;
+        _llm = llm;
+        _aiOptions = aiOptions;
     }
+
+    /// <summary>
+    /// Live diagnostics for the AI provider. Performs a tiny real completion and returns the
+    /// actual outcome (provider, model, latency, and the raw upstream error on failure) so an
+    /// admin can tell *why* the assistant fell back to the deterministic template — e.g. provider
+    /// not configured, bad model name (404), auth failure (401), or a timeout. Never leaks the API key.
+    /// </summary>
+    [HttpGet("diagnostics")]
+    public async Task<IActionResult> Diagnostics(CancellationToken ct)
+    {
+        var provider = _aiOptions.EffectiveProvider;
+        var model = ResolveDiagnosticsModel(provider);
+        var baseUrl = provider == "ollama" ? (string.IsNullOrWhiteSpace(_aiOptions.OllamaBaseUrl) ? "http://localhost:11434" : _aiOptions.OllamaBaseUrl) : null;
+
+        if (!_aiOptions.IsLiveProviderConfigured)
+        {
+            return Ok(new
+            {
+                configured = false,
+                provider,
+                model,
+                baseUrl,
+                success = false,
+                message = "No live AI provider is configured. Set AI_PROVIDER and the matching credentials " +
+                          "(ANTHROPIC_API_KEY / OPENAI_API_KEY, or OLLAMA_BASE_URL + OLLAMA_API_KEY) in the backend environment.",
+            });
+        }
+
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            var req = new LlmRequest(provider, model,
+                "You are a connectivity health check.", "Reply with the single word: OK.", 16);
+            var res = await _llm.CompleteAsync(req, ct);
+            sw.Stop();
+            return Ok(new
+            {
+                configured = true,
+                provider,
+                model,
+                baseUrl,
+                success = res.Success,
+                elapsedMs = sw.ElapsedMilliseconds,
+                error = res.Success ? null : Truncate(res.Error, 800),
+                sample = res.Success ? Truncate(res.Text, 120) : null,
+            });
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            // A TaskCanceledException here usually means the HttpClient timeout was hit.
+            var hint = ex is TaskCanceledException or OperationCanceledException
+                ? "Request timed out — the model may be slow/cold. Raise AI_HTTP_TIMEOUT_SECONDS or use a smaller model."
+                : null;
+            return Ok(new
+            {
+                configured = true,
+                provider,
+                model,
+                baseUrl,
+                success = false,
+                elapsedMs = sw.ElapsedMilliseconds,
+                error = Truncate(ex.Message, 800),
+                hint,
+            });
+        }
+    }
+
+    private string ResolveDiagnosticsModel(string provider)
+    {
+        if (!string.IsNullOrWhiteSpace(_aiOptions.Model)) return _aiOptions.Model;
+        return provider switch
+        {
+            "anthropic" => "claude-sonnet-4-20250514",
+            "openai" => "gpt-5",
+            "ollama" => "llama3.1",
+            _ => string.Empty,
+        };
+    }
+
+    private static string? Truncate(string? value, int max) =>
+        string.IsNullOrEmpty(value) || value.Length <= max ? value : value[..max];
 
     /// <summary>Generate a proposed starter configuration — does NOT write anything.</summary>
     [HttpPost("preview")]

@@ -33,6 +33,19 @@ export interface SetupDraft {
 
 export interface SetupPreviewResult { draft: SetupDraft; notes: string[]; engine: string; }
 
+export interface AiDiagnostics {
+  configured: boolean;
+  provider: string;
+  model: string;
+  baseUrl?: string | null;
+  success: boolean;
+  elapsedMs?: number;
+  error?: string | null;
+  hint?: string | null;
+  sample?: string | null;
+  message?: string | null;
+}
+
 const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 
 /**
@@ -67,4 +80,7 @@ export const setupAssistantApi = {
     client.post<{ applied: Record<string, number>; total: number }>(
       '/api/setup-assistant/apply', { draft, countryCode, currencyCode },
     ).then(r => r.data),
+
+  diagnostics: () =>
+    client.get<AiDiagnostics>('/api/setup-assistant/diagnostics').then(r => r.data),
 };

@@ -216,7 +216,14 @@ else
 builder.Services.AddHostedService<QiwaSyncWorker>();
 builder.Services.AddHostedService<AiInsightEngine>();
 
-builder.Services.AddHttpClient<ILlmClient, LlmClient>();
+// LLM calls (esp. Ollama Cloud reasoning models like gpt-oss:120b) can take 30-90s.
+// The default HttpClient timeout is 100s; a hung outbound call would otherwise block the
+// request thread until then and silently fall back. Make the budget explicit and overridable.
+builder.Services.AddHttpClient<ILlmClient, LlmClient>(c =>
+{
+    var seconds = int.TryParse(builder.Configuration["AI_HTTP_TIMEOUT_SECONDS"], out var s) && s > 0 ? s : 120;
+    c.Timeout = TimeSpan.FromSeconds(seconds);
+});
 builder.Services.AddHttpContextAccessor();
 
 // Country pack framework — scoped per request (strategies depend on scoped IStatutoryRuleReader).

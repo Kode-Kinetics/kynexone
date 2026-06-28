@@ -77,6 +77,20 @@ services:
       - key: CORS_EXTRA_ORIGINS
         value: ""
 
-      # AI provider — set to "none" to disable AI features entirely.
+      # ── AI provider ──────────────────────────────────────────────────────
+      # Production uses Ollama Cloud. The non-secret settings are committed here;
+      # OLLAMA_API_KEY is a secret and MUST be set in the Render dashboard (sync:false).
+      # To disable AI entirely, set AI_PROVIDER=none.
       - key: AI_PROVIDER
-        value: none
+        value: ollama
+      - key: OLLAMA_BASE_URL
+        value: https://ollama.com
+      - key: AI_MODEL
+        value: gpt-oss:120b
+      # Outbound LLM call budget. Ollama Cloud reasoning models can be slow/cold;
+      # raise if diagnostics report timeouts.
+      - key: AI_HTTP_TIMEOUT_SECONDS
+        value: "120"
+      # SECRET — set the real value in the Render dashboard, not in this file.
+      - key: OLLAMA_API_KEY
+        sync: false

@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Wand2, CheckCircle2, Trash2, Sparkles } from 'lucide-react';
-import { setupAssistantApi, type CompanyProfile, type SetupDraft } from '../api/setupAssistant';
+import { Wand2, CheckCircle2, Trash2, Sparkles, Stethoscope } from 'lucide-react';
+import { setupAssistantApi, type AiDiagnostics, type CompanyProfile, type SetupDraft } from '../api/setupAssistant';
 
 const COUNTRIES = [
   { code: 'SA', label: 'Saudi Arabia' }, { code: 'AE', label: 'United Arab Emirates' },
@@ -31,7 +31,22 @@ export function AiSetupAssistant() {
   const [draft, setDraft] = useState<SetupDraft | null>(null);
   const [done, setDone] = useState<{ applied: Record<string, number>; total: number } | null>(null);
 
+  const [diag, setDiag] = useState<AiDiagnostics | null>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+
   const toggle = (k: SectionKey) => setSections(s => ({ ...s, [k]: !s[k] }));
+
+  const runDiagnostics = async () => {
+    setDiagLoading(true); setDiag(null);
+    try {
+      setDiag(await setupAssistantApi.diagnostics());
+    } catch (e: unknown) {
+      setDiag({
+        configured: false, provider: 'unknown', model: '', success: false,
+        error: (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Diagnostics request failed.',
+      });
+    } finally { setDiagLoading(false); }
+  };
 
   const generate = async () => {
     if (!industry.trim()) { setError('Tell me your industry so the suggestions fit.'); return; }
@@ -163,7 +178,33 @@ export function AiSetupAssistant() {
             {applying ? 'Applying…' : `Apply ${totalItems} item(s)`}
           </button>
         )}
+        <button type="button" className="ml-auto flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-sapphire dark:text-slate-400 dark:hover:text-cyanAccent" onClick={runDiagnostics} disabled={diagLoading}>
+          <Stethoscope className="h-3.5 w-3.5" />
+          {diagLoading ? 'Testing…' : 'Test AI connection'}
+        </button>
       </div>
+
+      {diag && (
+        <div className={`rounded-xl border p-4 text-xs ${
+          diag.success
+            ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/20 dark:bg-emerald-500/[0.06]'
+            : 'border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/[0.06]'
+        }`}>
+          <p className="font-semibold text-slate-800 dark:text-slate-100">
+            {diag.success
+              ? `AI provider reachable — ${diag.provider} responded in ${diag.elapsedMs}ms`
+              : diag.configured ? `AI provider configured but the live call failed (${diag.provider})` : 'No live AI provider configured'}
+          </p>
+          <dl className="mt-2 grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-slate-600 dark:text-slate-300">
+            <dt className="font-medium">Provider</dt><dd>{diag.provider}</dd>
+            {diag.model && (<><dt className="font-medium">Model</dt><dd className="font-mono">{diag.model}</dd></>)}
+            {diag.baseUrl && (<><dt className="font-medium">Base URL</dt><dd className="font-mono break-all">{diag.baseUrl}</dd></>)}
+            {diag.message && (<><dt className="font-medium">Note</dt><dd>{diag.message}</dd></>)}
+            {diag.error && (<><dt className="font-medium">Error</dt><dd className="font-mono break-all text-rose-600 dark:text-rose-400">{diag.error}</dd></>)}
+            {diag.hint && (<><dt className="font-medium">Hint</dt><dd>{diag.hint}</dd></>)}
+          </dl>
+        </div>
+      )}
 
       {/* Preview */}
       {draft && (
