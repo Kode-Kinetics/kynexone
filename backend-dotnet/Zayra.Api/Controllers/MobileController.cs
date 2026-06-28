@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -20,6 +21,23 @@ public class MobileController : ControllerBase
 
     public MobileController(ZayraDbContext db) => _db = db;
 
+    /// <summary>
+    /// Resolves the CALLER's own employee id from their token — never a client-supplied id.
+    /// All mobile endpoints are self-service, so every employee-scoped query must use this and
+    /// ignore any route/body employeeId, otherwise any authenticated user could read or write a
+    /// colleague's data (payslips/salary, leave, attendance punches).
+    /// </summary>
+    private async Task<int?> ResolveCallerEmployeeIdAsync(Guid tenantId, CancellationToken ct)
+    {
+        if (int.TryParse(User.FindFirstValue("employee_id"), out var empId)) return empId;
+        var email = User.FindFirstValue("email") ?? User.FindFirstValue(ClaimTypes.Email);
+        if (string.IsNullOrWhiteSpace(email)) return null;
+        return await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && (e.WorkEmail == email || e.PersonalEmail == email))
+            .Select(e => (int?)e.Id)
+            .FirstOrDefaultAsync(ct);
+    }
+
     // ── Device Registration ──────────────────────────────────────────────────
 
     [HttpPost("register-device")]
@@ -27,10 +45,12 @@ public class MobileController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var employeeId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (employeeId is null) return NotFound(new { message = "Your account is not linked to an employee record." });
 
         var existing = await _db.EmployeeMobileDevices
             .FirstOrDefaultAsync(d => d.TenantId == tenantId
-                && d.EmployeeId == req.EmployeeId
+                && d.EmployeeId == employeeId
                 && d.DeviceIdentifier == req.DeviceIdentifier, ct);
 
         if (existing is null)
@@ -38,7 +58,7 @@ public class MobileController : ControllerBase
             existing = new EmployeeMobileDevice
             {
                 TenantId = tenantId.Value,
-                EmployeeId = req.EmployeeId,
+                EmployeeId = employeeId.Value,
                 DeviceIdentifier = req.DeviceIdentifier,
                 Platform = req.Platform,
                 PushToken = req.PushToken ?? string.Empty
@@ -63,6 +83,9 @@ public class MobileController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var meId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (meId is null) return NotFound();
+        employeeId = meId.Value; // self-service: ignore the route id, use the caller's own
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
@@ -115,12 +138,14 @@ public class MobileController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var employeeId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (employeeId is null) return NotFound(new { message = "Your account is not linked to an employee record." });
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         var existing = await _db.AttendanceDailyRecords
             .FirstOrDefaultAsync(a => a.TenantId == tenantId
-                && a.EmployeeId == req.EmployeeId
+                && a.EmployeeId == employeeId
                 && a.WorkDate == today, ct);
 
         var nowUtc = DateTime.UtcNow;
@@ -129,7 +154,7 @@ public class MobileController : ControllerBase
             existing = new AttendanceDailyRecord
             {
                 TenantId = tenantId.Value,
-                EmployeeId = req.EmployeeId,
+                EmployeeId = employeeId.Value,
                 WorkDate = today,
                 Status = "Present"
             };
@@ -154,7 +179,7 @@ public class MobileController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return Ok(new
         {
-            employeeId = req.EmployeeId,
+            employeeId = employeeId.Value,
             direction = req.Direction,
             timestamp = nowUtc,
             status = existing.Status,
@@ -171,6 +196,9 @@ public class MobileController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var meId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (meId is null) return NotFound();
+        employeeId = meId.Value;
 
         var balances = await _db.EmployeeLeaveBalances
             .Where(b => b.TenantId == tenantId && b.EmployeeId == employeeId
@@ -198,6 +226,9 @@ public class MobileController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var meId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (meId is null) return NotFound();
+        employeeId = meId.Value;
 
         var payslips = await _db.Payslips
             .Where(p => p.TenantId == tenantId && p.EmployeeId == employeeId)
@@ -226,6 +257,9 @@ public class MobileController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var meId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (meId is null) return NotFound();
+        employeeId = meId.Value;
 
         var query = _db.EmployeeNotifications
             .Where(n => n.TenantId == tenantId && n.EmployeeId == employeeId);
@@ -245,9 +279,12 @@ public class MobileController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var meId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (meId is null) return NotFound();
 
+        // Scope to the caller's own notification — cannot mark a colleague's notification read.
         var notification = await _db.EmployeeNotifications
-            .FirstOrDefaultAsync(n => n.Id == notificationId && n.TenantId == tenantId, ct);
+            .FirstOrDefaultAsync(n => n.Id == notificationId && n.TenantId == tenantId && n.EmployeeId == meId.Value, ct);
 
         if (notification is null) return NotFound();
 
