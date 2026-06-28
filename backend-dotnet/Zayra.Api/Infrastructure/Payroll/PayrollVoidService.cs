@@ -84,6 +84,11 @@ public sealed class PayrollVoidService
             .Where(s => s.TenantId == tenantId && s.RunId == runId)
             .ExecuteUpdateAsync(s => s.SetProperty(p => p.Status, "Voided"), ct);
 
+        // Restore the loan/advance/bonus sub-ledgers this run consumed — re-credit balances,
+        // reopen closed loans/advances, and return consumed bonuses to "Approved" so a replacement
+        // run re-includes them. Without this a void leaves phantom loan repayments and lost bonuses.
+        await PayrollSubledger.RestoreRunConsumptionAsync(_db, tenantId, runId, ct);
+
         run.Status         = "Voided";
         run.VoidedAtUtc    = DateTime.UtcNow;
         run.VoidedByUserId = actorId;

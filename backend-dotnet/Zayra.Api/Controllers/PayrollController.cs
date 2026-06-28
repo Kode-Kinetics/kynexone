@@ -149,6 +149,12 @@ public class PayrollController : ControllerBase
         if (run.Status is "Locked" or "Approved")
             return BadRequest(new { message = $"A run in '{run.Status}' status cannot be reprocessed. To reprocess, the approval must be revoked first." });
 
+        // Restore-then-recompute: undo any sub-ledger consumption THIS run made on a prior process
+        // before re-deriving, so re-processing never double-deducts a loan/advance or double-consumes
+        // a bonus. Saved immediately so the consumption queries below see the restored balances.
+        await PayrollSubledger.RestoreRunConsumptionAsync(_db, tenantId, id, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+
         var periodStart = new DateOnly(run.Year, run.Month, 1);
         var periodEnd = periodStart.AddMonths(1).AddDays(-1);
 
@@ -558,22 +564,31 @@ public class PayrollController : ControllerBase
             .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && a.OutstandingBalance > 0)
             .ToListAsync(cancellationToken);
 
+        var todayOnly = DateOnly.FromDateTime(DateTime.UtcNow);
         foreach (var loan in activeLoansMutable)
         {
             var deducted = Math.Min(loan.InstallmentAmount, loan.OutstandingBalance);
             if (deducted <= 0) continue;
             loan.OutstandingBalance -= deducted;
             if (loan.OutstandingBalance <= 0) loan.Status = "Closed";
-            // Record the paid installment
-            var inst = await _db.LoanInstallments.FirstOrDefaultAsync(i => i.LoanId == loan.Id && i.Status == "Pending", cancellationToken);
-            if (inst is not null) { inst.Status = "Paid"; inst.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); inst.PayrollRunId = id; inst.AmountPaid = deducted; }
+            // Record the run-attributed repayment so it is reversible (PayrollSubledger.Restore).
+            // Prefer the next scheduled installment; if none exists, create a repayment row so the
+            // deduction is ALWAYS attributable to this run (guarantees clean reprocess/void).
+            var inst = await _db.LoanInstallments.FirstOrDefaultAsync(i => i.TenantId == tenantId && i.LoanId == loan.Id && i.Status == "Pending", cancellationToken);
+            if (inst is not null) { inst.Status = "Paid"; inst.PaidDate = todayOnly; inst.PayrollRunId = id; inst.AmountPaid = deducted; }
+            else _db.LoanInstallments.Add(new LoanInstallment { TenantId = tenantId, LoanId = loan.Id, InstallmentNumber = 0, DueDate = todayOnly, AmountDue = deducted, AmountPaid = deducted, Status = "Paid", PaidDate = todayOnly, PayrollRunId = id });
         }
         foreach (var adv in activeAdvMutable)
         {
             var deducted = Math.Min(adv.InstallmentAmount, adv.OutstandingBalance);
             if (deducted <= 0) continue;
             adv.OutstandingBalance -= deducted;
+            adv.TotalRepaid += deducted;
             if (adv.OutstandingBalance <= 0) adv.Status = "Closed";
+            // Run-attributed repayment record (symmetric with loans) so advance deductions are reversible.
+            var advInst = await _db.AdvanceInstallments.FirstOrDefaultAsync(i => i.TenantId == tenantId && i.AdvanceId == adv.Id && i.Status == "Pending", cancellationToken);
+            if (advInst is not null) { advInst.Status = "Paid"; advInst.PaidDate = todayOnly; advInst.PayrollRunId = id; advInst.AmountPaid = deducted; }
+            else _db.AdvanceInstallments.Add(new AdvanceInstallment { TenantId = tenantId, AdvanceId = adv.Id, InstallmentNumber = 0, DueDate = todayOnly, AmountDue = deducted, AmountPaid = deducted, Status = "Paid", PaidDate = todayOnly, PayrollRunId = id });
         }
 
         // BONUS: mark consumed bonuses as PaidInPayroll so MarkBatchPaid() cannot double-pay.

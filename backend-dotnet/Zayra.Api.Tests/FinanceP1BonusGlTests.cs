@@ -12,6 +12,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
@@ -902,6 +903,92 @@ public class FinanceP1BonusGlTests
             .ToListAsync();
         incomeTax.Sum(d => d.Amount).Should().Be(1_000m,
             "enabled flat 10% company tax policy must withhold 10% of the taxable base");
+    }
+
+    // ── Test 12: Reprocess must not double-deduct a loan (idempotency, P0-1) ──────
+    [Fact]
+    public async Task Process_RerunOnProcessedRun_DoesNotDoubleDeductLoan()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn; await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var (emp, run, _) = await SeedMinimalRun(db, tenantId);
+        await SeedKsaCompany(db, tenantId, run);
+
+        db.EmployeeLoans.Add(new EmployeeLoan
+        {
+            TenantId = tenantId, EmployeeId = Guid.NewGuid(), EmployeeIntId = emp.Id,
+            LoanNumber = "LN-1", Status = "Active",
+            ApprovedAmount = 1_000m, ApprovedInstallments = 10, InstallmentAmount = 100m,
+            OutstandingBalance = 1_000m,
+        });
+        await db.SaveChangesAsync();
+
+        var ctrl = MakePayrollCtrl(db, tenantId);
+        (await ctrl.Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        (await db.EmployeeLoans.AsNoTracking().FirstAsync()).OutstandingBalance.Should().Be(900m, "first run deducts one instalment");
+
+        // Re-process the same (now "Processed") run — must restore-then-recompute, not deduct again.
+        (await ctrl.Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        (await db.EmployeeLoans.AsNoTracking().FirstAsync()).OutstandingBalance.Should().Be(900m,
+            "reprocess must NOT double-deduct the loan");
+    }
+
+    // ── Test 13: Void restores loan balance and reverts bonus consumption (P0-2) ──
+    [Fact]
+    public async Task Void_RestoresLoanBalance_AndRevertsBonusToApproved()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn; await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var (emp, run, _) = await SeedMinimalRun(db, tenantId);
+        await SeedKsaCompany(db, tenantId, run);
+
+        db.EmployeeLoans.Add(new EmployeeLoan
+        {
+            TenantId = tenantId, EmployeeId = Guid.NewGuid(), EmployeeIntId = emp.Id,
+            LoanNumber = "LN-2", Status = "Active",
+            ApprovedAmount = 1_000m, ApprovedInstallments = 10, InstallmentAmount = 100m,
+            OutstandingBalance = 1_000m,
+        });
+        var bonusType = new BonusType { TenantId = tenantId, Code = "V", NameEn = "Void Bonus", TaxRegion = "GCC", IsActive = true };
+        db.BonusTypes.Add(bonusType);
+        await db.SaveChangesAsync();
+        var batch = new BonusBatch { TenantId = tenantId, BatchNumber = "BON-V", BonusTypeId = bonusType.Id, BonusTypeName = bonusType.NameEn, PaymentPeriod = "2026-06", Status = "Approved" };
+        db.BonusBatches.Add(batch);
+        await db.SaveChangesAsync();
+        var bonus = new EmployeeBonus
+        {
+            TenantId = tenantId, BonusBatchId = batch.Id, EmployeeId = Guid.NewGuid(), EmployeeIntId = emp.Id,
+            EmployeeName = emp.FullName, BonusTypeId = bonusType.Id, BonusTypeName = bonusType.NameEn,
+            BasicSalary = 10_000m, CalculationMethod = "Fixed", CalculationValue = 1_000m,
+            GrossBonusAmount = 1_000m, TaxWithheld = 0m, BonusAmount = 1_000m,
+            PaymentPeriod = "2026-06", Status = "Approved", TaxRegion = "GCC",
+        };
+        db.EmployeeBonuses.Add(bonus);
+        await db.SaveChangesAsync();
+
+        var ctrl = MakePayrollCtrl(db, tenantId);
+        await ctrl.Process(run.Id, CancellationToken.None);
+        run.Status = "Processed";
+        await db.SaveChangesAsync();
+        await ctrl.Lock(run.Id, CancellationToken.None);
+        db.ChangeTracker.Clear();
+        (await db.EmployeeLoans.AsNoTracking().FirstAsync()).OutstandingBalance.Should().Be(900m, "loan deducted before void");
+        (await db.EmployeeBonuses.AsNoTracking().FirstAsync()).Status.Should().Be("PaidInPayroll", "bonus consumed before void");
+
+        // Void — must restore the loan and return the bonus to Approved.
+        var result = await new PayrollVoidService(db).VoidAsync(run.Id, tenantId, null, "tester", "correction", CancellationToken.None);
+        result.IsVoided.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        var loan = await db.EmployeeLoans.AsNoTracking().FirstAsync();
+        loan.OutstandingBalance.Should().Be(1_000m, "void must re-credit the loan");
+        loan.Status.Should().Be("Active");
+        var revertedBonus = await db.EmployeeBonuses.AsNoTracking().FirstAsync();
+        revertedBonus.Status.Should().Be("Approved", "void must return the bonus so a replacement run re-includes it");
+        revertedBonus.PayrollRunId.Should().BeNull();
     }
 }
 
