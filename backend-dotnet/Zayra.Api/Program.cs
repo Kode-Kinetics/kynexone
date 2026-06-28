@@ -532,13 +532,16 @@ using (var scope = app.Services.CreateScope())
     // otherwise the platform-admin pricing/CPQ console is empty. Idempotent (skips when present).
     await TrySeedAsync("PricingConfigSeeder", () => DemoDataSeeder.SeedPricingConfigAsync(dbContext, logger, CancellationToken.None), logger);
 
-    // Cleanup of garbage/corrupt demo tenants always runs (it only deactivates,
-    // never creates) — safe and useful even with demo seeding off.
-    await TrySeedAsync("GarbageDemoCleanup", () => CleanDemoKsaSeeder.DeactivateGarbageDemoTenantsAsync(dbContext, logger), logger);
-    await TrySeedAsync("IntelliFlowFragmentCleanup", () => IntelliFlowFragmentCleanup.RunAsync(dbContext, logger), logger);
-
-    // Demo TENANT creation is gated behind SeedDemoData so a live environment
-    // (SeedAdmin__SeedDemoData=false) is never polluted with sample tenants.
+    // Demo-tenant CREATION and demo-tenant CLEANUP are mutually exclusive — they MUST NOT
+    // run in the same boot. The cleanups deactivate + rename the very slugs the creators own
+    // (intelliflow / evostel / alnakheel). Running both frees the slug, and the next creator
+    // re-creates it → a brand-new demo tenant on every restart. That feedback loop is what
+    // accumulated hundreds of orphaned tenants in production and made user work appear to
+    // "revert to old data" (their tenant was shadowed by a freshly-seeded duplicate).
+    //
+    //   • demo seeding ON  (dev)  → run creators only; the slugs stay active and idempotent.
+    //   • demo seeding OFF (prod) → run cleanups only; they deactivate any leftover demo
+    //                               tenants once, then no-op on every subsequent boot.
     if (seedDemoData)
     {
         // Seed one clean KSA tenant. Idempotent: no-op when slug exists.
@@ -555,6 +558,13 @@ using (var scope = app.Services.CreateScope())
             scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
             authSeeder,
             logger), logger);
+    }
+    else
+    {
+        // Production / live: deactivate any demo or corrupt-fragment tenants that leaked in.
+        // Only deactivates (never creates), and is a no-op once nothing active matches.
+        await TrySeedAsync("GarbageDemoCleanup", () => CleanDemoKsaSeeder.DeactivateGarbageDemoTenantsAsync(dbContext, logger), logger);
+        await TrySeedAsync("IntelliFlowFragmentCleanup", () => IntelliFlowFragmentCleanup.RunAsync(dbContext, logger), logger);
     }
 
     if (isMigrateMode)
