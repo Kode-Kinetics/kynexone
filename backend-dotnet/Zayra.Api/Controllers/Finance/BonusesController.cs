@@ -503,20 +503,10 @@ public class BonusesController : ControllerBase
         var bonuses = await _db.EmployeeBonuses.Where(x => x.BonusBatchId == id && !x.IsDeleted).ToListAsync(ct);
         foreach (var b in bonuses) b.Status = "Approved";
 
-        // GL: Bonus Expense Dr / Bonus Payable Cr
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var bonusApprovalCurrency = await _db.ResolveTenantCurrencyAsync(tid, ct);
-        _db.FinanceGlEntries.Add(new FinanceGlEntry
-        {
-            TenantId = tid, SourceModule = "Bonus", SourceEntityId = id,
-            SourceEntityRef = batch.BatchNumber, EventType = "BonusApproval",
-            DebitAccount = "6100 - Employee Bonus Expense",
-            CreditAccount = "2300 - Bonus Payable",
-            Amount = batch.TotalAmount, Currency = bonusApprovalCurrency,
-            EntryDate = today, Period = batch.PaymentPeriod,
-            Description = $"Bonus approval: {batch.BatchName} ({batch.BatchNumber})",
-            PostedBy = uid, PostedByName = GetUserName(),
-        });
+        // No GL posted at approval. Bonus expense is recognized ONCE, at the actual PAYMENT event —
+        // the payroll lock for payroll-paid bonuses, or MarkBatchPaid for off-cycle. Posting an
+        // approval-time expense double-booked 6100 (again at payroll lock) and left 2300 Bonus
+        // Payable dangling for payroll-consumed bonuses. Approval is a workflow event, not a journal.
 
         await _db.SaveChangesAsync(ct);
         await WriteBonusAudit(tid, uid, id, null, "BatchApproved", "PendingApproval",
@@ -575,23 +565,30 @@ public class BonusesController : ControllerBase
             if (req.PayrollRunId.HasValue) b.PayrollRunId = req.PayrollRunId;
         }
 
-        // GL amount covers only the remaining (previously-unpaid) bonuses so that the
-        // payroll-consumed portion is not double-counted in the bonus GL.
-        var remainingGlAmount = unpaidBonuses.Sum(b => b.BonusAmount);
+        // Off-cycle payment recognizes the bonus expense in full, with balanced double-entry:
+        //   Dr 6100 Bonus Expense (gross) = Cr 1000 Cash (net) + Cr 2102 Income Tax Payable (withheld).
+        // Only the remaining (NOT payroll-consumed) bonuses are covered, so payroll-paid bonuses are
+        // never double-counted (those are expensed by the payroll lock instead).
+        var gross = unpaidBonuses.Sum(b => b.GrossBonusAmount);
+        var tax   = unpaidBonuses.Sum(b => b.TaxWithheld);
+        var net   = unpaidBonuses.Sum(b => b.BonusAmount);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var bonusPayCurrency = await _db.ResolveTenantCurrencyAsync(tid, ct);
-        if (remainingGlAmount > 0)
+        void AddBonusGl(string dr, string cr, decimal amt)
+        {
+            if (amt <= 0) return;
             _db.FinanceGlEntries.Add(new FinanceGlEntry
             {
                 TenantId = tid, SourceModule = "Bonus", SourceEntityId = id,
                 SourceEntityRef = batch.BatchNumber, EventType = "BonusPayment",
-                DebitAccount = "2300 - Bonus Payable",
-                CreditAccount = "1000 - Cash/Bank",
-                Amount = remainingGlAmount, Currency = bonusPayCurrency,
+                DebitAccount = dr, CreditAccount = cr, Amount = amt, Currency = bonusPayCurrency,
                 EntryDate = today, Period = batch.PaymentPeriod,
                 Description = $"Bonus payment: {batch.BatchName} ({batch.BatchNumber})",
                 PostedBy = uid, PostedByName = GetUserName(),
             });
+        }
+        AddBonusGl("6100 - Employee Bonus Expense", "1000 - Cash/Bank", net);
+        AddBonusGl("6100 - Employee Bonus Expense", "2102 - Income Tax Payable", tax);
 
         await _db.SaveChangesAsync(ct);
         await WriteBonusAudit(tid, uid, id, null, "BatchPaid", "Approved",
