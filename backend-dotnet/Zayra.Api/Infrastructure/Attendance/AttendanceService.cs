@@ -805,6 +805,17 @@ public class AttendanceService : IAttendanceService
     private async Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, AttendancePolicy policy, CancellationToken ct)
     {
         var existing = _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate);
+        // Locked-period guard (audit integrity): payroll stamps consumed impacts Status="Processed"
+        // when a run is processed/locked. Never silently mutate a paid, closed period — leave the
+        // locked impacts intact and raise an HR exception so it is handled via regularization +
+        // an off-cycle adjustment, not by rewriting history.
+        if (await existing.AnyAsync(x => x.Status == "Processed", ct))
+        {
+            var flagged = await _db.AttendanceExceptions.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate && x.ExceptionType == "PostLockPunch" && !x.IsResolved, ct);
+            if (!flagged)
+                _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = "PostLockPunch", Severity = "High", Details = "Punch received for a payroll-locked period. Payroll impacts were NOT modified. Resolve via a regularization request and an off-cycle adjustment." });
+            return;
+        }
         _db.AttendancePayrollImpacts.RemoveRange(existing);
         if (daily.LateMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Late deduction", Minutes = daily.LateMinutes, DailyRecordId = daily.Id });
         if (daily.EarlyExitMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Early exit deduction", Minutes = daily.EarlyExitMinutes, DailyRecordId = daily.Id });
@@ -812,7 +823,10 @@ public class AttendanceService : IAttendanceService
         // hardcoded 8h. Payroll converts these minutes to LOP days by dividing by its configured
         // standard-day divisor, so a non-8h working day must carry the policy's actual standard day.
         if (daily.Status == "Absent") _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Absence deduction", Minutes = policy.StandardWorkMinutes > 0 ? policy.StandardWorkMinutes : 480, DailyRecordId = daily.Id });
-        if (daily.OvertimeMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Overtime payable", Minutes = daily.OvertimeMinutes, DailyRecordId = daily.Id });
+        // NOTE: overtime is intentionally NOT emitted as a payroll impact here. OT pay flows only
+        // through the approved OvertimePayrollImpacts pipeline (honouring RequiresOvertimeApproval),
+        // so attendance must not create a parallel, unapproved OT that payroll could double-pay.
+        // daily.OvertimeMinutes remains on the daily record for dashboards/reporting only.
     }
 
     private async Task UpsertExceptions(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)

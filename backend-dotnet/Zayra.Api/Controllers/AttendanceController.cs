@@ -107,6 +107,7 @@ public class AttendanceController : ControllerBase
     /// </summary>
     [HttpPost("ingest")]
     [AllowAnonymous]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("device_ingest")]
     public async Task<IActionResult> Ingest([FromBody] DeviceIngestRequest request, CancellationToken ct)
     {
         var key = Request.Headers["X-Device-Key"].ToString();

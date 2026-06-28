@@ -362,6 +362,20 @@ builder.Services.AddRateLimiter(o =>
                 QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
                 QueueLimit               = 0,
             }));
+
+    // Anonymous attendance device webhook (X-Device-Key auth). Devices push batches at a low
+    // request rate, so a per-IP limit is generous enough for legitimate (even NAT-shared) devices
+    // while capping brute-force/DoS. Dedup already prevents data pollution.
+    o.AddPolicy("device_ingest", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("DeviceIngestPermitLimit", 120),
+                Window                   = TimeSpan.FromSeconds(rl.GetValue("DeviceIngestWindowSeconds", 60)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
 });
 
 builder.Services.AddEndpointsApiExplorer();
