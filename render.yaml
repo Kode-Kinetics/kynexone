@@ -64,12 +64,12 @@ services:
       - key: SeedAdmin__SeedDemoData
         value: "true"
 
-      # Web service never runs migrations on startup in Production.
-      # Migrations are applied via a Render one-off job:
-      #   dotnet Zayra.Api.dll --migrate
-      # Set to "true" ONLY for local development convenience.
+      # This free-tier topology has no separate pre-deploy/job slot, so the web
+      # process applies EF migrations on boot (MigrateAsync is a no-op when the
+      # schema is already current). Set to "false" ONLY after adding a dedicated
+      # migrate job/step that runs:  dotnet Zayra.Api.dll --migrate
       - key: Database__RunMigrationsOnStartup
-        value: "false"
+        value: "true"
 
       # CORS — add your real Vercel/frontend URL here (comma-separated for multiple).
       # appsettings.json already whitelists https://kynexone.vercel.app.

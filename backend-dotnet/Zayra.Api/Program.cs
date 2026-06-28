@@ -175,7 +175,6 @@ builder.Services.AddScoped<IHrmHierarchyService, HrmHierarchyService>();
 builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
 builder.Services.AddScoped<IApprovalPolicyService, ApprovalPolicyService>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
-builder.Services.AddScoped<IEmployeeModuleSchemaBootstrapper, EmployeeModuleSchemaBootstrapper>();
 builder.Services.AddScoped<IDocumentStorage, LocalDocumentStorage>();
 builder.Services.AddScoped<IHijriDateService, HijriDateService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
@@ -338,6 +337,31 @@ builder.Services.AddRateLimiter(o =>
                 QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
                 QueueLimit               = 0,
             }));
+
+    // Public, unauthenticated marketing endpoints (pricing calculator). Interactive
+    // reads (modules/estimate) get a generous window; the quote-submission write is
+    // throttled hard to deter spam/DoS of the PricingQuotes table.
+    o.AddPolicy("public_read", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("PublicReadPermitLimit", 60),
+                Window                   = TimeSpan.FromSeconds(rl.GetValue("PublicReadWindowSeconds", 60)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
+
+    o.AddPolicy("public_submit", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("PublicSubmitPermitLimit", 5),
+                Window                   = TimeSpan.FromSeconds(rl.GetValue("PublicSubmitWindowSeconds", 300)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
 });
 
 builder.Services.AddEndpointsApiExplorer();
@@ -460,12 +484,14 @@ app.MapGet("/health", async (ZayraDbContext db) =>
 // minimal-API duplicates here caused AmbiguousMatchException on /api/employees/reports/*.
 
 // ── Migration mode ────────────────────────────────────────────────────────────
-// In Production the web process NEVER runs migrations on startup to avoid crashing
-// the web service when TiDB or network is unavailable.
-// Migrations run via a one-off command:
-//   dotnet Zayra.Api.dll --migrate
-// or via Render pre-deploy job. Set Database__RunMigrationsOnStartup=true ONLY
-// for local dev convenience (it defaults false in Production).
+// Migrations are applied by MigrateAsync() below; it is a no-op when the schema is
+// already current. Behaviour is governed by Database:RunMigrationsOnStartup
+// (default TRUE) plus the one-off `--migrate` flag:
+//   • RunMigrationsOnStartup=true  → web process migrates on boot. Required on the
+//     current Render free-tier topology, which has NO separate pre-deploy/job slot.
+//   • RunMigrationsOnStartup=false → web boot SKIPS migrations; apply them instead via
+//     the one-off command  `dotnet Zayra.Api.dll --migrate`  (forces migration
+//     regardless of the flag). Use this only where a dedicated migrate job exists.
 var isMigrateMode = args.Contains("--migrate");
 var isPurgeDemoMode = args.Contains("--purge-demo");
 
@@ -478,10 +504,21 @@ using (var scope = app.Services.CreateScope())
     TenantOwnershipBootAssertion.Assert(dbContext);
     ControllerEntityReturnBootAssertion.Assert(dbContext, typeof(Program).Assembly);
 
-    // Always run migrations on startup — MigrateAsync is a no-op when schema is current.
-    logger.LogInformation("Running EF Core migrations...");
-    await dbContext.Database.MigrateAsync();
-    logger.LogInformation("EF Core migrations complete.");
+    // Apply migrations when enabled (default true) or when explicitly forced via --migrate.
+    // MigrateAsync is a no-op when the schema is already current.
+    var runMigrations = isMigrateMode
+        || app.Configuration.GetValue("Database:RunMigrationsOnStartup", true);
+    if (runMigrations)
+    {
+        logger.LogInformation("Running EF Core migrations...");
+        await dbContext.Database.MigrateAsync();
+        logger.LogInformation("EF Core migrations complete.");
+    }
+    else
+    {
+        logger.LogInformation(
+            "Skipping startup migrations (Database:RunMigrationsOnStartup=false, no --migrate flag).");
+    }
 
     // One-off demo cleanup: `dotnet Zayra.Api.dll --purge-demo`. Deactivates all
     // demo tenants (guarding the real SeedAdmin tenant) then exits — never seeds.

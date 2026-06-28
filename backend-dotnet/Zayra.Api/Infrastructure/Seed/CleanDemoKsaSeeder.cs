@@ -9,10 +9,14 @@ using Zayra.Api.Models;
 namespace Zayra.Api.Infrastructure.Seed;
 
 /// <summary>
-/// Replaces the three garbage demo tenants (intelliflow, evostel, alnakheel) with one
-/// credible KSA tenant: Ras Al-Manar Consulting Company LLC.
+/// Seeds one additional credible KSA tenant: Ras Al-Manar Consulting Company LLC.
 /// 15 employees (10 Saudi, 5 expat), locked payroll run computed by GosiCalculationService,
 /// GL entries balanced. Admin login: admin@rasalmanar.com / RasAlManar@2026!
+///
+/// NOTE: <c>intelliflow</c> and <c>evostel</c> are the CANONICAL demo tenants (created by
+/// <see cref="DemoDataSeeder"/>) and must NOT be deactivated here — doing so previously
+/// caused them to be created then killed within the same startup. Only genuinely obsolete
+/// legacy slugs belong in <see cref="GarbageSlugs"/>.
 /// </summary>
 public static class CleanDemoKsaSeeder
 {
@@ -20,9 +24,10 @@ public static class CleanDemoKsaSeeder
     public const string AdminEmail    = "admin@rasalmanar.com";
     public const string AdminPassword = "RasAlManar@2026!";
 
-    // Slugs NOT renamed — idempotency guards in DemoDataSeeder + KsaDemoTenantSeeder
-    // find the existing row (even with IsActive=false) and skip re-creation.
-    private static readonly string[] GarbageSlugs = ["intelliflow", "evostel", "alnakheel"];
+    // Obsolete legacy demo slugs that should be deactivated if found active.
+    // intelliflow/evostel are deliberately EXCLUDED — they are canonical (see class summary).
+    // The __deleted_* fragments are handled separately by IntelliFlowFragmentCleanup.
+    private static readonly string[] GarbageSlugs = ["alnakheel"];
 
     // ── Cleanup ────────────────────────────────────────────────────────────────
 

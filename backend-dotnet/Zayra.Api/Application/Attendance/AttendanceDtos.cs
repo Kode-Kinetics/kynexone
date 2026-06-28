@@ -62,7 +62,7 @@ public record AttendanceDeviceRequest(
     string? ApiKeyReference,
     string? SyncMethod,
     string? SyncFrequency,
-    // Flexible configuration — all stored as JSON; MissingTableCreator adds columns on first deploy
+    // Flexible configuration — all stored as JSON columns managed by EF Core migrations
     string? AuthType,
     string? AuthCredentialsJson,
     string? CustomHeadersJson,

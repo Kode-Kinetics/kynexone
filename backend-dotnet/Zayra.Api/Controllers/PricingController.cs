@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
@@ -22,6 +23,7 @@ public class PricingController : ControllerBase
     // ── GET /api/pricing/modules ── public module list ─────────────────────────
 
     [HttpGet("modules")]
+    [EnableRateLimiting("public_read")]
     public async Task<IActionResult> GetModules(CancellationToken ct)
     {
         var modules = await _db.PricingModuleConfigs
@@ -45,6 +47,7 @@ public class PricingController : ControllerBase
     // ── POST /api/pricing/estimate ── live price calculation (no auth) ─────────
 
     [HttpPost("estimate")]
+    [EnableRateLimiting("public_read")]
     public async Task<IActionResult> Estimate([FromBody] PricingEstimateRequest req, CancellationToken ct)
     {
         if (req.NumEmployees < 0 || req.NumCompanies < 1)
@@ -188,6 +191,7 @@ public class PricingController : ControllerBase
     // ── POST /api/pricing/quotes ── save customer quote request ───────────────
 
     [HttpPost("quotes")]
+    [EnableRateLimiting("public_submit")]
     public async Task<IActionResult> SubmitQuote([FromBody] SubmitQuoteRequest req, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(req.ContactEmail) || string.IsNullOrWhiteSpace(req.CompanyName))
