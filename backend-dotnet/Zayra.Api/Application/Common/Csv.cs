@@ -65,8 +65,14 @@ public static class Csv
         return result;
     }
 
-    private static string Escape(string s) =>
-        s.Contains(',') || s.Contains('"') || s.Contains('\n')
+    private static string Escape(string s)
+    {
+        // CSV formula-injection neutralization: a cell beginning with = + - @ (or tab/CR) is
+        // interpreted as a formula by Excel/Sheets. Prefix with an apostrophe so it stays text.
+        if (s.Length > 0 && (s[0] is '=' or '+' or '-' or '@' or '\t' or '\r'))
+            s = "'" + s;
+        return s.Contains(',') || s.Contains('"') || s.Contains('\n')
             ? "\"" + s.Replace("\"", "\"\"") + "\""
             : s;
+    }
 }

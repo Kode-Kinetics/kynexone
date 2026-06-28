@@ -49,7 +49,9 @@ var builder = WebApplication.CreateBuilder(args);
     const string DevTenantAudience   = "kynexone-tenant";
     const string DevPlatformAudience = "kynexone-platform";
 
-    if (builder.Environment.IsProduction())
+    // Enforce in EVERY non-Development environment (Production, Staging, Preview, …) so no deployed
+    // slot can ever boot with the committed dev signing key / dev audiences and allow token forgery.
+    if (!builder.Environment.IsDevelopment())
     {
         var jwtSection     = builder.Configuration.GetSection("Jwt");
         var prodTenantAud  = jwtSection["TenantAudience"];

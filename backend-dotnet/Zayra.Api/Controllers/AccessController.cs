@@ -448,9 +448,11 @@ public class AccessController : ControllerBase
         return found ? NoContent() : NotFound();
     }
 
-    // Not restricted to Admin role — service layer checks grantor authority or Admin claim
+    // Not restricted to Admin role — the service layer checks grantor authority or Admin claim.
+    // Must still be authenticated: [Authorize] (not [AllowAnonymous]) so JWT signature/audience/
+    // lifetime are enforced by the pipeline; a privilege-grant path must never bypass token validation.
     [HttpPost("users/{userId:guid}/grant-permission")]
-    [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+    [Microsoft.AspNetCore.Authorization.Authorize]
     public async Task<ActionResult<UserAccessDto>> GrantPermission(Guid userId, GrantPermissionRequest request, CancellationToken cancellationToken)
     {
         try
