@@ -24,7 +24,7 @@ import type {
 } from '../api/leave';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
-import client from '../api/client';
+import client, { notifyApiError } from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -238,11 +238,11 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
   const [pending, setPending] = useState<LeaveRequest[]>([]);
 
   useEffect(() => {
-    leaveReportsApi.dashboard(groupFilter).then(setDash).catch(() => {});
-    leaveCalendarApi.today().then(data => setOnLeave(Array.isArray(data) ? data : [])).catch(() => {});
+    leaveReportsApi.dashboard(groupFilter).then(setDash).catch(notifyApiError);
+    leaveCalendarApi.today().then(data => setOnLeave(Array.isArray(data) ? data : [])).catch(notifyApiError);
     leaveRequestsApi.list({ status: 'PendingManagerApproval', ...groupFilter })
       .then(r => setPending(Array.isArray(r?.items) ? r.items.slice(0, 6) : []))
-      .catch(() => {});
+      .catch(notifyApiError);
   }, [groupFilter.companyId, groupFilter.branchId]);
 
   return (
@@ -344,7 +344,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
   const load = () => {
     setLoading(true);
     leaveBalancesApi.list({ employeeId: empId ? Number(empId) : undefined, year, ...groupFilter })
-      .then(setBalances).catch(() => {}).finally(() => setLoading(false));
+      .then(setBalances).catch(notifyApiError).finally(() => setLoading(false));
   };
   useEffect(load, [year, groupFilter.companyId, groupFilter.branchId]);
 
@@ -471,7 +471,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string | boolean) => setForm(f => ({ ...f, [k]: v }));
 
-  useEffect(() => { leaveTypesApi.list().then(setLeaveTypes).catch(() => {}); }, []);
+  useEffect(() => { leaveTypesApi.list().then(setLeaveTypes).catch(notifyApiError); }, []);
 
   useEffect(() => {
     if (!form.employeeId || !form.leaveTypeId) { setBalance(null); return; }
@@ -801,7 +801,7 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const toDate = lastDay.toISOString().split('T')[0];
 
   useEffect(() => {
-    leaveCalendarApi.entries({ fromDate, toDate, departmentName: dept || undefined, ...groupFilter }).then(setEntries).catch(() => {});
+    leaveCalendarApi.entries({ fromDate, toDate, departmentName: dept || undefined, ...groupFilter }).then(setEntries).catch(notifyApiError);
   }, [month, calYear, dept, groupFilter.companyId, groupFilter.branchId]);
 
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];

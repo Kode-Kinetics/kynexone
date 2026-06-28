@@ -7,6 +7,7 @@ import type { ShiftDefinition, RosterEmployee, RosterAssignment } from '../api/s
 import { essApi } from '../api/ess';
 import type { EssRosterEntry } from '../api/ess';
 import { useAuth } from '../contexts/AuthContext';
+import { notifyApiError } from '../api/client';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -601,7 +602,7 @@ function RosterTab({ definitions }: RosterTabProps) {
     setLoading(true);
     shiftsApi.getRoster(from, to)
       .then((r) => { setEmployees(r.employees); setAssignments(r.assignments); })
-      .catch(() => {})
+      .catch(notifyApiError)
       .finally(() => setLoading(false));
   };
 
@@ -774,7 +775,7 @@ function MyScheduleTab({ definitions }: { definitions: ShiftDefinition[] }) {
     setLoading(true);
     essApi.myRoster(from, to)
       .then(setAssignments)
-      .catch(() => {})
+      .catch(notifyApiError)
       .finally(() => setLoading(false));
   }, [from, to]);
 
@@ -1220,7 +1221,7 @@ export function ShiftsPage() {
     setDefsLoading(true);
     shiftsApi.listDefinitions()
       .then(setDefinitions)
-      .catch(() => {})
+      .catch(notifyApiError)
       .finally(() => setDefsLoading(false));
   };
 

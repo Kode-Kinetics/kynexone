@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { UserMinus, X, CheckCircle2, Clock, Star, Undo2, AlertTriangle } from 'lucide-react';
 import { offboardingApi, type Offboarding, type OffboardingSummary } from '../api/offboarding';
 import { employeesApi } from '../api/employees';
+import { notifyApiError } from '../api/client';
 
 const SEPARATION_TYPES = ['Resignation', 'Termination', 'End of Contract', 'Retirement', 'Other'];
 const EXIT_REASONS = ['Compensation', 'Career Growth', 'Management', 'Work-Life Balance', 'Relocation', 'Job Content', 'Company Culture', 'Better Offer', 'Personal', 'Other'];
@@ -22,7 +23,7 @@ export function OffboardingPage() {
     setLoading(true);
     Promise.all([offboardingApi.list(), offboardingApi.summary()])
       .then(([i, s]) => { setItems(i); setSummary(s); })
-      .catch(() => {}).finally(() => setLoading(false));
+      .catch(notifyApiError).finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, []);
 
@@ -109,10 +110,10 @@ function OffboardingCard({ o, onChange }: { o: Offboarding; onChange: () => void
   const isProgress = o.status === 'InProgress';
   const daysLeft = isProgress ? daysBetween(new Date(), new Date(o.lastWorkingDay)) : null;
 
-  const toggle = async (k: string, v: boolean) => { setBusy(true); await offboardingApi.checklist(o.id, { [k]: v }).catch(() => {}); setBusy(false); onChange(); };
-  const saveEi = async () => { setBusy(true); await offboardingApi.exitInterview(o.id, ei).catch(() => {}); setBusy(false); setEditEi(false); onChange(); };
-  const complete = async () => { setBusy(true); await offboardingApi.complete(o.id).catch(() => {}); setBusy(false); onChange(); };
-  const cancel = async () => { setBusy(true); await offboardingApi.cancel(o.id).catch(() => {}); setBusy(false); onChange(); };
+  const toggle = async (k: string, v: boolean) => { setBusy(true); await offboardingApi.checklist(o.id, { [k]: v }).catch(notifyApiError); setBusy(false); onChange(); };
+  const saveEi = async () => { setBusy(true); await offboardingApi.exitInterview(o.id, ei).catch(notifyApiError); setBusy(false); setEditEi(false); onChange(); };
+  const complete = async () => { setBusy(true); await offboardingApi.complete(o.id).catch(notifyApiError); setBusy(false); onChange(); };
+  const cancel = async () => { setBusy(true); await offboardingApi.cancel(o.id).catch(notifyApiError); setBusy(false); onChange(); };
 
   return (
     <div className="surface p-4">
@@ -206,7 +207,7 @@ function InitiateModal({ onClose, onDone }: { onClose: () => void; onDone: () =>
   const [error, setError] = useState('');
 
   useEffect(() => {
-    employeesApi.list({ status: 'Active', pageSize: 300 }).then(r => setEmployees(r.items.map(e => ({ id: e.id, fullName: e.fullName, employeeCode: e.employeeCode })))).catch(() => {});
+    employeesApi.list({ status: 'Active', pageSize: 300 }).then(r => setEmployees(r.items.map(e => ({ id: e.id, fullName: e.fullName, employeeCode: e.employeeCode })))).catch(notifyApiError);
   }, []);
 
   const lwd = useMemo(() => {
