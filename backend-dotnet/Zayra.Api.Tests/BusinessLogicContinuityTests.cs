@@ -756,6 +756,39 @@ public class BusinessLogicContinuityTests
             date = date.AddDays(1);
         return date;
     }
+
+    // Guards the no-double-spend invariant: a request can never reserve beyond the available balance.
+    [Fact]
+    public async Task LeaveRequest_ExceedingAvailableBalance_IsRejected_AndReservesNothing()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var lt = new LeaveType { TenantId = tenantId, Code = "AL", NameEn = "Annual Leave", IsActive = true };
+        var emp = new Employee { TenantId = tenantId, EmployeeCode = "EMP-OR", FullName = "No Balance", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2) };
+        db.LeaveTypes.Add(lt); db.Employees.Add(emp);
+        await db.SaveChangesAsync();
+        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, LeaveTypeId = lt.Id, LeaveTypeName = lt.NameEn,
+            EmployeeName = emp.FullName, Year = DateTime.UtcNow.Year,
+            Entitled = 0, Accrued = 0, Used = 0, Pending = 0, NegativeAllowed = false,
+        });
+        await db.SaveChangesAsync();
+
+        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var request = new LeaveRequest
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName, LeaveTypeId = lt.Id,
+            StartDate = DateOnly.FromDateTime(GetNextWeekday(DayOfWeek.Monday)),
+            EndDate = DateOnly.FromDateTime(GetNextWeekday(DayOfWeek.Monday)),
+            DayType = "Full",
+        };
+        var act = async () => await svc.SubmitRequestAsync(tenantId, request, CancellationToken.None);
+        await act.Should().ThrowAsync<InvalidOperationException>("a request must never reserve beyond the available balance");
+
+        var bal = await db.EmployeeLeaveBalances.FirstAsync();
+        bal.Pending.Should().Be(0, "a rejected request must not leave a phantom reservation");
+    }
 }
 
 // ── Fakes ─────────────────────────────────────────────────────────────────────

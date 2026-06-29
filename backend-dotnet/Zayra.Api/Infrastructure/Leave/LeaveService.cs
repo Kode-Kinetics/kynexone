@@ -241,6 +241,52 @@ public class LeaveService : ILeaveService
         await _db.SaveChangesAsync(ct);
     }
 
+    /// <summary>
+    /// Atomically reserves <paramref name="days"/> as Pending leave, succeeding only if the balance
+    /// still suffices at the DB level (single conditional UPDATE on the raw columns — no read-then-write
+    /// race). Two concurrent reservations therefore cannot both succeed, eliminating double-spend.
+    /// Returns false when the balance is insufficient (and NegativeAllowed is off).
+    /// </summary>
+    private async Task<bool> TryReservePendingAsync(Guid tenantId, int employeeId, Guid leaveTypeId, decimal days, int year, string reference, string performedBy, CancellationToken ct)
+    {
+        var balance = await GetOrCreateBalanceAsync(tenantId, employeeId, leaveTypeId, year, ct);
+        var before = balance.Available; // computed in-memory
+
+        if (_db.Database.IsRelational())
+        {
+            // Production path: single conditional UPDATE — the DB evaluates "still sufficient?" and
+            // reserves atomically, so two concurrent submissions can never both win. Detach first so
+            // the stale tracked snapshot is not flushed over the atomic update. IgnoreQueryFilters is
+            // safe — explicit tenant+employee+type+year scope is re-applied in the WHERE.
+            _db.Entry(balance).State = Microsoft.EntityFrameworkCore.EntityState.Detached;
+            var rows = await _db.EmployeeLeaveBalances
+                .IgnoreQueryFilters()
+                .Where(b => b.TenantId == tenantId && b.EmployeeId == employeeId && b.LeaveTypeId == leaveTypeId && b.Year == year
+                    && (b.NegativeAllowed
+                        || b.Entitled + b.Accrued + b.CarriedForward + b.ManualAdjustment - b.Used - b.Pending - b.Encashed >= days))
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(b => b.Pending, b => b.Pending + days)
+                    .SetProperty(b => b.UpdatedAtUtc, DateTime.UtcNow), ct);
+            if (rows == 0) return false;
+        }
+        else
+        {
+            // Non-relational (InMemory test provider): ExecuteUpdate is unsupported. Apply the same
+            // guard + reservation on the tracked entity (single-threaded tests, so no race to guard).
+            if (!balance.NegativeAllowed && before < days) return false;
+            balance.Pending += days;
+            balance.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        _db.LeaveBalanceTransactions.Add(new LeaveBalanceTransaction
+        {
+            TenantId = tenantId, EmployeeId = employeeId, LeaveTypeId = leaveTypeId, Year = year,
+            TransactionType = "Pending", Amount = days, BalanceBefore = before, BalanceAfter = before - days,
+            Reference = reference, Reason = "Pending", PerformedByName = performedBy,
+        });
+        return true;
+    }
+
     public async Task<LeaveRequest> SubmitRequestAsync(Guid tenantId, LeaveRequest request, CancellationToken ct = default)
     {
         if (request.EndDate < request.StartDate)
@@ -303,8 +349,12 @@ public class LeaveService : ILeaveService
 
         _db.LeaveRequests.Add(request);
 
-        await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, workingDays, year,
-            "Pending", request.Id.ToString(), request.EmployeeName, ct);
+        // Atomic reservation: guarded at the DB level so two concurrent submissions can never both
+        // reserve the same days (prevents balance double-spend / over-allocation). Throws if the
+        // balance no longer suffices at the moment of reservation.
+        if (!await TryReservePendingAsync(tenantId, request.EmployeeId, request.LeaveTypeId, workingDays, year,
+                request.Id.ToString(), request.EmployeeName, ct))
+            throw new InvalidOperationException("Insufficient leave balance.");
 
         await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "Submitted",
             string.Empty, "Submitted", "Leave request submitted", request.EmployeeName, ct);
