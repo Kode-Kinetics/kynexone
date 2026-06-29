@@ -90,9 +90,12 @@ public class ApprovalPolicyService : IApprovalPolicyService
             potentialIds.Add(hrEmployeeId);
         }
 
+        // Explicit TenantId scope: int employee PKs are global, so a corrupted ManagerEmployeeId/etc.
+        // pointing at another tenant must NOT resolve a foreign employee as approver. (Defence-in-depth
+        // — the global query filter also covers this when an HTTP tenant context is active.)
         var names = await _db.Employees
             .AsNoTracking()
-            .Where(e => potentialIds.Contains(e.Id))
+            .Where(e => e.TenantId == tenantId && potentialIds.Contains(e.Id))
             .Select(e => new { e.Id, e.FullName })
             .ToDictionaryAsync(e => e.Id, e => e.FullName, ct);
 

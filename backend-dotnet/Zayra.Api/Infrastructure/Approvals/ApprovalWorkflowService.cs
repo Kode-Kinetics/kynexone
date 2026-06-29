@@ -102,8 +102,28 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var approval = await _db.ApprovalRequests.Include(x => x.Decisions).FirstOrDefaultAsync(x => x.Id == approvalRequestId && x.TenantId == tenantId, cancellationToken);
         if (approval is null) return null;
         if (approval.Status != "Pending") throw new InvalidOperationException("Approval request is already completed.");
+
+        // Segregation of duties: the requester can never approve their own request, and no single
+        // user may satisfy more than one step of the same request (prevents one person pushing a
+        // request through end-to-end).
+        if (approval.RequestedByUserId is not null && approval.RequestedByUserId == context.UserId)
+            throw new InvalidOperationException("You cannot approve your own request.");
+        if (context.UserId is not null && approval.Decisions.Any(d => d.DecidedByUserId == context.UserId))
+            throw new InvalidOperationException("You have already recorded a decision on this request.");
+
         var step = await _db.ApprovalWorkflowSteps.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.WorkflowId == approval.WorkflowId && x.StepOrder == approval.CurrentStepOrder, cancellationToken)
             ?? throw new InvalidOperationException("Current approval step was not found.");
+
+        // Approver-binding: when a step targets a specific employee, only that employee may decide it
+        // (an in-role colleague cannot stand in). Role-typed steps remain gated by the controller role.
+        if (step.ApproverType == "SpecificEmployee" && step.SpecificEmployeeId is int reqEmpId)
+        {
+            var callerEmpId = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && e.UserAccountId == context.UserId)
+                .Select(e => (int?)e.Id).FirstOrDefaultAsync(cancellationToken);
+            if (callerEmpId != reqEmpId)
+                throw new InvalidOperationException("This step must be approved by the assigned approver.");
+        }
 
         var normalizedDecision = request.Decision.Equals("Reject", StringComparison.OrdinalIgnoreCase) ? "Rejected" : "Approved";
         var approvalDecision = new ApprovalDecision
