@@ -122,7 +122,21 @@ public class LoansController : ControllerBase
         if (req.RequestedInstallments > loanType.MaxInstallments)
             return BadRequest($"Installments exceed maximum allowed ({loanType.MaxInstallments}).");
 
-        // Policy: check for loan policy and enforce max concurrent loans + cooldown
+        // Eligibility: minimum months of service (declared on the loan type but previously unenforced).
+        if (req.EmployeeIntId.HasValue && loanType.MinServiceMonths > 0)
+        {
+            var joiningDate = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tid && e.Id == req.EmployeeIntId.Value && !e.IsDeleted)
+                .Select(e => (DateTime?)e.JoiningDate).FirstOrDefaultAsync(ct);
+            if (joiningDate is not null)
+            {
+                var monthsOfService = (DateTime.UtcNow.Year - joiningDate.Value.Year) * 12 + DateTime.UtcNow.Month - joiningDate.Value.Month;
+                if (monthsOfService < loanType.MinServiceMonths)
+                    return BadRequest($"Employee needs at least {loanType.MinServiceMonths} month(s) of service for this loan (currently {Math.Max(0, monthsOfService)}).");
+            }
+        }
+
+        // Policy: check for loan policy and enforce max concurrent loans, salary multiple + cooldown
         var policy = await _db.Set<LoanPolicy>().FirstOrDefaultAsync(x => x.TenantId == tid && x.LoanTypeId == loanType.Id && x.IsActive, ct);
         if (policy != null && req.EmployeeIntId.HasValue)
         {
@@ -132,12 +146,25 @@ public class LoansController : ControllerBase
             if (activeCount >= policy.MaxConcurrentLoans)
                 return BadRequest($"Employee already has {activeCount} active/pending loan(s). Maximum allowed is {policy.MaxConcurrentLoans}.");
 
+            // Cap the loan at a configured multiple of monthly basic salary (declared but unenforced).
+            if (policy.MaxMultiplierOfSalary > 0)
+            {
+                var basic = await _db.EmployeeSalaryStructures.AsNoTracking()
+                    .Where(s => s.TenantId == tid && s.EmployeeId == req.EmployeeIntId.Value && s.IsActive)
+                    .OrderByDescending(s => s.EffectiveDate)
+                    .Select(s => (decimal?)s.BasicSalary).FirstOrDefaultAsync(ct) ?? 0m;
+                if (basic > 0 && req.RequestedAmount > basic * policy.MaxMultiplierOfSalary)
+                    return BadRequest($"Requested amount exceeds {policy.MaxMultiplierOfSalary}× monthly salary (max {basic * policy.MaxMultiplierOfSalary:N2}).");
+            }
+
             if (policy.CooldownMonthsAfterRepayment > 0)
             {
                 var cooldownCutoff = DateTime.UtcNow.AddMonths(-policy.CooldownMonthsAfterRepayment);
+                // Count BOTH "Settled" (manual) and "Closed" (payroll-repaid) terminal states, otherwise a
+                // loan repaid through payroll silently bypasses the cooldown.
                 var recentlySettled = await _db.EmployeeLoans.AnyAsync(
                     x => x.TenantId == tid && x.EmployeeIntId == req.EmployeeIntId && !x.IsDeleted
-                         && x.Status == "Settled" && x.UpdatedAtUtc > cooldownCutoff, ct);
+                         && (x.Status == "Settled" || x.Status == "Closed") && x.UpdatedAtUtc > cooldownCutoff, ct);
                 if (recentlySettled)
                     return BadRequest($"Employee must wait {policy.CooldownMonthsAfterRepayment} month(s) after settling a loan before requesting a new one.");
             }
