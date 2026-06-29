@@ -378,22 +378,68 @@ public class LeaveService : ILeaveService
             throw new InvalidOperationException("An employee cannot approve their own leave request.");
 
         var previousStatus = request.Status;
+
+        // ── Bind the decision to the routed step ───────────────────────────────────────
+        // The current pending approval step (lowest StepNumber not yet decided).
+        var pendingStep = await _db.LeaveApprovals
+            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == requestId && a.Decision == "Pending")
+            .OrderBy(a => a.StepNumber)
+            .FirstOrDefaultAsync(ct);
+        // When the step names a specific approver, only that user may decide it (no in-role stand-in).
+        if (pendingStep?.ApproverId is Guid assigned && assigned != approverId)
+            throw new InvalidOperationException("This leave request must be approved by its assigned approver.");
+        if (pendingStep is not null)
+        {
+            pendingStep.Decision = "Approved";
+            pendingStep.ApproverId = approverId;
+            pendingStep.ApproverName = approverName;
+            pendingStep.Notes = notes ?? string.Empty;
+            pendingStep.ActedAtUtc = DateTime.UtcNow;
+        }
+        else
+        {
+            _db.LeaveApprovals.Add(new LeaveApproval
+            {
+                TenantId = tenantId, LeaveRequestId = requestId, StepNumber = 1, ApproverRole = "Approver",
+                ApproverId = approverId, ApproverName = approverName, Decision = "Approved",
+                Notes = notes ?? string.Empty, ActedAtUtc = DateTime.UtcNow,
+            });
+        }
+
+        // ── Multi-step routing: advance to the next policy step instead of finalizing ──
+        // If a further step exists, the request stays pending; the balance remains RESERVED
+        // (Pending) and nothing is deducted until the FINAL approval. This prevents a single
+        // manager from fully approving leave that policy routes to HR.
+        var currentStepNumber = pendingStep?.StepNumber ?? 1;
+        var routingPolicy = await _policyService.ResolveAsync(tenantId, request.EmployeeId, "Leave", ct);
+        var nextStep = routingPolicy?.Steps.Where(s => s.StepOrder > currentStepNumber).OrderBy(s => s.StepOrder).FirstOrDefault();
+        if (nextStep is not null)
+        {
+            _db.LeaveApprovals.Add(new LeaveApproval
+            {
+                TenantId = tenantId, LeaveRequestId = requestId, StepNumber = nextStep.StepOrder,
+                ApproverRole = nextStep.ApproverType,
+                ApproverId = nextStep.ApproverEmployeeId.HasValue ? await ResolveUserIdAsync(tenantId, nextStep.ApproverEmployeeId.Value, ct) : null,
+                ApproverName = nextStep.ApproverEmployeeName ?? string.Empty,
+                Decision = "Pending",
+            });
+            request.Status = "PendingHRApproval";
+            request.DecidedAtUtc = DateTime.UtcNow;
+            await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "StepApproved",
+                previousStatus, request.Status, notes ?? string.Empty, approverName, ct);
+            _db.EmployeeNotifications.Add(new EmployeeNotification
+            {
+                TenantId = tenantId, EmployeeId = request.EmployeeId, NotificationType = "Info",
+                Title = "Leave pending further approval",
+                Body = $"Your {request.LeaveTypeName} request was approved by {approverName} and now awaits the next approver.",
+            });
+            await _db.SaveChangesAsync(ct);
+            return request;
+        }
+
+        // ── Final approval: finalize, move the balance Pending → Used, and (unpaid) create the impact ──
         request.Status = "Approved";
         request.DecidedAtUtc = DateTime.UtcNow;
-
-        var approval = new LeaveApproval
-        {
-            TenantId = tenantId,
-            LeaveRequestId = requestId,
-            StepNumber = 1,
-            ApproverRole = "Approver",
-            ApproverId = approverId,
-            ApproverName = approverName,
-            Decision = "Approved",
-            Notes = notes ?? string.Empty,
-            ActedAtUtc = DateTime.UtcNow
-        };
-        _db.LeaveApprovals.Add(approval);
 
         await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, request.TotalDays,
             request.StartDate.Year, "Used", request.Id.ToString(), approverName, ct);

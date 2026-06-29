@@ -789,6 +789,33 @@ public class BusinessLogicContinuityTests
         var bal = await db.EmployeeLeaveBalances.FirstAsync();
         bal.Pending.Should().Be(0, "a rejected request must not leave a phantom reservation");
     }
+
+    // A 2-step policy must NOT be fully approved by the first approver; only the final step deducts.
+    [Fact]
+    public async Task Leave_MultiStepPolicy_FirstApprovalAdvances_OnlyFinalApprovalDeducts()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var lt = new LeaveType { TenantId = tenantId, Code = "AL", NameEn = "Annual Leave", IsActive = true };
+        var emp = new Employee { TenantId = tenantId, EmployeeCode = "EMP-MS", FullName = "Multi Step", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2) };
+        db.LeaveTypes.Add(lt); db.Employees.Add(emp);
+        await db.SaveChangesAsync();
+        var balance = new EmployeeLeaveBalance { TenantId = tenantId, EmployeeId = emp.Id, LeaveTypeId = lt.Id, LeaveTypeName = lt.NameEn, EmployeeName = emp.FullName, Year = DateTime.UtcNow.Year, Entitled = 30, Accrued = 0 };
+        db.EmployeeLeaveBalances.Add(balance);
+        await db.SaveChangesAsync();
+
+        var svc = new LeaveService(db, new TwoStepLeavePolicyService());
+        var request = new LeaveRequest { TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName, LeaveTypeId = lt.Id, StartDate = DateOnly.FromDateTime(GetNextWeekday(DayOfWeek.Monday)), EndDate = DateOnly.FromDateTime(GetNextWeekday(DayOfWeek.Monday)), DayType = "Full" };
+        var submitted = await svc.SubmitRequestAsync(tenantId, request, CancellationToken.None);
+
+        await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
+        (await db.LeaveRequests.FindAsync(submitted.Id))!.Status.Should().NotBe("Approved", "one approver must not fully approve a 2-step leave");
+        (await db.EmployeeLeaveBalances.FindAsync(balance.Id))!.Used.Should().Be(0, "balance must not be deducted before the final step");
+
+        await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "HR", null, CancellationToken.None);
+        (await db.LeaveRequests.FindAsync(submitted.Id))!.Status.Should().Be("Approved");
+        (await db.EmployeeLeaveBalances.FindAsync(balance.Id))!.Used.Should().BeGreaterThan(0, "final approval moves Pending to Used");
+    }
 }
 
 // ── Fakes ─────────────────────────────────────────────────────────────────────
@@ -811,4 +838,14 @@ file sealed class NullApprovalPolicyService : IApprovalPolicyService
 {
     public Task<ResolvedApprovalPolicy?> ResolveAsync(Guid tenantId, int employeeId, string workflowType, CancellationToken ct)
         => Task.FromResult<ResolvedApprovalPolicy?>(null);
+}
+
+file sealed class TwoStepLeavePolicyService : IApprovalPolicyService
+{
+    public Task<ResolvedApprovalPolicy?> ResolveAsync(Guid tenantId, int employeeId, string workflowType, CancellationToken ct)
+        => Task.FromResult<ResolvedApprovalPolicy?>(new ResolvedApprovalPolicy(Guid.NewGuid(), "Two-Step", new List<ResolvedApprovalStep>
+        {
+            new(1, "Manager", "Role", null, null, false),
+            new(2, "HR", "Role", null, null, true),
+        }));
 }
