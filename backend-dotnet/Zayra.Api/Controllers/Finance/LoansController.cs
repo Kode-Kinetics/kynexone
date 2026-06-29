@@ -165,7 +165,7 @@ public class LoansController : ControllerBase
         {
             loan.ApprovedAmount = req.RequestedAmount;
             loan.ApprovedInstallments = req.RequestedInstallments;
-            loan.InstallmentAmount = req.RequestedAmount / req.RequestedInstallments;
+            loan.InstallmentAmount = req.RequestedInstallments > 0 ? Math.Round(req.RequestedAmount / req.RequestedInstallments, 2) : req.RequestedAmount;
             loan.OutstandingBalance = req.RequestedAmount;
             loan.Status = "Active";
             GenerateInstallments(tid, loan);
@@ -224,7 +224,7 @@ public class LoansController : ControllerBase
                 loan.Status = "Active";
                 loan.ApprovedAmount = req.ApprovedAmount ?? loan.RequestedAmount;
                 loan.ApprovedInstallments = req.ApprovedInstallments ?? loan.RequestedInstallments;
-                loan.InstallmentAmount = loan.ApprovedAmount / loan.ApprovedInstallments;
+                loan.InstallmentAmount = loan.ApprovedInstallments > 0 ? Math.Round(loan.ApprovedAmount / loan.ApprovedInstallments, 2) : loan.ApprovedAmount;
                 loan.OutstandingBalance = loan.ApprovedAmount;
                 loan.DisbursementDate = DateOnly.FromDateTime(DateTime.UtcNow);
                 if (req.RepaymentStartDate.HasValue) loan.RepaymentStartDate = req.RepaymentStartDate;

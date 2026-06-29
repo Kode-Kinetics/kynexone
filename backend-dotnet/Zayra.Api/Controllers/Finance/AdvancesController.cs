@@ -168,7 +168,7 @@ public class AdvancesController : ControllerBase
         if (!(policy?.RequiresApproval ?? true))
         {
             adv.ApprovedAmount = req.RequestedAmount;
-            adv.InstallmentAmount = req.Installments > 0 ? req.RequestedAmount / req.Installments : req.RequestedAmount;
+            adv.InstallmentAmount = req.Installments > 0 ? Math.Round(req.RequestedAmount / req.Installments, 2) : req.RequestedAmount;
             adv.OutstandingBalance = req.RequestedAmount;
             adv.Status = "Active";
             GenerateAdvanceInstallments(tid, adv, req.RepaymentStartDate);
@@ -195,7 +195,7 @@ public class AdvancesController : ControllerBase
 
         var oldStatus = adv.Status;
         adv.Status = "Active"; adv.ApprovedAmount = req.ApprovedAmount;
-        adv.InstallmentAmount = req.Installments > 0 ? req.ApprovedAmount / req.Installments : req.ApprovedAmount;
+        adv.InstallmentAmount = req.Installments > 0 ? Math.Round(req.ApprovedAmount / req.Installments, 2) : req.ApprovedAmount;
         adv.Installments = req.Installments; adv.OutstandingBalance = req.ApprovedAmount;
         adv.RepaymentStartDate = req.RepaymentStartDate; adv.UpdatedAtUtc = DateTime.UtcNow; adv.UpdatedBy = uid;
 

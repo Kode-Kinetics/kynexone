@@ -991,7 +991,10 @@ public class PayrollController : ControllerBase
                 ("Statutory", true)  => ("2106", "Social Insurance Employer Payable"),
                 ("Statutory", false) => ("2101", "Social Insurance Payable (Employee)"),
                 ("Tax", _)           => ("2102", "Income Tax Payable"),
-                ("Loan", _)          => ("2107", "Loan & Advance Deductions Payable"),
+                // Loan/advance repayment relieves the receivable (1400/1410), not a payable.
+                ("Loan", _)          => first.ComponentCode == "ADVANCE_EMI"
+                    ? ("1410", "Employee Salary Advances")
+                    : ("1400", "Employee Loans Receivable"),
                 ("Attendance", _)    => ("2104", "Attendance Adjustment Payable"),
                 ("Leave", _)         => ("2105", "Leave Deduction Payable"),
                 _ => first.ComponentCode switch
@@ -1784,7 +1787,12 @@ public class PayrollController : ControllerBase
                 ("Statutory", true)  => ("2106", "Social Insurance Employer Payable"),
                 ("Statutory", false) => ("2101", "Social Insurance Payable (Employee)"),
                 ("Tax", _)           => ("2102", "Income Tax Payable"),
-                ("Loan", _)          => ("2107", "Loan & Advance Deductions Payable"),
+                // Loan/advance repayment RELIEVES the receivable asset raised at disbursement
+                // (Dr 1400/1410 / Cr Cash) — it is not a payable. Crediting 1400/1410 here reduces
+                // the receivable through payroll, keeping the GL reconciled with the loan sub-ledger.
+                ("Loan", _)          => grp.Key.ComponentCode == "ADVANCE_EMI"
+                    ? ("1410", "Employee Salary Advances")
+                    : ("1400", "Employee Loans Receivable"),
                 ("Attendance", _)    => ("2104", "Attendance Adjustment Payable"),
                 ("Leave", _)         => ("2105", "Leave Deduction Payable"),
                 _ => grp.Key.ComponentCode switch
