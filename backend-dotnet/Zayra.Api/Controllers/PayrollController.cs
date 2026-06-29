@@ -356,7 +356,12 @@ public class PayrollController : ControllerBase
             var lopDayRate = lopDayDivisor > 0 && basic > 0 ? basic / lopDayDivisor : 0m;
             var lopDeduction = Math.Round(lopDays * lopDayRate, 2);
 
-            var leaveDeduction = leaveImpacts.Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("Deduction", StringComparison.OrdinalIgnoreCase)).Sum(x => x.Amount);
+            // Unpaid-leave deduction: computed HERE from the impact's working-days × the SAME LOP
+            // day-rate used for attendance absence (current basic ÷ configured divisor) — not a stale
+            // amount frozen at approval. This keeps one day-rate for all unpaid days and reflects the
+            // employee's current salary at run time.
+            var leaveDays = leaveImpacts.Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("Deduction", StringComparison.OrdinalIgnoreCase)).Sum(x => x.Days);
+            var leaveDeduction = Math.Round(leaveDays * lopDayRate, 2);
 
             // ── Overtime pay: approved hours × hourly rate × statutory multiplier ──
             // Recomputed from OvertimePayrollImpacts.Hours (not .Amount) so the statutory

@@ -411,21 +411,35 @@ public class LeaveService : ILeaveService
                 .Where(s => s.TenantId == tenantId && s.EmployeeId == request.EmployeeId && s.IsActive)
                 .OrderByDescending(s => s.EffectiveDate)
                 .FirstOrDefaultAsync(ct);
-            // basic ÷ 30 per unpaid day — standard GCC day-rate convention, matches payroll's
-            // default LOP divisor. [FLAG-COMPLIANCE: confirm divisor per jurisdiction before filing.]
             var basic = salary?.BasicSalary ?? 0m;
-            var amount = Math.Round(basic / 30m * request.TotalDays, 2);
-            _db.LeavePayrollImpacts.Add(new LeavePayrollImpact
+
+            // Split the unpaid leave into ONE impact per pay period it spans, recording the WORKING
+            // DAYS in each period. A leave crossing a month boundary therefore docks each month's run
+            // correctly (previously the whole leave hit only the start month). The authoritative
+            // deduction is computed by payroll from Days × the configured LOP divisor at run time;
+            // the Amount below is an informational basic÷30 estimate only.
+            var monthCursor = new DateOnly(request.StartDate.Year, request.StartDate.Month, 1);
+            var lastMonth = new DateOnly(request.EndDate.Year, request.EndDate.Month, 1);
+            while (monthCursor <= lastMonth)
             {
-                TenantId = tenantId,
-                LeaveRequestId = requestId,
-                EmployeeId = request.EmployeeId,
-                PayPeriod = $"{request.StartDate.Year}-{request.StartDate.Month:00}",
-                ImpactType = "Leave Deduction (Unpaid)",
-                Days = request.TotalDays,
-                Amount = amount,
-                Status = "Pending",
-            });
+                var segStart = monthCursor > request.StartDate ? monthCursor : request.StartDate;
+                var monthEnd = monthCursor.AddMonths(1).AddDays(-1);
+                var segEnd = monthEnd < request.EndDate ? monthEnd : request.EndDate;
+                var segDays = await CalculateWorkingDaysAsync(tenantId, segStart, segEnd, request.PolicyId, ct);
+                if (segDays > 0)
+                    _db.LeavePayrollImpacts.Add(new LeavePayrollImpact
+                    {
+                        TenantId = tenantId,
+                        LeaveRequestId = requestId,
+                        EmployeeId = request.EmployeeId,
+                        PayPeriod = $"{monthCursor.Year}-{monthCursor.Month:00}",
+                        ImpactType = "Leave Deduction (Unpaid)",
+                        Days = segDays,
+                        Amount = Math.Round(basic / 30m * segDays, 2),
+                        Status = "Pending",
+                    });
+                monthCursor = monthCursor.AddMonths(1);
+            }
         }
 
         await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "Approved",

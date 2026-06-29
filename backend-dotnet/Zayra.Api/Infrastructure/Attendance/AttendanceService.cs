@@ -767,7 +767,16 @@ public class AttendanceService : IAttendanceService
         daily.EarlyExitMinutes = daily.LastOutUtc is null ? 0 : Math.Max(0, (int)(shiftEnd - daily.LastOutUtc.Value).TotalMinutes - policy.EarlyExitThresholdMinutes);
         daily.OvertimeMinutes = Math.Max(0, daily.TotalWorkedMinutes - policy.StandardWorkMinutes);
         daily.UndertimeMinutes = Math.Max(0, policy.StandardWorkMinutes - daily.TotalWorkedMinutes);
-        daily.Status = daily.TotalWorkedMinutes == 0 ? "Absent" : daily.TotalWorkedMinutes < policy.HalfDayThresholdMinutes ? "Half day" : daily.LateMinutes > 0 ? "Late" : "Present";
+        // A day covered by an approved leave is "On Leave" (excused), never "Absent" — so it does
+        // NOT generate an attendance absence LOP. The leave module already applies the correct
+        // paid/unpaid treatment; counting it here too would double-dock the employee.
+        var onApprovedLeave = daily.TotalWorkedMinutes == 0 && await _db.LeaveRequests.AsNoTracking().AnyAsync(l =>
+            l.TenantId == tenantId && l.EmployeeId == employee.Id && l.Status == "Approved"
+            && l.StartDate <= date && l.EndDate >= date, ct);
+        daily.Status = onApprovedLeave ? "On Leave"
+            : daily.TotalWorkedMinutes == 0 ? "Absent"
+            : daily.TotalWorkedMinutes < policy.HalfDayThresholdMinutes ? "Half day"
+            : daily.LateMinutes > 0 ? "Late" : "Present";
         daily.ProcessedAtUtc = DateTime.UtcNow;
         daily.UpdatedAtUtc = DateTime.UtcNow;
         foreach (var raw in events) raw.IsProcessed = true;
