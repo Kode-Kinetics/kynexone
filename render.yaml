@@ -57,12 +57,13 @@ services:
       - key: SeedAdmin__TenantSlug
         value: zayra
 
-      # Demo data seeder — idempotent: safe to leave "true" permanently.
-      # Seeds IntelliFlow Systems (SAU/KSA-mainland, Enterprise/Active) +
-      # Evostel LLC (ARE/UAE-DIFC, Starter/PastDue) with 19+3 employees,
-      # 7 months of payroll, 90 days of attendance, leave types, and balances.
+      # Demo data seeder. MUST be "false" in any environment that holds REAL customer data:
+      # when "true", every deploy re-runs the demo seeders/cleanups, which create, deactivate,
+      # rename and re-seed demo tenants — and that churn can wipe or revert live data. Production
+      # runs ONLY idempotent global config (auth bootstrap, GOSI/statutory rules, pricing); it never
+      # touches tenant data. Use a SEPARATE demo/staging service with this set "true" for showcases.
       - key: SeedAdmin__SeedDemoData
-        value: "true"
+        value: "false"
 
       # Web service never runs migrations on startup in Production.
       # Migrations are applied via a Render one-off job:

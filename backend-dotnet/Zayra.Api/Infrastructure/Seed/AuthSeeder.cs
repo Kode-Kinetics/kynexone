@@ -78,46 +78,26 @@ public class AuthSeeder : IAuthSeeder
             await EnsureFoundationSeedData(tenant.Id, cancellationToken);
         }
 
-        // Propagate any newly-added permissions to all other existing tenants' Admin roles.
-        // Uses raw SQL so it doesn't trigger global tenant query filters on the DbContext.
-        // This ensures new permissions are always available for demo/test tenants after restart.
-        var permissions2 = await _db.Permissions.AsNoTracking().ToListAsync(cancellationToken);
-        var otherTenantIds = await _db.Tenants
-            .AsNoTracking()
-            .Where(t => t.Id != tenant.Id)
-            .Select(t => t.Id)
-            .ToListAsync(cancellationToken);
-        foreach (var otherTenantId in otherTenantIds)
+        // Backfill EVERY tenant's Admin role with all permissions in a SINGLE set-based statement.
+        // The previous implementation looped per-tenant-then-per-role with one query each — on a
+        // database with many tenants that became thousands of sequential round-trips and made startup
+        // take many minutes, so the app never finished booting (health check timed out → the whole
+        // service stayed offline). This achieves the identical result in ONE round-trip regardless of
+        // tenant count. Raw SQL intentionally bypasses the global tenant query filter.
+        try
         {
-            try
-            {
-                var allRoles = await _db.Roles
-                    .AsNoTracking()
-                    .Where(r => r.TenantId == otherTenantId)
-                    .Select(r => new { r.Id, r.Name })
-                    .ToListAsync(cancellationToken);
-
-                foreach (var role in allRoles)
-                {
-                    var existingPermIds = await _db.Database
-                        .SqlQuery<Guid>($"SELECT permission_id as Value FROM role_permissions WHERE role_id = {role.Id}")
-                        .ToListAsync(cancellationToken);
-
-                    var existingSet = existingPermIds.ToHashSet();
-                    var adminAll = role.Name == "Admin";
-
-                    foreach (var perm in permissions2)
-                    {
-                        if (existingSet.Contains(perm.Id)) continue;
-                        if (!adminAll) continue; // only patch Admin role here; other roles stay as seeded
-                        await _db.Database.ExecuteSqlRawAsync(
-                            "INSERT INTO role_permissions (role_id, permission_id) VALUES ({0}, {1}) ON CONFLICT DO NOTHING",
-                            role.Id, perm.Id);
-                    }
-                }
-            }
-            catch (Exception ex) { Console.WriteLine($"[Seed] Permission sync skipped for tenant {otherTenantId}: {ex.Message}"); }
+            await _db.Database.ExecuteSqlRawAsync(
+                @"INSERT INTO role_permissions (role_id, permission_id)
+                  SELECT r.id, p.id
+                  FROM roles r
+                  CROSS JOIN permissions p
+                  WHERE r.name = 'Admin'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM role_permissions rp
+                        WHERE rp.role_id = r.id AND rp.permission_id = p.id)
+                  ON CONFLICT DO NOTHING;", cancellationToken);
         }
+        catch (Exception ex) { Console.WriteLine($"[Seed] Admin permission backfill skipped: {ex.Message}"); }
     }
 
     public async Task<Role> EnsureTenantRolesAsync(Guid tenantId, CancellationToken cancellationToken = default)

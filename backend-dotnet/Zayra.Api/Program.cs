@@ -532,15 +532,18 @@ using (var scope = app.Services.CreateScope())
     // otherwise the platform-admin pricing/CPQ console is empty. Idempotent (skips when present).
     await TrySeedAsync("PricingConfigSeeder", () => DemoDataSeeder.SeedPricingConfigAsync(dbContext, logger, CancellationToken.None), logger);
 
-    // Cleanup of garbage/corrupt demo tenants always runs (it only deactivates,
-    // never creates) — safe and useful even with demo seeding off.
-    await TrySeedAsync("GarbageDemoCleanup", () => CleanDemoKsaSeeder.DeactivateGarbageDemoTenantsAsync(dbContext, logger), logger);
-    await TrySeedAsync("IntelliFlowFragmentCleanup", () => IntelliFlowFragmentCleanup.RunAsync(dbContext, logger), logger);
-
-    // Demo TENANT creation is gated behind SeedDemoData so a live environment
-    // (SeedAdmin__SeedDemoData=false) is never polluted with sample tenants.
+    // ── DEMO-ONLY ZONE ─────────────────────────────────────────────────────────────────────
+    // Every operation that can MUTATE tenant data (deactivate, rename, or create tenants) runs
+    // ONLY when demo seeding is enabled. In production (SeedAdmin__SeedDemoData=false) NOTHING in
+    // this block runs — so a deploy can NEVER wipe, revert, deactivate, or rename a real customer
+    // tenant. The only seeders that run in production are idempotent, additive global config above
+    // (Auth bootstrap, GOSI/statutory rules, pricing) which never delete or mutate customer records.
     if (seedDemoData)
     {
+        // Deactivate leftover/garbage demo tenants and soft-delete renamed fragments — demo envs only.
+        await TrySeedAsync("GarbageDemoCleanup", () => CleanDemoKsaSeeder.DeactivateGarbageDemoTenantsAsync(dbContext, logger), logger);
+        await TrySeedAsync("IntelliFlowFragmentCleanup", () => IntelliFlowFragmentCleanup.RunAsync(dbContext, logger), logger);
+
         // Seed one clean KSA tenant. Idempotent: no-op when slug exists.
         await TrySeedAsync("CleanDemoKsaSeeder", () => CleanDemoKsaSeeder.SeedAsync(
             dbContext,
