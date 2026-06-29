@@ -26,12 +26,14 @@ public class EmployeeSelfServiceController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly ILetterService _letters;
     private readonly PdfRenderGate _pdfGate;
+    private readonly Zayra.Api.Application.Leave.ILeaveService _leaveService;
 
-    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate)
+    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Zayra.Api.Application.Leave.ILeaveService leaveService)
     {
         _letters = letters;
         _db = db;
         _pdfGate = pdfGate;
+        _leaveService = leaveService;
     }
 
     [HttpGet("dashboard")]
@@ -362,28 +364,33 @@ public class EmployeeSelfServiceController : ControllerBase
         if (employee is null) return NotFound();
         var leaveType = await _db.LeaveTypes.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.LeaveTypeId && x.IsActive, cancellationToken);
         if (leaveType is null) return BadRequest(new { message = "Leave type is not available." });
-        var days = Math.Max(1, request.EndDate.DayNumber - request.StartDate.DayNumber + 1);
+        // Route through the canonical leave service so ESS gets the SAME validation as every other
+        // channel: overlap + balance + leave-type rules, correct workflow status, an approval step,
+        // and a Pending balance reservation. Previously this hand-built the row with an un-approvable
+        // "PendingManager" status and bypassed all of that (over-allocation + un-actionable requests).
         var leave = new LeaveRequest
         {
-            TenantId = tenantId,
             EmployeeId = employeeId,
             EmployeeName = employee.FullName,
             DepartmentName = employee.Department,
             DesignationTitle = employee.Designation,
             LeaveTypeId = leaveType.Id,
-            LeaveTypeName = leaveType.NameEn,
             StartDate = request.StartDate,
             EndDate = request.EndDate,
-            TotalDays = days,
             DayType = request.DayType ?? "Full",
-            Reason = request.Reason,
-            Status = "PendingManager",
-            SubmittedAtUtc = DateTime.UtcNow
+            Reason = request.Reason ?? string.Empty,
         };
-        _db.LeaveRequests.Add(leave);
-        await _db.SaveChangesAsync(cancellationToken);
-        await EssAudit(tenantId, employeeId, "ess.leave.requested", "LeaveRequest", leave.Id.ToString(), cancellationToken);
-        return Created($"/api/ess/leave/request/{leave.Id}", leave);
+        try
+        {
+            var submitted = await _leaveService.SubmitRequestAsync(tenantId, leave, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            await EssAudit(tenantId, employeeId, "ess.leave.requested", "LeaveRequest", submitted.Id.ToString(), cancellationToken);
+            return Created($"/api/ess/leave/request/{submitted.Id}", submitted);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     [HttpGet("documents")]

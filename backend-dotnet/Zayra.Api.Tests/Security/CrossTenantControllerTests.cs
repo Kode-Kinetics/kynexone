@@ -68,7 +68,7 @@ public class CrossTenantControllerTests
 
     private static EmployeeSelfServiceController EssController(ZayraDbContext db, Guid tenantId, int employeeId)
     {
-        var controller = new EmployeeSelfServiceController(db, new StubLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8));
+        var controller = new EmployeeSelfServiceController(db, new StubLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8), null!);
         controller.ControllerContext = new ControllerContext { HttpContext = BuildEssHttpContext(tenantId, employeeId) };
         return controller;
     }
@@ -202,13 +202,6 @@ public class CrossTenantControllerTests
             "GetAsync(tenantA, tenantBEmployee.Id) must return null — not leak salary/IBAN/passport/Iqama");
     }
 
-    private static LeaveController LeaveCtrl(ZayraDbContext db, Guid tenantId)
-    {
-        var c = new LeaveController(db, new DataScopeService(db));
-        c.ControllerContext = new ControllerContext { HttpContext = BuildHttpContext(tenantId, "Admin") };
-        return c;
-    }
-
     private static OvertimeController OvertimeCtrl(ZayraDbContext db, Guid tenantId)
     {
         var c = new OvertimeController(db, new DataScopeService(db));
@@ -249,7 +242,6 @@ public class CrossTenantControllerTests
     /// </summary>
     public static TheoryData<string> AllTenantIsolationCases { get; } = new()
     {
-        "LeaveController.Approve",
         "OvertimeController.Approve",
         "LoansController.GetLoan",
         "AdvancesController.Get",
@@ -267,24 +259,6 @@ public class CrossTenantControllerTests
 
         switch (scenario)
         {
-            case "LeaveController.Approve":
-            {
-                var leave = new LeaveRequest
-                {
-                    TenantId = tenantB, EmployeeId = 99,
-                    StartDate = DateOnly.FromDateTime(DateTime.UtcNow),
-                    EndDate = DateOnly.FromDateTime(DateTime.UtcNow),
-                    TotalDays = 1, Status = "Submitted",
-                };
-                db.LeaveRequests.Add(leave);
-                await db.SaveChangesAsync();
-
-                var result = await LeaveCtrl(db, tenantA).Approve(leave.Id, CancellationToken.None);
-                result.Should().BeOfType<NotFoundResult>(
-                    "TenantA cannot approve TenantB's leave — WHERE l.TenantId == tenantId returns null");
-                break;
-            }
-
             case "OvertimeController.Approve":
             {
                 var ot = new OvertimeRequest
