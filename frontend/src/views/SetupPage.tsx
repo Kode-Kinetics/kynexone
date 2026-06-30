@@ -6,6 +6,7 @@ import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import { financeGlApi, type GlAccount, type GlMappingRow } from '../api/financeGl';
+import { CountrySelect } from '../components/CountrySelect';
 import {
   companiesApi,
   branchesApi,
@@ -441,8 +442,8 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
           <FormField label="Name (AR)">
             <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" placeholder={translatingBranchNameAr && !form.nameAr ? 'Translating…' : undefined} />
           </FormField>
-          <FormField label="Country Code" required>
-            <input type="text" value={form.countryCode} onChange={(e) => f('countryCode', e.target.value)} className="input w-full" placeholder="AE" maxLength={10} />
+          <FormField label="Country" required>
+            <CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Branch country" />
           </FormField>
           <FormField label="City" required>
             <input type="text" value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" placeholder="Dubai" />
@@ -1546,7 +1547,7 @@ function GCCSettingsTab() {
         footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3 text-sm">
-          <FormField label="Country Code" required><input value={form.countryCode} onChange={(e) => f('countryCode', e.target.value)} className="input w-full" placeholder="AE" maxLength={5} disabled={!!editing} /></FormField>
+          <FormField label="Country" required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Country" disabled={!!editing} /></FormField>
           <FormField label="Work Week"><input value={form.workWeek ?? ''} onChange={(e) => f('workWeek', e.target.value)} className="input w-full" placeholder="Mon-Fri" /></FormField>
           <FormField label="Weekend Days"><input value={form.weekendDays ?? ''} onChange={(e) => f('weekendDays', e.target.value)} className="input w-full" placeholder="Fri,Sat" /></FormField>
           <div />
@@ -1743,7 +1744,7 @@ function LocationsTab() {
           <FormField label="Code" required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="DXB-HQ" /></FormField>
           <FormField label="Name (EN)" required><input value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" /></FormField>
           <FormField label="Name (AR)"><input value={form.nameAr} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" /></FormField>
-          <FormField label="Country Code" required><input value={form.countryCode} onChange={(e) => f('countryCode', e.target.value)} className="input w-full" placeholder="AE" maxLength={10} /></FormField>
+          <FormField label="Country" required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Location country" /></FormField>
           <FormField label="City"><input value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" /></FormField>
           <FormField label="Postal Code"><input value={form.postalCode} onChange={(e) => f('postalCode', e.target.value)} className="input w-full" /></FormField>
           <FormField label="Address"><input value={form.addressLine1} onChange={(e) => f('addressLine1', e.target.value)} className="input w-full" /></FormField>
