@@ -200,7 +200,11 @@ public class OpeningsController : ControllerBase
     public IActionResult ImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=job_openings_import_template.csv";
-        return Content(Csv.Template(JobOpeningCsvHeaders), "text/csv");
+        return Content(Csv.Template(JobOpeningCsvHeaders, new object?[]
+        {
+            "Example Job Title", "Engineering", "Software Engineer", "FullTime", "1", "Dubai",
+            "0", "0", "Example role description", "Example requirements", "Open"
+        }), "text/csv");
     }
 
     [HttpPost("import")]

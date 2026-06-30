@@ -113,8 +113,7 @@ public class DesignationsController : ControllerBase
     {
         var sb = new StringBuilder();
         sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("DES-001,Software Engineer,مهندس برمجيات,DEPT-001,G3,true\n");
-        sb.Append("DES-002,Senior Developer,مطور أول,DEPT-001,G4,true\n");
+        sb.Append("DES-001,Example Title,مسمى مثال,DEPT-001,G1,true\n");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "designations_import_template.csv");
     }
 

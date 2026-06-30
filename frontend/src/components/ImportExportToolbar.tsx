@@ -13,8 +13,10 @@ export interface ImportResult {
 export interface ImportExportToolbarProps {
   entityName: string;
   onExport: () => Promise<void>;
-  onDownloadTemplate: () => Promise<void>;
-  onImport: (csvContent: string) => Promise<ImportResult>;
+  /** Omit to hide the "Template" button (e.g. transactional entities with no bulk-import path). */
+  onDownloadTemplate?: () => Promise<void>;
+  /** Omit to hide the "Import CSV" button. */
+  onImport?: (csvContent: string) => Promise<ImportResult>;
 }
 
 interface Toast {
@@ -63,6 +65,7 @@ export function ImportExportToolbar({
   };
 
   const handleTemplate = async () => {
+    if (!onDownloadTemplate) return;
     setTemplating(true);
     try {
       await onDownloadTemplate();
@@ -76,7 +79,7 @@ export function ImportExportToolbar({
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (!file) return;
+    if (!file || !onImport) return;
 
     setImporting(true);
     try {
@@ -127,27 +130,31 @@ export function ImportExportToolbar({
         {exporting ? 'Exporting…' : 'Export'}
       </button>
 
-      <button
-        type="button"
-        className={btnOutline}
-        disabled={templating}
-        onClick={handleTemplate}
-        title="Download blank CSV import template"
-      >
-        <FileUp className="h-3.5 w-3.5" />
-        {templating ? 'Downloading…' : 'Template'}
-      </button>
+      {onDownloadTemplate && (
+        <button
+          type="button"
+          className={btnOutline}
+          disabled={templating}
+          onClick={handleTemplate}
+          title="Download blank CSV import template"
+        >
+          <FileUp className="h-3.5 w-3.5" />
+          {templating ? 'Downloading…' : 'Template'}
+        </button>
+      )}
 
-      <button
-        type="button"
-        className={btnOutline}
-        disabled={importing}
-        onClick={() => fileInputRef.current?.click()}
-        title={`Import ${entityName} from CSV`}
-      >
-        <Upload className="h-3.5 w-3.5" />
-        {importing ? 'Importing…' : 'Import CSV'}
-      </button>
+      {onImport && (
+        <button
+          type="button"
+          className={btnOutline}
+          disabled={importing}
+          onClick={() => fileInputRef.current?.click()}
+          title={`Import ${entityName} from CSV`}
+        >
+          <Upload className="h-3.5 w-3.5" />
+          {importing ? 'Importing…' : 'Import CSV'}
+        </button>
+      )}
 
       {/* Toast */}
       {toast && (

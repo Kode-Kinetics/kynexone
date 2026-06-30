@@ -94,8 +94,7 @@ public class CostCentersController : ControllerBase
     {
         var sb = new StringBuilder();
         sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("CC-001,Operations,العمليات,DEPT-001,true\n");
-        sb.Append("CC-002,Marketing,التسويق,,true\n");
+        sb.Append("CC-001,Example Cost Center,مركز تكلفة مثال,,true\n");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "cost_centers_import_template.csv");
     }
 

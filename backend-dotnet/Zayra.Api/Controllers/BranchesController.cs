@@ -112,8 +112,7 @@ public class BranchesController : ControllerBase
     {
         var sb = new StringBuilder();
         sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("IntelliFlow Systems LLC,HQ,Head Office,المقر الرئيسي,AE,Dubai,true,true\n");
-        sb.Append("IntelliFlow Systems LLC,RYD,Riyadh Office,,SA,Riyadh,false,true\n");
+        sb.Append("Example Company Ltd,BR-001,Example Branch,فرع مثال,AE,Dubai,true,true\n");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "branches_import_template.csv");
     }
 

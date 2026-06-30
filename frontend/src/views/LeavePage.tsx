@@ -49,12 +49,6 @@ const leaveRequestsImportExport = {
     const csv = await client.get<string>('/api/leave/requests/export', { responseType: 'text' }).then(r => r.data);
     downloadCsv(csv, 'leave-requests.csv');
   },
-  template: async () => {
-    const csv = await client.get<string>('/api/leave/requests/import-template', { responseType: 'text' }).then(r => r.data);
-    downloadCsv(csv, 'leave-requests-template.csv');
-  },
-  import: (csvContent: string) =>
-    client.post<{ received: number; created: number; skipped: number; errors: string[] }>('/api/leave/requests/import', { csvContent }).then(r => r.data),
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -652,11 +646,10 @@ function MyRequestsTab() {
         </select>
         <p className="text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
         <div className="ml-auto">
+          {/* Leave requests are transactional (approval flow + balance checks); export only — no bulk CSV import. */}
           <ImportExportToolbar
             entityName="Leave Requests"
             onExport={leaveRequestsImportExport.export}
-            onDownloadTemplate={leaveRequestsImportExport.template}
-            onImport={leaveRequestsImportExport.import}
           />
         </div>
       </div>

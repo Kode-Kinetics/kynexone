@@ -173,13 +173,10 @@ public class ApprovalPoliciesController : ControllerBase
         var sb = new StringBuilder();
         sb.Append("# Policies\n");
         sb.Append(string.Join(",", PolicyCsvHeaders)).Append('\n');
-        sb.Append("POL-001,Default Leave Approval,Leave,true,true\n");
-        sb.Append("POL-002,Payroll Approval,Payroll,true,true\n");
+        sb.Append("POL-001,Example Policy,Leave,true,true\n");
         sb.Append("\n# Steps (use PolicyCode from above)\n");
         sb.Append(string.Join(",", StepCsvHeaders)).Append('\n');
-        sb.Append("POL-001,1,Manager Approval,Manager,,false\n");
-        sb.Append("POL-001,2,HR Final Approval,HR,,true\n");
-        sb.Append("POL-002,1,Payroll Officer,Role,,true\n");
+        sb.Append("POL-001,1,Example Step,Manager,,true\n");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "approval_policies_import_template.csv");
     }
 

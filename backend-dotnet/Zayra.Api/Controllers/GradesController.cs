@@ -95,8 +95,7 @@ public class GradesController : ControllerBase
     {
         var sb = new StringBuilder();
         sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("G1,Junior,1,3000,6000,true\n");
-        sb.Append("G2,Mid,2,6000,10000,true\n");
+        sb.Append("G1,Example Grade,1,0,0,true\n");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "grades_import_template.csv");
     }
 

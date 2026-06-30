@@ -145,8 +145,7 @@ public class CompaniesController : ControllerBase
     {
         var sb = new StringBuilder();
         sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("IntelliFlow Systems LLC,انتيلي فلو,IntelliFlow,AE,1234567,TN123456,AED,true\n");
-        sb.Append("Evostel Trading LLC,إيفوستيل للتجارة,Evostel,KW,7654321,,KWD,true\n");
+        sb.Append("Example Company Ltd,شركة مثال,Example,AE,REG-000000,,AED,true\n");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "companies_import_template.csv");
     }
 

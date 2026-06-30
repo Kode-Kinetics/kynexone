@@ -111,8 +111,7 @@ public class LocationsController : ControllerBase
     {
         var sb = new StringBuilder();
         sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("LOC-001,Riyadh HQ,مقر الرياض,SA,Riyadh,true\n");
-        sb.Append("LOC-002,Dubai Office,مكتب دبي,AE,Dubai,true\n");
+        sb.Append("LOC-001,Example Location,موقع مثال,AE,Dubai,true\n");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "locations_import_template.csv");
     }
 

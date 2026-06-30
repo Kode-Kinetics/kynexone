@@ -126,7 +126,15 @@ public class EmployeesController : ControllerBase
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders)), "text/csv", "employees_import_template.csv");
+        File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders, new object?[]
+        {
+            "EMP-0001", "Example Employee", "موظف مثال", "employee@example.com", "+971500000000",
+            "Male", "AE", "Engineering", "DEPT-001", "Software Engineer", "Software Engineer",
+            "FullTime", "Unlimited", "Active", "2024-01-01",
+            "", "",
+            "10000", "0", "0", "0",
+            "AED", "", "", ""
+        })), "text/csv", "employees_import_template.csv");
 
     [HttpPost("import")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]

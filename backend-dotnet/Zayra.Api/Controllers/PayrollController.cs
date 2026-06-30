@@ -1839,7 +1839,10 @@ public class PayrollController : ControllerBase
     public IActionResult StructuresImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=salary_structures_import_template.csv";
-        return Content(Csv.Template(SalaryStructureCsvHeaders), "text/csv");
+        return Content(Csv.Template(SalaryStructureCsvHeaders, new object?[]
+        {
+            "SS-001", "Example Structure", "AED", "2024-01-01"
+        }), "text/csv");
     }
 
     [HttpPost("structures/import")]
@@ -2395,7 +2398,10 @@ public class PayrollController : ControllerBase
     public IActionResult EmployeeSalariesImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=employee_salaries_import_template.csv";
-        return Content(Csv.Template(EmployeeSalaryCsvHeaders), "text/csv");
+        return Content(Csv.Template(EmployeeSalaryCsvHeaders, new object?[]
+        {
+            "EMP-0001", "SS-001", "10000", "0", "0", "0", "0", "0", "0", "AED", "2024-01-01"
+        }), "text/csv");
     }
 
     [HttpPost("employee-salaries/import")]

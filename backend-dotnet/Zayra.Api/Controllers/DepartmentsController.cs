@@ -132,8 +132,7 @@ public class DepartmentsController : ControllerBase
     {
         var sb = new StringBuilder();
         sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("DEPT-001,Engineering,الهندسة,,EMP-00001,CC-001,true\n");
-        sb.Append("DEPT-002,Frontend,الواجهة الأمامية,DEPT-001,,CC-001,true\n");
+        sb.Append("DEPT-001,Example Department,قسم مثال,,,CC-001,true\n");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "departments_import_template.csv");
     }
 

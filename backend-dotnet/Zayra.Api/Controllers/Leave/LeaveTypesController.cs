@@ -160,7 +160,10 @@ public class LeaveTypesController : ControllerBase
     public IActionResult ImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=leave_types_import_template.csv";
-        return Content(Csv.Template(LeaveTypeCsvHeaders), "text/csv");
+        return Content(Csv.Template(LeaveTypeCsvHeaders, new object?[]
+        {
+            "EX", "Example Leave", "إجازة مثال", "Annual", "true", "false", "false", "false", "true", "0", "#3B82F6", "1"
+        }), "text/csv");
     }
 
     [HttpPost("import")]

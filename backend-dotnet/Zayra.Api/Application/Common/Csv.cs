@@ -21,6 +21,13 @@ public static class Csv
     public static string Template(IReadOnlyList<string> headers) =>
         string.Join(",", headers.Select(Escape)) + "\n";
 
+    /// <summary>
+    /// A template = header row + a single clearly-fake placeholder row that illustrates the
+    /// expected format. The placeholder is meant to be deleted/overwritten before import.
+    /// </summary>
+    public static string Template(IReadOnlyList<string> headers, IReadOnlyList<object?> exampleRow) =>
+        Build(headers, new[] { exampleRow });
+
     /// <summary>Parse CSV text into a list of column maps keyed by header name.</summary>
     public static List<Dictionary<string, string>> Parse(string content)
     {
