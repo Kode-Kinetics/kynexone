@@ -398,6 +398,8 @@ public class ZayraDbContext : DbContext
     public DbSet<BonusApproval> BonusApprovals => Set<BonusApproval>();
     public DbSet<BonusAuditLog> BonusAuditLogs => Set<BonusAuditLog>();
     public DbSet<FinanceGlEntry> FinanceGlEntries => Set<FinanceGlEntry>();
+    public DbSet<GlAccount> GlAccounts => Set<GlAccount>();
+    public DbSet<GlAccountMapping> GlAccountMappings => Set<GlAccountMapping>();
     // ── Reports & Analytics ────────────────────────────────────────────────────
     public DbSet<SavedReport> SavedReports => Set<SavedReport>();
     public DbSet<ReportSchedule> ReportSchedules => Set<ReportSchedule>();
@@ -781,6 +783,20 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.GradeId });
             entity.Property(x => x.Amount).HasPrecision(14, 2);
             entity.Property(x => x.Percentage).HasPrecision(7, 4);
+        });
+
+        modelBuilder.Entity<GlAccount>(entity =>
+        {
+            entity.ToTable("gl_accounts");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+        });
+
+        modelBuilder.Entity<GlAccountMapping>(entity =>
+        {
+            entity.ToTable("gl_account_mappings");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.DriverKey }).IsUnique();
         });
 
         modelBuilder.Entity<CostCenter>(entity =>

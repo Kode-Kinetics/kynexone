@@ -5,6 +5,7 @@ import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
+import { financeGlApi, type GlAccount, type GlMappingRow } from '../api/financeGl';
 import {
   companiesApi,
   branchesApi,
@@ -59,7 +60,7 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 
 type Tab = 'aiSetup' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
-  | 'fiscalYears' | 'locations' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
+  | 'fiscalYears' | 'locations' | 'glMapping' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'aiSetup', label: 'AI Setup', icon: Sparkles },
@@ -75,6 +76,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'gccSettings', label: 'GCC Settings', icon: Globe },
   { id: 'fiscalYears', label: 'Fiscal Years', icon: Calendar },
   { id: 'locations', label: 'Locations', icon: MapPin },
+  { id: 'glMapping', label: 'GL Mapping', icon: Landmark },
   { id: 'notificationTemplates', label: 'Notifications', icon: Bell },
   { id: 'emailConfig', label: 'Email / SMTP', icon: Settings },
   { id: 'adminAuditLogs', label: 'Audit Logs', icon: ClipboardList },
@@ -876,6 +878,112 @@ function PayScaleEditor({ components, onChange }: { components: GradePayScaleCom
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── GL Mapping (chart of accounts + payroll driver→account) ─────────────────
+
+function GlMappingTab() {
+  const [accounts, setAccounts] = useState<GlAccount[]>([]);
+  const [rows, setRows] = useState<GlMappingRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [newAcct, setNewAcct] = useState<{ code: string; name: string; accountType: string }>({ code: '', name: '', accountType: 'Expense' });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [a, m] = await Promise.all([financeGlApi.listAccounts(), financeGlApi.listMappings()]);
+      setAccounts(a); setRows(m);
+    } catch { /**/ } finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const seed = async () => { setSeeding(true); try { await financeGlApi.seedDefaults(); await load(); } catch (e) { notifyApiError(e); } finally { setSeeding(false); } };
+  const addAccount = async () => {
+    if (!newAcct.code.trim() || !newAcct.name.trim()) return;
+    try { await financeGlApi.createAccount({ ...newAcct, isActive: true }); setNewAcct({ code: '', name: '', accountType: 'Expense' }); await load(); }
+    catch (e) { notifyApiError(e); }
+  };
+  const setMapping = (driverKey: string, accountId: string) =>
+    setRows((rs) => rs.map((r) => (r.driverKey === driverKey ? { ...r, mappedAccountId: accountId || null } : r)));
+  const saveMappings = async () => {
+    setSaving(true);
+    try {
+      const payload = rows.filter((r) => r.mappedAccountId).map((r) => ({ driverKey: r.driverKey, accountId: r.mappedAccountId as string }));
+      await financeGlApi.setMappings(payload); await load();
+    } catch (e) { notifyApiError(e); } finally { setSaving(false); }
+  };
+
+  if (loading) return <p className="text-sm text-slate-400">Loading…</p>;
+
+  return (
+    <div className="space-y-6">
+      <div className="surface p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Chart of Accounts</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">GL accounts payroll can post to. Unmapped drivers use built-in defaults.</p>
+          </div>
+          <button type="button" onClick={seed} disabled={seeding} className="btn-secondary text-xs disabled:opacity-60">{seeding ? 'Seeding…' : 'Seed defaults'}</button>
+        </div>
+        <div className="overflow-hidden rounded-lg border border-slate-200 dark:border-white/10">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+              <tr><th className="px-3 py-2">Code</th><th className="px-3 py-2">Name</th><th className="px-3 py-2">Type</th><th className="px-3 py-2"></th></tr>
+            </thead>
+            <tbody>
+              {accounts.map((a) => (
+                <tr key={a.id} className="border-t border-slate-100 dark:border-white/5">
+                  <td className="px-3 py-2 font-mono text-xs">{a.code}</td>
+                  <td className="px-3 py-2">{a.name}</td>
+                  <td className="px-3 py-2 text-slate-500">{a.accountType}</td>
+                  <td className="px-3 py-2 text-right"><ActiveBadge active={a.isActive} /></td>
+                </tr>
+              ))}
+              <tr className="border-t border-slate-100 dark:border-white/5">
+                <td className="px-3 py-2"><input aria-label="New account code" value={newAcct.code} onChange={(e) => setNewAcct((x) => ({ ...x, code: e.target.value }))} className="input h-8 w-24 text-xs" placeholder="5006" /></td>
+                <td className="px-3 py-2"><input aria-label="New account name" value={newAcct.name} onChange={(e) => setNewAcct((x) => ({ ...x, name: e.target.value }))} className="input h-8 w-full text-xs" placeholder="Account name" /></td>
+                <td className="px-3 py-2">
+                  <select aria-label="New account type" value={newAcct.accountType} onChange={(e) => setNewAcct((x) => ({ ...x, accountType: e.target.value }))} className="select h-8 text-xs">
+                    {['Asset', 'Liability', 'Expense', 'Equity', 'Revenue'].map((t) => <option key={t}>{t}</option>)}
+                  </select>
+                </td>
+                <td className="px-3 py-2 text-right"><button type="button" onClick={addAccount} className="btn-secondary h-8 px-2 text-xs"><Plus className="h-3 w-3" /> Add</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="surface p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Payroll GL Mapping</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">Point each payroll posting line at one of your accounts. Blank = use the default.</p>
+          </div>
+          <button type="button" onClick={saveMappings} disabled={saving} className="btn-primary text-xs disabled:opacity-60">{saving ? 'Saving…' : 'Save mappings'}</button>
+        </div>
+        <div className="space-y-1.5">
+          {rows.map((r) => (
+            <div key={r.driverKey} className="grid grid-cols-12 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-white/[0.03]">
+              <div className="col-span-5">
+                <p className="text-sm text-slate-800 dark:text-slate-100">{r.label}</p>
+                <p className="text-[11px] text-slate-400">default: {r.defaultAccount}</p>
+              </div>
+              <div className="col-span-2 text-xs text-slate-500">{r.accountType}</div>
+              <div className="col-span-5">
+                <select aria-label={`Account for ${r.label}`} value={r.mappedAccountId ?? ''} onChange={(e) => setMapping(r.driverKey, e.target.value)} className="select w-full text-xs">
+                  <option value="">— use default —</option>
+                  {accounts.filter((a) => a.isActive).map((a) => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+                </select>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2133,6 +2241,7 @@ export function SetupPage() {
         {activeTab === 'gccSettings' && <GCCSettingsTab />}
         {activeTab === 'fiscalYears' && <FiscalYearsTab />}
         {activeTab === 'locations' && <LocationsTab />}
+        {activeTab === 'glMapping' && <GlMappingTab />}
         {activeTab === 'notificationTemplates' && <NotificationTemplatesTab />}
         {activeTab === 'emailConfig' && <EmailConfigTab />}
         {activeTab === 'adminAuditLogs' && <AdminAuditLogsTab />}
