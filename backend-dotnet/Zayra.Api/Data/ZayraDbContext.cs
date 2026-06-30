@@ -341,6 +341,7 @@ public class ZayraDbContext : DbContext
     public DbSet<Department> Departments => Set<Department>();
     public DbSet<Designation> Designations => Set<Designation>();
     public DbSet<Grade> Grades => Set<Grade>();
+    public DbSet<GradePayScaleComponent> GradePayScaleComponents => Set<GradePayScaleComponent>();
     public DbSet<CostCenter> CostCenters => Set<CostCenter>();
     public DbSet<EmployeeIdRule> EmployeeIdRules => Set<EmployeeIdRule>();
     public DbSet<ApprovalWorkflow> ApprovalWorkflows => Set<ApprovalWorkflow>();
@@ -767,6 +768,19 @@ public class ZayraDbContext : DbContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
+            entity.Property(x => x.MinSalary).HasPrecision(14, 2);
+            entity.Property(x => x.MidSalary).HasPrecision(14, 2);
+            entity.Property(x => x.MaxSalary).HasPrecision(14, 2);
+            entity.Property(x => x.Currency).HasMaxLength(8);
+        });
+
+        modelBuilder.Entity<GradePayScaleComponent>(entity =>
+        {
+            entity.ToTable("grade_pay_scale_components");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.GradeId });
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.Percentage).HasPrecision(7, 4);
         });
 
         modelBuilder.Entity<CostCenter>(entity =>

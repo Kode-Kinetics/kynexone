@@ -85,7 +85,7 @@ public class GradesController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var grades = await _db.Grades.AsNoTracking().Where(g => g.TenantId == tenantId.Value && !g.IsDeleted).OrderBy(g => g.Code).ToListAsync(ct);
-        var rows = grades.Select(g => (IReadOnlyList<object?>)new object?[] { g.Code, g.Name, g.Level.ToString(), string.Empty, string.Empty, g.IsActive ? "true" : "false" });
+        var rows = grades.Select(g => (IReadOnlyList<object?>)new object?[] { g.Code, g.Name, g.Level.ToString(), g.MinSalary, g.MaxSalary, g.IsActive ? "true" : "false" });
         return File(Encoding.UTF8.GetBytes(Csv.Build(CsvHeaders, rows)), "text/csv", $"grades_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
@@ -189,24 +189,83 @@ public class GradesController : ControllerBase
             var row = rows[i]; var rowNum = i + 2;
             var code = row.GetValueOrDefault("Code", string.Empty).Trim();
             var name = row.GetValueOrDefault("Name", string.Empty).Trim();
-            var (errors, level, _, _) = ValidateGradeRow(row, code, name);
+            var (errors, level, minSal, maxSal) = ValidateGradeRow(row, code, name);
             var warnings = new List<string>();
             if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code)) errors.Add($"Duplicate Code '{code}' within this batch");
+            if (minSal.HasValue && maxSal.HasValue && minSal > maxSal) errors.Add("MinSalary cannot exceed MaxSalary");
             if (errors.Count > 0) { skipped++; rowResults.Add(new ImportRowResult(rowNum, code, name, ImportRowStatus.Error, errors, warnings)); continue; }
             bool isActive = !row.TryGetValue("IsActive", out var av) || !string.Equals(av, "false", StringComparison.OrdinalIgnoreCase);
             seenCodes.Add(code);
             if (existingByCode.TryGetValue(code.ToUpperInvariant(), out var existing))
             {
-                existing.Name = name; existing.Level = level ?? existing.Level; existing.IsActive = isActive; existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
+                existing.Name = name; existing.Level = level ?? existing.Level;
+                if (minSal.HasValue) existing.MinSalary = minSal.Value;
+                if (maxSal.HasValue) existing.MaxSalary = maxSal.Value;
+                existing.IsActive = isActive; existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
             }
             else
             {
-                _db.Grades.Add(new Grade { TenantId = tenantId, Code = code, Name = name, Level = level ?? 0, IsActive = isActive }); created++;
+                _db.Grades.Add(new Grade { TenantId = tenantId, Code = code, Name = name, Level = level ?? 0,
+                    MinSalary = minSal ?? 0, MaxSalary = maxSal ?? 0, IsActive = isActive }); created++;
             }
             rowResults.Add(new ImportRowResult(rowNum, code, name, ImportRowStatus.Ok, errors, warnings));
         }
         await _db.SaveChangesAsync(ct);
         return new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>());
+    }
+
+    // ── Pay-scale components (benefit breakdown per grade) ───────────────────
+
+    [HttpGet("{id:guid}/pay-scale")]
+    public async Task<IActionResult> GetPayScale(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var gradeExists = await _db.Grades.AnyAsync(g => g.TenantId == tenantId && g.Id == id && !g.IsDeleted, ct);
+        if (!gradeExists) return NotFound();
+        var components = await _db.GradePayScaleComponents.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.GradeId == id)
+            .OrderBy(c => c.SortOrder).ThenBy(c => c.ComponentName)
+            .ToListAsync(ct);
+        return Ok(components.Select(c => c.ToDto()));
+    }
+
+    /// <summary>Replace the grade's pay-scale component lines wholesale (the editor sends the full set).</summary>
+    [HttpPut("{id:guid}/pay-scale")]
+    [Authorize(Roles = "Admin,HR Manager")]
+    public async Task<IActionResult> SetPayScale(Guid id, [FromBody] List<GradePayScaleComponentRequest> components, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var grade = await _db.Grades.FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == id && !g.IsDeleted, ct);
+        if (grade is null) return NotFound();
+
+        var codes = components.Select(c => c.ComponentCode?.Trim().ToUpperInvariant()).Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
+        if (codes.Count != codes.Distinct().Count())
+            return BadRequest(new { message = "Duplicate ComponentCode within the pay scale." });
+
+        var existing = await _db.GradePayScaleComponents.Where(c => c.TenantId == tenantId && c.GradeId == id).ToListAsync(ct);
+        _db.GradePayScaleComponents.RemoveRange(existing);
+        foreach (var c in components)
+        {
+            _db.GradePayScaleComponents.Add(new GradePayScaleComponent
+            {
+                TenantId = tenantId.Value,
+                GradeId = id,
+                ComponentCode = (c.ComponentCode ?? string.Empty).Trim().ToUpperInvariant(),
+                ComponentName = (c.ComponentName ?? string.Empty).Trim(),
+                ComponentType = c.ComponentType,
+                CalculationType = c.CalculationType,
+                Amount = c.Amount,
+                Percentage = c.Percentage,
+                IsTaxable = c.IsTaxable,
+                Frequency = c.Frequency,
+                SortOrder = c.SortOrder,
+                IsActive = c.IsActive,
+            });
+        }
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { count = components.Count });
     }
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());

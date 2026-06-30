@@ -107,13 +107,37 @@ public record DesignationRequest(
     bool IsManagerRole = false,
     bool IsActive = true);
 
-public record GradeDto(Guid Id, string Code, string Name, string Band, int Level, bool IsActive);
+public record GradeDto(
+    Guid Id, string Code, string Name, string Band, int Level,
+    decimal MinSalary, decimal MidSalary, decimal MaxSalary, string Currency,
+    bool IsActive);
 
 public record GradeRequest(
     [Required, MaxLength(40)] string Code,
     [Required, MaxLength(120)] string Name,
     [MaxLength(80)] string? Band,
     [Range(0, 100)] int Level,
+    [Range(0, 100_000_000)] decimal MinSalary = 0,
+    [Range(0, 100_000_000)] decimal MidSalary = 0,
+    [Range(0, 100_000_000)] decimal MaxSalary = 0,
+    [MaxLength(8)] string? Currency = "SAR",
+    bool IsActive = true);
+
+public record GradePayScaleComponentDto(
+    Guid Id, string ComponentCode, string ComponentName, string ComponentType,
+    string CalculationType, decimal Amount, decimal Percentage, bool IsTaxable,
+    string Frequency, int SortOrder, bool IsActive);
+
+public record GradePayScaleComponentRequest(
+    [Required, MaxLength(40)] string ComponentCode,
+    [Required, MaxLength(120)] string ComponentName,
+    [MaxLength(20)] string ComponentType = "Earning",
+    [MaxLength(20)] string CalculationType = "Fixed",
+    [Range(0, 100_000_000)] decimal Amount = 0,
+    [Range(0, 100)] decimal Percentage = 0,
+    bool IsTaxable = false,
+    [MaxLength(20)] string Frequency = "Monthly",
+    int SortOrder = 0,
     bool IsActive = true);
 
 public record CostCenterDto(Guid Id, Guid? CompanyId, string Code, string Name, bool IsActive);
@@ -180,7 +204,14 @@ public static class OrganizationMappings
         designation.IsManagerRole,
         designation.IsActive);
 
-    public static GradeDto ToDto(this Grade grade) => new(grade.Id, grade.Code, grade.Name, grade.Band, grade.Level, grade.IsActive);
+    public static GradeDto ToDto(this Grade grade) => new(
+        grade.Id, grade.Code, grade.Name, grade.Band, grade.Level,
+        grade.MinSalary, grade.MidSalary, grade.MaxSalary, grade.Currency,
+        grade.IsActive);
+
+    public static GradePayScaleComponentDto ToDto(this GradePayScaleComponent c) => new(
+        c.Id, c.ComponentCode, c.ComponentName, c.ComponentType, c.CalculationType,
+        c.Amount, c.Percentage, c.IsTaxable, c.Frequency, c.SortOrder, c.IsActive);
 
     public static CostCenterDto ToDto(this CostCenter costCenter) => new(costCenter.Id, costCenter.CompanyId, costCenter.Code, costCenter.Name, costCenter.IsActive);
 }

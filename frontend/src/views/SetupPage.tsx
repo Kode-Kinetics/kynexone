@@ -26,6 +26,8 @@ import type {
   DesignationRequest,
   GradeDto,
   GradeRequest,
+  GradePayScaleComponentDto,
+  GradePayScaleComponentRequest,
   CostCenterDto,
   CostCenterRequest,
 } from '../api/organization';
@@ -733,6 +735,7 @@ function GradesTab() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<GradeDto | null>(null);
   const [form, setForm] = useState<GradeRequest>(emptyGrade());
+  const [payScale, setPayScale] = useState<GradePayScaleComponentRequest[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -745,19 +748,25 @@ function GradesTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm(emptyGrade()); setError(''); setModalOpen(true); };
-  const openEdit = (g: GradeDto) => {
+  const openNew = () => { setEditing(null); setForm(emptyGrade()); setPayScale([]); setError(''); setModalOpen(true); };
+  const openEdit = async (g: GradeDto) => {
     setEditing(g);
-    setForm({ code: g.code, name: g.name, band: g.band, level: g.level, isActive: g.isActive });
+    setForm({ code: g.code, name: g.name, band: g.band, level: g.level, minSalary: g.minSalary, midSalary: g.midSalary, maxSalary: g.maxSalary, currency: g.currency, isActive: g.isActive });
+    setPayScale([]);
     setError('');
     setModalOpen(true);
+    try {
+      const comps = await gradesApi.getPayScale(g.id);
+      setPayScale(comps.map(({ id, ...rest }: GradePayScaleComponentDto) => rest));
+    } catch { /* empty pay scale */ }
   };
   const handleSave = async () => {
     if (!form.code.trim() || !form.name.trim()) { setError('Code and name are required'); return; }
+    if ((form.maxSalary ?? 0) > 0 && (form.minSalary ?? 0) > (form.maxSalary ?? 0)) { setError('Min salary cannot exceed max salary'); return; }
     setSaving(true); setError('');
     try {
-      if (editing) await gradesApi.update(editing.id, form);
-      else await gradesApi.create(form);
+      const saved = editing ? await gradesApi.update(editing.id, form) : await gradesApi.create(form);
+      await gradesApi.setPayScale(saved.id, payScale);
       setModalOpen(false); load();
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
     finally { setSaving(false); }
@@ -770,9 +779,12 @@ function GradesTab() {
     finally { setDeleting(null); }
   };
 
+  const payRange = (g: GradeDto) =>
+    g.maxSalary > 0 ? `${g.currency} ${g.minSalary.toLocaleString()}–${g.maxSalary.toLocaleString()}` : '—';
+
   return (
     <>
-      <TableShell columns={['Code', 'Name', 'Band', 'Level', 'Status']} onAdd={openNew} addLabel="Add Grade" loading={loading} empty={items.length === 0} emptyLabel="No grades yet"
+      <TableShell columns={['Code', 'Name', 'Band', 'Level', 'Pay Range', 'Status']} onAdd={openNew} addLabel="Add Grade" loading={loading} empty={items.length === 0} emptyLabel="No grades yet"
         actions={
           <ImportExportToolbar
             entityName="Grades"
@@ -788,6 +800,7 @@ function GradesTab() {
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{g.name}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{g.band || '—'}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{g.level}</td>
+            <td className="px-4 py-3 tabular-nums text-slate-600 dark:text-slate-300">{payRange(g)}</td>
             <td className="px-4 py-3"><ActiveBadge active={g.isActive} /></td>
             <td className="px-4 py-3">
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
@@ -803,14 +816,67 @@ function GradesTab() {
       <Modal isOpen={modalOpen} title={editing ? 'Edit Grade' : 'Add Grade'} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Code" required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="G5" /></FormField>
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="Code" required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="G5" /></FormField>
+            <FormField label="Level"><input type="number" value={form.level} onChange={(e) => f('level', Number(e.target.value))} className="input w-full" /></FormField>
+          </div>
           <FormField label="Name" required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="Professional Grade 5" /></FormField>
           <FormField label="Band"><input value={form.band ?? ''} onChange={(e) => f('band', e.target.value)} className="input w-full" placeholder="Professional" /></FormField>
-          <FormField label="Level"><input type="number" value={form.level} onChange={(e) => f('level', Number(e.target.value))} className="input w-full" /></FormField>
+
+          {/* Pay scale band */}
+          <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">Pay Scale</p>
+            <div className="grid grid-cols-4 gap-2">
+              <FormField label="Min"><input type="number" value={form.minSalary ?? 0} onChange={(e) => f('minSalary', Number(e.target.value))} className="input w-full" /></FormField>
+              <FormField label="Mid"><input type="number" value={form.midSalary ?? 0} onChange={(e) => f('midSalary', Number(e.target.value))} className="input w-full" /></FormField>
+              <FormField label="Max"><input type="number" value={form.maxSalary ?? 0} onChange={(e) => f('maxSalary', Number(e.target.value))} className="input w-full" /></FormField>
+              <FormField label="Currency"><input value={form.currency ?? 'SAR'} onChange={(e) => f('currency', e.target.value)} className="input w-full" placeholder="SAR" /></FormField>
+            </div>
+            <PayScaleEditor components={payScale} onChange={setPayScale} />
+          </div>
+
           <FormField label="Status"><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">Active</option><option value="false">Inactive</option></select></FormField>
         </div>
       </Modal>
     </>
+  );
+}
+
+/** Editable grid of benefit/earning lines that make up a grade's standard package. */
+function PayScaleEditor({ components, onChange }: { components: GradePayScaleComponentRequest[]; onChange: (c: GradePayScaleComponentRequest[]) => void }) {
+  const update = (i: number, patch: Partial<GradePayScaleComponentRequest>) =>
+    onChange(components.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
+  const remove = (i: number) => onChange(components.filter((_, idx) => idx !== i));
+  const add = () => onChange([...components, {
+    componentCode: '', componentName: '', componentType: 'Earning', calculationType: 'Fixed',
+    amount: 0, percentage: 0, isTaxable: false, frequency: 'Monthly', sortOrder: components.length + 1, isActive: true,
+  }]);
+
+  return (
+    <div className="mt-3">
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Benefit components</span>
+        <button type="button" onClick={add} className="btn-secondary h-6 px-2 text-xs">+ Add component</button>
+      </div>
+      {components.length === 0 ? (
+        <p className="py-2 text-xs text-slate-400">No components — e.g. Basic, Housing, Transport, Ticket, Insurance, Health.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {components.map((c, i) => (
+            <div key={i} className="grid grid-cols-12 items-center gap-1.5">
+              <input aria-label="Component code" value={c.componentCode} onChange={(e) => update(i, { componentCode: e.target.value })} className="input col-span-2 h-8 text-xs" placeholder="BASIC" />
+              <input aria-label="Component name" value={c.componentName} onChange={(e) => update(i, { componentName: e.target.value })} className="input col-span-3 h-8 text-xs" placeholder="Basic" />
+              <select aria-label="Component type" title="Component type" value={c.componentType} onChange={(e) => update(i, { componentType: e.target.value })} className="select col-span-2 h-8 text-xs"><option>Earning</option><option>Benefit</option><option>Deduction</option></select>
+              <select aria-label="Calculation type" title="Calculation type" value={c.calculationType} onChange={(e) => update(i, { calculationType: e.target.value })} className="select col-span-2 h-8 text-xs"><option value="Fixed">Fixed</option><option value="PercentOfBasic">% of Basic</option></select>
+              {c.calculationType === 'PercentOfBasic'
+                ? <input aria-label="Percentage of basic" type="number" value={c.percentage} onChange={(e) => update(i, { percentage: Number(e.target.value) })} className="input col-span-2 h-8 text-xs" placeholder="%" />
+                : <input aria-label="Amount" type="number" value={c.amount} onChange={(e) => update(i, { amount: Number(e.target.value) })} className="input col-span-2 h-8 text-xs" placeholder="Amount" />}
+              <button type="button" onClick={() => remove(i)} aria-label="Remove component" className="col-span-1 grid h-8 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:text-rose-500 dark:border-white/10"><Trash2 className="h-3.5 w-3.5" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2001,7 +2067,8 @@ const emptyDesig = (): DesignationRequest => ({
 });
 
 const emptyGrade = (): GradeRequest => ({
-  code: '', name: '', band: '', level: 0, isActive: true,
+  code: '', name: '', band: '', level: 0,
+  minSalary: 0, midSalary: 0, maxSalary: 0, currency: 'SAR', isActive: true,
 });
 
 const emptyCostCenter = (companyId?: string): CostCenterRequest => ({

@@ -360,6 +360,17 @@ public class OrganizationSetupService : IOrganizationSetupService
         grade.Name = Clean(request.Name);
         grade.Band = Clean(request.Band);
         grade.Level = request.Level;
+
+        // Pay-scale band — must be ordered Min ≤ Mid ≤ Max when supplied.
+        if (request.MaxSalary > 0 && request.MinSalary > request.MaxSalary)
+            throw new InvalidOperationException("MinSalary cannot exceed MaxSalary.");
+        if (request.MidSalary > 0 && (request.MidSalary < request.MinSalary || (request.MaxSalary > 0 && request.MidSalary > request.MaxSalary)))
+            throw new InvalidOperationException("MidSalary must fall between MinSalary and MaxSalary.");
+        grade.MinSalary = request.MinSalary;
+        grade.MidSalary = request.MidSalary;
+        grade.MaxSalary = request.MaxSalary;
+        grade.Currency = string.IsNullOrWhiteSpace(request.Currency) ? "SAR" : Clean(request.Currency).ToUpperInvariant();
+
         grade.IsActive = request.IsActive;
     }
 
