@@ -93,7 +93,7 @@ public class VisaTrackingController : ControllerBase
             TenantId = tid, EmployeeId = req.EmployeeId, EmployeeName = req.EmployeeName ?? string.Empty,
             ReminderType = "VisaExpiry", DocumentType = req.VisaType,
             ExpiryDate = req.ExpiryDate,
-            ScheduledAtUtc = req.ExpiryDate.ToDateTime(TimeOnly.MinValue).AddDays(-alertDays),
+            ScheduledAtUtc = req.ExpiryDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddDays(-alertDays),
         });
 
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
@@ -189,7 +189,7 @@ public class VisaTrackingController : ControllerBase
             TenantId = tid, EmployeeId = req.EmployeeId, EmployeeName = req.EmployeeName ?? string.Empty,
             ReminderType = "PassportExpiry", DocumentType = "Passport",
             ExpiryDate = req.ExpiryDate,
-            ScheduledAtUtc = req.ExpiryDate.ToDateTime(TimeOnly.MinValue).AddDays(-90),
+            ScheduledAtUtc = req.ExpiryDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddDays(-90),
         });
 
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog

@@ -448,9 +448,12 @@ public class AccessController : ControllerBase
         return found ? NoContent() : NotFound();
     }
 
-    // Not restricted to Admin role — service layer checks grantor authority or Admin claim
+    // Not restricted to Admin role — service layer checks grantor authority or Admin claim.
+    // Plain [Authorize] overrides the class-level Admin-only policy while still requiring
+    // an authenticated user (AllowAnonymous here would open a permission-grant endpoint
+    // to unauthenticated callers).
     [HttpPost("users/{userId:guid}/grant-permission")]
-    [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+    [Microsoft.AspNetCore.Authorization.Authorize]
     public async Task<ActionResult<UserAccessDto>> GrantPermission(Guid userId, GrantPermissionRequest request, CancellationToken cancellationToken)
     {
         try

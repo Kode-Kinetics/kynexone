@@ -93,7 +93,7 @@ public class PlanningController : ControllerBase
             return Ok(new HeadcountCheckResult(false, 0, 0, 0, headCount, 0, true, "No establishment set for this department — no budget limit enforced."));
 
         var current = await _db.Employees.CountAsync(e =>
-            e.TenantId == tenantId && (e.Status == "Active" || e.Status == "Offboarded") &&
+            e.TenantId == tenantId && !e.IsDeleted && (e.Status == "Active" || e.Status == "Offboarded") &&
             (e.DepartmentId == dept.Id || (e.DepartmentId == null && e.Department == dept.NameEn)), ct);
         var openReq = await _db.ManpowerRequisitions
             .Where(r => r.TenantId == tenantId && OpenReqStatuses.Contains(r.Status) &&

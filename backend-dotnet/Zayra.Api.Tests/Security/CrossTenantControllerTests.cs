@@ -68,7 +68,7 @@ public class CrossTenantControllerTests
 
     private static EmployeeSelfServiceController EssController(ZayraDbContext db, Guid tenantId, int employeeId)
     {
-        var controller = new EmployeeSelfServiceController(db, new StubLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8));
+        var controller = new EmployeeSelfServiceController(db, new StubLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8), new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalPolicyService(db)));
         controller.ControllerContext = new ControllerContext { HttpContext = BuildEssHttpContext(tenantId, employeeId) };
         return controller;
     }

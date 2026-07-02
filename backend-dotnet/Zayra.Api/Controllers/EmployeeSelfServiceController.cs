@@ -26,12 +26,14 @@ public class EmployeeSelfServiceController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly ILetterService _letters;
     private readonly PdfRenderGate _pdfGate;
+    private readonly Application.Leave.ILeaveService _leaveService;
 
-    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate)
+    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService)
     {
         _letters = letters;
         _db = db;
         _pdfGate = pdfGate;
+        _leaveService = leaveService;
     }
 
     [HttpGet("dashboard")]
@@ -362,7 +364,12 @@ public class EmployeeSelfServiceController : ControllerBase
         if (employee is null) return NotFound();
         var leaveType = await _db.LeaveTypes.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.LeaveTypeId && x.IsActive, cancellationToken);
         if (leaveType is null) return BadRequest(new { message = "Leave type is not available." });
-        var days = Math.Max(1, request.EndDate.DayNumber - request.StartDate.DayNumber + 1);
+
+        // Route through LeaveService so ESS submissions get the same treatment as HR-side
+        // ones: overlap + balance checks, working-day calculation, approval-policy routing
+        // (canonical Submitted/PendingManagerApproval statuses) and the approver's inbox
+        // record. The previous direct insert wrote Status="PendingManager", which no
+        // report, calendar, or approval transition recognises — requests were stuck.
         var leave = new LeaveRequest
         {
             TenantId = tenantId,
@@ -374,14 +381,18 @@ public class EmployeeSelfServiceController : ControllerBase
             LeaveTypeName = leaveType.NameEn,
             StartDate = request.StartDate,
             EndDate = request.EndDate,
-            TotalDays = days,
             DayType = request.DayType ?? "Full",
             Reason = request.Reason,
-            Status = "PendingManager",
-            SubmittedAtUtc = DateTime.UtcNow
+            PayrollImpact = leaveType.IsPaid ? "Full" : "None",
         };
-        _db.LeaveRequests.Add(leave);
-        await _db.SaveChangesAsync(cancellationToken);
+        try
+        {
+            leave = await _leaveService.SubmitRequestAsync(tenantId, leave, cancellationToken);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
         await EssAudit(tenantId, employeeId, "ess.leave.requested", "LeaveRequest", leave.Id.ToString(), cancellationToken);
         return Created($"/api/ess/leave/request/{leave.Id}", leave);
     }

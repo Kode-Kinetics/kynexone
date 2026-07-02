@@ -602,7 +602,7 @@ public class SensitiveFieldMaskingTests
 
     private static EmployeeSelfServiceController CreateEssController(ZayraDbContext db, Guid tenantId, int employeeId)
     {
-        var controller = new EmployeeSelfServiceController(db, new FakeLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1));
+        var controller = new EmployeeSelfServiceController(db, new FakeLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1), new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalPolicyService(db)));
         var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
         {
             new Claim("tenant_id", tenantId.ToString()),

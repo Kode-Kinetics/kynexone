@@ -111,8 +111,29 @@ public class ZayraDbContext : DbContext
                 TryStamp(entry, "UpdatedAtUtc", now);
                 if (_actorId.HasValue) TryStamp(entry, "UpdatedBy", _actorId.Value);
             }
+
+            if (entry.State is EntityState.Added or EntityState.Modified)
+                NormalizeDateTimeKinds(entry);
         }
         return await base.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Npgsql maps DateTime columns to 'timestamp with time zone' and throws when a value's
+    /// Kind is Unspecified. JSON model binding produces Unspecified for payloads like
+    /// "2024-01-01", and DateOnly.ToDateTime() does too — a recurring 500 class. Normalize
+    /// every DateTime being written: Unspecified is taken as UTC wall-clock; Local converts.
+    /// </summary>
+    private static void NormalizeDateTimeKinds(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry)
+    {
+        foreach (var prop in entry.Properties)
+        {
+            var clr = prop.Metadata.ClrType;
+            if (clr != typeof(DateTime) && clr != typeof(DateTime?)) continue;
+            if (prop.CurrentValue is not DateTime dt) continue;
+            if (dt.Kind == DateTimeKind.Unspecified) prop.CurrentValue = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+            else if (dt.Kind == DateTimeKind.Local) prop.CurrentValue = dt.ToUniversalTime();
+        }
     }
 
     private static void TryStamp(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry, string prop, object value, bool skipIfSet = false)
