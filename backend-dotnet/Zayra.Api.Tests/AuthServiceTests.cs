@@ -120,6 +120,38 @@ public class AuthServiceTests
         Assert.True(await db.AuditLogs.AnyAsync(x => x.Action == "auth.refresh"));
     }
 
+    // ── Tenant-mandated MFA enforcement ───────────────────────────────────────
+
+    [Fact]
+    public async Task Login_TenantRequiresMfa_UnenrolledUser_GetsNoTokens_AndEnrollmentSignal()
+    {
+        var (db, _, _) = await SeedUserAsync();
+        // Tenant policy now mandates MFA for all users, but the seeded user has NOT enrolled TOTP.
+        var sec = await db.SecuritySettings.FirstAsync();
+        sec.MfaRequired = true;
+        await db.SaveChangesAsync();
+
+        var auth = BuildService(db);
+        var login = await auth.LoginAsync(new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+
+        Assert.Null(login.Tokens);                       // NO session is issued
+        Assert.Null(login.Challenge);
+        Assert.True(login.RequiresMfaEnrollment);        // client is told to enroll
+        Assert.True(await db.AuditLogs.AnyAsync(x => x.Action == "auth.mfa_enrollment_required"));
+    }
+
+    [Fact]
+    public async Task Login_TenantDoesNotRequireMfa_UnenrolledUser_LogsInNormally()
+    {
+        // Guard against over-enforcement: with MfaRequired=false (the default) login is unaffected.
+        var (db, _, _) = await SeedUserAsync();
+        var auth = BuildService(db);
+        var login = await auth.LoginAsync(new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+
+        Assert.NotNull(login.Tokens);
+        Assert.False(login.RequiresMfaEnrollment);
+    }
+
     // ── Lockout: failure counter ──────────────────────────────────────────────
 
     [Fact]

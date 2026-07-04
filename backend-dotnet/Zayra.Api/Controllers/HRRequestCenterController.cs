@@ -140,6 +140,10 @@ public class HRRequestCenterController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (request is null) return NotFound();
 
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(request.EmployeeId))
+            return Forbid();
+
         var comments = await _db.HRRequestComments
             .Where(c => c.TenantId == tenantId && c.HRRequestId == id)
             .OrderBy(c => c.CreatedAtUtc)

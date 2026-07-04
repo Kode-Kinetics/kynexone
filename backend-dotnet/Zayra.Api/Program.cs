@@ -48,8 +48,12 @@ var builder = WebApplication.CreateBuilder(args);
 {
     const string DevTenantAudience   = "kynexone-tenant";
     const string DevPlatformAudience = "kynexone-platform";
+    const int    MinSigningKeyLength = 64;
 
-    if (builder.Environment.IsProduction())
+    // Enforce in EVERY non-Development environment (Production, Staging, QA…). A non-prod slot that
+    // holds real data must not silently run on the committed placeholder key, which would let anyone
+    // with the source forge admin JWTs.
+    if (!builder.Environment.IsDevelopment())
     {
         var jwtSection     = builder.Configuration.GetSection("Jwt");
         var prodTenantAud  = jwtSection["TenantAudience"];
@@ -63,10 +67,14 @@ var builder = WebApplication.CreateBuilder(args);
             prodErrors.Add($"Jwt:PlatformAudience is null, empty, or still the dev default ('{DevPlatformAudience}'). Set Jwt__PlatformAudience env var.");
         if (string.IsNullOrWhiteSpace(prodSigningKey) || prodSigningKey.StartsWith("CHANGE_ME"))
             prodErrors.Add("Jwt:SigningKey is null, empty, or still the placeholder value. Set Jwt__SigningKey env var to a ≥64-char random secret.");
+        else if (prodSigningKey.Length < MinSigningKeyLength)
+            prodErrors.Add($"Jwt:SigningKey is too short ({prodSigningKey.Length} chars). Use a ≥{MinSigningKeyLength}-char random secret so the HMAC key has adequate entropy.");
+        if (prodTenantAud is not null && prodTenantAud == prodPlatformAud)
+            prodErrors.Add("Jwt:TenantAudience and Jwt:PlatformAudience must differ — identical audiences collapse the tenant/platform token boundary.");
 
         if (prodErrors.Count > 0)
             throw new InvalidOperationException(
-                "Production JWT configuration fail-fast:\n" + string.Join("\n", prodErrors.Select(e => "  " + e)));
+                $"[{builder.Environment.EnvironmentName}] JWT configuration fail-fast:\n" + string.Join("\n", prodErrors.Select(e => "  " + e)));
     }
 }
 
@@ -159,6 +167,15 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("PlatformAdmin", policy => policy
         .RequireClaim("is_platform_admin", "true")
         .RequireClaim("aud", jwtOptions.PlatformAudience));
+
+    // DEFAULT-DENY: any endpoint that does NOT carry an explicit [Authorize]/[AllowAnonymous] now
+    // requires an authenticated user. This makes a forgotten authorization attribute fail CLOSED (401)
+    // instead of silently exposing the endpoint. Truly public endpoints are explicitly [AllowAnonymous]
+    // (AuthController, MfaController challenge-verify, PricingController, /health, tenant localization),
+    // which overrides this fallback.
+    options.FallbackPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
 });
 
 builder.Services.AddScoped<IPasswordHasher, Pbkdf2PasswordHasher>();
@@ -338,6 +355,19 @@ builder.Services.AddRateLimiter(o =>
                 QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
                 QueueLimit               = 0,
             }));
+
+    // Public (unauthenticated) marketing writes — quote/estimate submissions. Throttle per-IP to
+    // prevent spam / storage-exhaustion since these insert rows without any auth.
+    o.AddPolicy("public_write", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("PublicWritePermitLimit", 5),
+                Window                   = TimeSpan.FromSeconds(rl.GetValue("PublicWriteWindowSeconds", 60)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
 });
 
 builder.Services.AddEndpointsApiExplorer();
@@ -454,7 +484,7 @@ app.MapGet("/health", async (ZayraDbContext db) =>
     {
         return Results.Problem($"Database error: {ex.Message}", statusCode: 503);
     }
-});
+}).AllowAnonymous(); // health check is public; explicit so the default-deny fallback policy allows it
 
 // NOTE: employee endpoints live exclusively in EmployeesController — the former
 // minimal-API duplicates here caused AmbiguousMatchException on /api/employees/reports/*.

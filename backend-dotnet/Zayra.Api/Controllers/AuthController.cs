@@ -27,6 +27,8 @@ public class AuthController : ControllerBase
             var result = await _authService.LoginAsync(request, GetContext(), cancellationToken);
             if (result.RequiresMfa)
                 return Ok(new { mfaRequired = true, challengeToken = result.Challenge!.ChallengeToken, expiresInSeconds = result.Challenge.ExpiresInSeconds });
+            if (result.RequiresMfaEnrollment)
+                return Ok(new { mfaEnrollmentRequired = true, message = "Your organization requires multi-factor authentication. Please set up MFA to continue." });
             return Ok(result.Tokens);
         }
         catch (UnauthorizedAccessException ex) { return Unauthorized(new { message = ex.Message }); }
@@ -51,6 +53,7 @@ public class AuthController : ControllerBase
 
     [HttpPost("forgot-password")]
     [AllowAnonymous]
+    [EnableRateLimiting("auth_login")] // throttle to prevent reset-email bombing / enumeration abuse
     public async Task<ActionResult<ForgotPasswordResponse>> ForgotPassword(ForgotPasswordRequest request, CancellationToken cancellationToken)
     {
         return Ok(await _authService.ForgotPasswordAsync(request, GetContext(), cancellationToken));
@@ -58,6 +61,7 @@ public class AuthController : ControllerBase
 
     [HttpPost("reset-password")]
     [AllowAnonymous]
+    [EnableRateLimiting("auth_login")] // throttle reset-token guessing/replay
     public async Task<IActionResult> ResetPassword(ResetPasswordRequest request, CancellationToken cancellationToken)
     {
         try
@@ -70,6 +74,7 @@ public class AuthController : ControllerBase
 
     [HttpPost("accept-invitation")]
     [AllowAnonymous]
+    [EnableRateLimiting("auth_login")] // throttle invitation-token guessing
     public async Task<ActionResult<AuthResponse>> AcceptInvitation(AcceptInvitationRequest request, CancellationToken cancellationToken)
     {
         try { return Ok(await _authService.AcceptInvitationAsync(request, GetContext(), cancellationToken)); }

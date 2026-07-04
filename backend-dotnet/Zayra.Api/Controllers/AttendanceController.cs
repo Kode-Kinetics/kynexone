@@ -135,8 +135,16 @@ public class AttendanceController : ControllerBase
 
     [HttpGet("events/raw")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (operational punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public Task<PagedResult<AttendanceRawEvent>> Raw([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int? employeeId, [FromQuery] bool? processed, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default) =>
-        _attendance.GetRawEventsAsync(RequireTenant(), from, to, employeeId, processed, page, pageSize, ct);
+    public async Task<PagedResult<AttendanceRawEvent>> Raw([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int? employeeId, [FromQuery] bool? processed, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
+    {
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        var (singleId, setFilter) = scope.Constrain(employeeId);
+        // This service takes a single employeeId (no set-filter overload). For a scoped caller
+        // who requested no specific employee, Constrain yields a set — fail closed to the
+        // caller's own record rather than leaking the whole team.
+        var scopedEmployeeId = setFilter is not null ? scope.CallerEmployeeId : singleId;
+        return await _attendance.GetRawEventsAsync(RequireTenant(), from, to, scopedEmployeeId, processed, page, pageSize, ct);
+    }
 
     [HttpGet]
     [HttpGet("daily")]

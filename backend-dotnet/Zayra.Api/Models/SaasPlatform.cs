@@ -34,6 +34,13 @@ public class PlatformUser
     public DateTime? MfaConfiguredAtUtc { get; set; }
     public DateTime? LastLoginAtUtc { get; set; }
     public string? LastLoginIp { get; set; }
+    // Brute-force lockout for platform-admin accounts (highest-privilege in the system). Mirrors the
+    // tenant-user lockout in AuthService: after MaxFailed wrong passwords the account is locked for a
+    // cool-off window. Without this, only the per-IP rate limiter slowed a distributed attack.
+    public int FailedLoginCount { get; set; }
+    public DateTime? LockoutEndUtc { get; set; }
+    public const int MaxFailedLogins = 5;
+    public const int LockoutMinutes = 15;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
 }
@@ -56,6 +63,13 @@ public class MfaChallengeToken : INullableTenantOwned
     public string CreatedByIp { get; set; } = string.Empty;
     /// <summary>Set when the token is consumed. Null = still valid.</summary>
     public DateTime? UsedAtUtc { get; set; }
+    /// <summary>
+    /// Wrong-TOTP attempts against this challenge. The challenge is consumed once this reaches
+    /// <see cref="MaxAttempts"/>, so a single challenge token cannot be used to brute-force the
+    /// 6-digit code within its TTL (MFA-bypass hardening).
+    /// </summary>
+    public int FailedAttempts { get; set; }
+    public const int MaxAttempts = 5;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public bool IsValid => UsedAtUtc is null && DateTime.UtcNow < ExpiresAtUtc;
 }

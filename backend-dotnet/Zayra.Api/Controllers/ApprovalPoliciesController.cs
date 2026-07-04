@@ -377,10 +377,8 @@ public class ApprovalPoliciesController : ControllerBase
         return new ImportCommitResult(policyRows.Count, created, updated, skipped, rowResults, Array.Empty<string>());
     }
 
-    private static string Escape(string s) =>
-        s.Contains(',') || s.Contains('"') || s.Contains('\n')
-            ? "\"" + s.Replace("\"", "\"\"") + "\""
-            : s;
+    // Formula-injection-safe CSV cell escaping is centralized in Csv.Escape.
+    private static string Escape(string s) => Csv.Escape(s);
 }
 
 public record ApprovalPolicyStepRequest(

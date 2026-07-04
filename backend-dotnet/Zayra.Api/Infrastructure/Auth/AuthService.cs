@@ -137,6 +137,17 @@ public class AuthService : IAuthService
             return new AuthLoginResult(null, new MfaChallengeDto(challengeToken, 300));
         }
 
+        // Phase 4c — tenant-mandated MFA: if the tenant policy requires MFA for all users but this
+        // user hasn't enrolled TOTP, do NOT issue a session. Signal that enrollment is required so
+        // the client forces setup. Without this, a tenant enabling "require MFA for all" got no
+        // actual enforcement — password-only login still worked for un-enrolled users.
+        if (sec?.MfaRequired == true)
+        {
+            await _auditService.WriteAsync("auth.mfa_enrollment_required", "User", user.Id.ToString(),
+                context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
+            return new AuthLoginResult(null, null, RequiresMfaEnrollment: true);
+        }
+
         // Phase 5 — successful login: clear all lockout state and issue tokens
         user.FailedLoginCount = 0;
         user.IsLocked         = false;

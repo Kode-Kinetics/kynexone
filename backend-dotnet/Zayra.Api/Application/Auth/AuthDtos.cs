@@ -218,8 +218,9 @@ public record SecuritySettingDto(
 /// The client must POST this token + TOTP code to /api/auth/mfa/challenge/verify to obtain full tokens.</summary>
 public record MfaChallengeDto(string ChallengeToken, int ExpiresInSeconds);
 
-/// <summary>Union result from LoginAsync — exactly one of Tokens or Challenge is non-null.</summary>
-public record AuthLoginResult(AuthResponse? Tokens, MfaChallengeDto? Challenge)
+/// <summary>Result from LoginAsync — one of: Tokens (success), Challenge (MFA code needed),
+/// or RequiresMfaEnrollment (tenant mandates MFA but this user hasn't set it up yet).</summary>
+public record AuthLoginResult(AuthResponse? Tokens, MfaChallengeDto? Challenge, bool RequiresMfaEnrollment = false)
 {
     public bool RequiresMfa => Challenge is not null;
 }

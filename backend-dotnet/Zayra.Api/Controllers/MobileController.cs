@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -10,6 +11,13 @@ namespace Zayra.Api.Controllers;
 /// <summary>
 /// Mobile-optimised endpoints. Returns lightweight payloads suitable for native apps.
 /// All endpoints require authentication. Mobile devices register via POST /api/mobile/register-device.
+///
+/// SECURITY: this is a pure self-service surface. Every endpoint operates on the CALLER's own
+/// employee record, resolved server-side from the JWT (see <see cref="ResolveCallerEmployeeIdAsync"/>).
+/// A client-supplied employeeId (route or body) is never trusted for object access — it is only
+/// honoured when it matches the caller's own id — so one employee cannot read another employee's
+/// payslips/salary/leave/notifications or punch attendance as a colleague (IDOR / broken object-level
+/// authorization, CWE-639).
 /// </summary>
 [ApiController]
 [Route("api/mobile")]
@@ -20,6 +28,28 @@ public class MobileController : ControllerBase
 
     public MobileController(ZayraDbContext db) => _db = db;
 
+    /// <summary>
+    /// Resolves the authenticated caller's own employee id from the JWT (employee_id claim, with a
+    /// work/personal-email fallback), scoped to the caller's tenant. Returns null when the account is
+    /// not linked to an employee record in this tenant. Mirrors EmployeeSelfServiceController.
+    /// </summary>
+    private async Task<int?> ResolveCallerEmployeeIdAsync(Guid tenantId, CancellationToken ct)
+    {
+        if (int.TryParse(User.FindFirstValue("employee_id"), out var empId))
+            return empId;
+
+        var email = User.FindFirstValue("email") ?? User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(email))
+        {
+            var normalizedEmail = email.Trim().ToUpperInvariant();
+            var employee = await _db.Employees.AsNoTracking()
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted &&
+                    (x.WorkEmail.ToUpper() == normalizedEmail || x.PersonalEmail.ToUpper() == normalizedEmail), ct);
+            if (employee is not null) return employee.Id;
+        }
+        return null;
+    }
+
     // ── Device Registration ──────────────────────────────────────────────────
 
     [HttpPost("register-device")]
@@ -28,9 +58,14 @@ public class MobileController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
+        // Always register the device against the CALLER's own employee id — never req.EmployeeId,
+        // which a client could set to a colleague's id to hijack their push notifications.
+        var employeeId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (employeeId is null) return Forbid();
+
         var existing = await _db.EmployeeMobileDevices
             .FirstOrDefaultAsync(d => d.TenantId == tenantId
-                && d.EmployeeId == req.EmployeeId
+                && d.EmployeeId == employeeId
                 && d.DeviceIdentifier == req.DeviceIdentifier, ct);
 
         if (existing is null)
@@ -38,7 +73,7 @@ public class MobileController : ControllerBase
             existing = new EmployeeMobileDevice
             {
                 TenantId = tenantId.Value,
-                EmployeeId = req.EmployeeId,
+                EmployeeId = employeeId.Value,
                 DeviceIdentifier = req.DeviceIdentifier,
                 Platform = req.Platform,
                 PushToken = req.PushToken ?? string.Empty
@@ -63,6 +98,11 @@ public class MobileController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+
+        var callerId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (callerId is null) return Forbid();
+        if (employeeId != callerId.Value) return Forbid();
+        employeeId = callerId.Value;
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
@@ -116,11 +156,16 @@ public class MobileController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
+        // Punch is always recorded for the CALLER — a client cannot punch in/out as a colleague
+        // by setting req.EmployeeId (attendance fraud / IDOR).
+        var employeeId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (employeeId is null) return Forbid();
+
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         var existing = await _db.AttendanceDailyRecords
             .FirstOrDefaultAsync(a => a.TenantId == tenantId
-                && a.EmployeeId == req.EmployeeId
+                && a.EmployeeId == employeeId
                 && a.WorkDate == today, ct);
 
         var nowUtc = DateTime.UtcNow;
@@ -129,7 +174,7 @@ public class MobileController : ControllerBase
             existing = new AttendanceDailyRecord
             {
                 TenantId = tenantId.Value,
-                EmployeeId = req.EmployeeId,
+                EmployeeId = employeeId.Value,
                 WorkDate = today,
                 Status = "Present"
             };
@@ -154,7 +199,7 @@ public class MobileController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return Ok(new
         {
-            employeeId = req.EmployeeId,
+            employeeId,
             direction = req.Direction,
             timestamp = nowUtc,
             status = existing.Status,
@@ -171,6 +216,11 @@ public class MobileController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+
+        var callerId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (callerId is null) return Forbid();
+        if (employeeId != callerId.Value) return Forbid();
+        employeeId = callerId.Value;
 
         var balances = await _db.EmployeeLeaveBalances
             .Where(b => b.TenantId == tenantId && b.EmployeeId == employeeId
@@ -199,6 +249,11 @@ public class MobileController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
+        var callerId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (callerId is null) return Forbid();
+        if (employeeId != callerId.Value) return Forbid();
+        employeeId = callerId.Value;
+
         var payslips = await _db.Payslips
             .Where(p => p.TenantId == tenantId && p.EmployeeId == employeeId)
             .Join(_db.PayrollRuns.Where(r => r.TenantId == tenantId),
@@ -226,6 +281,11 @@ public class MobileController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+
+        var callerId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (callerId is null) return Forbid();
+        if (employeeId != callerId.Value) return Forbid();
+        employeeId = callerId.Value;
 
         var query = _db.EmployeeNotifications
             .Where(n => n.TenantId == tenantId && n.EmployeeId == employeeId);

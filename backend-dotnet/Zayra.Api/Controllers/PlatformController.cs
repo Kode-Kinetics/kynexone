@@ -85,20 +85,42 @@ public class PlatformController : ControllerBase
 
         if (dbUser is not null)
         {
+            // Brute-force lockout (see PlatformUser.FailedLoginCount): reject while a lockout is active.
+            if (dbUser.LockoutEndUtc.HasValue && dbUser.LockoutEndUtc > DateTime.UtcNow)
+            {
+                _db.LoginActivities.Add(new LoginActivity
+                {
+                    UserId = dbUser.Id, EmailAttempted = dbUser.Email,
+                    EventType = LoginEventTypes.PlatformLoginFailed, FailureReason = "account_locked",
+                    IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    UserAgent = HttpContext.Request.Headers.UserAgent.ToString(),
+                });
+                await _db.SaveChangesAsync(ct);
+                return Unauthorized(new { message = "Invalid platform admin credentials." });
+            }
+
             if (!_passwordHasher.Verify(req.Password, dbUser.PasswordHash))
             {
+                dbUser.FailedLoginCount++;
+                if (dbUser.FailedLoginCount >= PlatformUser.MaxFailedLogins)
+                    dbUser.LockoutEndUtc = DateTime.UtcNow.AddMinutes(PlatformUser.LockoutMinutes);
+                dbUser.UpdatedAtUtc = DateTime.UtcNow;
                 _db.LoginActivities.Add(new LoginActivity
                 {
                     UserId        = dbUser.Id,
                     EmailAttempted = dbUser.Email,
                     EventType     = LoginEventTypes.PlatformLoginFailed,
-                    FailureReason = "password_mismatch",
+                    FailureReason = dbUser.LockoutEndUtc.HasValue ? "account_locked_after_repeated_failures" : "password_mismatch",
                     IpAddress     = HttpContext.Connection.RemoteIpAddress?.ToString(),
                     UserAgent     = HttpContext.Request.Headers.UserAgent.ToString(),
                 });
                 await _db.SaveChangesAsync(ct);
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
             }
+
+            // Successful password: clear any lockout state.
+            dbUser.FailedLoginCount = 0;
+            dbUser.LockoutEndUtc = null;
 
             // MFA challenge: if the DB platform user has TOTP configured, issue a challenge
             // token instead of the full JWT. The client must complete /api/platform/auth/mfa/challenge/verify.
@@ -128,8 +150,12 @@ public class PlatformController : ControllerBase
             if (string.IsNullOrWhiteSpace(expectedEmail) || string.IsNullOrWhiteSpace(expectedPassword))
                 return StatusCode(503, new { message = "Platform admin credentials are not configured." });
 
-            if (!string.Equals(req.Email, expectedEmail, StringComparison.OrdinalIgnoreCase) ||
-                req.Password != expectedPassword)
+            // Constant-time password comparison (avoid a timing side-channel on the bootstrap secret).
+            var emailMatches = string.Equals(req.Email, expectedEmail, StringComparison.OrdinalIgnoreCase);
+            var passwordMatches = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                System.Text.Encoding.UTF8.GetBytes(req.Password ?? string.Empty),
+                System.Text.Encoding.UTF8.GetBytes(expectedPassword));
+            if (!emailMatches || !passwordMatches)
             {
                 _db.LoginActivities.Add(new LoginActivity
                 {
@@ -884,16 +910,26 @@ public class PlatformController : ControllerBase
             new(JwtRegisteredClaimNames.Name, user.FullName),
             new("tenant_id", tenant.Id.ToString()),
             new("tenant", tenant.Slug),
-            new("impersonated_by", "platform_admin"),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            new("impersonated_by", "platform_admin")
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
         // Impersonation tokens grant access to tenant-scoped endpoints, so they use TenantAudience.
+        var jti = Guid.NewGuid().ToString();
+        claims.Add(new Claim(JwtRegisteredClaimNames.Jti, jti));
+        // Bind the acting platform admin into the token so tenant-side audit can attribute actions to
+        // the impersonator, not just the impersonated user.
+        claims.Add(new Claim("act_sub", GetPlatformUserId()?.ToString() ?? "platform-admin"));
+        claims.Add(new Claim("act_email", PlatformActorEmail()));
         var token = new JwtSecurityToken(_jwt.Issuer, _jwt.TenantAudience, claims, expires: expiresAt, signingCredentials: credentials);
         var tokenString = new JwtSecurityTokenHandler().WriteToken(token);
+
+        // SOC2: privileged impersonation MUST be audited and attributable (who, whom, when, jti).
+        AuditPlatformAction(tenant.Id, "Impersonate", "User", user.Id.ToString(),
+            new { targetUserId = user.Id, targetEmail = user.Email, jti, expiresAt });
+        await _db.SaveChangesAsync(ct);
 
         return Ok(new
         {
@@ -1422,7 +1458,32 @@ public class PlatformController : ControllerBase
             Action = action,
             OldValuesJson = System.Text.Json.JsonSerializer.Serialize(oldVals),
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(newVals),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+        });
+    }
+
+    /// <summary>Email of the acting platform admin (from the platform JWT), for audit attribution.</summary>
+    private string PlatformActorEmail() =>
+        User.FindFirstValue(JwtRegisteredClaimNames.Email)
+        ?? User.FindFirstValue(ClaimTypes.Email)
+        ?? "platform_admin";
+
+    /// <summary>
+    /// Writes an attributable platform-admin audit record (SOC2 privileged-access evidence). Unlike the
+    /// tenant-scoped writes, this records WHICH platform admin performed the action. Caller must SaveChanges.
+    /// </summary>
+    private void AuditPlatformAction(Guid tenantId, string action, string entityType, string entityId, object details)
+    {
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId = tenantId,
+            EntityType = entityType,
+            EntityId = entityId,
+            Action = action,
+            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { actingAdminId = GetPlatformUserId(), actingAdminEmail = PlatformActorEmail() }),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(details),
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
     }
@@ -2039,6 +2100,8 @@ public class PlatformController : ControllerBase
             new("tenant", tenant.Slug),
             new("impersonated_by", "platform_admin"),
             new("support_reason", req.Reason.Trim()),
+            new("act_sub", GetPlatformUserId()?.ToString() ?? "platform-admin"),
+            new("act_email", PlatformActorEmail()),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
@@ -2058,7 +2121,7 @@ public class PlatformController : ControllerBase
             TargetUserId = userId,
             TargetUserEmail = user.Email,
             Reason = req.Reason.Trim(),
-            StartedByEmail = PlatformAdminEmail,
+            StartedByEmail = PlatformActorEmail(),
             StartedByIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
             ExpiresAtUtc = expiresAt,
             TokenHash = tokenHash
@@ -2077,9 +2140,10 @@ public class PlatformController : ControllerBase
                 targetUserEmail = user.Email,
                 tenantSlug = tenant.Slug,
                 reason = req.Reason.Trim(),
+                actingAdminId = GetPlatformUserId(),
                 expiresAt
             }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 

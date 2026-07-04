@@ -83,6 +83,11 @@ public class MfaService : IMfaService
         {
             user.MfaFailedCount++;
             user.UpdatedAtUtc = DateTime.UtcNow;
+            // Consume the challenge after too many wrong codes so the same token can't be replayed
+            // to grind the 6-digit space within the TTL. The user must re-authenticate for a new one.
+            challenge.FailedAttempts++;
+            if (challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts)
+                challenge.UsedAtUtc = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
             return null;
         }
@@ -169,7 +174,15 @@ public class MfaService : IMfaService
         try { plainSecret = _totp.DecryptSecret(pu.MfaSecretEncrypted); }
         catch { return null; }
 
-        if (!_totp.Verify(plainSecret, totpCode)) return null;
+        if (!_totp.Verify(plainSecret, totpCode))
+        {
+            // Same brute-force hardening as the tenant path: consume the challenge after MaxAttempts.
+            challenge.FailedAttempts++;
+            if (challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts)
+                challenge.UsedAtUtc = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+            return null;
+        }
 
         challenge.UsedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);

@@ -219,6 +219,33 @@ public class MfaTests
     }
 
     [Fact]
+    public async Task VerifyChallenge_ConsumesChallengeAfterMaxWrongAttempts_ThenCorrectCodeFails()
+    {
+        // Security: a single challenge token must not be reusable to brute-force the 6-digit code.
+        var (db, totp, tokens) = MakeServices();
+        var svc    = MakeMfaService(db, totp, tokens);
+        var secret = totp.GenerateBase32Secret();
+        var user   = MakeUser(TenantA, mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secret));
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        var raw = await svc.CreateChallengeAsync(user.Id, TenantA, "127.0.0.1", CancellationToken.None);
+
+        // Exhaust the attempt budget with wrong codes.
+        for (var i = 0; i < MfaChallengeToken.MaxAttempts; i++)
+            Assert.Null(await svc.VerifyChallengeAsync(raw, "000000", CancellationToken.None));
+
+        var challenge = await db.MfaChallengeTokens.FirstAsync();
+        Assert.NotNull(challenge.UsedAtUtc);                    // challenge consumed → no longer valid
+        Assert.False(challenge.IsValid);
+
+        // Even the CORRECT code must now be rejected: the attacker must re-authenticate for a new challenge.
+        var correct = ComputeTotpDirectly(secret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
+        var afterCap = await svc.VerifyChallengeAsync(raw, correct, CancellationToken.None);
+        Assert.Null(afterCap);
+    }
+
+    [Fact]
     public async Task VerifyChallenge_ExpiredToken_ReturnsNull()
     {
         var (db, totp, tokens) = MakeServices();

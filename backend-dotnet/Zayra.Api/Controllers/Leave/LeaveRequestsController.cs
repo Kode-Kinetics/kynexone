@@ -87,6 +87,10 @@ public class LeaveRequestsController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (request is null) return NotFound();
 
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(request.EmployeeId))
+            return Forbid();
+
         var approvals = await _db.LeaveApprovals
             .Where(a => a.TenantId == tenantId && a.LeaveRequestId == id)
             .OrderBy(a => a.StepNumber)

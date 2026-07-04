@@ -5,6 +5,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
 
@@ -118,32 +119,51 @@ public class AttendanceService : IAttendanceService
                  && !string.IsNullOrWhiteSpace(device.EndpointUrl))
         {
             // Pull API: attempt an authenticated HTTP GET to the device's REST endpoint
-            try
-            {
-                using var http = _httpClientFactory.CreateClient();
-                http.Timeout = TimeSpan.FromSeconds(10);
-                var url = BuildPollUrl(device);
-                var req = BuildDeviceRequest(device, url);
-                var response = await http.SendAsync(req, ct);
-                status = response.IsSuccessStatusCode ? "Success" : $"HTTP {(int)response.StatusCode}";
-                errorMessage = response.IsSuccessStatusCode
-                    ? $"Device responded with HTTP {(int)response.StatusCode}. Connection OK. Auth: {device.AuthType ?? "None"}."
-                    : $"Device returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Check endpoint URL and credentials.";
-            }
-            catch (TaskCanceledException)
+            var pullUrl = BuildPollUrl(device);
+            // SSRF guard: the endpoint URL is tenant-supplied. Block internal/loopback/metadata targets.
+            var (pullUrlOk, pullUrlReason) = await SsrfGuard.ValidateOutboundUrlAsync(pullUrl, ct);
+            if (!pullUrlOk)
             {
                 status = "Failed";
-                errorMessage = $"Connection timed out after 10 seconds. Check device IP/endpoint: {device.EndpointUrl}";
+                errorMessage = $"Endpoint URL rejected: {pullUrlReason}";
             }
-            catch (Exception ex)
+            else
             {
-                status = "Failed";
-                errorMessage = $"Connection error: {ex.Message}";
+                try
+                {
+                    using var handler = SsrfGuard.CreateGuardedClientHandler(); // no auto-redirect (rebind defence)
+                    using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
+                    var req = BuildDeviceRequest(device, pullUrl);
+                    var response = await http.SendAsync(req, ct);
+                    status = response.IsSuccessStatusCode ? "Success" : $"HTTP {(int)response.StatusCode}";
+                    errorMessage = response.IsSuccessStatusCode
+                        ? $"Device responded with HTTP {(int)response.StatusCode}. Connection OK. Auth: {device.AuthType ?? "None"}."
+                        : $"Device returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Check endpoint URL and credentials.";
+                }
+                catch (TaskCanceledException)
+                {
+                    status = "Failed";
+                    errorMessage = $"Connection timed out after 10 seconds. Check device IP/endpoint: {device.EndpointUrl}";
+                }
+                catch (Exception ex)
+                {
+                    status = "Failed";
+                    errorMessage = $"Connection error: {ex.Message}";
+                }
             }
         }
         else if (!string.IsNullOrWhiteSpace(device.IpAddress))
         {
             // SDK / biometric device: TCP ping on standard biometric port (ZKTeco default: 4370)
+            // SSRF guard: device.IpAddress is tenant-supplied — block internal/loopback/metadata targets
+            // so this cannot be used as an internal TCP port scanner.
+            var (hostOk, hostReason) = await SsrfGuard.ValidateOutboundHostAsync(device.IpAddress, ct);
+            if (!hostOk)
+            {
+                status = "Failed";
+                errorMessage = $"Device address rejected: {hostReason}";
+            }
+            else
             try
             {
                 using var tcp = new System.Net.Sockets.TcpClient();
@@ -211,39 +231,51 @@ public class AttendanceService : IAttendanceService
                  && !string.IsNullOrWhiteSpace(device.EndpointUrl))
         {
             // Pull API: authenticated HTTP GET using device config (auth type, custom headers, device params)
-            try
+            var syncUrl = BuildPollUrl(device);
+            // SSRF guard: the endpoint URL is tenant-supplied. Block internal/loopback/metadata targets.
+            var (syncUrlOk, syncUrlReason) = await SsrfGuard.ValidateOutboundUrlAsync(syncUrl, ct);
+            if (!syncUrlOk)
             {
-                var devParams = TryParseJson(device.DeviceParametersJson);
-                var timeoutSec = devParams.TryGetValue("timeout_seconds", out var ts) && int.TryParse(ts, out var t) ? t : 30;
-                using var http = _httpClientFactory.CreateClient();
-                http.Timeout = TimeSpan.FromSeconds(timeoutSec);
-                var url = BuildPollUrl(device);
-                var req = BuildDeviceRequest(device, url);
-                var response = await http.SendAsync(req, ct);
-                var body = await response.Content.ReadAsStringAsync(ct);
-                if (response.IsSuccessStatusCode)
+                status = "Failed";
+                errorMessage = $"Endpoint URL rejected: {syncUrlReason}";
+            }
+            else
+            {
+                try
                 {
-                    status = "Completed";
-                    rawEventsReceived = body.TrimStart().StartsWith('[') ? body.Split('{').Length - 1 : 0;
-                    errorMessage = rawEventsReceived > 0
-                        ? $"Device responded: {rawEventsReceived} potential records found. Configure field mappings to auto-process on next pull."
-                        : $"Device endpoint responded HTTP 200. Configure 'poll_path' and field mappings in Device Parameters to capture records.";
+                    var devParams = TryParseJson(device.DeviceParametersJson);
+                    var timeoutSec = devParams.TryGetValue("timeout_seconds", out var ts) && int.TryParse(ts, out var t) ? t : 30;
+                    using var handler = SsrfGuard.CreateGuardedClientHandler(); // no auto-redirect (rebind defence)
+                    using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(timeoutSec) };
+                    var req = BuildDeviceRequest(device, syncUrl);
+                    var response = await http.SendAsync(req, ct);
+                    var body = await response.Content.ReadAsStringAsync(ct);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        status = "Completed";
+                        rawEventsReceived = body.TrimStart().StartsWith('[') ? body.Split('{').Length - 1 : 0;
+                        errorMessage = rawEventsReceived > 0
+                            ? $"Device responded: {rawEventsReceived} potential records found. Configure field mappings to auto-process on next pull."
+                            : $"Device endpoint responded HTTP 200. Configure 'poll_path' and field mappings in Device Parameters to capture records.";
+                    }
+                    else
+                    {
+                        status = "Failed";
+                        // Do NOT reflect the response body: with a user-controlled endpoint this would turn
+                        // the SSRF into a full-read oracle. Status code only.
+                        errorMessage = $"Device returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Check endpoint URL and credentials.";
+                    }
                 }
-                else
+                catch (TaskCanceledException)
                 {
                     status = "Failed";
-                    errorMessage = $"Device returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body[..Math.Min(500, body.Length)]}";
+                    errorMessage = $"Sync timed out. Increase timeout_seconds in Device Parameters or check endpoint: {device.EndpointUrl}";
                 }
-            }
-            catch (TaskCanceledException)
-            {
-                status = "Failed";
-                errorMessage = $"Sync timed out. Increase timeout_seconds in Device Parameters or check endpoint: {device.EndpointUrl}";
-            }
-            catch (Exception ex)
-            {
-                status = "Failed";
-                errorMessage = $"Sync error: {ex.Message}";
+                catch (Exception ex)
+                {
+                    status = "Failed";
+                    errorMessage = $"Sync error: {ex.Message}";
+                }
             }
         }
         else if (device.SyncMethod?.Contains("CSV", StringComparison.OrdinalIgnoreCase) == true
