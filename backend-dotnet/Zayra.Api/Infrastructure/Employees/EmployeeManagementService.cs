@@ -504,12 +504,12 @@ public class EmployeeManagementService : IEmployeeManagementService
     private void TrackChange(Employee employee, string field, string oldValue, string newValue, DateTime? effectiveDate, string reason, RequestContext context)
     {
         if (oldValue == newValue || employee.TenantId is null) return;
-        _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId.Value, EmployeeId = employee.Id, EventType = field + "Change", FieldName = field, OldValue = oldValue, NewValue = newValue, EffectiveDate = DateOnly.FromDateTime(effectiveDate ?? DateTime.UtcNow), Reason = reason, CreatedByUserId = context.UserId, SnapshotJson = JsonSerializer.Serialize(employee) });
+        _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId.Value, EmployeeId = employee.Id, EventType = field + "Change", FieldName = field, OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(field, oldValue), NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(field, newValue), EffectiveDate = DateOnly.FromDateTime(effectiveDate ?? DateTime.UtcNow), Reason = reason, CreatedByUserId = context.UserId, SnapshotJson = EmployeeSafeSnapshot.Serialize(employee) });
     }
 
     private async Task AddHistory(Employee employee, string eventType, string field, string oldValue, string newValue, DateOnly effectiveDate, string reason, RequestContext context, CancellationToken cancellationToken)
     {
-        _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId ?? context.TenantId!.Value, EmployeeId = employee.Id, EventType = eventType, FieldName = field, OldValue = oldValue, NewValue = newValue, EffectiveDate = effectiveDate, Reason = reason, CreatedByUserId = context.UserId, SnapshotJson = JsonSerializer.Serialize(employee) });
+        _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId ?? context.TenantId!.Value, EmployeeId = employee.Id, EventType = eventType, FieldName = field, OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(field, oldValue), NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(field, newValue), EffectiveDate = effectiveDate, Reason = reason, CreatedByUserId = context.UserId, SnapshotJson = EmployeeSafeSnapshot.Serialize(employee) });
         await Task.CompletedTask;
     }
 

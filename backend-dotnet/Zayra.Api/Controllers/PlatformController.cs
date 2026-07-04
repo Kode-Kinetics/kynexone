@@ -2,6 +2,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -11,6 +12,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using StackExchange.Redis;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Filters;
 using Zayra.Api.Domain.Entities;
@@ -27,6 +29,9 @@ namespace Zayra.Api.Controllers;
 [Authorize(Policy = "PlatformAdmin")]
 public class PlatformController : ControllerBase
 {
+    // Same wire format as JwtTokenService entity_access claims ({"c":..,"r":..}).
+    private static readonly JsonSerializerOptions EntityAccessClaimJson = new(JsonSerializerDefaults.Web);
+
     private readonly ZayraDbContext _db;
     private readonly JwtOptions _jwt;
     private readonly IPasswordHasher _passwordHasher;
@@ -896,6 +901,11 @@ public class PlatformController : ControllerBase
             .AsNoTracking()
             .Include(u => u.UserRoles)
                 .ThenInclude(ur => ur.Role)
+                    .ThenInclude(r => r!.RolePermissions)
+                        .ThenInclude(rp => rp.Permission)
+            .Include(u => u.PermissionOverrides)
+            .Include(u => u.EntityAccesses)
+            .Include(u => u.EmployeeUserAccounts)
             .FirstOrDefaultAsync(u => u.Id == req.UserId && u.TenantId == tenantId && !u.IsDeleted, ct);
 
         if (user is null) return NotFound(new { message = "User not found in specified tenant." });
@@ -913,6 +923,20 @@ public class PlatformController : ControllerBase
             new("impersonated_by", "platform_admin")
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
+        // Mirror a real login token: without permission and entity_access claims the
+        // impersonated session has no HasPermission() grants and — worse — is treated
+        // as group scope (all companies in the tenant) by the company query filter.
+        claims.AddRange(AuthService.GetPermissions(user).Select(p => new Claim("permission", p)));
+        foreach (var grant in user.EntityAccesses.Where(e => e.IsActive))
+        {
+            var json = JsonSerializer.Serialize(new { c = grant.CompanyId?.ToString(), r = grant.Role }, EntityAccessClaimJson);
+            claims.Add(new Claim("entity_access", json));
+        }
+        if (user.IsGroupScope) claims.Add(new Claim("is_group_scope", "true"));
+        // Fail closed: an impersonated session whose user has no explicit company grants
+        // and no group scope must see no company-assigned data — never fall back to
+        // tenant-wide access via claim absence.
+        claims.Add(new Claim(EntityScopeContext.StrictScopeClaim, "true"));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
@@ -2084,7 +2108,13 @@ public class PlatformController : ControllerBase
 
         var user = await _db.Users
             .AsNoTracking()
-            .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
+            .Include(u => u.UserRoles)
+                .ThenInclude(ur => ur.Role)
+                    .ThenInclude(r => r!.RolePermissions)
+                        .ThenInclude(rp => rp.Permission)
+            .Include(u => u.PermissionOverrides)
+            .Include(u => u.EntityAccesses)
+            .Include(u => u.EmployeeUserAccounts)
             .FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == tenantId && !u.IsDeleted, ct);
         if (user is null) return NotFound(new { message = "User not found in specified tenant." });
 
@@ -2105,6 +2135,17 @@ public class PlatformController : ControllerBase
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
+        // Same rules as Impersonate: mirror a real login token (permissions + company
+        // grants) and fail closed on claim absence — a break-glass session must never
+        // widen to tenant-wide company access via missing claims.
+        claims.AddRange(AuthService.GetPermissions(user).Select(p => new Claim("permission", p)));
+        foreach (var grant in user.EntityAccesses.Where(e => e.IsActive))
+        {
+            var json = JsonSerializer.Serialize(new { c = grant.CompanyId?.ToString(), r = grant.Role }, EntityAccessClaimJson);
+            claims.Add(new Claim("entity_access", json));
+        }
+        if (user.IsGroupScope) claims.Add(new Claim("is_group_scope", "true"));
+        claims.Add(new Claim(EntityScopeContext.StrictScopeClaim, "true"));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);

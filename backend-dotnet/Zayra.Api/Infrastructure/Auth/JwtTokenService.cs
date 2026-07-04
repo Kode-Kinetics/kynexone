@@ -48,6 +48,9 @@ public class JwtTokenService : ITokenService
             var json = JsonSerializer.Serialize(new { c = grant.CompanyId?.ToString(), r = grant.Role }, _jsonOptions);
             claims.Add(new Claim("entity_access", json));
         }
+        // Group-level (all companies in tenant) access must be an explicit claim, never
+        // inferred from claim absence — required for the StrictMode fail-closed cutover.
+        if (user.IsGroupScope) claims.Add(new Claim("is_group_scope", "true"));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_options.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);

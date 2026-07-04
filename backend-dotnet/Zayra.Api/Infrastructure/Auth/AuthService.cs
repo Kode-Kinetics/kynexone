@@ -407,7 +407,9 @@ public class AuthService : IAuthService
         return user.UserRoles.Select(x => x.Role?.Name).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct().OrderBy(x => x).ToList();
     }
 
-    private static IReadOnlyCollection<string> GetPermissions(User user)
+    // Public: reused by platform-admin impersonation so minted tokens carry the exact
+    // permission set a real login would produce (roles + access-mode + overrides).
+    public static IReadOnlyCollection<string> GetPermissions(User user)
     {
         var permissions = user.UserRoles
             .SelectMany(x => x.Role?.RolePermissions ?? Array.Empty<RolePermission>())

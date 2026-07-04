@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.AI;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -370,12 +371,18 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
                     {
                         e.FullName, e.EmployeeCode, e.Department, e.Designation, e.JoiningDate,
                         e.EmploymentType, e.Status, e.WorkLocation, e.Grade,
-                        // Iqama/ID numbers only exposed to Admin/HR
-                        IqamaNumber = isAdminOrHr ? e.IqamaNumber : null,
-                        PassportNumber = isAdminOrHr ? e.PassportNumber : null
+                        e.IqamaNumber, e.PassportNumber
                     })
                     .FirstOrDefaultAsync(cancellationToken);
-                if (emp is not null) context["employee"] = emp;
+                // This context is serialized into the LLM prompt and persisted in the AI
+                // audit log — identity numbers must be masked even for Admin/HR callers.
+                if (emp is not null) context["employee"] = new
+                {
+                    emp.FullName, emp.EmployeeCode, emp.Department, emp.Designation, emp.JoiningDate,
+                    emp.EmploymentType, emp.Status, emp.WorkLocation, emp.Grade,
+                    IqamaNumber = isAdminOrHr ? SensitiveValueMask.MaskId(emp.IqamaNumber) : null,
+                    PassportNumber = isAdminOrHr ? SensitiveValueMask.MaskId(emp.PassportNumber) : null
+                };
                 break;
             }
 

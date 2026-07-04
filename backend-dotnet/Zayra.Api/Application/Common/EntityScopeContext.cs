@@ -11,6 +11,14 @@ namespace Zayra.Api.Application.Common;
 /// </summary>
 public sealed class EntityScopeContext
 {
+    /// <summary>
+    /// Claim stamped on high-privilege minted tokens (platform-admin impersonation).
+    /// When present, absence of entity_access / is_group_scope claims fails closed
+    /// (default-deny) regardless of the global StrictMode cutover — an impersonated
+    /// session must never inherit tenant-wide company access by claim omission.
+    /// </summary>
+    public const string StrictScopeClaim = "entity_scope_strict";
+
     public bool IsGroupLevel { get; }
     public IReadOnlyList<Guid> AccessibleCompanyIds { get; }
 
@@ -27,6 +35,9 @@ public sealed class EntityScopeContext
     /// </param>
     public static EntityScopeContext FromClaims(ClaimsPrincipal user, bool strictMode = false)
     {
+        // Per-token strict marker (impersonation) forces fail-closed even before the
+        // global StrictMode cutover.
+        var strict = strictMode || user.HasClaim(StrictScopeClaim, "true");
         var claims = user.FindAll("entity_access").Select(c => c.Value).ToList();
         if (claims.Count == 0)
         {
@@ -36,7 +47,7 @@ public sealed class EntityScopeContext
             // No entity_access and no is_group_scope:
             //   Non-strict → backward-compat GroupLevel (pre-migration behavior)
             //   Strict → default-deny (Empty)
-            return strictMode ? Empty : GroupLevel;
+            return strict ? Empty : GroupLevel;
         }
 
         var companyIds = new List<Guid>();
