@@ -74,6 +74,7 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
     plan: 'Starter', maxUsers: 20, maxEmployees: 50, maxCompanies: 1, maxAdminUsers: 10,
     billingEmail: '', billingCycle: 'Monthly', monthlyAmount: 0, currencyCode: 'USD',
     expiresAtUtc: null,
+    accountType: 'SingleCompany', companyCreationMode: 'GroupSelfServiceWithinLimit',
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
@@ -173,6 +174,26 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
                   className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60">
                   {PLANS.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Account Type</label>
+                <select value={form.accountType} onChange={e => change('accountType', e.target.value)}
+                  className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200 outline-none focus:border-indigo-400/50">
+                  <option value="SingleCompany">Single company</option>
+                  <option value="Group">Group (multiple legal entities)</option>
+                </select>
+                <p className="mt-1 text-[10px] text-slate-500">Product behavior — distinct from the Max Companies commercial limit.</p>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Company Creation Mode</label>
+                <select value={form.companyCreationMode} onChange={e => change('companyCreationMode', e.target.value)}
+                  disabled={form.accountType !== 'Group'}
+                  className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200 outline-none focus:border-indigo-400/50 disabled:opacity-40">
+                  <option value="GroupSelfServiceWithinLimit">Group self-service (within limit)</option>
+                  <option value="GroupDraftPlatformApproval">Group drafts + platform approval</option>
+                  <option value="PlatformControlled">Platform controlled</option>
+                </select>
+                <p className="mt-1 text-[10px] text-slate-500">Who creates legal entities and how they activate.</p>
               </div>
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Billing Cycle</label>

@@ -34,12 +34,18 @@ public class OrganizationSetupService : IOrganizationSetupService
         return company?.ToDto();
     }
 
-    public async Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken, bool asDraft = false)
     {
         ValidateCountryCode(request.CountryCode);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, null, cancellationToken);
         var company = new Company { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(company, request);
+        if (asDraft)
+        {
+            // GroupDraftPlatformApproval mode: created inactive, awaiting platform approval.
+            company.ApprovalStatus = CompanyApprovalStatuses.Draft;
+            company.IsActive = false;
+        }
         _db.Companies.Add(company);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.company_created", nameof(Company), company.Id.ToString(), context, null, cancellationToken);

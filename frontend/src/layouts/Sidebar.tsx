@@ -8,6 +8,7 @@ import { Logo } from '../components/Logo';
 import { navigationGroups } from '../routes/navigation';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
 
 interface SidebarProps {
@@ -37,6 +38,9 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
       return next;
     });
   };
+
+  const { accountType, companies: accessibleCompanies } = useCompany();
+  const canSeeGroupItem = accountType === 'Group' && accessibleCompanies.length >= 1;
 
   const canSee = (requiredPermissions?: string[]) => {
     if (!requiredPermissions || requiredPermissions.length === 0) return true;
@@ -122,7 +126,8 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
             const visibleItems = group.items.filter(
               (item) =>
                 canSee(item.requiredPermissions) &&
-                (!item.requiredFeatureKey || isFeatureEnabled(item.requiredFeatureKey)),
+                (!item.requiredFeatureKey || isFeatureEnabled(item.requiredFeatureKey)) &&
+                (!item.groupAccountOnly || canSeeGroupItem),
             );
             if (visibleItems.length === 0) return null;
 

@@ -15,6 +15,8 @@ export interface NavItem {
   requiredPermissions?: string[];
   /** Tenant feature flag key that must be enabled for this item to show. Empty/absent = always visible. */
   requiredFeatureKey?: string;
+  /** Show only for Group account tenants (multi-company). */
+  groupAccountOnly?: boolean;
 }
 
 export interface NavGroup {

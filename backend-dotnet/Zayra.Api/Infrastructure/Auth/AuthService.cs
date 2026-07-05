@@ -409,10 +409,59 @@ public class AuthService : IAuthService
         return new AuthResponse(accessToken, refreshToken, expiresAtUtc, ToUserDto(user));
     }
 
-    private static AuthUserDto ToUserDto(User user)
+    private AuthUserDto ToUserDto(User user)
     {
         var link = PrimaryAccess(user);
-        return new AuthUserDto(user.Id, user.TenantId, user.Tenant!.Slug, user.Email, user.FullName, GetRoles(user), GetPermissions(user), link?.EmployeeId, link?.AccessMode ?? AccessModes.FullPortal, link?.RequiresPasswordSetup ?? false);
+        var companies = ResolveAccessibleCompanies(user);
+        return new AuthUserDto(user.Id, user.TenantId, user.Tenant!.Slug, user.Email, user.FullName,
+            GetRoles(user), GetPermissions(user), link?.EmployeeId, link?.AccessMode ?? AccessModes.FullPortal,
+            link?.RequiresPasswordSetup ?? false,
+            user.Tenant!.AccountType,
+            IsGroupScopeDecision(user),
+            companies);
+    }
+
+    /// <summary>
+    /// Whether this user's issuance-time scope decision resolves to group level —
+    /// the same rules the token claims use (EntityScopeClaims.Resolve).
+    /// </summary>
+    private static bool IsGroupScopeDecision(User user)
+    {
+        var grants = user.EntityAccesses.Where(e => e.IsActive)
+            .Select(e => new EntityAccessGrant(e.CompanyId, e.Role, e.GrantMode)).ToList();
+        return EntityScopeClaims.Resolve(user.IsGroupScope, grants, Array.Empty<Guid>()).Mode == EntityScopeModes.Group;
+    }
+
+    /// <summary>
+    /// The user's ACCESSIBLE active companies for the switcher: group scope → all active;
+    /// company grants → the granted subset. Synchronous by design — callers hold the user
+    /// graph already and the companies query is tiny and tenant-indexed.
+    /// </summary>
+    private IReadOnlyCollection<CompanyAccessDto> ResolveAccessibleCompanies(User user)
+    {
+        var grants = user.EntityAccesses.Where(e => e.IsActive)
+            .Select(e => new EntityAccessGrant(e.CompanyId, e.Role, e.GrantMode)).ToList();
+
+        // IgnoreQueryFilters is intentional: capability resolution happens during token
+        // issuance/me lookup; the TenantId predicate fully scopes the read.
+        var active = _db.Companies.IgnoreQueryFilters().AsNoTracking()
+            .Where(c => c.TenantId == user.TenantId && c.IsActive && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .Select(c => new CompanyAccessDto(
+                c.Id,
+                c.TradeName != "" ? c.TradeName : c.LegalNameEn,
+                c.LegalNameEn,
+                c.CountryCode,
+                c.IsActive))
+            .ToList();
+
+        var scope = EntityScopeClaims.Resolve(user.IsGroupScope, grants, active.Select(c => c.Id).ToList());
+        return scope.Mode switch
+        {
+            EntityScopeModes.Group => active,
+            EntityScopeModes.Companies => active.Where(c => scope.CompanyIds.Contains(c.Id)).ToList(),
+            _ => Array.Empty<CompanyAccessDto>(),
+        };
     }
 
     private static IReadOnlyCollection<string> GetRoles(User user)

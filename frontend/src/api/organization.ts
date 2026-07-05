@@ -48,6 +48,7 @@ export interface CompanyDto {
   qiwaEstablishmentId: string;
   defaultCurrency: string;
   isActive: boolean;
+  approvalStatus: 'Active' | 'Draft' | 'PendingActivation';
 }
 
 export interface CompanyRequest {
@@ -75,6 +76,8 @@ export const companiesApi = {
   update: (id: string, data: CompanyRequest) =>
     client.put<CompanyDto>(`/api/companies/${id}`, data).then((r) => r.data),
   remove: (id: string) => client.delete(`/api/companies/${id}`),
+  setStatus: (id: string, isActive: boolean) =>
+    client.put<CompanyDto>(`/api/companies/${id}/status`, { isActive }).then((r) => r.data),
   export: () => client.get<string>('/api/companies/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/companies/import-template', { responseType: 'text' }).then((r) => r.data),
   import: (csv: string) => client.post<RawImportCommit>('/api/companies/import', { csv }).then((r) => toImportResult(r.data)),

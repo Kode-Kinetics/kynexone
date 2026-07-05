@@ -118,6 +118,22 @@ public sealed class EntityScopeContext
     // Default-deny — no company-owned data visible.
     public static readonly EntityScopeContext Empty = new(false, Array.Empty<Guid>());
 
+    /// <summary>Explicit narrowed scope (company switcher / derived contexts).</summary>
+    public static EntityScopeContext ForCompanies(IEnumerable<Guid> companyIds) =>
+        new(false, companyIds.Distinct().ToList());
+
+    /// <summary>
+    /// Applies the company-switcher header on top of the token scope: a valid selection
+    /// the actor can access narrows to that single company; an invalid or inaccessible
+    /// selection FAILS CLOSED (Empty) — the header can only ever narrow, never widen.
+    /// </summary>
+    public EntityScopeContext NarrowTo(string? selectedCompanyHeader)
+    {
+        if (string.IsNullOrWhiteSpace(selectedCompanyHeader)) return this;
+        if (!Guid.TryParse(selectedCompanyHeader, out var selected)) return Empty;
+        return CanAccessCompany(selected) ? ForCompanies(new[] { selected }) : Empty;
+    }
+
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
 
     private sealed record EntityAccessClaim(

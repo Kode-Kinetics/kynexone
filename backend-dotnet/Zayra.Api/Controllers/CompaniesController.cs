@@ -88,28 +88,80 @@ public class CompaniesController : ControllerBase
                     });
             }
 
-            // ── Account-type gate (product behavior, distinct from the commercial
-            //    MaxCompanies limit above): only Group tenants operate multiple active
-            //    legal entities. SingleCompany tenants keep exactly one default company. ──
-            var existingCount = await _db.Companies.CountAsync(c => c.TenantId == tenantId, cancellationToken);
-            if (existingCount >= 1)
-            {
-                var accountType = await _db.Tenants.AsNoTracking()
-                    .Where(t => t.Id == tenantId)
-                    .Select(t => t.AccountType)
-                    .FirstOrDefaultAsync(cancellationToken);
-                if (accountType != Zayra.Api.Domain.Entities.TenantAccountTypes.Group)
-                    return Conflict(new
-                    {
-                        error = "account_type_single_company",
-                        message = "This account is configured as a single-company account. Ask your platform administrator to enable the Group account type to manage multiple legal entities.",
-                    });
-            }
+            // ── Governance gates (product behavior, distinct from the commercial
+            //    MaxCompanies limit above) ──────────────────────────────────────────
+            var tenant = await _db.Tenants.AsNoTracking()
+                .Where(t => t.Id == tenantId)
+                .Select(t => new { t.AccountType, t.CompanyCreationMode })
+                .FirstOrDefaultAsync(cancellationToken);
+            if (tenant is null) return Unauthorized();
 
-            var company = await _organization.CreateCompanyAsync(tenantId.Value, request, Context(), cancellationToken);
+            // PlatformControlled: only platform admins create companies for this tenant.
+            if (tenant.CompanyCreationMode == Zayra.Api.Domain.Entities.CompanyCreationModes.PlatformControlled)
+                return StatusCode(403, new
+                {
+                    error = "company_creation_platform_controlled",
+                    message = "Company creation for this account is managed by the platform. Contact your account manager.",
+                });
+
+            // Account type: only Group tenants operate multiple active legal entities.
+            var existingCount = await _db.Companies.CountAsync(c => c.TenantId == tenantId, cancellationToken);
+            if (existingCount >= 1 && tenant.AccountType != Zayra.Api.Domain.Entities.TenantAccountTypes.Group)
+                return Conflict(new
+                {
+                    error = "account_type_single_company",
+                    message = "This account is configured as a single-company account. Ask your platform administrator to enable the Group account type to manage multiple legal entities.",
+                });
+
+            // Draft-approval mode: group admins submit drafts; a platform admin activates.
+            var asDraft = tenant.CompanyCreationMode == Zayra.Api.Domain.Entities.CompanyCreationModes.GroupDraftPlatformApproval;
+            var company = await _organization.CreateCompanyAsync(tenantId.Value, request, Context(), cancellationToken, asDraft);
             return CreatedAtAction(nameof(Get), new { id = company.Id }, company);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// Suspend or reactivate a legal entity. Deactivating the last active company is
+    /// blocked — a tenant must always retain one operational company.
+    /// </summary>
+    [HttpPut("{id:guid}/status")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> SetStatus(Guid id, [FromBody] CompanyStatusRequest request, CancellationToken cancellationToken)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+
+        var company = await _db.Companies.FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == id && !c.IsDeleted, cancellationToken);
+        if (company is null) return NotFound();
+
+        if (!request.IsActive)
+        {
+            var otherActive = await _db.Companies.CountAsync(
+                c => c.TenantId == tenantId && c.Id != id && c.IsActive && !c.IsDeleted, cancellationToken);
+            if (otherActive == 0)
+                return Conflict(new
+                {
+                    error = "last_active_company",
+                    message = "Cannot deactivate the only active company. Activate another company first.",
+                });
+        }
+
+        var previous = company.IsActive;
+        company.IsActive = request.IsActive;
+        company.UpdatedAtUtc = DateTime.UtcNow;
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId = tenantId.Value,
+            CompanyId = company.Id,
+            EntityType = nameof(Company),
+            EntityId = company.Id.ToString(),
+            Action = request.IsActive ? "CompanyReactivated" : "CompanySuspended",
+            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { isActive = previous }),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { isActive = company.IsActive }),
+        });
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(company.ToDto());
     }
 
     [HttpPut("{id:guid}")]
@@ -278,3 +330,4 @@ public class CompaniesController : ControllerBase
 }
 
 public record CompanyImportRequest(string Csv);
+public record CompanyStatusRequest(bool IsActive);

@@ -109,6 +109,8 @@ public record AuthResponse(
     DateTime ExpiresAtUtc,
     AuthUserDto User);
 
+public record CompanyAccessDto(Guid Id, string Name, string Code, string CountryCode, bool IsActive);
+
 public record AuthUserDto(
     Guid Id,
     Guid TenantId,
@@ -119,7 +121,11 @@ public record AuthUserDto(
     IReadOnlyCollection<string> Permissions,
     int? EmployeeId = null,
     string AccessMode = "FullPortal",
-    bool RequiresPasswordSetup = false);
+    bool RequiresPasswordSetup = false,
+    // Company-scope capability payload (final batch): drives the frontend company switcher.
+    string AccountType = "SingleCompany",
+    bool IsGroupScope = false,
+    IReadOnlyCollection<CompanyAccessDto>? Companies = null);
 
 public record ForgotPasswordResponse(string Message, string? ResetToken, DateTime? ResetTokenExpiresAtUtc);
 

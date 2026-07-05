@@ -541,6 +541,20 @@ public class PlatformController : ControllerBase
         var employeeCount = await _db.Employees.AsNoTracking()
             .CountAsync(e => e.TenantId == tenantId && !e.IsDeleted, ct);
 
+        var companies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .Select(c => new
+            {
+                c.Id,
+                name = c.TradeName != "" ? c.TradeName : c.LegalNameEn,
+                code = c.LegalNameEn,
+                c.CountryCode,
+                c.IsActive,
+                c.ApprovalStatus,
+            })
+            .ToListAsync(ct);
+
         return Ok(new
         {
             tenant.Id,
@@ -548,6 +562,9 @@ public class PlatformController : ControllerBase
             tenant.Slug,
             tenant.IsActive,
             tenant.CreatedAtUtc,
+            tenant.AccountType,
+            tenant.CompanyCreationMode,
+            companies,
             subscription = sub,
             featureFlags = flags,
             localization = loc,
@@ -970,6 +987,88 @@ public class PlatformController : ControllerBase
         return Ok(new { tenantId, accountType = tenant.AccountType });
     }
 
+    /// <summary>Sets who may create companies for this tenant and how they activate.</summary>
+    [HttpPut("tenants/{tenantId:guid}/company-creation-mode")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> SetCompanyCreationMode(Guid tenantId, [FromBody] SetCompanyCreationModeRequest req, CancellationToken ct)
+    {
+        if (!CompanyCreationModes.IsValid(req.Mode))
+            return BadRequest(new { message = "Mode must be PlatformControlled, GroupSelfServiceWithinLimit or GroupDraftPlatformApproval." });
+        var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+
+        var previous = tenant.CompanyCreationMode;
+        tenant.CompanyCreationMode = req.Mode;
+        AuditTenant(tenantId, "CompanyCreationModeChanged",
+            new { mode = previous }, new { mode = req.Mode });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { tenantId, companyCreationMode = tenant.CompanyCreationMode });
+    }
+
+    /// <summary>Approves a Draft company created under GroupDraftPlatformApproval — activates it.</summary>
+    [HttpPost("tenants/{tenantId:guid}/companies/{companyId:guid}/approve")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> ApproveCompany(Guid tenantId, Guid companyId, CancellationToken ct)
+    {
+        // SYSTEM CONTEXT: tenant scope intentionally bypassed — platform admins operate
+        // across tenants; explicit TenantId predicate scopes the read.
+        var company = await _db.Companies.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted, ct);
+        if (company is null) return NotFound(new { message = "Company not found in specified tenant." });
+        if (company.ApprovalStatus == CompanyApprovalStatuses.Active && company.IsActive)
+            return Ok(new { companyId, approvalStatus = company.ApprovalStatus, message = "Company is already active." });
+
+        var previous = new { company.ApprovalStatus, company.IsActive };
+        company.ApprovalStatus = CompanyApprovalStatuses.Active;
+        company.IsActive = true;
+        company.UpdatedAtUtc = DateTime.UtcNow;
+        AuditTenant(tenantId, "CompanyApproved",
+            previous, new { company.ApprovalStatus, company.IsActive, companyId });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { companyId, approvalStatus = company.ApprovalStatus, isActive = company.IsActive });
+    }
+
+    /// <summary>
+    /// Platform-side company creation (used for PlatformControlled tenants). Bypasses the
+    /// tenant-side creation-mode gate but still honors MaxCompanies.
+    /// </summary>
+    [HttpPost("tenants/{tenantId:guid}/companies")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> CreatePlatformCompany(Guid tenantId, [FromBody] Zayra.Api.Application.Organization.CompanyRequest req, CancellationToken ct)
+    {
+        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+        if (!Application.Common.CountryCodeStandard.IsValidOrEmpty(req.CountryCode))
+            return BadRequest(new { message = $"Unrecognized country code '{req.CountryCode}'." });
+
+        var sub = await _db.TenantSubscriptions.AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+        // SYSTEM CONTEXT: tenant scope intentionally bypassed; explicit TenantId predicate.
+        var count = await _db.Companies.IgnoreQueryFilters().CountAsync(c => c.TenantId == tenantId && !c.IsDeleted, ct);
+        if (sub is not null && sub.MaxCompanies > 0 && count >= sub.MaxCompanies)
+            return StatusCode(402, new { error = "company_limit_reached", maxAllowed = sub.MaxCompanies });
+        if (count >= 1 && tenant.AccountType != TenantAccountTypes.Group)
+            return Conflict(new { error = "account_type_single_company", message = "Enable the Group account type before adding more companies." });
+
+        var company = new Company
+        {
+            TenantId = tenantId,
+            LegalNameEn = req.LegalNameEn,
+            LegalNameAr = req.LegalNameAr ?? string.Empty,
+            TradeName = req.TradeName ?? string.Empty,
+            CountryCode = req.CountryCode,
+            Jurisdiction = req.Jurisdiction ?? string.Empty,
+            RegistrationNumber = req.RegistrationNumber,
+            TaxNumber = req.TaxNumber ?? string.Empty,
+            DefaultCurrency = req.DefaultCurrency,
+            IsActive = true,
+            ApprovalStatus = CompanyApprovalStatuses.Active,
+        };
+        _db.Companies.Add(company);
+        AuditTenant(tenantId, "CompanyCreatedByPlatform", new { }, new { companyId = company.Id, code = company.LegalNameEn });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { companyId = company.Id, company.LegalNameEn, company.ApprovalStatus });
+    }
+
     /// <summary>
     /// Shared claim-v2 scope emission for minted (impersonation / break-glass) tokens —
     /// same resolver as normal login, so all three token types can never drift apart.
@@ -1084,8 +1183,16 @@ public class PlatformController : ControllerBase
 
         if (req.AccountType is not null && !TenantAccountTypes.IsValid(req.AccountType))
             return BadRequest(new { message = "AccountType must be 'SingleCompany' or 'Group'." });
+        if (req.CompanyCreationMode is not null && !CompanyCreationModes.IsValid(req.CompanyCreationMode))
+            return BadRequest(new { message = "CompanyCreationMode must be PlatformControlled, GroupSelfServiceWithinLimit or GroupDraftPlatformApproval." });
 
-        var tenant = new Tenant { Name = name, Slug = slug, AccountType = req.AccountType ?? TenantAccountTypes.SingleCompany };
+        var tenant = new Tenant
+        {
+            Name = name,
+            Slug = slug,
+            AccountType = req.AccountType ?? TenantAccountTypes.SingleCompany,
+            CompanyCreationMode = req.CompanyCreationMode ?? CompanyCreationModes.GroupSelfServiceWithinLimit,
+        };
         _db.Tenants.Add(tenant);
         await _db.SaveChangesAsync(ct);
 
@@ -4250,9 +4357,12 @@ public record CreateTenantRequest(
     int? MaxCompanies  = null,
     int? MaxAdminUsers = null,
     // SingleCompany (default) | Group — product behavior, distinct from MaxCompanies.
-    string? AccountType = null);
+    string? AccountType = null,
+    // PlatformControlled | GroupSelfServiceWithinLimit (default) | GroupDraftPlatformApproval
+    string? CompanyCreationMode = null);
 
 public record SetAccountTypeRequest(string AccountType);
+public record SetCompanyCreationModeRequest(string Mode);
 
 public record AddTenantAdminRequest(string Email, string? FullName, string Password);
 public record CreateTenantUserRequest(string Email, string? FullName, string Password, string? RoleName, bool? MustChangePassword);

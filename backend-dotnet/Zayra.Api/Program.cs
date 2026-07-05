@@ -570,6 +570,15 @@ using (var scope = app.Services.CreateScope())
             authSeeder,
             logger), logger);
 
+    // Enterprise GROUP demo tenants (ALMARAI_TEST/TATA_TEST/EMAAR_TEST) — E2E/demo only,
+    // idempotent, and NEVER enabled in production (separate flag from SEED_DEMO_DATA).
+    if (string.Equals(Environment.GetEnvironmentVariable(Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder.EnableEnvVar), "true", StringComparison.OrdinalIgnoreCase))
+        await TrySeedAsync("EnterpriseGroupSeeder", () => new Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder(
+            dbContext,
+            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
+            authSeeder,
+            scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder>()).SeedAsync(), logger);
+
     await TrySeedAsync("GosiRuleSeeder",      () => GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger), logger);
     await TrySeedAsync("StatutoryRuleSeeder", () => Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.SeedAsync(dbContext, logger), logger);
 

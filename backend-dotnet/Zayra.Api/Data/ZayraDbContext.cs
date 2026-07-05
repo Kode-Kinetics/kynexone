@@ -53,29 +53,30 @@ public class ZayraDbContext : DbContext
         }
     }
 
-    // Company scope — derived lazily from JWT entity_access claims.
-    // True when no HTTP context (admin/background work) or user has group-level access.
-    private bool _isGroupScope
+    /// <summary>Company-switcher header: narrows the request's company view. Can only narrow, never widen.</summary>
+    public const string CompanySelectionHeader = "X-Company-Id";
+
+    /// <summary>
+    /// The request's effective company scope: token claims (v2/legacy) narrowed by the
+    /// optional X-Company-Id switcher header. An inaccessible or malformed selection
+    /// fails closed. No HTTP context (seeding/background) = trusted group scope.
+    /// </summary>
+    private EntityScopeContext ResolveRequestScope()
     {
-        get
-        {
-            var user = _httpContextAccessor?.HttpContext?.User;
-            if (user is null) return true;
-            return EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false).IsGroupLevel;
-        }
+        var ctx = _httpContextAccessor?.HttpContext;
+        var user = ctx?.User;
+        if (user is null) return EntityScopeContext.GroupLevel;
+        var scope = EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false);
+        var header = ctx!.Request.Headers[CompanySelectionHeader].FirstOrDefault();
+        return scope.NarrowTo(header);
     }
 
+    // Company scope — derived lazily from JWT claims + switcher header.
+    // True when no HTTP context (admin/background work) or user has group-level access.
+    private bool _isGroupScope => ResolveRequestScope().IsGroupLevel;
+
     // Explicit company IDs the current user may access. Empty when _isGroupScope=true.
-    private List<Guid> _companyScopeIds
-    {
-        get
-        {
-            var user = _httpContextAccessor?.HttpContext?.User;
-            if (user is null) return [];
-            return EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false)
-                .AccessibleCompanyIds.ToList();
-        }
-    }
+    private List<Guid> _companyScopeIds => ResolveRequestScope().AccessibleCompanyIds.ToList();
 
     public ZayraDbContext(
         DbContextOptions<ZayraDbContext> options,
@@ -149,7 +150,9 @@ public class ZayraDbContext : DbContext
         var tenantClaim = _tenantId;
         if (user is null || tenantClaim is null) return; // system context — trusted by design
 
-        var scope = EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false);
+        // Same narrowed scope as reads: with the switcher on Company A, writes resolve
+        // and validate against Company A — the switcher context IS the write context.
+        var scope = ResolveRequestScope();
 
         Dictionary<Guid, List<Guid>>? companiesByTenant = null;
         Dictionary<int, Guid?>? employeeCompanyCache = null;

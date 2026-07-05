@@ -13,12 +13,21 @@ export const BASE_URL = resolveBaseUrl();
 
 const client = axios.create({ baseURL: BASE_URL });
 
+// Company-switcher selection, set by CurrentCompanyProvider. Travels as the
+// X-Company-Id header: the backend intersects it with the token scope, so it can only
+// NARROW access — an inaccessible value yields empty data server-side (fail closed).
+let activeCompanyId: string | null = null;
+export function setActiveCompanyId(companyId: string | null) {
+  activeCompanyId = companyId;
+}
+
 client.interceptors.request.use((config) => {
   const url = config.url ?? '';
   const isAuthEndpoint = url.includes('/api/auth/login') || url.includes('/api/auth/refresh');
   if (!isAuthEndpoint) {
     const token = localStorage.getItem('zayra_access_token');
     if (token) config.headers.Authorization = `Bearer ${token}`;
+    if (activeCompanyId) config.headers['X-Company-Id'] = activeCompanyId;
   }
   return config;
 });

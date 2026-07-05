@@ -16,7 +16,8 @@ public record CompanyDto(
     string GosiEmployerId,
     string QiwaEstablishmentId,
     string DefaultCurrency,
-    bool IsActive);
+    bool IsActive,
+    string ApprovalStatus = CompanyApprovalStatuses.Active);
 
 public record CompanyRequest(
     [Required, MaxLength(180)] string LegalNameEn,
@@ -163,7 +164,8 @@ public static class OrganizationMappings
         company.GosiEmployerId,
         company.QiwaEstablishmentId,
         company.DefaultCurrency,
-        company.IsActive);
+        company.IsActive,
+        company.ApprovalStatus);
 
     public static BranchDto ToDto(this Branch branch) => new(
         branch.Id,
