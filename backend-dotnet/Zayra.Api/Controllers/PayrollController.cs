@@ -1531,6 +1531,9 @@ public class PayrollController : ControllerBase
     [HttpGet("reports/register/export")]
     public async Task<IActionResult> ExportRegister([FromQuery] Guid runId, CancellationToken cancellationToken)
     {
+        // Salary registers carry compensation data — exporting requires the explicit
+        // payroll export permission, same as every other payroll export endpoint.
+        if (!HasPermission("payroll.export")) return Forbid();
         var tenantId = GetTenantId();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == runId && x.TenantId == tenantId, cancellationToken);
