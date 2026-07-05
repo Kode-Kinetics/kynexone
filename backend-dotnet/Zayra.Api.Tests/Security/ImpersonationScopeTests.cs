@@ -60,10 +60,13 @@ public class ImpersonationScopeTests : PlatformTestBase
         visible.Should().NotContain("EMP-B", "impersonated Company A admin must not read Company B data");
     }
 
-    // ── C2: no grants — fail closed, never tenant-wide ─────────────────────────
+    // ── C2 (Phase 2 parity semantics): a grant-less user's impersonation mirrors
+    //     their own login — an EXPLICIT v2 group claim (the documented tenant
+    //     default), never scope inherited from claim ABSENCE. Claim absence itself
+    //     still fails closed — see the stripped-claims test below. ────────────────
 
     [Fact]
-    public async Task Impersonate_UserWithNoEntityGrants_FailsClosedForCompanyScopedData()
+    public async Task Impersonate_UserWithNoEntityGrants_MirrorsOwnLogin_ExplicitGroupClaim()
     {
         var (dbName, tenantId, companyA, companyB, _) = await SeedTenantWithTwoCompanies();
 
@@ -73,23 +76,35 @@ public class ImpersonationScopeTests : PlatformTestBase
 
         var jwt = await ImpersonateAndParse(controller, tenantId, user.Id);
 
-        jwt.Claims.Should().NotContain(c => c.Type == "entity_access");
+        // The scope is an explicit issuance decision (claim v2), not a parser fallback.
+        jwt.Claims.Should().Contain(c => c.Type == EntityScopeContext.V2ClaimType && c.Value.Contains("\"group\""));
         jwt.Claims.Should().Contain(c => c.Type == EntityScopeContext.StrictScopeClaim && c.Value == "true");
 
-        // Absence of grants must resolve to default-deny, NOT group level.
         var scope = EntityScopeContext.FromClaims(ToPrincipal(jwt));
-        scope.IsGroupLevel.Should().BeFalse("missing claims on an impersonation token must never mean 'all companies'");
+        scope.IsGroupLevel.Should().BeTrue("parity: the user's own login is tenant-wide by documented default");
+        (await QueryEmployeeCodesAs(dbName, jwt)).Should().Contain(new[] { "EMP-A", "EMP-B" });
+    }
+
+    [Fact]
+    public async Task Impersonation_WithScopeClaimsStripped_StillFailsClosed()
+    {
+        var (dbName, tenantId, companyA, companyB, _) = await SeedTenantWithTwoCompanies();
+
+        await using var db = NewDb(dbName);
+        var user = await SeedTenantUser(db, tenantId, grants: Array.Empty<Guid>());
+        var controller = CreateController(db);
+
+        var jwt = await ImpersonateAndParse(controller, tenantId, user.Id);
+        // Simulate a tampered/legacy minted token: strict marker present, scope claims gone.
+        var stripped = new ClaimsPrincipal(new ClaimsIdentity(
+            jwt.Claims.Where(c => c.Type != EntityScopeContext.V2ClaimType
+                               && c.Type != "entity_access"
+                               && c.Type != "is_group_scope"), "Test"));
+
+        var scope = EntityScopeContext.FromClaims(stripped);
+        scope.IsGroupLevel.Should().BeFalse("claim ABSENCE on a strict-marked token must never mean 'all companies'");
         scope.CanAccessCompany(companyA).Should().BeFalse();
         scope.CanAccessCompany(companyB).Should().BeFalse();
-
-        var visible = await QueryEmployeeCodesAs(dbName, jwt);
-        visible.Should().NotContain("EMP-A");
-        visible.Should().NotContain("EMP-B");
-        // Phase 1B hardening: Employee is ICompanyScopedOperational — company-unassigned
-        // rows are visible to GROUP scope only, never to a fail-closed scoped session.
-        visible.Should().NotContain("EMP-NULL",
-            "operational null-CompanyId rows must not leak to scoped users (poison-default prevention)");
-        visible.Should().BeEmpty();
     }
 
     // ── C3: explicit group scope — represented, not inferred ───────────────────

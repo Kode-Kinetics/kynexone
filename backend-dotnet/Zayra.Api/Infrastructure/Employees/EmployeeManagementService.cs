@@ -507,14 +507,20 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
     }
 
-    /// <summary>Oldest active company = the tenant's default legal entity (matches CompanyScopeBackfill).</summary>
+    /// <summary>
+    /// Unambiguous default only: with exactly one active company that company is the
+    /// answer; a multi-company (Group) tenant returns null so the write-side company
+    /// stamping in ZayraDbContext enforces explicit company context instead of a silent
+    /// oldest-company guess.
+    /// </summary>
     private async Task<Guid?> ResolveDefaultCompanyId(Guid tenantId, CancellationToken cancellationToken)
     {
-        return await _db.Companies
+        var ids = await _db.Companies
             .Where(c => c.TenantId == tenantId && !c.IsDeleted && c.IsActive)
-            .OrderBy(c => c.CreatedAtUtc)
             .Select(c => (Guid?)c.Id)
-            .FirstOrDefaultAsync(cancellationToken);
+            .Take(2)
+            .ToListAsync(cancellationToken);
+        return ids.Count == 1 ? ids[0] : null;
     }
 
     private void TrackChange(Employee employee, string field, string oldValue, string newValue, DateTime? effectiveDate, string reason, RequestContext context)

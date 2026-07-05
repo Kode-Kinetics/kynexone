@@ -208,6 +208,23 @@ public sealed class QiwaSyncWorker : BackgroundService
             return;
         }
 
+        // Company-scope hardening (Phase 2): a legal entity that has been deactivated must
+        // not keep syncing to Qiwa — its establishment registration is per-company. Skip
+        // (not dead-letter): the log resumes automatically if the company is reactivated.
+        // SYSTEM CONTEXT: tenant scope intentionally bypassed; explicit TenantId predicate.
+        if (employee.CompanyId is Guid employeeCompanyId)
+        {
+            var companyActive = await db.Companies.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(c => c.TenantId == tenantId && c.Id == employeeCompanyId && c.IsActive && !c.IsDeleted, ct);
+            if (!companyActive)
+            {
+                _log.LogInformation(
+                    "QiwaSyncWorker: skipping sync log {SyncLogId} — employee {EmployeeId} belongs to inactive company {CompanyId} in tenant {TenantId}.",
+                    log.Id, log.EmployeeId, employeeCompanyId, tenantId);
+                return;
+            }
+        }
+
         if (token is null)
         {
             FailOrDeadLetter(db, log, employee, tenantId, "Could not acquire Qiwa access token (missing/invalid credentials).", "NO_TOKEN");

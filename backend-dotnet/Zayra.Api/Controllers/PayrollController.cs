@@ -1548,6 +1548,11 @@ public class PayrollController : ControllerBase
             s.GrossSalary.ToString("F2"), s.Deductions.ToString("F2"), s.NetSalary.ToString("F2"), s.Status
         });
         var csv = Csv.Build(headers, rows);
+        // Export audit: who exported which run's salary register, how many rows, and the
+        // company dimension — never the salary/IBAN values themselves.
+        await PayrollAudit("payroll.register.exported", "PayrollRun", runId.ToString(),
+            new { run.Year, run.Month, run.CompanyId, rowCount = slips.Count, scoped = !scope.IsUnrestricted }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
         Response.Headers["Content-Disposition"] = $"attachment; filename=salary-register-{run.Year}-{run.Month:D2}.csv";
         return Content(csv, "text/csv");
     }

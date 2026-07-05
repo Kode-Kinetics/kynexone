@@ -390,9 +390,22 @@ public class AuthService : IAuthService
         var permissions = GetPermissions(user);
         var entityAccess = user.EntityAccesses
             .Where(e => e.IsActive)
-            .Select(e => new EntityAccessGrant(e.CompanyId, e.Role))
+            .Select(e => new EntityAccessGrant(e.CompanyId, e.Role, e.GrantMode))
             .ToList();
-        var accessToken = _tokenService.CreateAccessToken(user, roles, permissions, user.Tenant!, entityAccess, out var expiresAtUtc);
+        // AllCurrentCompanies grants freeze the set of companies active RIGHT NOW into
+        // the token; the query only runs when such a grant exists.
+        IReadOnlyCollection<Guid> activeCompanyIds = Array.Empty<Guid>();
+        if (entityAccess.Any(g => g.Mode == EntityGrantModes.AllCurrentCompanies))
+        {
+            // IgnoreQueryFilters is intentional: token issuance happens before the caller
+            // has a scope; the TenantId predicate below fully scopes the read.
+            activeCompanyIds = _db.Companies.IgnoreQueryFilters()
+                .Where(c => c.TenantId == user.TenantId && c.IsActive && !c.IsDeleted)
+                .Select(c => c.Id)
+                .ToList();
+        }
+        var entityScope = EntityScopeClaims.Resolve(user.IsGroupScope, entityAccess, activeCompanyIds);
+        var accessToken = _tokenService.CreateAccessToken(user, roles, permissions, user.Tenant!, entityAccess, entityScope, out var expiresAtUtc);
         return new AuthResponse(accessToken, refreshToken, expiresAtUtc, ToUserDto(user));
     }
 

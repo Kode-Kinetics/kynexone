@@ -558,7 +558,7 @@ public class MfaTests
 
 file class FakeTokenService : ITokenService
 {
-    public string CreateAccessToken(Zayra.Api.Domain.Entities.User user, IReadOnlyCollection<string> roles, IReadOnlyCollection<string> permissions, Zayra.Api.Domain.Entities.Tenant tenant, IReadOnlyCollection<EntityAccessGrant> entityAccess, out DateTime expiresAtUtc)
+    public string CreateAccessToken(Zayra.Api.Domain.Entities.User user, IReadOnlyCollection<string> roles, IReadOnlyCollection<string> permissions, Zayra.Api.Domain.Entities.Tenant tenant, IReadOnlyCollection<EntityAccessGrant> entityAccess, EntityScopeDescriptor entityScope, out DateTime expiresAtUtc)
     {
         expiresAtUtc = DateTime.UtcNow.AddHours(1);
         return $"fake-access-{user.Id}";

@@ -12,6 +12,51 @@ public class DataScopeService : IDataScopeService
     public DataScopeService(ZayraDbContext db) => _db = db;
 
     public async Task<DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
+        => await ApplyCompanyBoundaryAsync(await ResolvePermissionScopeAsync(caller, tenantId, ct), caller, tenantId, ct);
+
+    /// <summary>
+    /// Phase 2: the employee-visibility scope must never cross the company boundary.
+    /// Group-scope callers are untouched; company-scoped callers get their allowed set
+    /// intersected with employees of their accessible companies — Organization level is
+    /// materialized into an explicit id set instead of "unrestricted", so even consumers
+    /// that bypass the EF company filter cannot leak sibling-company employees. Own
+    /// scope keeps the caller's own record (self-service always works), and manager/
+    /// supervisor trees are trimmed to in-company members only.
+    /// </summary>
+    private async Task<DataScope> ApplyCompanyBoundaryAsync(DataScope scope, ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
+    {
+        var entityScope = EntityScopeContext.FromClaims(caller);
+        if (entityScope.IsGroupLevel) return scope;
+        if (scope.Level == DataScopeLevel.Own) return scope;
+
+        var companyIds = entityScope.AccessibleCompanyIds.ToList();
+        List<int> inCompany;
+        if (scope.AllowedEmployeeIds is null)
+        {
+            inCompany = companyIds.Count == 0
+                ? new List<int>()
+                : await _db.Employees.AsNoTracking()
+                    .Where(e => e.TenantId == tenantId && !e.IsDeleted
+                             && e.CompanyId != null && companyIds.Contains(e.CompanyId.Value))
+                    .Select(e => e.Id).ToListAsync(ct);
+        }
+        else
+        {
+            var allowed = scope.AllowedEmployeeIds.ToList();
+            inCompany = companyIds.Count == 0 || allowed.Count == 0
+                ? new List<int>()
+                : await _db.Employees.AsNoTracking()
+                    .Where(e => e.TenantId == tenantId && !e.IsDeleted && allowed.Contains(e.Id)
+                             && e.CompanyId != null && companyIds.Contains(e.CompanyId.Value))
+                    .Select(e => e.Id).ToListAsync(ct);
+        }
+
+        var set = new HashSet<int>(inCompany);
+        if (scope.CallerEmployeeId is int self) set.Add(self); // own record always reachable
+        return new DataScope { Level = scope.Level, CallerEmployeeId = scope.CallerEmployeeId, AllowedEmployeeIds = set.ToList() };
+    }
+
+    private async Task<DataScope> ResolvePermissionScopeAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
     {
         var permissions = caller.Claims
             .Where(c => c.Type == "permission")

@@ -115,7 +115,161 @@ public class ZayraDbContext : DbContext
             if (entry.State is EntityState.Added or EntityState.Modified)
                 NormalizeDateTimeKinds(entry);
         }
+        await EnforceCompanyScopeOnWritesAsync(cancellationToken);
         return await base.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Phase 2 write-side enforcement for ICompanyScopedOperational entities. The read
+    /// filter alone cannot stop a request from WRITING rows into another company, and a
+    /// forgotten CompanyId would create rows invisible to scoped users (poison default).
+    ///
+    /// Rules per entry (user contexts only — system contexts with no tenant claim, i.e.
+    /// seeders / backfill / background workers, are trusted group-scope by design):
+    ///   Added, CompanyId set    → actor must have access to that company (fail closed).
+    ///   Added, CompanyId null   → server-side resolution, in order:
+    ///       (a) owning employee's company (EmployeeId/EmployeeIntId linkage — the "safe
+    ///           route": ESS and manager flows never carry a company explicitly);
+    ///       (b) tenant has exactly one active company → that company (SingleCompany);
+    ///       (c) actor's scope covers exactly one of the tenant's companies → that one;
+    ///       (d) otherwise FAIL CLOSED — Group tenants require explicit company context.
+    ///       (0 active companies → no company dimension yet; null passes through.)
+    ///   Modified                → reassigning or nulling-out a non-null CompanyId is
+    ///       blocked (explicit transfer workflows come later and must opt in); assigning
+    ///       a previously-null CompanyId is allowed (repair) but access-validated.
+    /// </summary>
+    private async Task EnforceCompanyScopeOnWritesAsync(CancellationToken ct)
+    {
+        var entries = ChangeTracker.Entries()
+            .Where(e => e.Entity is ICompanyScopedOperational && e.State is EntityState.Added or EntityState.Modified)
+            .ToList();
+        if (entries.Count == 0) return;
+
+        var user = _httpContextAccessor?.HttpContext?.User;
+        var tenantClaim = _tenantId;
+        if (user is null || tenantClaim is null) return; // system context — trusted by design
+
+        var scope = EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false);
+
+        Dictionary<Guid, List<Guid>>? companiesByTenant = null;
+        Dictionary<int, Guid?>? employeeCompanyCache = null;
+
+        foreach (var entry in entries)
+        {
+            var scoped = (ICompanyScopedOperational)entry.Entity;
+
+            if (entry.State == EntityState.Modified)
+            {
+                var companyProp = entry.Property(nameof(ICompanyScoped.CompanyId));
+                var original = (Guid?)companyProp.OriginalValue;
+                var current = scoped.CompanyId;
+                if (original is not null && current != original)
+                    throw new InvalidOperationException(
+                        $"company_reassignment_blocked: {entry.Metadata.ClrType.Name} rows cannot change company " +
+                        "(or lose their company) outside an explicit transfer workflow.");
+                if (current is not null && !scope.CanAccessCompany(current))
+                    throw new UnauthorizedAccessException(
+                        $"company_scope_denied: no access to the company that owns this {entry.Metadata.ClrType.Name}.");
+                continue;
+            }
+
+            // Added
+            if (scoped.CompanyId is Guid explicitCompany)
+            {
+                if (!scope.CanAccessCompany(explicitCompany))
+                    throw new UnauthorizedAccessException(
+                        $"company_scope_denied: cannot create {entry.Metadata.ClrType.Name} in a company outside your access.");
+                continue;
+            }
+
+            var entityTenant = ResolveEntryTenantId(entry) ?? tenantClaim.Value;
+
+            // (a) Safe route: follow the owning employee's company.
+            var linkedEmployeeId = ResolveLinkedEmployeeId(entry);
+            if (linkedEmployeeId is int empId and > 0)
+            {
+                employeeCompanyCache ??= new Dictionary<int, Guid?>();
+                if (!employeeCompanyCache.TryGetValue(empId, out var empCompany))
+                {
+                    // IgnoreQueryFilters is intentional: server-side stamping must see the
+                    // employee row even when the ACTOR's scope wouldn't (the deny decision
+                    // is made below); TenantId predicate keeps this tenant-contained.
+                    empCompany = await Employees.IgnoreQueryFilters().AsNoTracking()
+                        .Where(e => e.TenantId == entityTenant && e.Id == empId)
+                        .Select(e => e.CompanyId)
+                        .FirstOrDefaultAsync(ct);
+                    employeeCompanyCache[empId] = empCompany;
+                }
+                if (empCompany is Guid fromEmployee)
+                {
+                    if (!scope.CanAccessCompany(fromEmployee))
+                        throw new UnauthorizedAccessException(
+                            $"company_scope_denied: cannot create {entry.Metadata.ClrType.Name} for an employee outside your company access.");
+                    scoped.CompanyId = fromEmployee;
+                    continue;
+                }
+            }
+
+            // (b)/(c)/(d): tenant-level resolution.
+            companiesByTenant ??= new Dictionary<Guid, List<Guid>>();
+            if (!companiesByTenant.TryGetValue(entityTenant, out var activeCompanies))
+            {
+                // IgnoreQueryFilters is intentional: default-company resolution needs the
+                // tenant's full active company list regardless of actor scope; explicit
+                // TenantId predicate keeps this tenant-contained.
+                activeCompanies = await Companies.IgnoreQueryFilters().AsNoTracking()
+                    .Where(c => c.TenantId == entityTenant && c.IsActive && !c.IsDeleted)
+                    .OrderBy(c => c.CreatedAtUtc)
+                    .Select(c => c.Id)
+                    .ToListAsync(ct);
+                companiesByTenant[entityTenant] = activeCompanies;
+            }
+
+            if (activeCompanies.Count == 0) continue; // no company dimension yet
+            if (activeCompanies.Count == 1)
+            {
+                var only = activeCompanies[0];
+                if (!scope.CanAccessCompany(only))
+                    throw new UnauthorizedAccessException(
+                        $"company_scope_denied: cannot create {entry.Metadata.ClrType.Name} in this tenant's company.");
+                scoped.CompanyId = only;
+                continue;
+            }
+
+            if (!scope.IsGroupLevel)
+            {
+                var accessible = scope.AccessibleCompanyIds.Intersect(activeCompanies).ToList();
+                if (accessible.Count == 1)
+                {
+                    scoped.CompanyId = accessible[0];
+                    continue;
+                }
+            }
+
+            throw new InvalidOperationException(
+                $"company_scope_required: {entry.Metadata.ClrType.Name} in a multi-company tenant needs an " +
+                "explicit CompanyId (or an employee linkage to derive it from).");
+        }
+    }
+
+    private static Guid? ResolveEntryTenantId(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry) =>
+        entry.Entity switch
+        {
+            ITenantOwned owned => owned.TenantId,
+            INullableTenantOwned nullable => nullable.TenantId,
+            _ => null,
+        };
+
+    /// <summary>Owning-employee linkage: int Employee.Id via "EmployeeId" (int/int?) or "EmployeeIntId".</summary>
+    private static int? ResolveLinkedEmployeeId(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry)
+    {
+        var type = entry.Entity.GetType();
+        var direct = type.GetProperty("EmployeeId");
+        if (direct?.PropertyType == typeof(int)) return (int)direct.GetValue(entry.Entity)!;
+        if (direct?.PropertyType == typeof(int?) && direct.GetValue(entry.Entity) is int nullableInt) return nullableInt;
+        var intLink = type.GetProperty("EmployeeIntId");
+        if (intLink?.PropertyType == typeof(int?) && intLink.GetValue(entry.Entity) is int viaIntLink) return viaIntLink;
+        return null;
     }
 
     /// <summary>

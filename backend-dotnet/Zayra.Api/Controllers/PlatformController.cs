@@ -873,19 +873,62 @@ public class PlatformController : ControllerBase
             new { purgedBy = "platform_admin", purgedAtUtc = DateTime.UtcNow });
         await _db.SaveChangesAsync(ct);
 
-        // Hard-delete tenant-owned data. ExecuteDelete runs immediately; order respects FKs.
+        // Hard-delete tenant-owned data. Phase 2: the erasure set is derived from the EF
+        // MODEL (every ITenantOwned/INullableTenantOwned entity), not a hand-maintained
+        // table list — the old fixed list silently orphaned employees, companies, payroll
+        // and every other operational table. Audit logs are retained as the legal record.
         var userIds = await _db.Users.Where(u => u.TenantId == tenantId).Select(u => u.Id).ToListAsync(ct);
         if (userIds.Count > 0)
             await _db.RefreshTokens.Where(t => userIds.Contains(t.UserId)).ExecuteDeleteAsync(ct);
-        await _db.TenantInvoiceLines.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
-        await _db.TenantPayments.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
-        await _db.TenantInvoices.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
-        await _db.TenantSubscriptions.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
-        await _db.TenantFeatureFlags.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
+
+        var retained = new HashSet<Type> { typeof(Tenant), typeof(AuditLog), typeof(AdminAuditLog), typeof(User) };
+        var sweepTypes = _db.Model.GetEntityTypes()
+            .Where(t => !t.IsOwned() && t.BaseType is null)
+            .Select(t => t.ClrType)
+            .Where(clr => !retained.Contains(clr)
+                          && (typeof(ITenantOwned).IsAssignableFrom(clr) || typeof(INullableTenantOwned).IsAssignableFrom(clr)))
+            .ToList();
+
+        // Two passes: FK dependents that block a parent delete on pass 1 usually succeed
+        // on pass 2 once children are gone. Anything still failing is reported, not hidden.
+        var failures = new List<string>();
+        for (var pass = 0; pass < 2; pass++)
+        {
+            failures.Clear();
+            foreach (var clr in sweepTypes)
+            {
+                try { await PurgeTenantRowsAsync(clr, tenantId, ct); }
+                catch (Exception ex) { failures.Add($"{clr.Name}: {ex.GetBaseException().Message}"); }
+            }
+            if (failures.Count == 0) break;
+        }
+
         await _db.Users.Where(u => u.TenantId == tenantId).ExecuteDeleteAsync(ct);
         await _db.Tenants.Where(t => t.Id == tenantId).ExecuteDeleteAsync(ct);
 
+        AuditTenant(tenantId, "TenantPurgeCompleted",
+            new { tables = sweepTypes.Count },
+            new { unresolved = failures.Count, failures = failures.Take(10) });
+        await _db.SaveChangesAsync(ct);
+
+        if (failures.Count > 0)
+            return Ok(new { tenantId, purged = true, incomplete = true, unresolvedTables = failures, message = $"Tenant '{name}' erased with {failures.Count} unresolved table(s) — review audit log." });
         return Ok(new { tenantId, purged = true, message = $"Tenant '{name}' and its data have been permanently erased." });
+    }
+
+    private static readonly System.Reflection.MethodInfo _purgeRowsMethod =
+        typeof(PlatformController).GetMethod(nameof(PurgeTenantRowsCoreAsync), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+    private Task PurgeTenantRowsAsync(Type entityClrType, Guid tenantId, CancellationToken ct) =>
+        (Task)_purgeRowsMethod.MakeGenericMethod(entityClrType).Invoke(this, new object[] { tenantId, ct })!;
+
+    private async Task PurgeTenantRowsCoreAsync<TEntity>(Guid tenantId, CancellationToken ct) where TEntity : class
+    {
+        // IgnoreQueryFilters is intentional: GDPR erasure must reach soft-deleted and
+        // company-scoped rows too; the TenantId predicate fully scopes the delete.
+        await _db.Set<TEntity>().IgnoreQueryFilters()
+            .Where(e => EF.Property<Guid?>(e, "TenantId") == tenantId)
+            .ExecuteDeleteAsync(ct);
     }
 
     // ── Account type (SingleCompany | Group) ──────────────────────────────────
@@ -927,6 +970,26 @@ public class PlatformController : ControllerBase
         return Ok(new { tenantId, accountType = tenant.AccountType });
     }
 
+    /// <summary>
+    /// Shared claim-v2 scope emission for minted (impersonation / break-glass) tokens —
+    /// same resolver as normal login, so all three token types can never drift apart.
+    /// </summary>
+    private async Task<List<Claim>> BuildEntityScopeClaimsAsync(User user, Guid tenantId, CancellationToken ct)
+    {
+        var entityAccess = user.EntityAccesses
+            .Where(e => e.IsActive)
+            .Select(e => new EntityAccessGrant(e.CompanyId, e.Role, e.GrantMode))
+            .ToList();
+        IReadOnlyCollection<Guid> activeCompanyIds = Array.Empty<Guid>();
+        if (entityAccess.Any(g => g.Mode == EntityGrantModes.AllCurrentCompanies))
+            activeCompanyIds = await _db.Companies
+                .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+                .Select(c => c.Id)
+                .ToListAsync(ct);
+        var scope = EntityScopeClaims.Resolve(user.IsGroupScope, entityAccess, activeCompanyIds);
+        return EntityScopeClaims.Build(scope, entityAccess);
+    }
+
     // ── Impersonation ─────────────────────────────────────────────────────────
 
     [HttpPost("tenants/{tenantId:guid}/impersonate")]
@@ -962,19 +1025,13 @@ public class PlatformController : ControllerBase
             new("impersonated_by", "platform_admin")
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
-        // Mirror a real login token: without permission and entity_access claims the
-        // impersonated session has no HasPermission() grants and — worse — is treated
-        // as group scope (all companies in the tenant) by the company query filter.
+        // Mirror a real login token exactly (permissions + the same claim-v2 scope
+        // decision the user's own login would produce) so an impersonated session can
+        // never be broader OR narrower than the user it represents.
         claims.AddRange(AuthService.GetPermissions(user).Select(p => new Claim("permission", p)));
-        foreach (var grant in user.EntityAccesses.Where(e => e.IsActive))
-        {
-            var json = JsonSerializer.Serialize(new { c = grant.CompanyId?.ToString(), r = grant.Role }, EntityAccessClaimJson);
-            claims.Add(new Claim("entity_access", json));
-        }
-        if (user.IsGroupScope) claims.Add(new Claim("is_group_scope", "true"));
-        // Fail closed: an impersonated session whose user has no explicit company grants
-        // and no group scope must see no company-assigned data — never fall back to
-        // tenant-wide access via claim absence.
+        claims.AddRange(await BuildEntityScopeClaimsAsync(user, tenantId, ct));
+        // Fail closed on claim absence/malformation regardless of the global StrictMode:
+        // a minted session must carry an EXPLICIT scope decision or see nothing.
         claims.Add(new Claim(EntityScopeContext.StrictScopeClaim, "true"));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
@@ -2177,16 +2234,11 @@ public class PlatformController : ControllerBase
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
-        // Same rules as Impersonate: mirror a real login token (permissions + company
-        // grants) and fail closed on claim absence — a break-glass session must never
-        // widen to tenant-wide company access via missing claims.
+        // Same rules as Impersonate: mirror a real login token (permissions + the same
+        // claim-v2 scope decision), and fail closed on claim absence — a break-glass
+        // session must never widen to tenant-wide company access via missing claims.
         claims.AddRange(AuthService.GetPermissions(user).Select(p => new Claim("permission", p)));
-        foreach (var grant in user.EntityAccesses.Where(e => e.IsActive))
-        {
-            var json = JsonSerializer.Serialize(new { c = grant.CompanyId?.ToString(), r = grant.Role }, EntityAccessClaimJson);
-            claims.Add(new Claim("entity_access", json));
-        }
-        if (user.IsGroupScope) claims.Add(new Claim("is_group_scope", "true"));
+        claims.AddRange(await BuildEntityScopeClaimsAsync(user, tenantId, ct));
         claims.Add(new Claim(EntityScopeContext.StrictScopeClaim, "true"));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));

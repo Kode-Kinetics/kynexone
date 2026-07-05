@@ -11,7 +11,7 @@ public interface IPasswordHasher
 
 public interface ITokenService
 {
-    string CreateAccessToken(User user, IReadOnlyCollection<string> roles, IReadOnlyCollection<string> permissions, Tenant tenant, IReadOnlyCollection<EntityAccessGrant> entityAccess, out DateTime expiresAtUtc);
+    string CreateAccessToken(User user, IReadOnlyCollection<string> roles, IReadOnlyCollection<string> permissions, Tenant tenant, IReadOnlyCollection<EntityAccessGrant> entityAccess, EntityScopeDescriptor entityScope, out DateTime expiresAtUtc);
     string CreateSecureToken();
     string HashToken(string token);
 }

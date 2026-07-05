@@ -76,16 +76,21 @@ public sealed class AiInsightEngine : BackgroundService
         var now = DateTime.UtcNow;
         var insights = new List<AIInsight>();
 
-        // ── 1. Payroll Variance Analysis ──────────────────────────────────────
-        var runs = await db.PayrollRuns
+        // ── 1. Payroll Variance Analysis — per legal entity (Phase 2) ─────────
+        // Comparing payroll totals ACROSS companies produces meaningless variance and
+        // leaks one company's payroll movement into a sibling's insight feed. Analyze
+        // each company's run series independently and stamp the insight's CompanyId.
+        var recentRuns = await db.PayrollRuns
             .AsNoTracking()
             .Where(r => r.TenantId == tenantId && (r.Status == "Locked" || r.Status == "Approved"))
             .OrderByDescending(r => r.Year).ThenByDescending(r => r.Month)
-            .Take(4)
+            .Take(24)
             .ToListAsync(ct);
 
-        if (runs.Count >= 2)
+        foreach (var companySeries in recentRuns.GroupBy(r => r.CompanyId))
         {
+            var runs = companySeries.Take(4).ToList();
+            if (runs.Count < 2) continue;
             var latest = runs[0];
             var prior3Avg = runs.Skip(1).Average(r => r.TotalNetSalary);
             if (prior3Avg > 0)
@@ -99,7 +104,8 @@ public sealed class AiInsightEngine : BackgroundService
                         $"Net payroll {direction} by {variancePct:F1}%",
                         $"Net payroll for {MonthLabel(latest.Month, latest.Year)} is {direction} by {variancePct:F1}% " +
                         $"({latest.TotalNetSalary:N0}) vs. 3-month average ({prior3Avg:N0}). Review for new hires, terminations, or one-time adjustments.",
-                        new { LatestRunId = latest.Id, LatestNet = latest.TotalNetSalary, Prior3Avg = prior3Avg, VariancePct = variancePct }));
+                        new { LatestRunId = latest.Id, LatestNet = latest.TotalNetSalary, Prior3Avg = prior3Avg, VariancePct = variancePct },
+                        companySeries.Key));
                 }
             }
         }
@@ -130,9 +136,9 @@ public sealed class AiInsightEngine : BackgroundService
         }
 
         // ── 3. Overtime Anomaly Detection ─────────────────────────────────────
-        if (runs.Count > 0)
+        if (recentRuns.Count > 0)
         {
-            var latestRun = runs[0];
+            var latestRun = recentRuns[0];
             // Load flat records and aggregate in C# — GroupBy inside EF provider
             // queries is not portable across InMemory, SQLite, and MySQL.
             var rawOvertimeRows = await db.PayrollEarnings
@@ -279,9 +285,10 @@ public sealed class AiInsightEngine : BackgroundService
     }
 
     private static AIInsight BuildInsight(Guid tenantId, string module, string insightType, string severity,
-        string title, string summary, object data) => new()
+        string title, string summary, object data, Guid? companyId = null) => new()
     {
         TenantId = tenantId,
+        CompanyId = companyId,
         Module = module,
         InsightType = insightType,
         Severity = severity,

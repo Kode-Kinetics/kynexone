@@ -119,6 +119,15 @@ public class EmployeesController : ControllerBase
             e.JoiningDate.ToString("yyyy-MM-dd")
         });
         var csv = Csv.Build(EmployeeCsvHeaders, rows);
+        // Export audit: actor, row count, and company-scope dimension — no PII values.
+        await _audit.WriteAsync("employees.exported", "Employee", "bulk", Context(),
+            JsonSerializer.Serialize(new
+            {
+                rowCount = emps.Count,
+                groupScope = entityScope.IsGroupLevel,
+                companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
+                exportType = "employees_csv",
+            }), ct);
         return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 

@@ -136,9 +136,25 @@ public class PermissionGrantorRecord : ITenantOwned
     public Guid? CreatedBy { get; set; }
 }
 
+/// <summary>Grant modes for company access (Phase 2).</summary>
+public static class EntityGrantModes
+{
+    /// <summary>Access only to the explicitly listed company on this grant row.</summary>
+    public const string SelectedCompanies = "SelectedCompanies";
+    /// <summary>Access to companies active at token issuance — snapshot into the claim, NOT dynamic.</summary>
+    public const string AllCurrentCompanies = "AllCurrentCompanies";
+    /// <summary>Dynamic group-wide access: all companies now and in the future.</summary>
+    public const string AllCurrentAndFutureCompanies = "AllCurrentAndFutureCompanies";
+
+    public static bool IsValid(string value) =>
+        value is SelectedCompanies or AllCurrentCompanies or AllCurrentAndFutureCompanies;
+}
+
 /// <summary>
 /// SAP/Workday-style Legal Entity access grant.
-/// CompanyId null = group-level (all companies). CompanyId set = scoped to that company only.
+/// GrantMode = SelectedCompanies requires CompanyId; the two all-company modes ignore it.
+/// (Legacy rows with null CompanyId were migrated to AllCurrentAndFutureCompanies —
+/// behavior-preserving, since a null-company grant always meant dynamic group access.)
 /// </summary>
 public class UserEntityAccess : ITenantOwned
 {
@@ -148,6 +164,8 @@ public class UserEntityAccess : ITenantOwned
     public User? User { get; set; }
     public Guid? CompanyId { get; set; }
     public Company? Company { get; set; }
+    // SelectedCompanies | AllCurrentCompanies | AllCurrentAndFutureCompanies
+    public string GrantMode { get; set; } = EntityGrantModes.SelectedCompanies;
     public string Role { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
