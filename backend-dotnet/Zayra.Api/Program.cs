@@ -188,6 +188,7 @@ builder.Services.AddScoped<IAccessManagementService, AccessManagementService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<IEmployeeManagementService, EmployeeManagementService>();
 builder.Services.AddScoped<IOrganizationSetupService, OrganizationSetupService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Governance.ICompanyTaxPolicyResolver, Zayra.Api.Infrastructure.Governance.CompanyTaxPolicyResolver>();
 builder.Services.AddScoped<IHrmHierarchyService, HrmHierarchyService>();
 builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
 builder.Services.AddScoped<IApprovalPolicyService, ApprovalPolicyService>();
@@ -507,11 +508,25 @@ using (var scope = app.Services.CreateScope())
     // Boot assertions — model-level only, no DB I/O
     TenantOwnershipBootAssertion.Assert(dbContext);
     ControllerEntityReturnBootAssertion.Assert(dbContext, typeof(Program).Assembly);
+    // Company dimension: strict (failed boot) outside Production; Production logs errors
+    // until ZAYRA_COMPANY_SCOPE_ASSERT=strict is set after a proven-clean deploy cycle.
+    CompanyScopeBootAssertion.Assert(
+        dbContext,
+        CompanyScopeBootAssertion.ResolveStrictMode(app.Environment.IsProduction()),
+        logger);
 
     // Always run migrations on startup — MigrateAsync is a no-op when schema is current.
     logger.LogInformation("Running EF Core migrations...");
     await dbContext.Database.MigrateAsync();
     logger.LogInformation("EF Core migrations complete.");
+
+    // Phase 1B default-company backfill — idempotent (only touches null CompanyId rows),
+    // non-fatal, and disabled via CompanyScope:Backfill=false / CompanyScope__Backfill=false.
+    if (!string.Equals(app.Configuration["CompanyScope:Backfill"], "false", StringComparison.OrdinalIgnoreCase))
+    {
+        try { await CompanyScopeBackfill.RunAsync(dbContext, logger); }
+        catch (Exception ex) { logger.LogError(ex, "CompanyScopeBackfill failed — continuing startup."); }
+    }
 
     // One-off demo cleanup: `dotnet Zayra.Api.dll --purge-demo`. Deactivates all
     // demo tenants (guarding the real SeedAdmin tenant) then exits — never seeds.

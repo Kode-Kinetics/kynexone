@@ -1,7 +1,7 @@
 using Zayra.Api.Domain.Entities;
 namespace Zayra.Api.Models;
 
-public class LeavePolicyEligibility : ITenantOwned
+public class LeavePolicyEligibility : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
@@ -111,10 +111,12 @@ public class OvertimeRule : ITenantOwned
     public bool IsActive { get; set; } = true;
 }
 
-public class OvertimeRequest : ITenantOwned
+public class OvertimeRequest : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public int EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public Guid? OvertimePolicyId { get; set; }
@@ -328,10 +330,12 @@ public class PayrollEarning : ITenantOwned
     public string Source { get; set; } = "Salary";
 }
 
-public class PayrollDeduction : ITenantOwned
+public class PayrollDeduction : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid PayrollRunId { get; set; }
     public int EmployeeId { get; set; }
     public string ComponentCode { get; set; } = string.Empty;
@@ -404,10 +408,12 @@ public class PayrollException : ITenantOwned
     public string Status { get; set; } = "Open";
 }
 
-public class Payslip : ITenantOwned
+public class Payslip : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid PayrollRunId { get; set; }
     public int EmployeeId { get; set; }
     public string PayslipNumber { get; set; } = string.Empty;
@@ -510,10 +516,12 @@ public class BankTransferFile : ITenantOwned
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
-public class WPSFileBatch : ITenantOwned
+public class WPSFileBatch : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid PaymentBatchId { get; set; }
     public string SifFileName { get; set; } = string.Empty;
     public string Status { get; set; } = "Generated";

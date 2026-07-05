@@ -1,10 +1,12 @@
 using Zayra.Api.Domain.Entities;
 namespace Zayra.Api.Models;
 
-public class EmployeeDocument : ITenantOwned
+public class EmployeeDocument : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public int? EmployeeId { get; set; }
     public Guid? DraftId { get; set; }
     public string DocumentType { get; set; } = string.Empty;

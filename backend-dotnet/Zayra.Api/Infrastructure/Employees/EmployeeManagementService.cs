@@ -83,6 +83,9 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var employee = new Employee { TenantId = tenantId, EmployeeCode = code, CreatedBy = context.UserId };
         await ApplyEmployee(employee, request, tenantId, cancellationToken);
+        // Employees must always resolve to a legal entity: operational company scoping
+        // treats null CompanyId as invisible to scoped users, so default it here.
+        employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
         employee.Status = "Draft";
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         _db.Employees.Add(employee);
@@ -392,7 +395,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.WorkEmail = Clean(request.WorkEmail);
         employee.Phone = Clean(request.MobileNumber);
         employee.ProfilePhotoUrl = Clean(request.ProfilePhotoUrl);
-        employee.CompanyId = request.CompanyId;
+        // Never null-out an existing company assignment: under operational company scoping
+        // a null CompanyId hides the employee from scoped users. Reassignment requires an
+        // explicit value; omission keeps the current legal entity.
+        employee.CompanyId = request.CompanyId ?? employee.CompanyId;
         employee.BranchId = request.BranchId;
         employee.DepartmentId = request.DepartmentId;
         employee.DesignationId = request.DesignationId;
@@ -499,6 +505,16 @@ public class EmployeeManagementService : IEmployeeManagementService
             record.UpdatedBy = context.UserId;
             ApplyKnownComplianceMirror(employee, record);
         }
+    }
+
+    /// <summary>Oldest active company = the tenant's default legal entity (matches CompanyScopeBackfill).</summary>
+    private async Task<Guid?> ResolveDefaultCompanyId(Guid tenantId, CancellationToken cancellationToken)
+    {
+        return await _db.Companies
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted && c.IsActive)
+            .OrderBy(c => c.CreatedAtUtc)
+            .Select(c => (Guid?)c.Id)
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     private void TrackChange(Employee employee, string field, string oldValue, string newValue, DateTime? effectiveDate, string reason, RequestContext context)

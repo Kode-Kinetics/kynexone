@@ -88,6 +88,24 @@ public class CompaniesController : ControllerBase
                     });
             }
 
+            // ── Account-type gate (product behavior, distinct from the commercial
+            //    MaxCompanies limit above): only Group tenants operate multiple active
+            //    legal entities. SingleCompany tenants keep exactly one default company. ──
+            var existingCount = await _db.Companies.CountAsync(c => c.TenantId == tenantId, cancellationToken);
+            if (existingCount >= 1)
+            {
+                var accountType = await _db.Tenants.AsNoTracking()
+                    .Where(t => t.Id == tenantId)
+                    .Select(t => t.AccountType)
+                    .FirstOrDefaultAsync(cancellationToken);
+                if (accountType != Zayra.Api.Domain.Entities.TenantAccountTypes.Group)
+                    return Conflict(new
+                    {
+                        error = "account_type_single_company",
+                        message = "This account is configured as a single-company account. Ask your platform administrator to enable the Group account type to manage multiple legal entities.",
+                    });
+            }
+
             var company = await _organization.CreateCompanyAsync(tenantId.Value, request, Context(), cancellationToken);
             return CreatedAtAction(nameof(Get), new { id = company.Id }, company);
         }

@@ -85,7 +85,11 @@ public class ImpersonationScopeTests : PlatformTestBase
         var visible = await QueryEmployeeCodesAs(dbName, jwt);
         visible.Should().NotContain("EMP-A");
         visible.Should().NotContain("EMP-B");
-        visible.Should().Contain("EMP-NULL", "company-unassigned rows remain visible by design (CompanyId == null)");
+        // Phase 1B hardening: Employee is ICompanyScopedOperational — company-unassigned
+        // rows are visible to GROUP scope only, never to a fail-closed scoped session.
+        visible.Should().NotContain("EMP-NULL",
+            "operational null-CompanyId rows must not leak to scoped users (poison-default prevention)");
+        visible.Should().BeEmpty();
     }
 
     // ── C3: explicit group scope — represented, not inferred ───────────────────
@@ -111,6 +115,7 @@ public class ImpersonationScopeTests : PlatformTestBase
 
         var visible = await QueryEmployeeCodesAs(dbName, jwt);
         visible.Should().Contain(new[] { "EMP-A", "EMP-B" });
+        visible.Should().Contain("EMP-NULL", "group scope still sees unassigned rows so they stay repairable");
     }
 
     // ── C4: selected-companies subset — sees exactly the granted set ───────────

@@ -16,6 +16,13 @@ namespace Zayra.Api.Tests.Security;
 /// </summary>
 public class EmployeeSnapshotMaskingTests
 {
+    static EmployeeSnapshotMaskingTests()
+    {
+        // Change markers use HMAC with a server-side secret (never stored in DB). Plain
+        // deterministic SHA-256 was rejected: salary entropy is low enough to brute-force.
+        Environment.SetEnvironmentVariable(SensitiveValueMask.AuditSecretEnvVar, "test-audit-secret");
+    }
+
     private static Employee MakeSensitiveEmployee() => new()
     {
         TenantId = Guid.NewGuid(),
@@ -61,7 +68,7 @@ public class EmployeeSnapshotMaskingTests
         var json = EmployeeSafeSnapshot.Serialize(MakeSensitiveEmployee());
 
         json.Should().NotContain("15750.5");
-        json.Should().Contain("sha256:", "salary must be stored as a deterministic change marker");
+        json.Should().Contain("hmac:", "salary must be stored as a keyed (HMAC) change marker, never raw or unsalted-hashed");
     }
 
     [Fact]
@@ -127,7 +134,7 @@ public class EmployeeSnapshotMaskingTests
         EmployeeSafeSnapshot.SanitizeFieldValue("IqamaNumber", "2456789012")
             .Should().Be("***9012");
         EmployeeSafeSnapshot.SanitizeFieldValue("Salary", "15750.50")
-            .Should().StartWith("sha256:");
+            .Should().StartWith("hmac:");
         EmployeeSafeSnapshot.SanitizeFieldValue("Department", "Finance")
             .Should().Be("Finance");
         EmployeeSafeSnapshot.SanitizeFieldValue("Status", "Active")
@@ -151,9 +158,26 @@ public class EmployeeSnapshotMaskingTests
         var a2 = SensitiveValueMask.HashMarker(15750.50m);
         var b = SensitiveValueMask.HashMarker(16000.00m);
 
+        a1.Should().StartWith("hmac:");
         a1.Should().Be(a2, "same value must produce the same marker so audit can detect no-change");
         a1.Should().NotBe(b, "a changed value must produce a different marker");
         a1.Should().NotContain("15750");
+    }
+
+    [Fact]
+    public void HashMarker_WithoutServerSecret_DegradesToRedaction_NeverUnsaltedHash()
+    {
+        var saved = Environment.GetEnvironmentVariable(SensitiveValueMask.AuditSecretEnvVar);
+        try
+        {
+            Environment.SetEnvironmentVariable(SensitiveValueMask.AuditSecretEnvVar, null);
+            SensitiveValueMask.HashMarker(15750.50m).Should().Be(SensitiveValueMask.Redacted,
+                "a low-entropy value must never be persisted as a crackable unkeyed digest");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(SensitiveValueMask.AuditSecretEnvVar, saved);
+        }
     }
 
     // ── Source lint: raw employee serialization must never return on SnapshotJson ──

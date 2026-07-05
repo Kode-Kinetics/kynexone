@@ -21,7 +21,7 @@ public class LeaveType : ITenantOwned
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
-public class LeavePolicy : ITenantOwned
+public class LeavePolicy : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
@@ -79,10 +79,12 @@ public class EmployeeLeaveBalance : ITenantOwned
         Entitled + Accrued + CarriedForward + ManualAdjustment - Used - Pending - Encashed;
 }
 
-public class LeaveBalanceTransaction : ITenantOwned
+public class LeaveBalanceTransaction : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public int EmployeeId { get; set; }
     public Guid LeaveTypeId { get; set; }
     public int Year { get; set; }
@@ -96,10 +98,12 @@ public class LeaveBalanceTransaction : ITenantOwned
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
-public class LeaveRequest : ITenantOwned
+public class LeaveRequest : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public int EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public string DepartmentName { get; set; } = string.Empty;
@@ -176,7 +180,7 @@ public class LeaveModificationRequest : ITenantOwned
     public DateTime? ReviewedAtUtc { get; set; }
 }
 
-public class PublicHolidayCalendar : ITenantOwned
+public class PublicHolidayCalendar : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }

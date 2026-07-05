@@ -888,6 +888,45 @@ public class PlatformController : ControllerBase
         return Ok(new { tenantId, purged = true, message = $"Tenant '{name}' and its data have been permanently erased." });
     }
 
+    // ── Account type (SingleCompany | Group) ──────────────────────────────────
+
+    /// <summary>
+    /// Sets the tenant's product account type. Distinct from MaxCompanies (commercial
+    /// limit): AccountType drives group behavior (multi-company provisioning, switcher).
+    /// Downgrading to SingleCompany is blocked while multiple active companies exist.
+    /// </summary>
+    [HttpPut("tenants/{tenantId:guid}/account-type")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> SetAccountType(Guid tenantId, [FromBody] SetAccountTypeRequest req, CancellationToken ct)
+    {
+        if (!TenantAccountTypes.IsValid(req.AccountType))
+            return BadRequest(new { message = "AccountType must be 'SingleCompany' or 'Group'." });
+
+        var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+
+        if (req.AccountType == TenantAccountTypes.SingleCompany)
+        {
+            var activeCompanies = await _db.Companies
+                .CountAsync(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted, ct);
+            if (activeCompanies > 1)
+                return Conflict(new
+                {
+                    error = "multiple_active_companies",
+                    activeCompanies,
+                    message = "Cannot downgrade to SingleCompany while the tenant has multiple active companies. Deactivate the extra companies first.",
+                });
+        }
+
+        var previous = tenant.AccountType;
+        tenant.AccountType = req.AccountType;
+        AuditTenant(tenantId, "AccountTypeChanged",
+            new { accountType = previous },
+            new { accountType = req.AccountType });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { tenantId, accountType = tenant.AccountType });
+    }
+
     // ── Impersonation ─────────────────────────────────────────────────────────
 
     [HttpPost("tenants/{tenantId:guid}/impersonate")]
@@ -986,7 +1025,10 @@ public class PlatformController : ControllerBase
         if (await _db.Tenants.AsNoTracking().AnyAsync(t => t.Slug == slug && t.IsActive, ct))
             return Conflict(new { message = $"A tenant with slug '{slug}' already exists." });
 
-        var tenant = new Tenant { Name = name, Slug = slug };
+        if (req.AccountType is not null && !TenantAccountTypes.IsValid(req.AccountType))
+            return BadRequest(new { message = "AccountType must be 'SingleCompany' or 'Group'." });
+
+        var tenant = new Tenant { Name = name, Slug = slug, AccountType = req.AccountType ?? TenantAccountTypes.SingleCompany };
         _db.Tenants.Add(tenant);
         await _db.SaveChangesAsync(ct);
 
@@ -4154,7 +4196,11 @@ public record CreateTenantRequest(
     string? CurrencyCode,
     DateTime? ExpiresAtUtc,
     int? MaxCompanies  = null,
-    int? MaxAdminUsers = null);
+    int? MaxAdminUsers = null,
+    // SingleCompany (default) | Group — product behavior, distinct from MaxCompanies.
+    string? AccountType = null);
+
+public record SetAccountTypeRequest(string AccountType);
 
 public record AddTenantAdminRequest(string Email, string? FullName, string Password);
 public record CreateTenantUserRequest(string Email, string? FullName, string Password, string? RoleName, bool? MustChangePassword);

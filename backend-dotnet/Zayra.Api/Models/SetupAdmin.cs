@@ -181,10 +181,13 @@ public class NotificationTemplate : ITenantOwned
 
 // ── Admin Audit Log ───────────────────────────────────────────────────────────
 
-public class AdminAuditLog : ITenantOwned
+public class AdminAuditLog : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    // Legal-entity dimension: set for company-scoped actions, null for tenant/group-level
+    // actions (config semantics — null rows stay visible to every tenant user).
+    public Guid? CompanyId { get; set; }
     public string EntityType { get; set; } = string.Empty;
     public string EntityId { get; set; } = string.Empty;
     public string Action { get; set; } = string.Empty;      // Created, Updated, Deleted, Activated, etc.

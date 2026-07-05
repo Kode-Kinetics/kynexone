@@ -1,9 +1,12 @@
 namespace Zayra.Api.Domain.Entities;
 
-public class AuditLog : INullableTenantOwned
+public class AuditLog : INullableTenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid? TenantId { get; set; }
+    // Legal-entity dimension: set for company-scoped actions, null for tenant/group-level
+    // actions (config semantics — null rows stay visible to every tenant user).
+    public Guid? CompanyId { get; set; }
     public Guid? UserId { get; set; }
     public string Action { get; set; } = string.Empty;
     public string EntityName { get; set; } = string.Empty;

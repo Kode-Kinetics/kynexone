@@ -16,10 +16,12 @@ public class ShiftDefinition : ITenantOwned
     public DateTime? UpdatedAtUtc { get; set; }
 }
 
-public class ShiftAssignment : ITenantOwned
+public class ShiftAssignment : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public int EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public Guid ShiftDefinitionId { get; set; }

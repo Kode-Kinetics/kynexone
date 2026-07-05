@@ -304,6 +304,8 @@ public class ZayraDbContext : DbContext
     public DbSet<TenantBranding> TenantBrandings => Set<TenantBranding>();
     public DbSet<CountryPayrollRule> CountryPayrollRules => Set<CountryPayrollRule>();
     public DbSet<StatutoryRule> StatutoryRules => Set<StatutoryRule>();
+    public DbSet<CompanyTaxPolicy> CompanyTaxPolicies => Set<CompanyTaxPolicy>();
+    public DbSet<CompanyComplianceProfile> CompanyComplianceProfiles => Set<CompanyComplianceProfile>();
     public DbSet<TenantFieldHelpText> TenantFieldHelpTexts => Set<TenantFieldHelpText>();
     public DbSet<PlatformSupportSession> PlatformSupportSessions => Set<PlatformSupportSession>();
     public DbSet<PlatformUser> PlatformUsers => Set<PlatformUser>();
@@ -2269,6 +2271,31 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc });
         });
 
+        // ── Company governance (Phase 1B: per-legal-entity policy foundation) ─────
+        modelBuilder.Entity<CompanyTaxPolicy>(entity =>
+        {
+            entity.ToTable("company_tax_policies");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CountryCode).HasMaxLength(2);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.IncomeTaxRatePercent).HasPrecision(8, 4);
+            entity.Property(x => x.Notes).HasMaxLength(1000);
+            // Resolution query: tenant + company (or null default) + Active + date window.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status, x.EffectiveFrom });
+        });
+
+        modelBuilder.Entity<CompanyComplianceProfile>(entity =>
+        {
+            entity.ToTable("company_compliance_profiles");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CountryCode).HasMaxLength(2);
+            entity.Property(x => x.Jurisdiction).HasMaxLength(40);
+            entity.Property(x => x.CompliancePack).HasMaxLength(60);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.Notes).HasMaxLength(1000);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status, x.EffectiveFrom });
+        });
+
         // ── Loans ──────────────────────────────────────────────────────────────
         modelBuilder.Entity<LoanType>(entity =>
         {
@@ -2485,6 +2512,37 @@ public class ZayraDbContext : DbContext
         });
 
         ApplyTenantQueryFilters(modelBuilder);
+        ApplyCompanyScopeIndexes(modelBuilder);
+    }
+
+    /// <summary>
+    /// Convention-driven indexing for the company dimension: every ICompanyScoped entity
+    /// that also carries TenantId gets a composite (TenantId, CompanyId) index so the
+    /// automatic company filter never table-scans. Hot operational tables additionally
+    /// get a (TenantId, CompanyId, status/date) index for their dominant list queries.
+    /// HasIndex on an existing property set is idempotent, so manual per-entity indexes
+    /// (e.g. cost_centers) are not duplicated.
+    /// </summary>
+    private static void ApplyCompanyScopeIndexes(ModelBuilder modelBuilder)
+    {
+        var hotPathExtras = new Dictionary<Type, string[]>
+        {
+            [typeof(Models.AttendanceRecord)] = new[] { "TenantId", "CompanyId", "WorkDate" },
+            [typeof(Models.LeaveRequest)] = new[] { "TenantId", "CompanyId", "Status" },
+            [typeof(Models.PayrollRun)] = new[] { "TenantId", "CompanyId", "Status" },
+        };
+
+        foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+        {
+            if (entityType.IsOwned() || entityType.BaseType is not null) continue;
+            var clr = entityType.ClrType;
+            if (!typeof(ICompanyScoped).IsAssignableFrom(clr)) continue;
+            if (clr.GetProperty("TenantId") is null) continue;
+
+            modelBuilder.Entity(clr).HasIndex("TenantId", "CompanyId");
+            if (hotPathExtras.TryGetValue(clr, out var extra))
+                modelBuilder.Entity(clr).HasIndex(extra);
+        }
     }
 
     private static readonly MethodInfo _setTenantFilterNonNull =
@@ -2524,12 +2582,24 @@ public class ZayraDbContext : DbContext
     // Each method AND-s in the soft-delete guard and, for ICompanyScoped entities, the
     // company-scope guard in one HasQueryFilter call (EF Core only supports one per entity type).
     // Code that intentionally needs deleted/cross-company records must call .IgnoreQueryFilters().
+    //
+    // Two company-scope tiers:
+    //   ICompanyScoped (config/template): CompanyId == null ⇒ tenant-wide, visible to all.
+    //   ICompanyScopedOperational:        CompanyId == null ⇒ visible to GROUP scope only —
+    //     a scoped user never sees unassigned operational rows (poison-default prevention).
     private void SetTenantFilterNonNull<TEntity>(ModelBuilder modelBuilder) where TEntity : class
     {
         var hasSoftDelete = typeof(TEntity).GetProperty("IsDeleted") != null;
-        var hasCompanyScope = typeof(ICompanyScoped).IsAssignableFrom(typeof(TEntity));
+        var isOperationalScope = typeof(ICompanyScopedOperational).IsAssignableFrom(typeof(TEntity));
+        var isConfigScope = !isOperationalScope && typeof(ICompanyScoped).IsAssignableFrom(typeof(TEntity));
 
-        if (hasSoftDelete && hasCompanyScope)
+        if (hasSoftDelete && isOperationalScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                     && !EF.Property<bool>(e, "IsDeleted")
+                     && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
+                         && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
+        else if (hasSoftDelete && isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
                      && !EF.Property<bool>(e, "IsDeleted")
@@ -2539,7 +2609,12 @@ public class ZayraDbContext : DbContext
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
                      && !EF.Property<bool>(e, "IsDeleted"));
-        else if (hasCompanyScope)
+        else if (isOperationalScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                     && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
+                         && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
+        else if (isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
@@ -2552,9 +2627,16 @@ public class ZayraDbContext : DbContext
     private void SetTenantFilterNullable<TEntity>(ModelBuilder modelBuilder) where TEntity : class
     {
         var hasSoftDelete = typeof(TEntity).GetProperty("IsDeleted") != null;
-        var hasCompanyScope = typeof(ICompanyScoped).IsAssignableFrom(typeof(TEntity));
+        var isOperationalScope = typeof(ICompanyScopedOperational).IsAssignableFrom(typeof(TEntity));
+        var isConfigScope = !isOperationalScope && typeof(ICompanyScoped).IsAssignableFrom(typeof(TEntity));
 
-        if (hasSoftDelete && hasCompanyScope)
+        if (hasSoftDelete && isOperationalScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                     && !EF.Property<bool>(e, "IsDeleted")
+                     && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
+                         && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
+        else if (hasSoftDelete && isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
                      && !EF.Property<bool>(e, "IsDeleted")
@@ -2564,7 +2646,12 @@ public class ZayraDbContext : DbContext
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
                      && !EF.Property<bool>(e, "IsDeleted"));
-        else if (hasCompanyScope)
+        else if (isOperationalScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                     && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
+                         && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
+        else if (isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null

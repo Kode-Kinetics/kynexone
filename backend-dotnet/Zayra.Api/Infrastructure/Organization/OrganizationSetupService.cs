@@ -36,6 +36,7 @@ public class OrganizationSetupService : IOrganizationSetupService
 
     public async Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        ValidateCountryCode(request.CountryCode);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, null, cancellationToken);
         var company = new Company { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(company, request);
@@ -49,6 +50,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var company = await _db.Companies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (company is null) return null;
+        ValidateCountryCode(request.CountryCode);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, id, cancellationToken);
         Apply(company, request);
         company.UpdatedAtUtc = DateTime.UtcNow;
@@ -56,6 +58,18 @@ public class OrganizationSetupService : IOrganizationSetupService
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.company_updated", nameof(Company), company.Id.ToString(), context, null, cancellationToken);
         return company.ToDto();
+    }
+
+    /// <summary>
+    /// Company.CountryCode anchors statutory-pack resolution and the new company
+    /// governance tables, so free text is rejected: non-empty values must be a
+    /// recognized ISO code (ISO-2 canonical; ISO-3 accepted and mapped).
+    /// </summary>
+    private static void ValidateCountryCode(string? countryCode)
+    {
+        if (!CountryCodeStandard.IsValidOrEmpty(countryCode))
+            throw new InvalidOperationException(
+                $"Unrecognized country code '{countryCode}'. Use an ISO 3166-1 code (e.g. SA, AE, IN, GB).");
     }
 
     public async Task<PagedResult<BranchDto>> GetBranchesAsync(Guid tenantId, Guid? companyId, int page, int pageSize, CancellationToken cancellationToken)
