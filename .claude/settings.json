@@ -29,7 +29,9 @@
       "Bash(git merge feature/hrm-ai-intelligence-layer --no-ff -m ' *)",
       "Bash(git stash *)",
       "Bash(git merge *)",
-      "Bash(git remote *)"
+      "Bash(git remote *)",
+      "Bash(npm show *)",
+      "Bash(curl -s https://zayra-ai-workforce-git-feat-nextj-7b7746-kode-kinetics-projects.vercel.app/api/auth/login -X POST -H 'Content-Type: application/json' -d '{\"email\":\"admin@kynexone.com\",\"password\":\"KynexOne@2025\",\"tenantSlug\":\"zayra\"}')"
     ]
   }
 }

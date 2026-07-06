@@ -24,25 +24,58 @@ function cacheKey(locale: string, source: string): string {
  * label (e.g. a trailing colon). Strip all of it so the field receives clean
  * target text only.
  */
+const ENTITY_MAP: Record<string, string> = {
+  '&quot;': '"',
+  '&#39;': "'",
+  '&apos;': "'",
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&nbsp;': ' ',
+};
+
+/**
+ * Decodes entities exactly ONCE. A sequential replace chain double-unescapes
+ * ("&amp;lt;" → "&lt;" → "<"); a single alternation pass decodes each entity
+ * one time only, so author-escaped text can never resurrect into markup.
+ * In the browser the native parser does the same via a textarea (content model
+ * is text — tags stay literal, entities decode once, nothing executes).
+ */
+function decodeEntitiesOnce(s: string): string {
+  if (typeof document !== 'undefined') {
+    const el = document.createElement('textarea');
+    el.innerHTML = s;
+    return el.value;
+  }
+  return s.replace(/&(?:quot|#39|apos|amp|lt|gt|nbsp);/g, (m) => ENTITY_MAP[m] ?? m);
+}
+
+/**
+ * Removes tag fragments with a run-to-stable loop (a single pass lets
+ * "<scr<x>ipt>" reassemble into "<script>"), then removes ANY remaining angle
+ * brackets: these values are plain UI label text, so no element may ever
+ * survive into the output, categorically.
+ */
+function stripMarkup(s: string): string {
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(/<[^>]*>/g, '');
+  } while (s !== prev);
+  return s.replace(/[<>]/g, '');
+}
+
 export function sanitizeTranslation(raw: string): string {
   if (!raw) return '';
-  let s = raw
-    // 1) Drop any XML/HTML-like tag: <g id="1">, </g>, <x/>, <bpt>, <ph> …
-    .replace(/<[^>]*>/g, '')
-    // 2) Decode the handful of entities MyMemory emits
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&nbsp;/g, ' ')
-    // 3) Collapse whitespace
-    .replace(/\s+/g, ' ')
-    .trim();
-  // 4) Trim leading/trailing separator punctuation left behind by TM segments
+  // 1) Decode entities once, THEN strip — entity-encoded markup ("&lt;script&gt;")
+  //    becomes visible to the stripper instead of surviving decode-after-strip.
+  let s = stripMarkup(decodeEntitiesOnce(raw));
+  // 2) Collapse whitespace
+  s = s.replace(/\s+/g, ' ').trim();
+  // 3) Trim leading/trailing separator punctuation left behind by TM segments
   //    (Latin + Arabic comma/colon, dashes, pipes) — keep inner punctuation.
   s = s.replace(/^[\s:;،,|–—-]+|[\s:;،,|–—-]+$/g, '').trim();
-  // 5) Ignore MyMemory's plain-text warning/echo responses
+  // 4) Ignore MyMemory's plain-text warning/echo responses
   if (/^MYMEMORY WARNING/i.test(s) || /PLEASE SELECT TWO DISTINCT LANGUAGES/i.test(s)) return '';
   return s;
 }
