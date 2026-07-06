@@ -51,17 +51,20 @@ test.describe('Group→Company: single-company regression', () => {
     test.skip(skipReason !== null, skipReason ?? '');
   });
 
-  test('API: /api/auth/me does not mark the default tenant as group-scope', async () => {
+  test('API: /api/auth/me marks the default tenant as SingleCompany with ≤1 company', async () => {
     const api = await newApi();
     try {
       const me = await fetchMe(api, token!);
       expect(me.status).toBe(200);
-      // Fields are additive in this release; when present they must say "not a group".
+      // The single-company signal is the ACCOUNT TYPE and the accessible-company count.
+      // isGroupScope is deliberately true for grant-less users (the documented explicit
+      // tenant default — docs/GROUP_COMPANY_ACCESS_MODEL.md); with one company that
+      // still renders no switcher and no group UI.
       if (me.json?.accountType !== undefined && me.json.accountType !== null) {
         expect(String(me.json.accountType)).not.toMatch(/^group$/i);
       }
-      if (me.json?.isGroupScope !== undefined) {
-        expect(me.json.isGroupScope).toBeFalsy();
+      if (me.json?.companies !== undefined && Array.isArray(me.json.companies)) {
+        expect(me.json.companies.length).toBeLessThanOrEqual(1);
       }
     } finally {
       await api.dispose().catch(() => {});

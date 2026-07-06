@@ -76,6 +76,19 @@ npx playwright test e2e/group-company/security.spec.ts   # one file
 npx playwright test e2e/group-company --list    # parse check, no run
 ```
 
+## Verified run requirements (learned from the first live run)
+
+- **Raise the login rate limit for the suite**: the backend throttles `/api/auth/login`
+  (default 10/window) and the suite logs in dozens of times. Run the backend with
+  `RateLimit__LoginPermitLimit=1000` or probes will see 429s and suites will skip.
+- **Use a PRODUCTION frontend** (`npm run build && npx next start -p 3000`): `next dev`
+  lazy compilation makes the health probes flaky and its error overlay breaks selectors.
+  Never leave a stale `.next` from a previous build under a dev server.
+- **Platform suite credentials**: export `PLATFORM_ADMIN_EMAIL` / `PLATFORM_ADMIN_PASSWORD`
+  to BOTH the backend and the Playwright process, or platform-admin specs skip.
+- Verified result on 2026-07-05: 27/28 passing, 1 conditional skip (payroll register
+  export probe when no inaccessible run id is discoverable).
+
 ## Environment variables
 
 | Variable | Default | Used for |

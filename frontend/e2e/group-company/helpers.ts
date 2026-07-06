@@ -256,10 +256,15 @@ export async function uiLogin(
   password: string = GROUP_PASSWORD,
 ): Promise<void> {
   await page.goto('/login', { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  await page.getByRole('textbox', { name: 'Email address' }).fill(email, { timeout: 30_000 });
-  await page.getByRole('textbox', { name: 'Password' }).fill(password);
-  await page.getByRole('textbox', { name: 'Workspace' }).fill(slug);
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  // The login form uses stable ids (#li-em / #li-pw / #li-ws — src/views/LoginPage.tsx);
+  // its labels are not programmatically associated, so accessible-name lookups miss.
+  // The page renders the form TWICE (mobile + desktop variants share ids); target the
+  // visible instance to satisfy strict mode.
+  const visible = (selector: string) => page.locator(selector).filter({ visible: true }).first();
+  await visible('#li-em').fill(email, { timeout: 30_000 });
+  await visible('#li-pw').fill(password);
+  await visible('#li-ws').fill(slug);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).filter({ visible: true }).first().click();
   await page.waitForURL(/\/(dashboard|app|group)/, { timeout: 30_000 });
   // Let the dashboard's initial API calls settle so background 403 redirects
   // cannot abort the next page.goto() (see e2e/helpers.ts for the rationale).

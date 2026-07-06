@@ -43,10 +43,11 @@ export function CompanySwitcher() {
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-2 max-h-80 w-64 overflow-y-auto rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
+        <div role="menu" aria-label="Select company" className="absolute left-0 top-full z-50 mt-2 max-h-80 w-64 overflow-y-auto rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
           {isGroupScope && (
             <button
               type="button"
+              role="menuitem"
               onClick={() => { setSelectedCompany(null); setOpen(false); }}
               className={`flex w-full items-center justify-between px-4 py-2.5 text-sm transition hover:bg-slate-50 dark:hover:bg-white/[0.04] ${selectedCompanyId === null ? 'bg-sapphire/[0.06] font-semibold text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}
             >
@@ -58,6 +59,7 @@ export function CompanySwitcher() {
             <button
               key={company.id}
               type="button"
+              role="menuitem"
               onClick={() => { setSelectedCompany(company.id); setOpen(false); }}
               className={`flex w-full items-center justify-between px-4 py-2.5 text-sm transition hover:bg-slate-50 dark:hover:bg-white/[0.04] ${selectedCompanyId === company.id ? 'bg-sapphire/[0.06] font-semibold text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}
             >
