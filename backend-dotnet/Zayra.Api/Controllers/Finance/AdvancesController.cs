@@ -113,6 +113,11 @@ public class AdvancesController : ControllerBase
         var tid = GetTenantId();
         var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (adv == null) return NotFound();
+        // Object-level authorization (see LoansController.GetLoan): a scoped caller may only read an
+        // advance for an employee in their scope; prevents IDOR via the detail route.
+        var scope = await _scopeService.ResolveAsync(User, tid, ct);
+        if (!scope.IsUnrestricted && !(adv.EmployeeIntId.HasValue && scope.CanAccessEmployee(adv.EmployeeIntId.Value)))
+            return Forbid();
         var installments = await _db.AdvanceInstallments.Where(x => x.AdvanceId == id).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
         var approvals = await _db.AdvanceApprovals.Where(x => x.AdvanceId == id).OrderBy(x => x.StepOrder).ToListAsync(ct);
         var auditLogs = await _db.AdvanceAuditLogs.Where(x => x.AdvanceId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);

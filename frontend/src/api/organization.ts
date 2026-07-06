@@ -48,6 +48,7 @@ export interface CompanyDto {
   qiwaEstablishmentId: string;
   defaultCurrency: string;
   isActive: boolean;
+  approvalStatus: 'Active' | 'Draft' | 'PendingActivation';
 }
 
 export interface CompanyRequest {
@@ -75,6 +76,8 @@ export const companiesApi = {
   update: (id: string, data: CompanyRequest) =>
     client.put<CompanyDto>(`/api/companies/${id}`, data).then((r) => r.data),
   remove: (id: string) => client.delete(`/api/companies/${id}`),
+  setStatus: (id: string, isActive: boolean) =>
+    client.put<CompanyDto>(`/api/companies/${id}/status`, { isActive }).then((r) => r.data),
   export: () => client.get<string>('/api/companies/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/companies/import-template', { responseType: 'text' }).then((r) => r.data),
   import: (csv: string) => client.post<RawImportCommit>('/api/companies/import', { csv }).then((r) => toImportResult(r.data)),
@@ -220,6 +223,10 @@ export interface GradeDto {
   name: string;
   band: string;
   level: number;
+  minSalary: number;
+  midSalary: number;
+  maxSalary: number;
+  currency: string;
   isActive: boolean;
 }
 
@@ -228,8 +235,28 @@ export interface GradeRequest {
   name: string;
   band?: string;
   level: number;
+  minSalary?: number;
+  midSalary?: number;
+  maxSalary?: number;
+  currency?: string;
   isActive: boolean;
 }
+
+export interface GradePayScaleComponentDto {
+  id: string;
+  componentCode: string;
+  componentName: string;
+  componentType: string;     // Earning | Benefit | Deduction
+  calculationType: string;   // Fixed | PercentOfBasic
+  amount: number;
+  percentage: number;
+  isTaxable: boolean;
+  frequency: string;         // Monthly | Annual
+  sortOrder: number;
+  isActive: boolean;
+}
+
+export type GradePayScaleComponentRequest = Omit<GradePayScaleComponentDto, 'id'>;
 
 export const gradesApi = {
   list: (page = 1, pageSize = 100) =>
@@ -241,6 +268,10 @@ export const gradesApi = {
   update: (id: string, data: GradeRequest) =>
     client.put<GradeDto>(`/api/grades/${id}`, data).then((r) => r.data),
   remove: (id: string) => client.delete(`/api/grades/${id}`),
+  getPayScale: (id: string) =>
+    client.get<GradePayScaleComponentDto[]>(`/api/grades/${id}/pay-scale`).then((r) => r.data),
+  setPayScale: (id: string, components: GradePayScaleComponentRequest[]) =>
+    client.put<{ count: number }>(`/api/grades/${id}/pay-scale`, components).then((r) => r.data),
   export: () => client.get<string>('/api/grades/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/grades/import-template', { responseType: 'text' }).then((r) => r.data),
   import: (csv: string) => client.post<RawImportCommit>('/api/grades/import', { csv }).then((r) => toImportResult(r.data)),

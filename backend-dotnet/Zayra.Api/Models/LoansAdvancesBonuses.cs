@@ -39,10 +39,12 @@ public class LoanPolicy : ITenantOwned
     public Guid? CreatedBy { get; set; }
 }
 
-public class EmployeeLoan : ITenantOwned
+public class EmployeeLoan : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     /// <summary>Int FK to Employee.Id — enables payroll run to deduct EMI without Guid/int mismatch.</summary>
@@ -148,10 +150,12 @@ public class AdvancePolicy : ITenantOwned
     public Guid? CreatedBy { get; set; }
 }
 
-public class SalaryAdvance : ITenantOwned
+public class SalaryAdvance : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     /// <summary>Int FK to Employee.Id — enables payroll run to deduct advance repayment.</summary>
@@ -274,10 +278,12 @@ public class BonusBatch : ITenantOwned
     public Guid? UpdatedBy { get; set; }
 }
 
-public class EmployeeBonus : ITenantOwned
+public class EmployeeBonus : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid BonusBatchId { get; set; }
     public Guid EmployeeId { get; set; }       // placeholder Guid — use EmployeeIntId for payroll join
     public int? EmployeeIntId { get; set; }    // Employee.Id (int PK) for payroll-run matching

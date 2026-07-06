@@ -12,6 +12,15 @@ public sealed class DataScope
 
     public bool IsUnrestricted => AllowedEmployeeIds is null;
 
+    /// <summary>
+    /// True when the caller is allowed to see the given employee's records under this scope.
+    /// Use this to authorize by-id ("detail") reads, which cannot be protected by <see cref="Constrain"/>
+    /// (that method silently falls back to the caller's own id for a filtered LIST; a detail read must
+    /// instead be rejected outright). Org-wide callers pass; scoped callers must have the id in-scope.
+    /// </summary>
+    public bool CanAccessEmployee(int employeeId) =>
+        IsUnrestricted || (AllowedEmployeeIds?.Contains(employeeId) ?? false);
+
     /// Constrains a client-supplied employeeId filter against this scope.
     /// Returns (singleId, setFilter):
     ///   singleId non-null → filter by one employee

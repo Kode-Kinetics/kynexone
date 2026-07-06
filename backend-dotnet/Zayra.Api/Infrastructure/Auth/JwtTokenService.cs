@@ -22,7 +22,7 @@ public class JwtTokenService : ITokenService
         _options = options.Value;
     }
 
-    public string CreateAccessToken(User user, IReadOnlyCollection<string> roles, IReadOnlyCollection<string> permissions, Tenant tenant, IReadOnlyCollection<EntityAccessGrant> entityAccess, out DateTime expiresAtUtc)
+    public string CreateAccessToken(User user, IReadOnlyCollection<string> roles, IReadOnlyCollection<string> permissions, Tenant tenant, IReadOnlyCollection<EntityAccessGrant> entityAccess, EntityScopeDescriptor entityScope, out DateTime expiresAtUtc)
     {
         expiresAtUtc = DateTime.UtcNow.AddMinutes(_options.AccessTokenMinutes);
         var claims = new List<Claim>
@@ -43,11 +43,10 @@ public class JwtTokenService : ITokenService
         }
         claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
         claims.AddRange(permissions.Select(permission => new Claim("permission", permission)));
-        foreach (var grant in entityAccess)
-        {
-            var json = JsonSerializer.Serialize(new { c = grant.CompanyId?.ToString(), r = grant.Role }, _jsonOptions);
-            claims.Add(new Claim("entity_access", json));
-        }
+        // Company scope, claim format v2 (+ legacy v1 during the rollout window).
+        // The scope decision is made at issuance by EntityScopeClaims.Resolve — never
+        // inferred from claim absence, which is what makes the StrictMode flip safe.
+        claims.AddRange(EntityScopeClaims.Build(entityScope, entityAccess));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_options.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);

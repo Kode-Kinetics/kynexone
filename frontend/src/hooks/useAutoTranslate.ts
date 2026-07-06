@@ -17,6 +17,69 @@ function cacheKey(locale: string, source: string): string {
   return `${CACHE_PREFIX}${locale}:${source.trim().toLowerCase()}`;
 }
 
+/**
+ * MyMemory returns crowd-sourced translation-memory segments that frequently
+ * carry CAT-tool noise: inline placeholder tags (`<g id="1">…</g>`, XLIFF/TMX
+ * markers), HTML entities, and stray separator punctuation from the original
+ * label (e.g. a trailing colon). Strip all of it so the field receives clean
+ * target text only.
+ */
+const ENTITY_MAP: Record<string, string> = {
+  '&quot;': '"',
+  '&#39;': "'",
+  '&apos;': "'",
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&nbsp;': ' ',
+};
+
+/**
+ * Decodes entities exactly ONCE. A sequential replace chain double-unescapes
+ * ("&amp;lt;" → "&lt;" → "<"); a single alternation pass decodes each entity
+ * one time only, so author-escaped text can never resurrect into markup.
+ * In the browser the native parser does the same via a textarea (content model
+ * is text — tags stay literal, entities decode once, nothing executes).
+ */
+function decodeEntitiesOnce(s: string): string {
+  if (typeof document !== 'undefined') {
+    const el = document.createElement('textarea');
+    el.innerHTML = s;
+    return el.value;
+  }
+  return s.replace(/&(?:quot|#39|apos|amp|lt|gt|nbsp);/g, (m) => ENTITY_MAP[m] ?? m);
+}
+
+/**
+ * Removes tag fragments with a run-to-stable loop (a single pass lets
+ * "<scr<x>ipt>" reassemble into "<script>"), then removes ANY remaining angle
+ * brackets: these values are plain UI label text, so no element may ever
+ * survive into the output, categorically.
+ */
+function stripMarkup(s: string): string {
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(/<[^>]*>/g, '');
+  } while (s !== prev);
+  return s.replace(/[<>]/g, '');
+}
+
+export function sanitizeTranslation(raw: string): string {
+  if (!raw) return '';
+  // 1) Decode entities once, THEN strip — entity-encoded markup ("&lt;script&gt;")
+  //    becomes visible to the stripper instead of surviving decode-after-strip.
+  let s = stripMarkup(decodeEntitiesOnce(raw));
+  // 2) Collapse whitespace
+  s = s.replace(/\s+/g, ' ').trim();
+  // 3) Trim leading/trailing separator punctuation left behind by TM segments
+  //    (Latin + Arabic comma/colon, dashes, pipes) — keep inner punctuation.
+  s = s.replace(/^[\s:;،,|–—-]+|[\s:;،,|–—-]+$/g, '').trim();
+  // 4) Ignore MyMemory's plain-text warning/echo responses
+  if (/^MYMEMORY WARNING/i.test(s) || /PLEASE SELECT TWO DISTINCT LANGUAGES/i.test(s)) return '';
+  return s;
+}
+
 function getCache(locale: string, source: string): string | null {
   if (typeof window === 'undefined') return null;
   try { return localStorage.getItem(cacheKey(locale, source)); } catch { return null; }
@@ -49,10 +112,11 @@ export function useAutoTranslate(source: string, locale: LocaleCode = 'ar') {
     const pair = LANG_PAIR[locale];
     if (!pair) { setTranslation(''); return; }
 
-    // Serve from cache immediately
+    // Serve from cache immediately (sanitize too — older cache entries may
+    // predate this cleanup and still contain raw TM tags).
     const cached = getCache(locale, trimmed);
     if (cached) {
-      setTranslation(cached);
+      setTranslation(sanitizeTranslation(cached));
       return;
     }
 
@@ -68,9 +132,11 @@ export function useAutoTranslate(source: string, locale: LocaleCode = 'ar') {
         );
         const data: { responseStatus: number; responseData?: { translatedText: string } } = await res.json();
         if (data.responseStatus === 200 && data.responseData?.translatedText) {
-          const tx = data.responseData.translatedText;
-          setCache(locale, trimmed, tx);
-          setTranslation(tx);
+          const tx = sanitizeTranslation(data.responseData.translatedText);
+          if (tx) {
+            setCache(locale, trimmed, tx);
+            setTranslation(tx);
+          }
         }
       } catch {
         // Best-effort — silently ignore network / abort errors

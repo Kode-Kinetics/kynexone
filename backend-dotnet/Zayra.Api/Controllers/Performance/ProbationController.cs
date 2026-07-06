@@ -13,7 +13,12 @@ namespace Zayra.Api.Controllers.Performance;
 public class ProbationController : ControllerBase
 {
     private readonly ZayraDbContext _db;
-    public ProbationController(ZayraDbContext db) => _db = db;
+    private readonly IDataScopeService _scopeService;
+    public ProbationController(ZayraDbContext db, IDataScopeService scopeService)
+    {
+        _db = db;
+        _scopeService = scopeService;
+    }
 
     [HttpGet]
     public async Task<IActionResult> List(
@@ -22,9 +27,15 @@ public class ProbationController : ControllerBase
         CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+        // Scope probation-review reads to the caller (own → team → org), like the other performance
+        // controllers. Previously any authenticated user could enumerate every employee's probation
+        // outcomes/notes (IDOR, CWE-639).
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var (singleId, setFilter) = scope.Constrain(employeeId);
         var query = _db.ProbationReviews.Where(p => p.TenantId == tenantId);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(p => p.Status == status);
-        if (employeeId.HasValue) query = query.Where(p => p.EmployeeId == employeeId.Value);
+        if (setFilter is not null) query = query.Where(p => setFilter.Contains(p.EmployeeId));
+        else if (singleId.HasValue) query = query.Where(p => p.EmployeeId == singleId.Value);
         return Ok(await query.OrderByDescending(p => p.ProbationEndDate).ToListAsync(ct));
     }
 
@@ -34,7 +45,9 @@ public class ProbationController : ControllerBase
         var tenantId = this.GetTenantId()!.Value;
         var r = await _db.ProbationReviews
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
-        return r is null ? NotFound() : Ok(r);
+        if (r is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        return scope.CanAccessEmployee(r.EmployeeId) ? Ok(r) : Forbid();
     }
 
     [HttpPost]

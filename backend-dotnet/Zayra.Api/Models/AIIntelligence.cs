@@ -18,10 +18,13 @@ public class AIModelConfig : ITenantOwned
 
 // ── AI Insight (generic cross-module) ────────────────────────────────────────
 
-public class AIInsight : ITenantOwned
+public class AIInsight : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    // Legal-entity dimension: company-specific insights (e.g. per-company payroll
+    // variance) are stamped; tenant-level insights stay null (visible to everyone).
+    public Guid? CompanyId { get; set; }
     public string Module { get; set; } = string.Empty; // Attendance, Leave, Payroll, Recruitment, HR
     public string InsightType { get; set; } = string.Empty; // AbsenteeismPattern, ChurnRisk, PayrollVariance, etc.
     public string Severity { get; set; } = "Info"; // Info, Warning, Critical

@@ -5,6 +5,8 @@ import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
+import { financeGlApi, type GlAccount, type GlMappingRow } from '../api/financeGl';
+import { CountrySelect } from '../components/CountrySelect';
 import {
   companiesApi,
   branchesApi,
@@ -26,6 +28,8 @@ import type {
   DesignationRequest,
   GradeDto,
   GradeRequest,
+  GradePayScaleComponentDto,
+  GradePayScaleComponentRequest,
   CostCenterDto,
   CostCenterRequest,
 } from '../api/organization';
@@ -57,7 +61,7 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 
 type Tab = 'aiSetup' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
-  | 'fiscalYears' | 'locations' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
+  | 'fiscalYears' | 'locations' | 'glMapping' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'aiSetup', label: 'AI Setup', icon: Sparkles },
@@ -73,6 +77,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'gccSettings', label: 'GCC Settings', icon: Globe },
   { id: 'fiscalYears', label: 'Fiscal Years', icon: Calendar },
   { id: 'locations', label: 'Locations', icon: MapPin },
+  { id: 'glMapping', label: 'GL Mapping', icon: Landmark },
   { id: 'notificationTemplates', label: 'Notifications', icon: Bell },
   { id: 'emailConfig', label: 'Email / SMTP', icon: Settings },
   { id: 'adminAuditLogs', label: 'Audit Logs', icon: ClipboardList },
@@ -437,8 +442,8 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
           <FormField label="Name (AR)">
             <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" placeholder={translatingBranchNameAr && !form.nameAr ? 'Translating…' : undefined} />
           </FormField>
-          <FormField label="Country Code" required>
-            <input type="text" value={form.countryCode} onChange={(e) => f('countryCode', e.target.value)} className="input w-full" placeholder="AE" maxLength={10} />
+          <FormField label="Country" required>
+            <CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Branch country" />
           </FormField>
           <FormField label="City" required>
             <input type="text" value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" placeholder="Dubai" />
@@ -733,6 +738,7 @@ function GradesTab() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<GradeDto | null>(null);
   const [form, setForm] = useState<GradeRequest>(emptyGrade());
+  const [payScale, setPayScale] = useState<GradePayScaleComponentRequest[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -745,19 +751,25 @@ function GradesTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm(emptyGrade()); setError(''); setModalOpen(true); };
-  const openEdit = (g: GradeDto) => {
+  const openNew = () => { setEditing(null); setForm(emptyGrade()); setPayScale([]); setError(''); setModalOpen(true); };
+  const openEdit = async (g: GradeDto) => {
     setEditing(g);
-    setForm({ code: g.code, name: g.name, band: g.band, level: g.level, isActive: g.isActive });
+    setForm({ code: g.code, name: g.name, band: g.band, level: g.level, minSalary: g.minSalary, midSalary: g.midSalary, maxSalary: g.maxSalary, currency: g.currency, isActive: g.isActive });
+    setPayScale([]);
     setError('');
     setModalOpen(true);
+    try {
+      const comps = await gradesApi.getPayScale(g.id);
+      setPayScale(comps.map(({ id, ...rest }: GradePayScaleComponentDto) => rest));
+    } catch { /* empty pay scale */ }
   };
   const handleSave = async () => {
     if (!form.code.trim() || !form.name.trim()) { setError('Code and name are required'); return; }
+    if ((form.maxSalary ?? 0) > 0 && (form.minSalary ?? 0) > (form.maxSalary ?? 0)) { setError('Min salary cannot exceed max salary'); return; }
     setSaving(true); setError('');
     try {
-      if (editing) await gradesApi.update(editing.id, form);
-      else await gradesApi.create(form);
+      const saved = editing ? await gradesApi.update(editing.id, form) : await gradesApi.create(form);
+      await gradesApi.setPayScale(saved.id, payScale);
       setModalOpen(false); load();
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
     finally { setSaving(false); }
@@ -770,9 +782,12 @@ function GradesTab() {
     finally { setDeleting(null); }
   };
 
+  const payRange = (g: GradeDto) =>
+    g.maxSalary > 0 ? `${g.currency} ${g.minSalary.toLocaleString()}–${g.maxSalary.toLocaleString()}` : '—';
+
   return (
     <>
-      <TableShell columns={['Code', 'Name', 'Band', 'Level', 'Status']} onAdd={openNew} addLabel="Add Grade" loading={loading} empty={items.length === 0} emptyLabel="No grades yet"
+      <TableShell columns={['Code', 'Name', 'Band', 'Level', 'Pay Range', 'Status']} onAdd={openNew} addLabel="Add Grade" loading={loading} empty={items.length === 0} emptyLabel="No grades yet"
         actions={
           <ImportExportToolbar
             entityName="Grades"
@@ -788,6 +803,7 @@ function GradesTab() {
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{g.name}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{g.band || '—'}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{g.level}</td>
+            <td className="px-4 py-3 tabular-nums text-slate-600 dark:text-slate-300">{payRange(g)}</td>
             <td className="px-4 py-3"><ActiveBadge active={g.isActive} /></td>
             <td className="px-4 py-3">
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
@@ -803,14 +819,173 @@ function GradesTab() {
       <Modal isOpen={modalOpen} title={editing ? 'Edit Grade' : 'Add Grade'} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Code" required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="G5" /></FormField>
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="Code" required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="G5" /></FormField>
+            <FormField label="Level"><input type="number" value={form.level} onChange={(e) => f('level', Number(e.target.value))} className="input w-full" /></FormField>
+          </div>
           <FormField label="Name" required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="Professional Grade 5" /></FormField>
           <FormField label="Band"><input value={form.band ?? ''} onChange={(e) => f('band', e.target.value)} className="input w-full" placeholder="Professional" /></FormField>
-          <FormField label="Level"><input type="number" value={form.level} onChange={(e) => f('level', Number(e.target.value))} className="input w-full" /></FormField>
+
+          {/* Pay scale band */}
+          <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">Pay Scale</p>
+            <div className="grid grid-cols-4 gap-2">
+              <FormField label="Min"><input type="number" value={form.minSalary ?? 0} onChange={(e) => f('minSalary', Number(e.target.value))} className="input w-full" /></FormField>
+              <FormField label="Mid"><input type="number" value={form.midSalary ?? 0} onChange={(e) => f('midSalary', Number(e.target.value))} className="input w-full" /></FormField>
+              <FormField label="Max"><input type="number" value={form.maxSalary ?? 0} onChange={(e) => f('maxSalary', Number(e.target.value))} className="input w-full" /></FormField>
+              <FormField label="Currency"><input value={form.currency ?? 'SAR'} onChange={(e) => f('currency', e.target.value)} className="input w-full" placeholder="SAR" /></FormField>
+            </div>
+            <PayScaleEditor components={payScale} onChange={setPayScale} />
+          </div>
+
           <FormField label="Status"><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">Active</option><option value="false">Inactive</option></select></FormField>
         </div>
       </Modal>
     </>
+  );
+}
+
+/** Editable grid of benefit/earning lines that make up a grade's standard package. */
+function PayScaleEditor({ components, onChange }: { components: GradePayScaleComponentRequest[]; onChange: (c: GradePayScaleComponentRequest[]) => void }) {
+  const update = (i: number, patch: Partial<GradePayScaleComponentRequest>) =>
+    onChange(components.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
+  const remove = (i: number) => onChange(components.filter((_, idx) => idx !== i));
+  const add = () => onChange([...components, {
+    componentCode: '', componentName: '', componentType: 'Earning', calculationType: 'Fixed',
+    amount: 0, percentage: 0, isTaxable: false, frequency: 'Monthly', sortOrder: components.length + 1, isActive: true,
+  }]);
+
+  return (
+    <div className="mt-3">
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Benefit components</span>
+        <button type="button" onClick={add} className="btn-secondary h-6 px-2 text-xs">+ Add component</button>
+      </div>
+      {components.length === 0 ? (
+        <p className="py-2 text-xs text-slate-400">No components — e.g. Basic, Housing, Transport, Ticket, Insurance, Health.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {components.map((c, i) => (
+            <div key={i} className="grid grid-cols-12 items-center gap-1.5">
+              <input aria-label="Component code" value={c.componentCode} onChange={(e) => update(i, { componentCode: e.target.value })} className="input col-span-2 h-8 text-xs" placeholder="BASIC" />
+              <input aria-label="Component name" value={c.componentName} onChange={(e) => update(i, { componentName: e.target.value })} className="input col-span-3 h-8 text-xs" placeholder="Basic" />
+              <select aria-label="Component type" title="Component type" value={c.componentType} onChange={(e) => update(i, { componentType: e.target.value })} className="select col-span-2 h-8 text-xs"><option>Earning</option><option>Benefit</option><option>Deduction</option></select>
+              <select aria-label="Calculation type" title="Calculation type" value={c.calculationType} onChange={(e) => update(i, { calculationType: e.target.value })} className="select col-span-2 h-8 text-xs"><option value="Fixed">Fixed</option><option value="PercentOfBasic">% of Basic</option></select>
+              {c.calculationType === 'PercentOfBasic'
+                ? <input aria-label="Percentage of basic" type="number" value={c.percentage} onChange={(e) => update(i, { percentage: Number(e.target.value) })} className="input col-span-2 h-8 text-xs" placeholder="%" />
+                : <input aria-label="Amount" type="number" value={c.amount} onChange={(e) => update(i, { amount: Number(e.target.value) })} className="input col-span-2 h-8 text-xs" placeholder="Amount" />}
+              <button type="button" onClick={() => remove(i)} aria-label="Remove component" className="col-span-1 grid h-8 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:text-rose-500 dark:border-white/10"><Trash2 className="h-3.5 w-3.5" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── GL Mapping (chart of accounts + payroll driver→account) ─────────────────
+
+function GlMappingTab() {
+  const [accounts, setAccounts] = useState<GlAccount[]>([]);
+  const [rows, setRows] = useState<GlMappingRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [newAcct, setNewAcct] = useState<{ code: string; name: string; accountType: string }>({ code: '', name: '', accountType: 'Expense' });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [a, m] = await Promise.all([financeGlApi.listAccounts(), financeGlApi.listMappings()]);
+      setAccounts(a); setRows(m);
+    } catch { /**/ } finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const seed = async () => { setSeeding(true); try { await financeGlApi.seedDefaults(); await load(); } catch (e) { notifyApiError(e); } finally { setSeeding(false); } };
+  const addAccount = async () => {
+    if (!newAcct.code.trim() || !newAcct.name.trim()) return;
+    try { await financeGlApi.createAccount({ ...newAcct, isActive: true }); setNewAcct({ code: '', name: '', accountType: 'Expense' }); await load(); }
+    catch (e) { notifyApiError(e); }
+  };
+  const setMapping = (driverKey: string, accountId: string) =>
+    setRows((rs) => rs.map((r) => (r.driverKey === driverKey ? { ...r, mappedAccountId: accountId || null } : r)));
+  const saveMappings = async () => {
+    setSaving(true);
+    try {
+      const payload = rows.filter((r) => r.mappedAccountId).map((r) => ({ driverKey: r.driverKey, accountId: r.mappedAccountId as string }));
+      await financeGlApi.setMappings(payload); await load();
+    } catch (e) { notifyApiError(e); } finally { setSaving(false); }
+  };
+
+  if (loading) return <p className="text-sm text-slate-400">Loading…</p>;
+
+  return (
+    <div className="space-y-6">
+      <div className="surface p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Chart of Accounts</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">GL accounts payroll can post to. Unmapped drivers use built-in defaults.</p>
+          </div>
+          <button type="button" onClick={seed} disabled={seeding} className="btn-secondary text-xs disabled:opacity-60">{seeding ? 'Seeding…' : 'Seed defaults'}</button>
+        </div>
+        <div className="overflow-hidden rounded-lg border border-slate-200 dark:border-white/10">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+              <tr><th className="px-3 py-2">Code</th><th className="px-3 py-2">Name</th><th className="px-3 py-2">Type</th><th className="px-3 py-2"></th></tr>
+            </thead>
+            <tbody>
+              {accounts.map((a) => (
+                <tr key={a.id} className="border-t border-slate-100 dark:border-white/5">
+                  <td className="px-3 py-2 font-mono text-xs">{a.code}</td>
+                  <td className="px-3 py-2">{a.name}</td>
+                  <td className="px-3 py-2 text-slate-500">{a.accountType}</td>
+                  <td className="px-3 py-2 text-right"><ActiveBadge active={a.isActive} /></td>
+                </tr>
+              ))}
+              <tr className="border-t border-slate-100 dark:border-white/5">
+                <td className="px-3 py-2"><input aria-label="New account code" value={newAcct.code} onChange={(e) => setNewAcct((x) => ({ ...x, code: e.target.value }))} className="input h-8 w-24 text-xs" placeholder="5006" /></td>
+                <td className="px-3 py-2"><input aria-label="New account name" value={newAcct.name} onChange={(e) => setNewAcct((x) => ({ ...x, name: e.target.value }))} className="input h-8 w-full text-xs" placeholder="Account name" /></td>
+                <td className="px-3 py-2">
+                  <select aria-label="New account type" value={newAcct.accountType} onChange={(e) => setNewAcct((x) => ({ ...x, accountType: e.target.value }))} className="select h-8 text-xs">
+                    {['Asset', 'Liability', 'Expense', 'Equity', 'Revenue'].map((t) => <option key={t}>{t}</option>)}
+                  </select>
+                </td>
+                <td className="px-3 py-2 text-right"><button type="button" onClick={addAccount} className="btn-secondary h-8 px-2 text-xs"><Plus className="h-3 w-3" /> Add</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="surface p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Payroll GL Mapping</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">Point each payroll posting line at one of your accounts. Blank = use the default.</p>
+          </div>
+          <button type="button" onClick={saveMappings} disabled={saving} className="btn-primary text-xs disabled:opacity-60">{saving ? 'Saving…' : 'Save mappings'}</button>
+        </div>
+        <div className="space-y-1.5">
+          {rows.map((r) => (
+            <div key={r.driverKey} className="grid grid-cols-12 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-white/[0.03]">
+              <div className="col-span-5">
+                <p className="text-sm text-slate-800 dark:text-slate-100">{r.label}</p>
+                <p className="text-[11px] text-slate-400">default: {r.defaultAccount}</p>
+              </div>
+              <div className="col-span-2 text-xs text-slate-500">{r.accountType}</div>
+              <div className="col-span-5">
+                <select aria-label={`Account for ${r.label}`} value={r.mappedAccountId ?? ''} onChange={(e) => setMapping(r.driverKey, e.target.value)} className="select w-full text-xs">
+                  <option value="">— use default —</option>
+                  {accounts.filter((a) => a.isActive).map((a) => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+                </select>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1372,7 +1547,7 @@ function GCCSettingsTab() {
         footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3 text-sm">
-          <FormField label="Country Code" required><input value={form.countryCode} onChange={(e) => f('countryCode', e.target.value)} className="input w-full" placeholder="AE" maxLength={5} disabled={!!editing} /></FormField>
+          <FormField label="Country" required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Country" disabled={!!editing} /></FormField>
           <FormField label="Work Week"><input value={form.workWeek ?? ''} onChange={(e) => f('workWeek', e.target.value)} className="input w-full" placeholder="Mon-Fri" /></FormField>
           <FormField label="Weekend Days"><input value={form.weekendDays ?? ''} onChange={(e) => f('weekendDays', e.target.value)} className="input w-full" placeholder="Fri,Sat" /></FormField>
           <div />
@@ -1569,7 +1744,7 @@ function LocationsTab() {
           <FormField label="Code" required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="DXB-HQ" /></FormField>
           <FormField label="Name (EN)" required><input value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" /></FormField>
           <FormField label="Name (AR)"><input value={form.nameAr} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" /></FormField>
-          <FormField label="Country Code" required><input value={form.countryCode} onChange={(e) => f('countryCode', e.target.value)} className="input w-full" placeholder="AE" maxLength={10} /></FormField>
+          <FormField label="Country" required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Location country" /></FormField>
           <FormField label="City"><input value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" /></FormField>
           <FormField label="Postal Code"><input value={form.postalCode} onChange={(e) => f('postalCode', e.target.value)} className="input w-full" /></FormField>
           <FormField label="Address"><input value={form.addressLine1} onChange={(e) => f('addressLine1', e.target.value)} className="input w-full" /></FormField>
@@ -2001,7 +2176,8 @@ const emptyDesig = (): DesignationRequest => ({
 });
 
 const emptyGrade = (): GradeRequest => ({
-  code: '', name: '', band: '', level: 0, isActive: true,
+  code: '', name: '', band: '', level: 0,
+  minSalary: 0, midSalary: 0, maxSalary: 0, currency: 'SAR', isActive: true,
 });
 
 const emptyCostCenter = (companyId?: string): CostCenterRequest => ({
@@ -2066,6 +2242,7 @@ export function SetupPage() {
         {activeTab === 'gccSettings' && <GCCSettingsTab />}
         {activeTab === 'fiscalYears' && <FiscalYearsTab />}
         {activeTab === 'locations' && <LocationsTab />}
+        {activeTab === 'glMapping' && <GlMappingTab />}
         {activeTab === 'notificationTemplates' && <NotificationTemplatesTab />}
         {activeTab === 'emailConfig' && <EmailConfigTab />}
         {activeTab === 'adminAuditLogs' && <AdminAuditLogsTab />}

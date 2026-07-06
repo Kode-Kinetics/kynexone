@@ -59,6 +59,19 @@ export interface CreateTenantBody {
   monthlyAmount?: number;
   currencyCode?: string;
   expiresAtUtc?: string | null;
+  /** SingleCompany (default) | Group — product behavior, distinct from maxCompanies. */
+  accountType?: 'SingleCompany' | 'Group';
+  /** PlatformControlled | GroupSelfServiceWithinLimit (default) | GroupDraftPlatformApproval */
+  companyCreationMode?: string;
+}
+
+export interface PlatformTenantCompany {
+  id: string;
+  name: string;
+  code: string;
+  countryCode: string;
+  isActive: boolean;
+  approvalStatus: 'Active' | 'Draft' | 'PendingActivation';
 }
 
 export interface CreateTenantResult {
@@ -149,6 +162,9 @@ export interface TenantLocalization {
 }
 
 export interface PlatformTenantDetail {
+  accountType?: 'SingleCompany' | 'Group';
+  companyCreationMode?: string;
+  companies?: PlatformTenantCompany[];
   id: string;
   name: string;
   slug: string;
@@ -488,6 +504,15 @@ export const platformApi = {
 
   updateTenant: (tenantId: string, name: string) =>
     platform.patch<{ id: string; name: string; slug: string }>(`/api/platform/tenants/${tenantId}`, { name }).then(r => r.data),
+
+  setAccountType: (tenantId: string, accountType: 'SingleCompany' | 'Group') =>
+    platform.put(`/api/platform/tenants/${tenantId}/account-type`, { accountType }).then(r => r.data),
+
+  setCompanyCreationMode: (tenantId: string, mode: string) =>
+    platform.put(`/api/platform/tenants/${tenantId}/company-creation-mode`, { mode }).then(r => r.data),
+
+  approveCompany: (tenantId: string, companyId: string) =>
+    platform.post(`/api/platform/tenants/${tenantId}/companies/${companyId}/approve`).then(r => r.data),
 
   updateSubscription: (tenantId: string, body: {
     plan: string;

@@ -74,6 +74,16 @@ public class FeedbackController : ControllerBase
     public async Task<IActionResult> List360(Guid reviewId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+
+        // Authorize by the review's subject employee: the caller may see 360 feedback
+        // only if they are the subject, their in-scope manager, or an org-wide role.
+        var review = await _db.AppraisalReviews
+            .FirstOrDefaultAsync(r => r.Id == reviewId && r.TenantId == tenantId, ct);
+        if (review is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(review.EmployeeId))
+            return Forbid();
+
         var items = await _db.Feedback360
             .Where(f => f.TenantId == tenantId && f.ReviewId == reviewId)
             .ToListAsync(ct);

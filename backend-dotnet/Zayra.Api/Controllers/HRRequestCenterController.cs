@@ -140,6 +140,10 @@ public class HRRequestCenterController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (request is null) return NotFound();
 
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(request.EmployeeId))
+            return Forbid();
+
         var comments = await _db.HRRequestComments
             .Where(c => c.TenantId == tenantId && c.HRRequestId == id)
             .OrderBy(c => c.CreatedAtUtc)
@@ -233,11 +237,12 @@ public class HRRequestCenterController : ControllerBase
         };
 
         _db.HRRequestComments.Add(comment);
-        // A reply from HR moves an Open ticket into "In Progress" so the SLA/response
-        // indicators reflect that HR has engaged.
+        // A reply from HR moves an Open ticket into "InProgress" so the SLA/response
+        // indicators reflect that HR has engaged. (Canonical status token — no space —
+        // matching the dashboard count, status filters and badges across the app.)
         var ticket = await _db.HRRequests.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (ticket is not null && ticket.Status == "Open")
-            ticket.Status = "In Progress";
+            ticket.Status = "InProgress";
         // Notify the employee in their self-service feed that HR replied.
         if (ticket is not null)
             _db.EmployeeNotifications.Add(new EmployeeNotification

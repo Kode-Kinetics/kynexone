@@ -448,9 +448,12 @@ public class AccessController : ControllerBase
         return found ? NoContent() : NotFound();
     }
 
-    // Not restricted to Admin role — service layer checks grantor authority or Admin claim
+    // Not restricted to Admin role — service layer checks grantor authority or Admin claim.
+    // Plain [Authorize] overrides the class-level Admin-only policy while still requiring
+    // an authenticated user (AllowAnonymous here would open a permission-grant endpoint
+    // to unauthenticated callers).
     [HttpPost("users/{userId:guid}/grant-permission")]
-    [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+    [Microsoft.AspNetCore.Authorization.Authorize]
     public async Task<ActionResult<UserAccessDto>> GrantPermission(Guid userId, GrantPermissionRequest request, CancellationToken cancellationToken)
     {
         try
@@ -510,7 +513,7 @@ public class AccessController : ControllerBase
         if (userId.HasValue) query = query.Where(e => e.UserId == userId.Value);
         var results = await query
             .OrderBy(e => e.UserId).ThenBy(e => e.CompanyId)
-            .Select(e => new EntityGrantDto(e.Id, e.UserId, e.CompanyId, e.Role, e.CreatedAtUtc))
+            .Select(e => new EntityGrantDto(e.Id, e.UserId, e.CompanyId, e.Role, e.CreatedAtUtc, e.GrantMode))
             .ToListAsync(cancellationToken);
         return Ok(results);
     }
@@ -525,6 +528,15 @@ public class AccessController : ControllerBase
         // Validate target user belongs to this tenant
         if (!await _db.Users.AnyAsync(u => u.Id == request.UserId && u.TenantId == tenantId && !u.IsDeleted, cancellationToken))
             return BadRequest(new { message = "User not found in this tenant." });
+
+        // Validate grant mode (Phase 2): Selected requires a company; all-company modes must not pin one.
+        var grantMode = request.GrantMode ?? EntityGrantModes.SelectedCompanies;
+        if (!EntityGrantModes.IsValid(grantMode))
+            return BadRequest(new { message = "GrantMode must be SelectedCompanies, AllCurrentCompanies or AllCurrentAndFutureCompanies." });
+        if (grantMode == EntityGrantModes.SelectedCompanies && !request.CompanyId.HasValue)
+            return BadRequest(new { message = "SelectedCompanies grants require a CompanyId." });
+        if (grantMode != EntityGrantModes.SelectedCompanies && request.CompanyId.HasValue)
+            return BadRequest(new { message = "All-company grant modes must not specify a CompanyId." });
 
         // Validate company if specified
         if (request.CompanyId.HasValue && !await _db.Companies.AnyAsync(c => c.Id == request.CompanyId.Value && c.TenantId == tenantId && !c.IsDeleted, cancellationToken))
@@ -542,12 +554,13 @@ public class AccessController : ControllerBase
             TenantId = tenantId.Value,
             UserId = request.UserId,
             CompanyId = request.CompanyId,
+            GrantMode = grantMode,
             Role = request.Role,
             CreatedBy = actorId,
         };
         _db.UserEntityAccesses.Add(grant);
         await _db.SaveChangesAsync(cancellationToken);
-        return CreatedAtAction(nameof(ListEntityGrants), new EntityGrantDto(grant.Id, grant.UserId, grant.CompanyId, grant.Role, grant.CreatedAtUtc));
+        return CreatedAtAction(nameof(ListEntityGrants), new EntityGrantDto(grant.Id, grant.UserId, grant.CompanyId, grant.Role, grant.CreatedAtUtc, grant.GrantMode));
     }
 
     [HttpDelete("entity-grants/{id:guid}")]
@@ -598,5 +611,6 @@ public class AccessController : ControllerBase
 
 public record SetGroupScopeRequest(bool IsGroupScope);
 
-public record EntityGrantDto(Guid Id, Guid UserId, Guid? CompanyId, string Role, DateTime CreatedAtUtc);
-public record CreateEntityGrantRequest(Guid UserId, Guid? CompanyId, string Role);
+public record EntityGrantDto(Guid Id, Guid UserId, Guid? CompanyId, string Role, DateTime CreatedAtUtc, string GrantMode = EntityGrantModes.SelectedCompanies);
+// GrantMode: SelectedCompanies (default, requires CompanyId) | AllCurrentCompanies | AllCurrentAndFutureCompanies
+public record CreateEntityGrantRequest(Guid UserId, Guid? CompanyId, string Role, string? GrantMode = null);

@@ -13,7 +13,12 @@ namespace Zayra.Api.Controllers.Performance;
 public class PIPController : ControllerBase
 {
     private readonly ZayraDbContext _db;
-    public PIPController(ZayraDbContext db) => _db = db;
+    private readonly IDataScopeService _scopeService;
+    public PIPController(ZayraDbContext db, IDataScopeService scopeService)
+    {
+        _db = db;
+        _scopeService = scopeService;
+    }
 
     [HttpGet]
     public async Task<IActionResult> List(
@@ -22,8 +27,14 @@ public class PIPController : ControllerBase
         CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+        // Performance Improvement Plans are sensitive/disciplinary-adjacent. Scope reads so an employee
+        // sees only their own PIP and a manager only their team's; HR/Admin (org-wide) see all. Previously
+        // any authenticated tenant user could list every PIP in the tenant (IDOR, CWE-639).
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var (singleId, setFilter) = scope.Constrain(employeeId);
         var query = _db.PerformanceImprovementPlans.Where(p => p.TenantId == tenantId);
-        if (employeeId.HasValue)                   query = query.Where(p => p.EmployeeId == employeeId.Value);
+        if (setFilter is not null)                 query = query.Where(p => setFilter.Contains(p.EmployeeId));
+        else if (singleId.HasValue)                query = query.Where(p => p.EmployeeId == singleId.Value);
         if (!string.IsNullOrWhiteSpace(status))    query = query.Where(p => p.Status == status);
         return Ok(await query.OrderByDescending(p => p.CreatedAtUtc).ToListAsync(ct));
     }
@@ -35,6 +46,8 @@ public class PIPController : ControllerBase
         var pip = await _db.PerformanceImprovementPlans
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
         if (pip is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(pip.EmployeeId)) return Forbid();
 
         var checkIns = await _db.PIPCheckIns
             .Where(c => c.TenantId == tenantId && c.PipId == id)

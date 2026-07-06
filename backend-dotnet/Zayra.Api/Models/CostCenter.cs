@@ -1,7 +1,7 @@
 using Zayra.Api.Domain.Entities;
 namespace Zayra.Api.Models;
 
-public class CostCenter : ITenantOwned
+public class CostCenter : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }

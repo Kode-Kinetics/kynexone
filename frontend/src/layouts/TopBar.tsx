@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale, LOCALES } from '../contexts/LocaleContext';
+import { CompanySwitcher } from '../components/CompanySwitcher';
 import { notificationsApi } from '../api/notifications';
 import type { NotificationItem } from '../api/notifications';
 import type { ThemeMode } from '../types/ui';
@@ -273,6 +274,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
       </button>
 
       <LanguageSwitcher />
+      <CompanySwitcher />
 
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         <button

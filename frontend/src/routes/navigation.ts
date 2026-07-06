@@ -1,5 +1,6 @@
 import {
   AlertOctagon,
+  Building2,
   BarChart3,
   MessageSquareText,
   BriefcaseBusiness,
@@ -32,6 +33,7 @@ export const navigationGroups: NavGroup[] = [
     label: 'Overview',
     items: [
       { label: 'Dashboard', icon: Gauge, path: '/dashboard', requiredPermissions: ['dashboard.read'] },
+      { label: 'Group Overview', icon: Building2, path: '/group', requiredPermissions: ['dashboard.read'], groupAccountOnly: true },
       { label: 'Self-Service', icon: UserCircle2, path: '/ess', requiredPermissions: ['ess.read'] },
     ],
   },
@@ -71,6 +73,9 @@ export const navigationGroups: NavGroup[] = [
   {
     label: 'Administration',
     items: [
+      { label: 'Companies', icon: Building2, path: '/companies', requiredPermissions: ['organization.read'] },
+      { label: 'Compliance Profiles', icon: ShieldCheck, path: '/compliance-profiles', requiredPermissions: ['compliance.read'] },
+      { label: 'Tax Policies', icon: Landmark, path: '/tax-policies', requiredPermissions: ['payroll.read'] },
       { label: 'Request Center', icon: Headphones, path: '/hr-requests', requiredPermissions: ['approvals.read', 'approvals.write', 'approvals.decide', 'ess.read'] },
       { label: 'Approvals', icon: CheckSquare2, path: '/approvals', requiredPermissions: ['approvals.read', 'approvals.decide'] },
       { label: 'User Management', icon: KeyRound, path: '/user-management', requiredPermissions: ['users.manage', 'roles.manage', 'security.manage'] },

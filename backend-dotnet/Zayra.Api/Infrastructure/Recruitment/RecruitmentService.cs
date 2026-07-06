@@ -192,7 +192,7 @@ public class RecruitmentService : IRecruitmentService
             Department = offer.OfferedDepartment,
             Designation = offer.OfferedJobTitle,
             ManagerEmployeeId = deptHeadId,
-            JoiningDate = offer.StartDate.ToDateTime(TimeOnly.MinValue),
+            JoiningDate = offer.StartDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
             Salary = offer.BasicSalary,
             ContractType = "Permanent",
             ProbationEndDate = offer.StartDate.AddMonths(offer.ProbationMonths),

@@ -1,5 +1,13 @@
 import client from './client';
 
+export interface CompanyAccess {
+  id: string;
+  name: string;
+  code: string;
+  countryCode: string;
+  isActive: boolean;
+}
+
 export interface AuthUser {
   id: string;
   tenantId: string;
@@ -11,6 +19,12 @@ export interface AuthUser {
   employeeId?: number;
   accessMode?: string;
   requiresPasswordSetup?: boolean;
+  /** SingleCompany | Group — drives group UI visibility. */
+  accountType?: 'SingleCompany' | 'Group';
+  /** True when the user's scope decision is group-wide (sees every company). */
+  isGroupScope?: boolean;
+  /** The user's ACCESSIBLE active companies — the company switcher's option list. */
+  companies?: CompanyAccess[];
 }
 
 export interface AuthResponse {

@@ -179,10 +179,12 @@ public class AttendanceGeofence : ITenantOwned
     public bool IsActive { get; set; } = true;
 }
 
-public class AttendanceRegularizationRequest : ITenantOwned
+public class AttendanceRegularizationRequest : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public int EmployeeId { get; set; }
     public DateOnly WorkDate { get; set; }
     public string RequestType { get; set; } = "Missed punch";

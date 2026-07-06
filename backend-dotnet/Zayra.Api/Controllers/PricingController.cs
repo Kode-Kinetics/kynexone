@@ -1,11 +1,17 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
 
+// Public marketing/pricing surface — intentionally unauthenticated. Marked [AllowAnonymous] explicitly
+// so it keeps working under the global default-deny fallback policy (Program.cs), and so the public
+// intent is documented rather than implied by an omitted attribute.
+[AllowAnonymous]
 [ApiController]
 [Route("api/pricing")]
 public class PricingController : ControllerBase
@@ -45,6 +51,7 @@ public class PricingController : ControllerBase
     // ── POST /api/pricing/estimate ── live price calculation (no auth) ─────────
 
     [HttpPost("estimate")]
+    [EnableRateLimiting("public_write")]
     public async Task<IActionResult> Estimate([FromBody] PricingEstimateRequest req, CancellationToken ct)
     {
         if (req.NumEmployees < 0 || req.NumCompanies < 1)
@@ -188,6 +195,7 @@ public class PricingController : ControllerBase
     // ── POST /api/pricing/quotes ── save customer quote request ───────────────
 
     [HttpPost("quotes")]
+    [EnableRateLimiting("public_write")]
     public async Task<IActionResult> SubmitQuote([FromBody] SubmitQuoteRequest req, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(req.ContactEmail) || string.IsNullOrWhiteSpace(req.CompanyName))

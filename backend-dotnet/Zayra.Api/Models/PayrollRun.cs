@@ -1,7 +1,7 @@
 using Zayra.Api.Domain.Entities;
 namespace Zayra.Api.Models;
 
-public class PayrollRun : ITenantOwned, ICompanyScoped
+public class PayrollRun : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
@@ -27,10 +27,12 @@ public class PayrollRun : ITenantOwned, ICompanyScoped
     public string? VoidedByName { get; set; }
 }
 
-public class PayrollSlip : ITenantOwned
+public class PayrollSlip : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid RunId { get; set; }
     public int EmployeeId { get; set; }
     public string EmployeeCode { get; set; } = string.Empty;

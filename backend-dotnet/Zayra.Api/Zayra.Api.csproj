@@ -18,6 +18,9 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
     <PackageReference Include="PdfPig" Version="0.1.9" />
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.1.0" />
+    <!-- Security: pin the patched System.IO.Packaging (8.0.1) to override the vulnerable 8.0.0 that
+         DocumentFormat.OpenXml.Framework pulls in transitively — GHSA-f32c-w444-8ppv / GHSA-qj66-m88j-hmgj. -->
+    <PackageReference Include="System.IO.Packaging" Version="8.0.1" />
     <PackageReference Include="QuestPDF" Version="2024.12.4" />
     <PackageReference Include="MailKit" Version="4.16.0" />
     <PackageReference Include="StackExchange.Redis" Version="2.8.16" />

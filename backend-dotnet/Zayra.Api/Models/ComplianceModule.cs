@@ -44,10 +44,12 @@ public class ContractTemplate : ITenantOwned
 
 // ── Employee Contract ──────────────────────────────────────────────────────────
 
-public class EmployeeContract : ITenantOwned
+public class EmployeeContract : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public Guid? TemplateId { get; set; }
@@ -134,10 +136,12 @@ public class ComplianceReminder : ITenantOwned
 
 // ── Visa Record ────────────────────────────────────────────────────────────────
 
-public class VisaRecord : ITenantOwned
+public class VisaRecord : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public string VisaType { get; set; } = string.Empty;           // Residence/Visit/Employment/Transit
@@ -158,10 +162,12 @@ public class VisaRecord : ITenantOwned
 
 // ── Passport Record ────────────────────────────────────────────────────────────
 
-public class PassportRecord : ITenantOwned
+public class PassportRecord : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public string PassportNumber { get; set; } = string.Empty;
@@ -183,10 +189,12 @@ public class PassportRecord : ITenantOwned
 
 // ── Work Permit Record ─────────────────────────────────────────────────────────
 
-public class WorkPermitRecord : ITenantOwned
+public class WorkPermitRecord : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public string PermitNumber { get; set; } = string.Empty;

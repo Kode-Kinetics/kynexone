@@ -137,6 +137,17 @@ public class AuthService : IAuthService
             return new AuthLoginResult(null, new MfaChallengeDto(challengeToken, 300));
         }
 
+        // Phase 4c — tenant-mandated MFA: if the tenant policy requires MFA for all users but this
+        // user hasn't enrolled TOTP, do NOT issue a session. Signal that enrollment is required so
+        // the client forces setup. Without this, a tenant enabling "require MFA for all" got no
+        // actual enforcement — password-only login still worked for un-enrolled users.
+        if (sec?.MfaRequired == true)
+        {
+            await _auditService.WriteAsync("auth.mfa_enrollment_required", "User", user.Id.ToString(),
+                context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
+            return new AuthLoginResult(null, null, RequiresMfaEnrollment: true);
+        }
+
         // Phase 5 — successful login: clear all lockout state and issue tokens
         user.FailedLoginCount = 0;
         user.IsLocked         = false;
@@ -379,16 +390,78 @@ public class AuthService : IAuthService
         var permissions = GetPermissions(user);
         var entityAccess = user.EntityAccesses
             .Where(e => e.IsActive)
-            .Select(e => new EntityAccessGrant(e.CompanyId, e.Role))
+            .Select(e => new EntityAccessGrant(e.CompanyId, e.Role, e.GrantMode))
             .ToList();
-        var accessToken = _tokenService.CreateAccessToken(user, roles, permissions, user.Tenant!, entityAccess, out var expiresAtUtc);
+        // AllCurrentCompanies grants freeze the set of companies active RIGHT NOW into
+        // the token; the query only runs when such a grant exists.
+        IReadOnlyCollection<Guid> activeCompanyIds = Array.Empty<Guid>();
+        if (entityAccess.Any(g => g.Mode == EntityGrantModes.AllCurrentCompanies))
+        {
+            // IgnoreQueryFilters is intentional: token issuance happens before the caller
+            // has a scope; the TenantId predicate below fully scopes the read.
+            activeCompanyIds = _db.Companies.IgnoreQueryFilters()
+                .Where(c => c.TenantId == user.TenantId && c.IsActive && !c.IsDeleted)
+                .Select(c => c.Id)
+                .ToList();
+        }
+        var entityScope = EntityScopeClaims.Resolve(user.IsGroupScope, entityAccess, activeCompanyIds);
+        var accessToken = _tokenService.CreateAccessToken(user, roles, permissions, user.Tenant!, entityAccess, entityScope, out var expiresAtUtc);
         return new AuthResponse(accessToken, refreshToken, expiresAtUtc, ToUserDto(user));
     }
 
-    private static AuthUserDto ToUserDto(User user)
+    private AuthUserDto ToUserDto(User user)
     {
         var link = PrimaryAccess(user);
-        return new AuthUserDto(user.Id, user.TenantId, user.Tenant!.Slug, user.Email, user.FullName, GetRoles(user), GetPermissions(user), link?.EmployeeId, link?.AccessMode ?? AccessModes.FullPortal, link?.RequiresPasswordSetup ?? false);
+        var companies = ResolveAccessibleCompanies(user);
+        return new AuthUserDto(user.Id, user.TenantId, user.Tenant!.Slug, user.Email, user.FullName,
+            GetRoles(user), GetPermissions(user), link?.EmployeeId, link?.AccessMode ?? AccessModes.FullPortal,
+            link?.RequiresPasswordSetup ?? false,
+            user.Tenant!.AccountType,
+            IsGroupScopeDecision(user),
+            companies);
+    }
+
+    /// <summary>
+    /// Whether this user's issuance-time scope decision resolves to group level —
+    /// the same rules the token claims use (EntityScopeClaims.Resolve).
+    /// </summary>
+    private static bool IsGroupScopeDecision(User user)
+    {
+        var grants = user.EntityAccesses.Where(e => e.IsActive)
+            .Select(e => new EntityAccessGrant(e.CompanyId, e.Role, e.GrantMode)).ToList();
+        return EntityScopeClaims.Resolve(user.IsGroupScope, grants, Array.Empty<Guid>()).Mode == EntityScopeModes.Group;
+    }
+
+    /// <summary>
+    /// The user's ACCESSIBLE active companies for the switcher: group scope → all active;
+    /// company grants → the granted subset. Synchronous by design — callers hold the user
+    /// graph already and the companies query is tiny and tenant-indexed.
+    /// </summary>
+    private IReadOnlyCollection<CompanyAccessDto> ResolveAccessibleCompanies(User user)
+    {
+        var grants = user.EntityAccesses.Where(e => e.IsActive)
+            .Select(e => new EntityAccessGrant(e.CompanyId, e.Role, e.GrantMode)).ToList();
+
+        // IgnoreQueryFilters is intentional: capability resolution happens during token
+        // issuance/me lookup; the TenantId predicate fully scopes the read.
+        var active = _db.Companies.IgnoreQueryFilters().AsNoTracking()
+            .Where(c => c.TenantId == user.TenantId && c.IsActive && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .Select(c => new CompanyAccessDto(
+                c.Id,
+                c.TradeName != "" ? c.TradeName : c.LegalNameEn,
+                c.LegalNameEn,
+                c.CountryCode,
+                c.IsActive))
+            .ToList();
+
+        var scope = EntityScopeClaims.Resolve(user.IsGroupScope, grants, active.Select(c => c.Id).ToList());
+        return scope.Mode switch
+        {
+            EntityScopeModes.Group => active,
+            EntityScopeModes.Companies => active.Where(c => scope.CompanyIds.Contains(c.Id)).ToList(),
+            _ => Array.Empty<CompanyAccessDto>(),
+        };
     }
 
     private static IReadOnlyCollection<string> GetRoles(User user)
@@ -396,7 +469,9 @@ public class AuthService : IAuthService
         return user.UserRoles.Select(x => x.Role?.Name).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct().OrderBy(x => x).ToList();
     }
 
-    private static IReadOnlyCollection<string> GetPermissions(User user)
+    // Public: reused by platform-admin impersonation so minted tokens carry the exact
+    // permission set a real login would produce (roles + access-mode + overrides).
+    public static IReadOnlyCollection<string> GetPermissions(User user)
     {
         var permissions = user.UserRoles
             .SelectMany(x => x.Role?.RolePermissions ?? Array.Empty<RolePermission>())

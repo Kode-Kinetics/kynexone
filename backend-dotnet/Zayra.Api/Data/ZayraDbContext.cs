@@ -53,29 +53,30 @@ public class ZayraDbContext : DbContext
         }
     }
 
-    // Company scope — derived lazily from JWT entity_access claims.
-    // True when no HTTP context (admin/background work) or user has group-level access.
-    private bool _isGroupScope
+    /// <summary>Company-switcher header: narrows the request's company view. Can only narrow, never widen.</summary>
+    public const string CompanySelectionHeader = "X-Company-Id";
+
+    /// <summary>
+    /// The request's effective company scope: token claims (v2/legacy) narrowed by the
+    /// optional X-Company-Id switcher header. An inaccessible or malformed selection
+    /// fails closed. No HTTP context (seeding/background) = trusted group scope.
+    /// </summary>
+    private EntityScopeContext ResolveRequestScope()
     {
-        get
-        {
-            var user = _httpContextAccessor?.HttpContext?.User;
-            if (user is null) return true;
-            return EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false).IsGroupLevel;
-        }
+        var ctx = _httpContextAccessor?.HttpContext;
+        var user = ctx?.User;
+        if (user is null) return EntityScopeContext.GroupLevel;
+        var scope = EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false);
+        var header = ctx!.Request.Headers[CompanySelectionHeader].FirstOrDefault();
+        return scope.NarrowTo(header);
     }
 
+    // Company scope — derived lazily from JWT claims + switcher header.
+    // True when no HTTP context (admin/background work) or user has group-level access.
+    private bool _isGroupScope => ResolveRequestScope().IsGroupLevel;
+
     // Explicit company IDs the current user may access. Empty when _isGroupScope=true.
-    private List<Guid> _companyScopeIds
-    {
-        get
-        {
-            var user = _httpContextAccessor?.HttpContext?.User;
-            if (user is null) return [];
-            return EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false)
-                .AccessibleCompanyIds.ToList();
-        }
-    }
+    private List<Guid> _companyScopeIds => ResolveRequestScope().AccessibleCompanyIds.ToList();
 
     public ZayraDbContext(
         DbContextOptions<ZayraDbContext> options,
@@ -111,8 +112,185 @@ public class ZayraDbContext : DbContext
                 TryStamp(entry, "UpdatedAtUtc", now);
                 if (_actorId.HasValue) TryStamp(entry, "UpdatedBy", _actorId.Value);
             }
+
+            if (entry.State is EntityState.Added or EntityState.Modified)
+                NormalizeDateTimeKinds(entry);
         }
+        await EnforceCompanyScopeOnWritesAsync(cancellationToken);
         return await base.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Phase 2 write-side enforcement for ICompanyScopedOperational entities. The read
+    /// filter alone cannot stop a request from WRITING rows into another company, and a
+    /// forgotten CompanyId would create rows invisible to scoped users (poison default).
+    ///
+    /// Rules per entry (user contexts only — system contexts with no tenant claim, i.e.
+    /// seeders / backfill / background workers, are trusted group-scope by design):
+    ///   Added, CompanyId set    → actor must have access to that company (fail closed).
+    ///   Added, CompanyId null   → server-side resolution, in order:
+    ///       (a) owning employee's company (EmployeeId/EmployeeIntId linkage — the "safe
+    ///           route": ESS and manager flows never carry a company explicitly);
+    ///       (b) tenant has exactly one active company → that company (SingleCompany);
+    ///       (c) actor's scope covers exactly one of the tenant's companies → that one;
+    ///       (d) otherwise FAIL CLOSED — Group tenants require explicit company context.
+    ///       (0 active companies → no company dimension yet; null passes through.)
+    ///   Modified                → reassigning or nulling-out a non-null CompanyId is
+    ///       blocked (explicit transfer workflows come later and must opt in); assigning
+    ///       a previously-null CompanyId is allowed (repair) but access-validated.
+    /// </summary>
+    private async Task EnforceCompanyScopeOnWritesAsync(CancellationToken ct)
+    {
+        var entries = ChangeTracker.Entries()
+            .Where(e => e.Entity is ICompanyScopedOperational && e.State is EntityState.Added or EntityState.Modified)
+            .ToList();
+        if (entries.Count == 0) return;
+
+        var user = _httpContextAccessor?.HttpContext?.User;
+        var tenantClaim = _tenantId;
+        if (user is null || tenantClaim is null) return; // system context — trusted by design
+
+        // Same narrowed scope as reads: with the switcher on Company A, writes resolve
+        // and validate against Company A — the switcher context IS the write context.
+        var scope = ResolveRequestScope();
+
+        Dictionary<Guid, List<Guid>>? companiesByTenant = null;
+        Dictionary<int, Guid?>? employeeCompanyCache = null;
+
+        foreach (var entry in entries)
+        {
+            var scoped = (ICompanyScopedOperational)entry.Entity;
+
+            if (entry.State == EntityState.Modified)
+            {
+                var companyProp = entry.Property(nameof(ICompanyScoped.CompanyId));
+                var original = (Guid?)companyProp.OriginalValue;
+                var current = scoped.CompanyId;
+                if (original is not null && current != original)
+                    throw new InvalidOperationException(
+                        $"company_reassignment_blocked: {entry.Metadata.ClrType.Name} rows cannot change company " +
+                        "(or lose their company) outside an explicit transfer workflow.");
+                if (current is not null && !scope.CanAccessCompany(current))
+                    throw new UnauthorizedAccessException(
+                        $"company_scope_denied: no access to the company that owns this {entry.Metadata.ClrType.Name}.");
+                continue;
+            }
+
+            // Added
+            if (scoped.CompanyId is Guid explicitCompany)
+            {
+                if (!scope.CanAccessCompany(explicitCompany))
+                    throw new UnauthorizedAccessException(
+                        $"company_scope_denied: cannot create {entry.Metadata.ClrType.Name} in a company outside your access.");
+                continue;
+            }
+
+            var entityTenant = ResolveEntryTenantId(entry) ?? tenantClaim.Value;
+
+            // (a) Safe route: follow the owning employee's company.
+            var linkedEmployeeId = ResolveLinkedEmployeeId(entry);
+            if (linkedEmployeeId is int empId and > 0)
+            {
+                employeeCompanyCache ??= new Dictionary<int, Guid?>();
+                if (!employeeCompanyCache.TryGetValue(empId, out var empCompany))
+                {
+                    // IgnoreQueryFilters is intentional: server-side stamping must see the
+                    // employee row even when the ACTOR's scope wouldn't (the deny decision
+                    // is made below); TenantId predicate keeps this tenant-contained.
+                    empCompany = await Employees.IgnoreQueryFilters().AsNoTracking()
+                        .Where(e => e.TenantId == entityTenant && e.Id == empId)
+                        .Select(e => e.CompanyId)
+                        .FirstOrDefaultAsync(ct);
+                    employeeCompanyCache[empId] = empCompany;
+                }
+                if (empCompany is Guid fromEmployee)
+                {
+                    if (!scope.CanAccessCompany(fromEmployee))
+                        throw new UnauthorizedAccessException(
+                            $"company_scope_denied: cannot create {entry.Metadata.ClrType.Name} for an employee outside your company access.");
+                    scoped.CompanyId = fromEmployee;
+                    continue;
+                }
+            }
+
+            // (b)/(c)/(d): tenant-level resolution.
+            companiesByTenant ??= new Dictionary<Guid, List<Guid>>();
+            if (!companiesByTenant.TryGetValue(entityTenant, out var activeCompanies))
+            {
+                // IgnoreQueryFilters is intentional: default-company resolution needs the
+                // tenant's full active company list regardless of actor scope; explicit
+                // TenantId predicate keeps this tenant-contained.
+                activeCompanies = await Companies.IgnoreQueryFilters().AsNoTracking()
+                    .Where(c => c.TenantId == entityTenant && c.IsActive && !c.IsDeleted)
+                    .OrderBy(c => c.CreatedAtUtc)
+                    .Select(c => c.Id)
+                    .ToListAsync(ct);
+                companiesByTenant[entityTenant] = activeCompanies;
+            }
+
+            if (activeCompanies.Count == 0) continue; // no company dimension yet
+            if (activeCompanies.Count == 1)
+            {
+                var only = activeCompanies[0];
+                if (!scope.CanAccessCompany(only))
+                    throw new UnauthorizedAccessException(
+                        $"company_scope_denied: cannot create {entry.Metadata.ClrType.Name} in this tenant's company.");
+                scoped.CompanyId = only;
+                continue;
+            }
+
+            if (!scope.IsGroupLevel)
+            {
+                var accessible = scope.AccessibleCompanyIds.Intersect(activeCompanies).ToList();
+                if (accessible.Count == 1)
+                {
+                    scoped.CompanyId = accessible[0];
+                    continue;
+                }
+            }
+
+            throw new InvalidOperationException(
+                $"company_scope_required: {entry.Metadata.ClrType.Name} in a multi-company tenant needs an " +
+                "explicit CompanyId (or an employee linkage to derive it from).");
+        }
+    }
+
+    private static Guid? ResolveEntryTenantId(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry) =>
+        entry.Entity switch
+        {
+            ITenantOwned owned => owned.TenantId,
+            INullableTenantOwned nullable => nullable.TenantId,
+            _ => null,
+        };
+
+    /// <summary>Owning-employee linkage: int Employee.Id via "EmployeeId" (int/int?) or "EmployeeIntId".</summary>
+    private static int? ResolveLinkedEmployeeId(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry)
+    {
+        var type = entry.Entity.GetType();
+        var direct = type.GetProperty("EmployeeId");
+        if (direct?.PropertyType == typeof(int)) return (int)direct.GetValue(entry.Entity)!;
+        if (direct?.PropertyType == typeof(int?) && direct.GetValue(entry.Entity) is int nullableInt) return nullableInt;
+        var intLink = type.GetProperty("EmployeeIntId");
+        if (intLink?.PropertyType == typeof(int?) && intLink.GetValue(entry.Entity) is int viaIntLink) return viaIntLink;
+        return null;
+    }
+
+    /// <summary>
+    /// Npgsql maps DateTime columns to 'timestamp with time zone' and throws when a value's
+    /// Kind is Unspecified. JSON model binding produces Unspecified for payloads like
+    /// "2024-01-01", and DateOnly.ToDateTime() does too — a recurring 500 class. Normalize
+    /// every DateTime being written: Unspecified is taken as UTC wall-clock; Local converts.
+    /// </summary>
+    private static void NormalizeDateTimeKinds(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry)
+    {
+        foreach (var prop in entry.Properties)
+        {
+            var clr = prop.Metadata.ClrType;
+            if (clr != typeof(DateTime) && clr != typeof(DateTime?)) continue;
+            if (prop.CurrentValue is not DateTime dt) continue;
+            if (dt.Kind == DateTimeKind.Unspecified) prop.CurrentValue = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+            else if (dt.Kind == DateTimeKind.Local) prop.CurrentValue = dt.ToUniversalTime();
+        }
     }
 
     private static void TryStamp(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry, string prop, object value, bool skipIfSet = false)
@@ -283,6 +461,8 @@ public class ZayraDbContext : DbContext
     public DbSet<TenantBranding> TenantBrandings => Set<TenantBranding>();
     public DbSet<CountryPayrollRule> CountryPayrollRules => Set<CountryPayrollRule>();
     public DbSet<StatutoryRule> StatutoryRules => Set<StatutoryRule>();
+    public DbSet<CompanyTaxPolicy> CompanyTaxPolicies => Set<CompanyTaxPolicy>();
+    public DbSet<CompanyComplianceProfile> CompanyComplianceProfiles => Set<CompanyComplianceProfile>();
     public DbSet<TenantFieldHelpText> TenantFieldHelpTexts => Set<TenantFieldHelpText>();
     public DbSet<PlatformSupportSession> PlatformSupportSessions => Set<PlatformSupportSession>();
     public DbSet<PlatformUser> PlatformUsers => Set<PlatformUser>();
@@ -341,6 +521,7 @@ public class ZayraDbContext : DbContext
     public DbSet<Department> Departments => Set<Department>();
     public DbSet<Designation> Designations => Set<Designation>();
     public DbSet<Grade> Grades => Set<Grade>();
+    public DbSet<GradePayScaleComponent> GradePayScaleComponents => Set<GradePayScaleComponent>();
     public DbSet<CostCenter> CostCenters => Set<CostCenter>();
     public DbSet<EmployeeIdRule> EmployeeIdRules => Set<EmployeeIdRule>();
     public DbSet<ApprovalWorkflow> ApprovalWorkflows => Set<ApprovalWorkflow>();
@@ -397,6 +578,8 @@ public class ZayraDbContext : DbContext
     public DbSet<BonusApproval> BonusApprovals => Set<BonusApproval>();
     public DbSet<BonusAuditLog> BonusAuditLogs => Set<BonusAuditLog>();
     public DbSet<FinanceGlEntry> FinanceGlEntries => Set<FinanceGlEntry>();
+    public DbSet<GlAccount> GlAccounts => Set<GlAccount>();
+    public DbSet<GlAccountMapping> GlAccountMappings => Set<GlAccountMapping>();
     // ── Reports & Analytics ────────────────────────────────────────────────────
     public DbSet<SavedReport> SavedReports => Set<SavedReport>();
     public DbSet<ReportSchedule> ReportSchedules => Set<ReportSchedule>();
@@ -767,6 +950,33 @@ public class ZayraDbContext : DbContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
+            entity.Property(x => x.MinSalary).HasPrecision(14, 2);
+            entity.Property(x => x.MidSalary).HasPrecision(14, 2);
+            entity.Property(x => x.MaxSalary).HasPrecision(14, 2);
+            entity.Property(x => x.Currency).HasMaxLength(8);
+        });
+
+        modelBuilder.Entity<GradePayScaleComponent>(entity =>
+        {
+            entity.ToTable("grade_pay_scale_components");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.GradeId });
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.Percentage).HasPrecision(7, 4);
+        });
+
+        modelBuilder.Entity<GlAccount>(entity =>
+        {
+            entity.ToTable("gl_accounts");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+        });
+
+        modelBuilder.Entity<GlAccountMapping>(entity =>
+        {
+            entity.ToTable("gl_account_mappings");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.DriverKey }).IsUnique();
         });
 
         modelBuilder.Entity<CostCenter>(entity =>
@@ -2218,6 +2428,31 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc });
         });
 
+        // ── Company governance (Phase 1B: per-legal-entity policy foundation) ─────
+        modelBuilder.Entity<CompanyTaxPolicy>(entity =>
+        {
+            entity.ToTable("company_tax_policies");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CountryCode).HasMaxLength(2);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.IncomeTaxRatePercent).HasPrecision(8, 4);
+            entity.Property(x => x.Notes).HasMaxLength(1000);
+            // Resolution query: tenant + company (or null default) + Active + date window.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status, x.EffectiveFrom });
+        });
+
+        modelBuilder.Entity<CompanyComplianceProfile>(entity =>
+        {
+            entity.ToTable("company_compliance_profiles");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CountryCode).HasMaxLength(2);
+            entity.Property(x => x.Jurisdiction).HasMaxLength(40);
+            entity.Property(x => x.CompliancePack).HasMaxLength(60);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.Notes).HasMaxLength(1000);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status, x.EffectiveFrom });
+        });
+
         // ── Loans ──────────────────────────────────────────────────────────────
         modelBuilder.Entity<LoanType>(entity =>
         {
@@ -2434,6 +2669,37 @@ public class ZayraDbContext : DbContext
         });
 
         ApplyTenantQueryFilters(modelBuilder);
+        ApplyCompanyScopeIndexes(modelBuilder);
+    }
+
+    /// <summary>
+    /// Convention-driven indexing for the company dimension: every ICompanyScoped entity
+    /// that also carries TenantId gets a composite (TenantId, CompanyId) index so the
+    /// automatic company filter never table-scans. Hot operational tables additionally
+    /// get a (TenantId, CompanyId, status/date) index for their dominant list queries.
+    /// HasIndex on an existing property set is idempotent, so manual per-entity indexes
+    /// (e.g. cost_centers) are not duplicated.
+    /// </summary>
+    private static void ApplyCompanyScopeIndexes(ModelBuilder modelBuilder)
+    {
+        var hotPathExtras = new Dictionary<Type, string[]>
+        {
+            [typeof(Models.AttendanceRecord)] = new[] { "TenantId", "CompanyId", "WorkDate" },
+            [typeof(Models.LeaveRequest)] = new[] { "TenantId", "CompanyId", "Status" },
+            [typeof(Models.PayrollRun)] = new[] { "TenantId", "CompanyId", "Status" },
+        };
+
+        foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+        {
+            if (entityType.IsOwned() || entityType.BaseType is not null) continue;
+            var clr = entityType.ClrType;
+            if (!typeof(ICompanyScoped).IsAssignableFrom(clr)) continue;
+            if (clr.GetProperty("TenantId") is null) continue;
+
+            modelBuilder.Entity(clr).HasIndex("TenantId", "CompanyId");
+            if (hotPathExtras.TryGetValue(clr, out var extra))
+                modelBuilder.Entity(clr).HasIndex(extra);
+        }
     }
 
     private static readonly MethodInfo _setTenantFilterNonNull =
@@ -2473,12 +2739,24 @@ public class ZayraDbContext : DbContext
     // Each method AND-s in the soft-delete guard and, for ICompanyScoped entities, the
     // company-scope guard in one HasQueryFilter call (EF Core only supports one per entity type).
     // Code that intentionally needs deleted/cross-company records must call .IgnoreQueryFilters().
+    //
+    // Two company-scope tiers:
+    //   ICompanyScoped (config/template): CompanyId == null ⇒ tenant-wide, visible to all.
+    //   ICompanyScopedOperational:        CompanyId == null ⇒ visible to GROUP scope only —
+    //     a scoped user never sees unassigned operational rows (poison-default prevention).
     private void SetTenantFilterNonNull<TEntity>(ModelBuilder modelBuilder) where TEntity : class
     {
         var hasSoftDelete = typeof(TEntity).GetProperty("IsDeleted") != null;
-        var hasCompanyScope = typeof(ICompanyScoped).IsAssignableFrom(typeof(TEntity));
+        var isOperationalScope = typeof(ICompanyScopedOperational).IsAssignableFrom(typeof(TEntity));
+        var isConfigScope = !isOperationalScope && typeof(ICompanyScoped).IsAssignableFrom(typeof(TEntity));
 
-        if (hasSoftDelete && hasCompanyScope)
+        if (hasSoftDelete && isOperationalScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                     && !EF.Property<bool>(e, "IsDeleted")
+                     && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
+                         && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
+        else if (hasSoftDelete && isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
                      && !EF.Property<bool>(e, "IsDeleted")
@@ -2488,7 +2766,12 @@ public class ZayraDbContext : DbContext
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
                      && !EF.Property<bool>(e, "IsDeleted"));
-        else if (hasCompanyScope)
+        else if (isOperationalScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                     && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
+                         && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
+        else if (isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
@@ -2501,9 +2784,16 @@ public class ZayraDbContext : DbContext
     private void SetTenantFilterNullable<TEntity>(ModelBuilder modelBuilder) where TEntity : class
     {
         var hasSoftDelete = typeof(TEntity).GetProperty("IsDeleted") != null;
-        var hasCompanyScope = typeof(ICompanyScoped).IsAssignableFrom(typeof(TEntity));
+        var isOperationalScope = typeof(ICompanyScopedOperational).IsAssignableFrom(typeof(TEntity));
+        var isConfigScope = !isOperationalScope && typeof(ICompanyScoped).IsAssignableFrom(typeof(TEntity));
 
-        if (hasSoftDelete && hasCompanyScope)
+        if (hasSoftDelete && isOperationalScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                     && !EF.Property<bool>(e, "IsDeleted")
+                     && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
+                         && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
+        else if (hasSoftDelete && isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
                      && !EF.Property<bool>(e, "IsDeleted")
@@ -2513,7 +2803,12 @@ public class ZayraDbContext : DbContext
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
                      && !EF.Property<bool>(e, "IsDeleted"));
-        else if (hasCompanyScope)
+        else if (isOperationalScope)
+            modelBuilder.Entity<TEntity>().HasQueryFilter(
+                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                     && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
+                         && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
+        else if (isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
                 e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null

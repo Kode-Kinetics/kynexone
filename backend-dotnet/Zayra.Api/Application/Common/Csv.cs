@@ -65,8 +65,26 @@ public static class Csv
         return result;
     }
 
-    private static string Escape(string s) =>
-        s.Contains(',') || s.Contains('"') || s.Contains('\n')
+    // Characters that make a spreadsheet treat a cell as a formula. A cell that begins
+    // with any of these is prefixed with a leading apostrophe so Excel/Sheets/LibreOffice
+    // render it as literal text instead of evaluating it (CSV / formula injection, aka
+    // "CSV Excel macro injection", CWE-1236). Tab and CR are included because some parsers
+    // strip a leading one and re-expose the following '='/'+'/etc.
+    private static readonly char[] FormulaTriggers = { '=', '+', '-', '@', '\t', '\r' };
+
+    /// <summary>
+    /// Escapes a single cell for safe CSV output: neutralizes formula-injection lead
+    /// characters, then applies RFC-4180 quoting when the value contains a delimiter,
+    /// quote, or newline. Public so alternative writers can reuse the identical rule.
+    /// </summary>
+    public static string Escape(string s)
+    {
+        s ??= string.Empty;
+        // Neutralize formula injection: a value starting with a trigger char becomes text.
+        if (s.Length > 0 && Array.IndexOf(FormulaTriggers, s[0]) >= 0)
+            s = "'" + s;
+        return s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r')
             ? "\"" + s.Replace("\"", "\"\"") + "\""
             : s;
+    }
 }

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { AppLayout } from '@/src/layouts/AppLayout';
 import { TenantSettingsProvider } from '@/src/contexts/TenantSettingsContext';
+import { CurrentCompanyProvider } from '@/src/contexts/CompanyContext';
 import { applyTheme, getStoredTheme } from '@/src/utils/theme';
 import type { ThemeMode } from '@/src/types/ui';
 
@@ -29,9 +30,11 @@ function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <TenantSettingsProvider>
-      <AppLayout theme={theme} onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
-        {children}
-      </AppLayout>
+      <CurrentCompanyProvider>
+        <AppLayout theme={theme} onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
+          {children}
+        </AppLayout>
+      </CurrentCompanyProvider>
     </TenantSettingsProvider>
   );
 }

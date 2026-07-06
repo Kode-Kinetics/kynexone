@@ -25,9 +25,10 @@ public class AnalyticsController : ControllerBase
         var thisMonth = new DateOnly(today.Year, today.Month, 1);
         var lastMonth = thisMonth.AddMonths(-1);
 
-        // Headcount
+        // Headcount — JoiningDate is timestamptz; Npgsql requires a UTC-kind parameter.
+        var thisMonthStartUtc = DateTime.SpecifyKind(thisMonth.ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc);
         var totalActive = await _db.Employees.CountAsync(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active", ct);
-        var newThisMonth = await _db.Employees.CountAsync(x => x.TenantId == tid && !x.IsDeleted && x.JoiningDate >= thisMonth.ToDateTime(TimeOnly.MinValue), ct);
+        var newThisMonth = await _db.Employees.CountAsync(x => x.TenantId == tid && !x.IsDeleted && x.JoiningDate >= thisMonthStartUtc, ct);
         var exitsThisMonth = await _db.Employees.CountAsync(x => x.TenantId == tid && !x.IsDeleted
             && (x.Status == "Resigned" || x.Status == "Terminated")
             && x.ContractEndDate.HasValue && x.ContractEndDate.Value >= thisMonth, ct);
@@ -87,8 +88,10 @@ public class AnalyticsController : ControllerBase
             var m = today.AddMonths(-i);
             var monthStart = new DateOnly(m.Year, m.Month, 1);
             var monthEnd = monthStart.AddMonths(1).AddDays(-1);
+            // JoiningDate is timestamptz; Npgsql requires a UTC-kind parameter.
+            var monthEndUtc = DateTime.SpecifyKind(monthEnd.ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc);
             var count = await _db.Employees.CountAsync(x => x.TenantId == tid && !x.IsDeleted
-                && x.JoiningDate <= monthEnd.ToDateTime(TimeOnly.MinValue) && (x.ContractEndDate == null || x.ContractEndDate > monthEnd), ct);
+                && x.JoiningDate <= monthEndUtc && (x.ContractEndDate == null || x.ContractEndDate > monthEnd), ct);
             result.Add(new { period = $"{m.Year}-{m.Month:D2}", headcount = count });
         }
         return Ok(result);

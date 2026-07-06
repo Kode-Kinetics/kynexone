@@ -109,6 +109,8 @@ public record AuthResponse(
     DateTime ExpiresAtUtc,
     AuthUserDto User);
 
+public record CompanyAccessDto(Guid Id, string Name, string Code, string CountryCode, bool IsActive);
+
 public record AuthUserDto(
     Guid Id,
     Guid TenantId,
@@ -119,7 +121,11 @@ public record AuthUserDto(
     IReadOnlyCollection<string> Permissions,
     int? EmployeeId = null,
     string AccessMode = "FullPortal",
-    bool RequiresPasswordSetup = false);
+    bool RequiresPasswordSetup = false,
+    // Company-scope capability payload (final batch): drives the frontend company switcher.
+    string AccountType = "SingleCompany",
+    bool IsGroupScope = false,
+    IReadOnlyCollection<CompanyAccessDto>? Companies = null);
 
 public record ForgotPasswordResponse(string Message, string? ResetToken, DateTime? ResetTokenExpiresAtUtc);
 
@@ -218,8 +224,9 @@ public record SecuritySettingDto(
 /// The client must POST this token + TOTP code to /api/auth/mfa/challenge/verify to obtain full tokens.</summary>
 public record MfaChallengeDto(string ChallengeToken, int ExpiresInSeconds);
 
-/// <summary>Union result from LoginAsync — exactly one of Tokens or Challenge is non-null.</summary>
-public record AuthLoginResult(AuthResponse? Tokens, MfaChallengeDto? Challenge)
+/// <summary>Result from LoginAsync — one of: Tokens (success), Challenge (MFA code needed),
+/// or RequiresMfaEnrollment (tenant mandates MFA but this user hasn't set it up yet).</summary>
+public record AuthLoginResult(AuthResponse? Tokens, MfaChallengeDto? Challenge, bool RequiresMfaEnrollment = false)
 {
     public bool RequiresMfa => Challenge is not null;
 }

@@ -32,9 +32,24 @@ public sealed class CountryPackResolver : ICountryPackResolver
         => Resolve<ICountryPackDescriptor>(cc, j);
 
     private T Resolve<T>(string countryCode, string jurisdiction) where T : class
-        => _sp.GetKeyedService<T>($"{countryCode}:{jurisdiction}")
-        ?? _sp.GetKeyedService<T>(countryCode)
-        ?? _sp.GetRequiredService<T>();  // non-keyed default pack
+    {
+        // Pack registrations are keyed by ISO-3 ("SAU", "ARE"); canonical stored data is
+        // ISO-2 ("SA", "AE"). Try the raw value first (backward compat for ISO-3 data),
+        // then the explicit ISO-2 → ISO-3 mapping layer. Never mutate stored values here.
+        var exact = _sp.GetKeyedService<T>($"{countryCode}:{jurisdiction}")
+                    ?? _sp.GetKeyedService<T>(countryCode);
+        if (exact is not null) return exact;
+
+        var iso3 = Application.Common.CountryCodeStandard.ToIso3(countryCode);
+        if (iso3 is not null && !iso3.Equals(countryCode, StringComparison.OrdinalIgnoreCase))
+        {
+            var mapped = _sp.GetKeyedService<T>($"{iso3}:{jurisdiction}")
+                         ?? _sp.GetKeyedService<T>(iso3);
+            if (mapped is not null) return mapped;
+        }
+
+        return _sp.GetRequiredService<T>();  // non-keyed default pack
+    }
 }
 
 // Retained for test use: allows constructing a resolver with explicit strategy

@@ -35,6 +35,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(120)")
                         .HasColumnName("action");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -73,6 +77,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("user_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "CreatedAtUtc");
 
@@ -415,6 +421,16 @@ namespace Zayra.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<string>("AccountType")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("account_type");
+
+                    b.Property<string>("CompanyCreationMode")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("company_creation_mode");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -960,6 +976,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("acknowledged_by");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -1017,6 +1037,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("title");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "EmployeeId");
 
@@ -1287,6 +1309,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("action");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -1330,6 +1356,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "CreatedAtUtc");
 
@@ -3705,6 +3733,10 @@ namespace Zayra.Api.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<int>("EmployeeId")
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
@@ -3743,6 +3775,10 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId", "WorkDate");
+
                     b.HasIndex("TenantId", "EmployeeId", "WorkDate")
                         .IsUnique();
 
@@ -3757,6 +3793,10 @@ namespace Zayra.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -3810,6 +3850,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("work_date");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "Status");
 
@@ -4913,6 +4955,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("ApprovalStatus")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("approval_status");
+
                     b.Property<string>("CountryCode")
                         .IsRequired()
                         .HasColumnType("text")
@@ -5014,6 +5061,177 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "RegistrationNumber");
 
                     b.ToTable("companies", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompanyComplianceProfile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CompliancePack")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("compliance_pack");
+
+                    b.Property<string>("CountryCode")
+                        .IsRequired()
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)")
+                        .HasColumnName("country_code");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<DateOnly>("EffectiveFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_from");
+
+                    b.Property<DateOnly?>("EffectiveTo")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_to");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_deleted");
+
+                    b.Property<string>("Jurisdiction")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("jurisdiction");
+
+                    b.Property<string>("Notes")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("notes");
+
+                    b.Property<string>("RequiredFieldsJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("required_fields_json");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId", "Status", "EffectiveFrom");
+
+                    b.ToTable("company_compliance_profiles", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompanyTaxPolicy", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("AppliesToBonus")
+                        .HasColumnType("boolean")
+                        .HasColumnName("applies_to_bonus");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CountryCode")
+                        .IsRequired()
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)")
+                        .HasColumnName("country_code");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<DateOnly>("EffectiveFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_from");
+
+                    b.Property<DateOnly?>("EffectiveTo")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_to");
+
+                    b.Property<decimal?>("IncomeTaxRatePercent")
+                        .HasPrecision(8, 4)
+                        .HasColumnType("numeric(8,4)")
+                        .HasColumnName("income_tax_rate_percent");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_deleted");
+
+                    b.Property<string>("Notes")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("notes");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TaxConfigurationJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("tax_configuration_json");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId", "Status", "EffectiveFrom");
+
+                    b.ToTable("company_tax_policies", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.Competency", b =>
@@ -6496,6 +6714,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "Department");
 
                     b.HasIndex("TenantId", "EmployeeCode")
@@ -6678,6 +6898,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(10,4)")
                         .HasColumnName("calculation_value");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -6753,6 +6977,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "BonusBatchId", "EmployeeId");
 
@@ -6981,6 +7207,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("basic_salary");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<string>("ContentHtmlAr")
                         .IsRequired()
                         .HasColumnType("text")
@@ -7090,6 +7320,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "ContractNumber")
                         .IsUnique();
 
@@ -7156,6 +7388,10 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("approval_status");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
 
                     b.Property<string>("ContentType")
                         .IsRequired()
@@ -7256,6 +7492,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("version_number");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "DraftId");
 
@@ -7945,6 +8183,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "CompanyId", "IsActive");
 
                     b.ToTable("employee_id_rules", (string)null);
@@ -8059,6 +8299,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("approved_installments");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -8166,6 +8410,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "LoanNumber")
                         .IsUnique();
@@ -9509,6 +9755,92 @@ namespace Zayra.Api.Migrations
                     b.ToTable("gcc_compliance_settings", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.GlAccount", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AccountType")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("account_type");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("code");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique();
+
+                    b.ToTable("gl_accounts", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.GlAccountMapping", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("DriverKey")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("driver_key");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "DriverKey")
+                        .IsUnique();
+
+                    b.ToTable("gl_account_mappings", (string)null);
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.GoalProgressUpdate", b =>
                 {
                     b.Property<Guid>("Id")
@@ -9666,6 +9998,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("currency");
+
                     b.Property<DateTime?>("DeletedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at_utc");
@@ -9685,6 +10023,21 @@ namespace Zayra.Api.Migrations
                     b.Property<int>("Level")
                         .HasColumnType("integer")
                         .HasColumnName("level");
+
+                    b.Property<decimal>("MaxSalary")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("max_salary");
+
+                    b.Property<decimal>("MidSalary")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("mid_salary");
+
+                    b.Property<decimal>("MinSalary")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("min_salary");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -9711,6 +10064,83 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "IsDeleted");
 
                     b.ToTable("grades", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.GradePayScaleComponent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("CalculationType")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("calculation_type");
+
+                    b.Property<string>("ComponentCode")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("component_code");
+
+                    b.Property<string>("ComponentName")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("component_name");
+
+                    b.Property<string>("ComponentType")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("component_type");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Frequency")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("frequency");
+
+                    b.Property<Guid>("GradeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("grade_id");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<bool>("IsTaxable")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_taxable");
+
+                    b.Property<decimal>("Percentage")
+                        .HasPrecision(7, 4)
+                        .HasColumnType("numeric(7,4)")
+                        .HasColumnName("percentage");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "GradeId");
+
+                    b.ToTable("grade_pay_scale_components", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.HRRequest", b =>
@@ -10710,6 +11140,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(7,2)")
                         .HasColumnName("balance_before");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -10751,6 +11185,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("year");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "EmployeeId", "LeaveTypeId");
 
@@ -11268,6 +11704,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "LeaveTypeId", "Status");
 
                     b.ToTable("leave_policies", (string)null);
@@ -11329,6 +11767,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "LeavePolicyId", "IsActive");
 
                     b.ToTable("leave_policy_eligibilities", (string)null);
@@ -11354,6 +11794,10 @@ namespace Zayra.Api.Migrations
                     b.Property<DateTime?>("CancelledAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("cancelled_at_utc");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -11475,7 +11919,11 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "Status");
+
+                    b.HasIndex("TenantId", "CompanyId", "Status");
 
                     b.HasIndex("TenantId", "EmployeeId", "StartDate");
 
@@ -12436,6 +12884,10 @@ namespace Zayra.Api.Migrations
                     b.Property<DateTime>("ExpiresAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
+
+                    b.Property<int>("FailedAttempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("failed_attempts");
 
                     b.Property<Guid?>("PlatformUserId")
                         .HasColumnType("uuid")
@@ -13529,6 +13981,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("attendance_daily_record_id");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -13598,6 +14054,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("work_date");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "Status");
 
@@ -13736,6 +14194,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -13816,6 +14278,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "PassportNumber");
 
@@ -14130,6 +14594,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<string>("ComponentCode")
                         .IsRequired()
                         .HasColumnType("text")
@@ -14164,6 +14632,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "PayrollRunId", "EmployeeId");
 
@@ -14487,6 +14957,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "CompanyId", "Status");
 
                     b.HasIndex("TenantId", "Year", "Month")
@@ -14557,6 +15029,10 @@ namespace Zayra.Api.Migrations
                         .HasPrecision(12, 2)
                         .HasColumnType("numeric(12,2)")
                         .HasColumnName("basic_salary");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
 
                     b.Property<decimal>("Deductions")
                         .HasPrecision(12, 2)
@@ -14651,6 +15127,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "RunId", "EmployeeId")
                         .IsUnique();
 
@@ -14713,6 +15191,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -14752,6 +15234,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "PayrollRunId", "EmployeeId")
                         .IsUnique();
@@ -15811,6 +16295,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(256)")
                         .HasColumnName("email");
 
+                    b.Property<int>("FailedLoginCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("failed_login_count");
+
                     b.Property<string>("FullName")
                         .IsRequired()
                         .HasMaxLength(180)
@@ -15831,6 +16319,10 @@ namespace Zayra.Api.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
                         .HasColumnName("last_login_ip");
+
+                    b.Property<DateTime?>("LockoutEndUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("lockout_end_utc");
 
                     b.Property<DateTime?>("MfaConfiguredAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -16360,6 +16852,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "CountryCode", "CalendarYear");
 
@@ -17044,6 +17538,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("approved_amount");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -17136,6 +17634,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "AdvanceNumber")
                         .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "EmployeeId", "Status");
 
@@ -17422,6 +17922,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("date")
                         .HasColumnName("assigned_date");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -17466,6 +17970,8 @@ namespace Zayra.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "AssignedDate");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "EmployeeId", "AssignedDate")
                         .IsUnique();
@@ -18284,6 +18790,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
+                    b.Property<string>("GrantMode")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("grant_mode");
+
                     b.Property<DateTime?>("GrantedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("granted_at");
@@ -18405,6 +18916,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<string>("CountryCode")
                         .IsRequired()
                         .HasColumnType("text")
@@ -18484,6 +18999,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "VisaNumber");
 
                     b.HasIndex("TenantId", "EmployeeId", "IsDeleted");
@@ -18499,6 +19016,10 @@ namespace Zayra.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -18546,6 +19067,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "PaymentBatchId");
 
                     b.ToTable("wps_file_batches", (string)null);
@@ -18557,6 +19080,10 @@ namespace Zayra.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
@@ -18626,6 +19153,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "PermitNumber");
 

@@ -103,6 +103,12 @@ public class LoansController : ControllerBase
         var tid = GetTenantId();
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (loan == null) return NotFound();
+        // Object-level authorization: a non-org-wide caller (employee/manager) may only read a loan
+        // belonging to an employee in their scope. Without this, the scoped LIST above is trivially
+        // bypassed by hitting the detail route with any loan GUID (IDOR, CWE-639).
+        var scope = await _scopeService.ResolveAsync(User, tid, ct);
+        if (!scope.IsUnrestricted && !(loan.EmployeeIntId.HasValue && scope.CanAccessEmployee(loan.EmployeeIntId.Value)))
+            return Forbid();
         var installments = await _db.LoanInstallments.Where(x => x.LoanId == id).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
         var approvals = await _db.LoanApprovals.Where(x => x.LoanId == id).OrderBy(x => x.StepOrder).ToListAsync(ct);
         var auditLogs = await _db.LoanAuditLogs.Where(x => x.LoanId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);

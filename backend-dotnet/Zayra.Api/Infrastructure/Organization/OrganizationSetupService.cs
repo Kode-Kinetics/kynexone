@@ -34,11 +34,18 @@ public class OrganizationSetupService : IOrganizationSetupService
         return company?.ToDto();
     }
 
-    public async Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken, bool asDraft = false)
     {
+        ValidateCountryCode(request.CountryCode);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, null, cancellationToken);
         var company = new Company { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(company, request);
+        if (asDraft)
+        {
+            // GroupDraftPlatformApproval mode: created inactive, awaiting platform approval.
+            company.ApprovalStatus = CompanyApprovalStatuses.Draft;
+            company.IsActive = false;
+        }
         _db.Companies.Add(company);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.company_created", nameof(Company), company.Id.ToString(), context, null, cancellationToken);
@@ -49,6 +56,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var company = await _db.Companies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (company is null) return null;
+        ValidateCountryCode(request.CountryCode);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, id, cancellationToken);
         Apply(company, request);
         company.UpdatedAtUtc = DateTime.UtcNow;
@@ -56,6 +64,18 @@ public class OrganizationSetupService : IOrganizationSetupService
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.company_updated", nameof(Company), company.Id.ToString(), context, null, cancellationToken);
         return company.ToDto();
+    }
+
+    /// <summary>
+    /// Company.CountryCode anchors statutory-pack resolution and the new company
+    /// governance tables, so free text is rejected: non-empty values must be a
+    /// recognized ISO code (ISO-2 canonical; ISO-3 accepted and mapped).
+    /// </summary>
+    private static void ValidateCountryCode(string? countryCode)
+    {
+        if (!CountryCodeStandard.IsValidOrEmpty(countryCode))
+            throw new InvalidOperationException(
+                $"Unrecognized country code '{countryCode}'. Use an ISO 3166-1 code (e.g. SA, AE, IN, GB).");
     }
 
     public async Task<PagedResult<BranchDto>> GetBranchesAsync(Guid tenantId, Guid? companyId, int page, int pageSize, CancellationToken cancellationToken)
@@ -360,6 +380,17 @@ public class OrganizationSetupService : IOrganizationSetupService
         grade.Name = Clean(request.Name);
         grade.Band = Clean(request.Band);
         grade.Level = request.Level;
+
+        // Pay-scale band — must be ordered Min ≤ Mid ≤ Max when supplied.
+        if (request.MaxSalary > 0 && request.MinSalary > request.MaxSalary)
+            throw new InvalidOperationException("MinSalary cannot exceed MaxSalary.");
+        if (request.MidSalary > 0 && (request.MidSalary < request.MinSalary || (request.MaxSalary > 0 && request.MidSalary > request.MaxSalary)))
+            throw new InvalidOperationException("MidSalary must fall between MinSalary and MaxSalary.");
+        grade.MinSalary = request.MinSalary;
+        grade.MidSalary = request.MidSalary;
+        grade.MaxSalary = request.MaxSalary;
+        grade.Currency = string.IsNullOrWhiteSpace(request.Currency) ? "SAR" : Clean(request.Currency).ToUpperInvariant();
+
         grade.IsActive = request.IsActive;
     }
 

@@ -50,10 +50,14 @@ public class LocationsController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.Code)) return BadRequest(new { message = "Code is required" });
         if (string.IsNullOrWhiteSpace(req.NameEn)) return BadRequest(new { message = "NameEn is required" });
 
+        var code = req.Code.Trim();
+        var duplicate = await _db.Locations.AnyAsync(l => l.TenantId == tenantId && !l.IsDeleted && l.Code.ToUpper() == code.ToUpper(), ct);
+        if (duplicate) return BadRequest(new { message = $"A location with code '{code}' already exists." });
+
         var loc = new Location
         {
             TenantId = tenantId.Value,
-            Code = req.Code.Trim(),
+            Code = code,
             NameEn = req.NameEn.Trim(),
             NameAr = req.NameAr?.Trim() ?? string.Empty,
             CountryCode = req.CountryCode?.Trim() ?? string.Empty,

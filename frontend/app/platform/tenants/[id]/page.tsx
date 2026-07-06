@@ -3,11 +3,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import {
+import { Building2,
   ArrowLeft, RefreshCw, Edit3, Check, X, AlertTriangle,
   Zap, Users, CreditCard, FileText, Shield, ExternalLink,
   UserCog, PlayCircle, StopCircle, Palette, Globe, Trash2,
 } from 'lucide-react';
+import { GovernanceTab } from './GovernanceTab';
 import {
   platformApi,
   type PlatformTenantDetail,
@@ -51,9 +52,10 @@ const STATUS_CLS: Record<string, string> = {
   cancelled: 'text-slate-500',
 };
 
-type Tab = 'overview' | 'features' | 'users' | 'billing' | 'audit' | 'security' | 'branding' | 'localization';
+type Tab = 'overview' | 'governance' | 'features' | 'users' | 'billing' | 'audit' | 'security' | 'branding' | 'localization';
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'overview',     label: 'Overview',     icon: Edit3 },
+  { id: 'governance',   label: 'Governance',   icon: Building2 },
   { id: 'features',     label: 'Features',     icon: Zap },
   { id: 'users',        label: 'Users',        icon: Users },
   { id: 'billing',      label: 'Billing',      icon: CreditCard },
@@ -869,6 +871,7 @@ export default function TenantDetailPage() {
 
       {/* Tab content */}
       {tab === 'overview'     && <OverviewTab tenant={tenant} onRefresh={load} onDelete={() => setDeleteOpen(true)} />}
+      {tab === 'governance'   && <GovernanceTab tenant={tenant} onRefresh={load} />}
       {tab === 'features'     && <FeaturesTab tenant={tenant} onRefresh={load} featureFlags={featureFlags} />}
       {tab === 'users'        && <UsersTab tenantId={tenant.id} />}
       {tab === 'billing'      && <BillingTab tenantId={tenant.id} />}

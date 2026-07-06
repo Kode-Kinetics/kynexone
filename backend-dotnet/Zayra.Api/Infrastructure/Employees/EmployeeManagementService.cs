@@ -83,6 +83,9 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var employee = new Employee { TenantId = tenantId, EmployeeCode = code, CreatedBy = context.UserId };
         await ApplyEmployee(employee, request, tenantId, cancellationToken);
+        // Employees must always resolve to a legal entity: operational company scoping
+        // treats null CompanyId as invisible to scoped users, so default it here.
+        employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
         employee.Status = "Draft";
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         _db.Employees.Add(employee);
@@ -392,7 +395,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.WorkEmail = Clean(request.WorkEmail);
         employee.Phone = Clean(request.MobileNumber);
         employee.ProfilePhotoUrl = Clean(request.ProfilePhotoUrl);
-        employee.CompanyId = request.CompanyId;
+        // Never null-out an existing company assignment: under operational company scoping
+        // a null CompanyId hides the employee from scoped users. Reassignment requires an
+        // explicit value; omission keeps the current legal entity.
+        employee.CompanyId = request.CompanyId ?? employee.CompanyId;
         employee.BranchId = request.BranchId;
         employee.DepartmentId = request.DepartmentId;
         employee.DesignationId = request.DesignationId;
@@ -501,15 +507,31 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
     }
 
+    /// <summary>
+    /// Unambiguous default only: with exactly one active company that company is the
+    /// answer; a multi-company (Group) tenant returns null so the write-side company
+    /// stamping in ZayraDbContext enforces explicit company context instead of a silent
+    /// oldest-company guess.
+    /// </summary>
+    private async Task<Guid?> ResolveDefaultCompanyId(Guid tenantId, CancellationToken cancellationToken)
+    {
+        var ids = await _db.Companies
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted && c.IsActive)
+            .Select(c => (Guid?)c.Id)
+            .Take(2)
+            .ToListAsync(cancellationToken);
+        return ids.Count == 1 ? ids[0] : null;
+    }
+
     private void TrackChange(Employee employee, string field, string oldValue, string newValue, DateTime? effectiveDate, string reason, RequestContext context)
     {
         if (oldValue == newValue || employee.TenantId is null) return;
-        _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId.Value, EmployeeId = employee.Id, EventType = field + "Change", FieldName = field, OldValue = oldValue, NewValue = newValue, EffectiveDate = DateOnly.FromDateTime(effectiveDate ?? DateTime.UtcNow), Reason = reason, CreatedByUserId = context.UserId, SnapshotJson = JsonSerializer.Serialize(employee) });
+        _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId.Value, EmployeeId = employee.Id, EventType = field + "Change", FieldName = field, OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(field, oldValue), NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(field, newValue), EffectiveDate = DateOnly.FromDateTime(effectiveDate ?? DateTime.UtcNow), Reason = reason, CreatedByUserId = context.UserId, SnapshotJson = EmployeeSafeSnapshot.Serialize(employee) });
     }
 
     private async Task AddHistory(Employee employee, string eventType, string field, string oldValue, string newValue, DateOnly effectiveDate, string reason, RequestContext context, CancellationToken cancellationToken)
     {
-        _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId ?? context.TenantId!.Value, EmployeeId = employee.Id, EventType = eventType, FieldName = field, OldValue = oldValue, NewValue = newValue, EffectiveDate = effectiveDate, Reason = reason, CreatedByUserId = context.UserId, SnapshotJson = JsonSerializer.Serialize(employee) });
+        _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId ?? context.TenantId!.Value, EmployeeId = employee.Id, EventType = eventType, FieldName = field, OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(field, oldValue), NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(field, newValue), EffectiveDate = effectiveDate, Reason = reason, CreatedByUserId = context.UserId, SnapshotJson = EmployeeSafeSnapshot.Serialize(employee) });
         await Task.CompletedTask;
     }
 

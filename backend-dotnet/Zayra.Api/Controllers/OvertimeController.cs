@@ -276,8 +276,13 @@ public class OvertimeController : ControllerBase
     public async Task<ActionResult<IReadOnlyCollection<OvertimeCompOffConversion>>> CompOffConversions([FromQuery] int? employeeId, CancellationToken ct = default)
     {
         var tenantId = RequireTenant();
+        // Apply caller data-scope like the sibling Requests/Calculations endpoints; without it any
+        // employee could read every colleague's comp-off (overtime→leave) conversions (IDOR, CWE-639).
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var (singleId, setFilter) = scope.Constrain(employeeId);
         var query = _db.OvertimeCompOffConversions.AsNoTracking().Where(x => x.TenantId == tenantId);
-        if (employeeId.HasValue) query = query.Where(x => x.EmployeeId == employeeId.Value);
+        if (setFilter is not null) query = query.Where(x => setFilter.Contains(x.EmployeeId));
+        else if (singleId.HasValue) query = query.Where(x => x.EmployeeId == singleId.Value);
         return Ok(await query.ToListAsync(ct));
     }
 

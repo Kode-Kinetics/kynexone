@@ -2,6 +2,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -11,6 +12,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using StackExchange.Redis;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Filters;
 using Zayra.Api.Domain.Entities;
@@ -27,6 +29,9 @@ namespace Zayra.Api.Controllers;
 [Authorize(Policy = "PlatformAdmin")]
 public class PlatformController : ControllerBase
 {
+    // Same wire format as JwtTokenService entity_access claims ({"c":..,"r":..}).
+    private static readonly JsonSerializerOptions EntityAccessClaimJson = new(JsonSerializerDefaults.Web);
+
     private readonly ZayraDbContext _db;
     private readonly JwtOptions _jwt;
     private readonly IPasswordHasher _passwordHasher;
@@ -85,20 +90,42 @@ public class PlatformController : ControllerBase
 
         if (dbUser is not null)
         {
+            // Brute-force lockout (see PlatformUser.FailedLoginCount): reject while a lockout is active.
+            if (dbUser.LockoutEndUtc.HasValue && dbUser.LockoutEndUtc > DateTime.UtcNow)
+            {
+                _db.LoginActivities.Add(new LoginActivity
+                {
+                    UserId = dbUser.Id, EmailAttempted = dbUser.Email,
+                    EventType = LoginEventTypes.PlatformLoginFailed, FailureReason = "account_locked",
+                    IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    UserAgent = HttpContext.Request.Headers.UserAgent.ToString(),
+                });
+                await _db.SaveChangesAsync(ct);
+                return Unauthorized(new { message = "Invalid platform admin credentials." });
+            }
+
             if (!_passwordHasher.Verify(req.Password, dbUser.PasswordHash))
             {
+                dbUser.FailedLoginCount++;
+                if (dbUser.FailedLoginCount >= PlatformUser.MaxFailedLogins)
+                    dbUser.LockoutEndUtc = DateTime.UtcNow.AddMinutes(PlatformUser.LockoutMinutes);
+                dbUser.UpdatedAtUtc = DateTime.UtcNow;
                 _db.LoginActivities.Add(new LoginActivity
                 {
                     UserId        = dbUser.Id,
                     EmailAttempted = dbUser.Email,
                     EventType     = LoginEventTypes.PlatformLoginFailed,
-                    FailureReason = "password_mismatch",
+                    FailureReason = dbUser.LockoutEndUtc.HasValue ? "account_locked_after_repeated_failures" : "password_mismatch",
                     IpAddress     = HttpContext.Connection.RemoteIpAddress?.ToString(),
                     UserAgent     = HttpContext.Request.Headers.UserAgent.ToString(),
                 });
                 await _db.SaveChangesAsync(ct);
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
             }
+
+            // Successful password: clear any lockout state.
+            dbUser.FailedLoginCount = 0;
+            dbUser.LockoutEndUtc = null;
 
             // MFA challenge: if the DB platform user has TOTP configured, issue a challenge
             // token instead of the full JWT. The client must complete /api/platform/auth/mfa/challenge/verify.
@@ -128,8 +155,12 @@ public class PlatformController : ControllerBase
             if (string.IsNullOrWhiteSpace(expectedEmail) || string.IsNullOrWhiteSpace(expectedPassword))
                 return StatusCode(503, new { message = "Platform admin credentials are not configured." });
 
-            if (!string.Equals(req.Email, expectedEmail, StringComparison.OrdinalIgnoreCase) ||
-                req.Password != expectedPassword)
+            // Constant-time password comparison (avoid a timing side-channel on the bootstrap secret).
+            var emailMatches = string.Equals(req.Email, expectedEmail, StringComparison.OrdinalIgnoreCase);
+            var passwordMatches = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                System.Text.Encoding.UTF8.GetBytes(req.Password ?? string.Empty),
+                System.Text.Encoding.UTF8.GetBytes(expectedPassword));
+            if (!emailMatches || !passwordMatches)
             {
                 _db.LoginActivities.Add(new LoginActivity
                 {
@@ -510,6 +541,20 @@ public class PlatformController : ControllerBase
         var employeeCount = await _db.Employees.AsNoTracking()
             .CountAsync(e => e.TenantId == tenantId && !e.IsDeleted, ct);
 
+        var companies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .Select(c => new
+            {
+                c.Id,
+                name = c.TradeName != "" ? c.TradeName : c.LegalNameEn,
+                code = c.LegalNameEn,
+                c.CountryCode,
+                c.IsActive,
+                c.ApprovalStatus,
+            })
+            .ToListAsync(ct);
+
         return Ok(new
         {
             tenant.Id,
@@ -517,6 +562,9 @@ public class PlatformController : ControllerBase
             tenant.Slug,
             tenant.IsActive,
             tenant.CreatedAtUtc,
+            tenant.AccountType,
+            tenant.CompanyCreationMode,
+            companies,
             subscription = sub,
             featureFlags = flags,
             localization = loc,
@@ -842,19 +890,203 @@ public class PlatformController : ControllerBase
             new { purgedBy = "platform_admin", purgedAtUtc = DateTime.UtcNow });
         await _db.SaveChangesAsync(ct);
 
-        // Hard-delete tenant-owned data. ExecuteDelete runs immediately; order respects FKs.
+        // Hard-delete tenant-owned data. Phase 2: the erasure set is derived from the EF
+        // MODEL (every ITenantOwned/INullableTenantOwned entity), not a hand-maintained
+        // table list — the old fixed list silently orphaned employees, companies, payroll
+        // and every other operational table. Audit logs are retained as the legal record.
         var userIds = await _db.Users.Where(u => u.TenantId == tenantId).Select(u => u.Id).ToListAsync(ct);
         if (userIds.Count > 0)
             await _db.RefreshTokens.Where(t => userIds.Contains(t.UserId)).ExecuteDeleteAsync(ct);
-        await _db.TenantInvoiceLines.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
-        await _db.TenantPayments.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
-        await _db.TenantInvoices.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
-        await _db.TenantSubscriptions.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
-        await _db.TenantFeatureFlags.Where(x => x.TenantId == tenantId).ExecuteDeleteAsync(ct);
+
+        var retained = new HashSet<Type> { typeof(Tenant), typeof(AuditLog), typeof(AdminAuditLog), typeof(User) };
+        var sweepTypes = _db.Model.GetEntityTypes()
+            .Where(t => !t.IsOwned() && t.BaseType is null)
+            .Select(t => t.ClrType)
+            .Where(clr => !retained.Contains(clr)
+                          && (typeof(ITenantOwned).IsAssignableFrom(clr) || typeof(INullableTenantOwned).IsAssignableFrom(clr)))
+            .ToList();
+
+        // Two passes: FK dependents that block a parent delete on pass 1 usually succeed
+        // on pass 2 once children are gone. Anything still failing is reported, not hidden.
+        var failures = new List<string>();
+        for (var pass = 0; pass < 2; pass++)
+        {
+            failures.Clear();
+            foreach (var clr in sweepTypes)
+            {
+                try { await PurgeTenantRowsAsync(clr, tenantId, ct); }
+                catch (Exception ex) { failures.Add($"{clr.Name}: {ex.GetBaseException().Message}"); }
+            }
+            if (failures.Count == 0) break;
+        }
+
         await _db.Users.Where(u => u.TenantId == tenantId).ExecuteDeleteAsync(ct);
         await _db.Tenants.Where(t => t.Id == tenantId).ExecuteDeleteAsync(ct);
 
+        AuditTenant(tenantId, "TenantPurgeCompleted",
+            new { tables = sweepTypes.Count },
+            new { unresolved = failures.Count, failures = failures.Take(10) });
+        await _db.SaveChangesAsync(ct);
+
+        if (failures.Count > 0)
+            return Ok(new { tenantId, purged = true, incomplete = true, unresolvedTables = failures, message = $"Tenant '{name}' erased with {failures.Count} unresolved table(s) — review audit log." });
         return Ok(new { tenantId, purged = true, message = $"Tenant '{name}' and its data have been permanently erased." });
+    }
+
+    private static readonly System.Reflection.MethodInfo _purgeRowsMethod =
+        typeof(PlatformController).GetMethod(nameof(PurgeTenantRowsCoreAsync), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+    private Task PurgeTenantRowsAsync(Type entityClrType, Guid tenantId, CancellationToken ct) =>
+        (Task)_purgeRowsMethod.MakeGenericMethod(entityClrType).Invoke(this, new object[] { tenantId, ct })!;
+
+    private async Task PurgeTenantRowsCoreAsync<TEntity>(Guid tenantId, CancellationToken ct) where TEntity : class
+    {
+        // IgnoreQueryFilters is intentional: GDPR erasure must reach soft-deleted and
+        // company-scoped rows too; the TenantId predicate fully scopes the delete.
+        await _db.Set<TEntity>().IgnoreQueryFilters()
+            .Where(e => EF.Property<Guid?>(e, "TenantId") == tenantId)
+            .ExecuteDeleteAsync(ct);
+    }
+
+    // ── Account type (SingleCompany | Group) ──────────────────────────────────
+
+    /// <summary>
+    /// Sets the tenant's product account type. Distinct from MaxCompanies (commercial
+    /// limit): AccountType drives group behavior (multi-company provisioning, switcher).
+    /// Downgrading to SingleCompany is blocked while multiple active companies exist.
+    /// </summary>
+    [HttpPut("tenants/{tenantId:guid}/account-type")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> SetAccountType(Guid tenantId, [FromBody] SetAccountTypeRequest req, CancellationToken ct)
+    {
+        if (!TenantAccountTypes.IsValid(req.AccountType))
+            return BadRequest(new { message = "AccountType must be 'SingleCompany' or 'Group'." });
+
+        var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+
+        if (req.AccountType == TenantAccountTypes.SingleCompany)
+        {
+            var activeCompanies = await _db.Companies
+                .CountAsync(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted, ct);
+            if (activeCompanies > 1)
+                return Conflict(new
+                {
+                    error = "multiple_active_companies",
+                    activeCompanies,
+                    message = "Cannot downgrade to SingleCompany while the tenant has multiple active companies. Deactivate the extra companies first.",
+                });
+        }
+
+        var previous = tenant.AccountType;
+        tenant.AccountType = req.AccountType;
+        AuditTenant(tenantId, "AccountTypeChanged",
+            new { accountType = previous },
+            new { accountType = req.AccountType });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { tenantId, accountType = tenant.AccountType });
+    }
+
+    /// <summary>Sets who may create companies for this tenant and how they activate.</summary>
+    [HttpPut("tenants/{tenantId:guid}/company-creation-mode")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> SetCompanyCreationMode(Guid tenantId, [FromBody] SetCompanyCreationModeRequest req, CancellationToken ct)
+    {
+        if (!CompanyCreationModes.IsValid(req.Mode))
+            return BadRequest(new { message = "Mode must be PlatformControlled, GroupSelfServiceWithinLimit or GroupDraftPlatformApproval." });
+        var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+
+        var previous = tenant.CompanyCreationMode;
+        tenant.CompanyCreationMode = req.Mode;
+        AuditTenant(tenantId, "CompanyCreationModeChanged",
+            new { mode = previous }, new { mode = req.Mode });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { tenantId, companyCreationMode = tenant.CompanyCreationMode });
+    }
+
+    /// <summary>Approves a Draft company created under GroupDraftPlatformApproval — activates it.</summary>
+    [HttpPost("tenants/{tenantId:guid}/companies/{companyId:guid}/approve")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> ApproveCompany(Guid tenantId, Guid companyId, CancellationToken ct)
+    {
+        // SYSTEM CONTEXT: tenant scope intentionally bypassed — platform admins operate
+        // across tenants; explicit TenantId predicate scopes the read.
+        var company = await _db.Companies.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted, ct);
+        if (company is null) return NotFound(new { message = "Company not found in specified tenant." });
+        if (company.ApprovalStatus == CompanyApprovalStatuses.Active && company.IsActive)
+            return Ok(new { companyId, approvalStatus = company.ApprovalStatus, message = "Company is already active." });
+
+        var previous = new { company.ApprovalStatus, company.IsActive };
+        company.ApprovalStatus = CompanyApprovalStatuses.Active;
+        company.IsActive = true;
+        company.UpdatedAtUtc = DateTime.UtcNow;
+        AuditTenant(tenantId, "CompanyApproved",
+            previous, new { company.ApprovalStatus, company.IsActive, companyId });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { companyId, approvalStatus = company.ApprovalStatus, isActive = company.IsActive });
+    }
+
+    /// <summary>
+    /// Platform-side company creation (used for PlatformControlled tenants). Bypasses the
+    /// tenant-side creation-mode gate but still honors MaxCompanies.
+    /// </summary>
+    [HttpPost("tenants/{tenantId:guid}/companies")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> CreatePlatformCompany(Guid tenantId, [FromBody] Zayra.Api.Application.Organization.CompanyRequest req, CancellationToken ct)
+    {
+        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+        if (!Application.Common.CountryCodeStandard.IsValidOrEmpty(req.CountryCode))
+            return BadRequest(new { message = $"Unrecognized country code '{req.CountryCode}'." });
+
+        var sub = await _db.TenantSubscriptions.AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+        // SYSTEM CONTEXT: tenant scope intentionally bypassed; explicit TenantId predicate.
+        var count = await _db.Companies.IgnoreQueryFilters().CountAsync(c => c.TenantId == tenantId && !c.IsDeleted, ct);
+        if (sub is not null && sub.MaxCompanies > 0 && count >= sub.MaxCompanies)
+            return StatusCode(402, new { error = "company_limit_reached", maxAllowed = sub.MaxCompanies });
+        if (count >= 1 && tenant.AccountType != TenantAccountTypes.Group)
+            return Conflict(new { error = "account_type_single_company", message = "Enable the Group account type before adding more companies." });
+
+        var company = new Company
+        {
+            TenantId = tenantId,
+            LegalNameEn = req.LegalNameEn,
+            LegalNameAr = req.LegalNameAr ?? string.Empty,
+            TradeName = req.TradeName ?? string.Empty,
+            CountryCode = req.CountryCode,
+            Jurisdiction = req.Jurisdiction ?? string.Empty,
+            RegistrationNumber = req.RegistrationNumber,
+            TaxNumber = req.TaxNumber ?? string.Empty,
+            DefaultCurrency = req.DefaultCurrency,
+            IsActive = true,
+            ApprovalStatus = CompanyApprovalStatuses.Active,
+        };
+        _db.Companies.Add(company);
+        AuditTenant(tenantId, "CompanyCreatedByPlatform", new { }, new { companyId = company.Id, code = company.LegalNameEn });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { companyId = company.Id, company.LegalNameEn, company.ApprovalStatus });
+    }
+
+    /// <summary>
+    /// Shared claim-v2 scope emission for minted (impersonation / break-glass) tokens —
+    /// same resolver as normal login, so all three token types can never drift apart.
+    /// </summary>
+    private async Task<List<Claim>> BuildEntityScopeClaimsAsync(User user, Guid tenantId, CancellationToken ct)
+    {
+        var entityAccess = user.EntityAccesses
+            .Where(e => e.IsActive)
+            .Select(e => new EntityAccessGrant(e.CompanyId, e.Role, e.GrantMode))
+            .ToList();
+        IReadOnlyCollection<Guid> activeCompanyIds = Array.Empty<Guid>();
+        if (entityAccess.Any(g => g.Mode == EntityGrantModes.AllCurrentCompanies))
+            activeCompanyIds = await _db.Companies
+                .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+                .Select(c => c.Id)
+                .ToListAsync(ct);
+        var scope = EntityScopeClaims.Resolve(user.IsGroupScope, entityAccess, activeCompanyIds);
+        return EntityScopeClaims.Build(scope, entityAccess);
     }
 
     // ── Impersonation ─────────────────────────────────────────────────────────
@@ -870,6 +1102,11 @@ public class PlatformController : ControllerBase
             .AsNoTracking()
             .Include(u => u.UserRoles)
                 .ThenInclude(ur => ur.Role)
+                    .ThenInclude(r => r!.RolePermissions)
+                        .ThenInclude(rp => rp.Permission)
+            .Include(u => u.PermissionOverrides)
+            .Include(u => u.EntityAccesses)
+            .Include(u => u.EmployeeUserAccounts)
             .FirstOrDefaultAsync(u => u.Id == req.UserId && u.TenantId == tenantId && !u.IsDeleted, ct);
 
         if (user is null) return NotFound(new { message = "User not found in specified tenant." });
@@ -884,16 +1121,34 @@ public class PlatformController : ControllerBase
             new(JwtRegisteredClaimNames.Name, user.FullName),
             new("tenant_id", tenant.Id.ToString()),
             new("tenant", tenant.Slug),
-            new("impersonated_by", "platform_admin"),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            new("impersonated_by", "platform_admin")
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
+        // Mirror a real login token exactly (permissions + the same claim-v2 scope
+        // decision the user's own login would produce) so an impersonated session can
+        // never be broader OR narrower than the user it represents.
+        claims.AddRange(AuthService.GetPermissions(user).Select(p => new Claim("permission", p)));
+        claims.AddRange(await BuildEntityScopeClaimsAsync(user, tenantId, ct));
+        // Fail closed on claim absence/malformation regardless of the global StrictMode:
+        // a minted session must carry an EXPLICIT scope decision or see nothing.
+        claims.Add(new Claim(EntityScopeContext.StrictScopeClaim, "true"));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
         // Impersonation tokens grant access to tenant-scoped endpoints, so they use TenantAudience.
+        var jti = Guid.NewGuid().ToString();
+        claims.Add(new Claim(JwtRegisteredClaimNames.Jti, jti));
+        // Bind the acting platform admin into the token so tenant-side audit can attribute actions to
+        // the impersonator, not just the impersonated user.
+        claims.Add(new Claim("act_sub", GetPlatformUserId()?.ToString() ?? "platform-admin"));
+        claims.Add(new Claim("act_email", PlatformActorEmail()));
         var token = new JwtSecurityToken(_jwt.Issuer, _jwt.TenantAudience, claims, expires: expiresAt, signingCredentials: credentials);
         var tokenString = new JwtSecurityTokenHandler().WriteToken(token);
+
+        // SOC2: privileged impersonation MUST be audited and attributable (who, whom, when, jti).
+        AuditPlatformAction(tenant.Id, "Impersonate", "User", user.Id.ToString(),
+            new { targetUserId = user.Id, targetEmail = user.Email, jti, expiresAt });
+        await _db.SaveChangesAsync(ct);
 
         return Ok(new
         {
@@ -926,7 +1181,18 @@ public class PlatformController : ControllerBase
         if (await _db.Tenants.AsNoTracking().AnyAsync(t => t.Slug == slug && t.IsActive, ct))
             return Conflict(new { message = $"A tenant with slug '{slug}' already exists." });
 
-        var tenant = new Tenant { Name = name, Slug = slug };
+        if (req.AccountType is not null && !TenantAccountTypes.IsValid(req.AccountType))
+            return BadRequest(new { message = "AccountType must be 'SingleCompany' or 'Group'." });
+        if (req.CompanyCreationMode is not null && !CompanyCreationModes.IsValid(req.CompanyCreationMode))
+            return BadRequest(new { message = "CompanyCreationMode must be PlatformControlled, GroupSelfServiceWithinLimit or GroupDraftPlatformApproval." });
+
+        var tenant = new Tenant
+        {
+            Name = name,
+            Slug = slug,
+            AccountType = req.AccountType ?? TenantAccountTypes.SingleCompany,
+            CompanyCreationMode = req.CompanyCreationMode ?? CompanyCreationModes.GroupSelfServiceWithinLimit,
+        };
         _db.Tenants.Add(tenant);
         await _db.SaveChangesAsync(ct);
 
@@ -1422,7 +1688,32 @@ public class PlatformController : ControllerBase
             Action = action,
             OldValuesJson = System.Text.Json.JsonSerializer.Serialize(oldVals),
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(newVals),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+        });
+    }
+
+    /// <summary>Email of the acting platform admin (from the platform JWT), for audit attribution.</summary>
+    private string PlatformActorEmail() =>
+        User.FindFirstValue(JwtRegisteredClaimNames.Email)
+        ?? User.FindFirstValue(ClaimTypes.Email)
+        ?? "platform_admin";
+
+    /// <summary>
+    /// Writes an attributable platform-admin audit record (SOC2 privileged-access evidence). Unlike the
+    /// tenant-scoped writes, this records WHICH platform admin performed the action. Caller must SaveChanges.
+    /// </summary>
+    private void AuditPlatformAction(Guid tenantId, string action, string entityType, string entityId, object details)
+    {
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId = tenantId,
+            EntityType = entityType,
+            EntityId = entityId,
+            Action = action,
+            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { actingAdminId = GetPlatformUserId(), actingAdminEmail = PlatformActorEmail() }),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(details),
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
     }
@@ -2023,7 +2314,13 @@ public class PlatformController : ControllerBase
 
         var user = await _db.Users
             .AsNoTracking()
-            .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
+            .Include(u => u.UserRoles)
+                .ThenInclude(ur => ur.Role)
+                    .ThenInclude(r => r!.RolePermissions)
+                        .ThenInclude(rp => rp.Permission)
+            .Include(u => u.PermissionOverrides)
+            .Include(u => u.EntityAccesses)
+            .Include(u => u.EmployeeUserAccounts)
             .FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == tenantId && !u.IsDeleted, ct);
         if (user is null) return NotFound(new { message = "User not found in specified tenant." });
 
@@ -2039,9 +2336,17 @@ public class PlatformController : ControllerBase
             new("tenant", tenant.Slug),
             new("impersonated_by", "platform_admin"),
             new("support_reason", req.Reason.Trim()),
+            new("act_sub", GetPlatformUserId()?.ToString() ?? "platform-admin"),
+            new("act_email", PlatformActorEmail()),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
+        // Same rules as Impersonate: mirror a real login token (permissions + the same
+        // claim-v2 scope decision), and fail closed on claim absence — a break-glass
+        // session must never widen to tenant-wide company access via missing claims.
+        claims.AddRange(AuthService.GetPermissions(user).Select(p => new Claim("permission", p)));
+        claims.AddRange(await BuildEntityScopeClaimsAsync(user, tenantId, ct));
+        claims.Add(new Claim(EntityScopeContext.StrictScopeClaim, "true"));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
@@ -2058,7 +2363,7 @@ public class PlatformController : ControllerBase
             TargetUserId = userId,
             TargetUserEmail = user.Email,
             Reason = req.Reason.Trim(),
-            StartedByEmail = PlatformAdminEmail,
+            StartedByEmail = PlatformActorEmail(),
             StartedByIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
             ExpiresAtUtc = expiresAt,
             TokenHash = tokenHash
@@ -2077,9 +2382,10 @@ public class PlatformController : ControllerBase
                 targetUserEmail = user.Email,
                 tenantSlug = tenant.Slug,
                 reason = req.Reason.Trim(),
+                actingAdminId = GetPlatformUserId(),
                 expiresAt
             }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -4049,7 +4355,14 @@ public record CreateTenantRequest(
     string? CurrencyCode,
     DateTime? ExpiresAtUtc,
     int? MaxCompanies  = null,
-    int? MaxAdminUsers = null);
+    int? MaxAdminUsers = null,
+    // SingleCompany (default) | Group — product behavior, distinct from MaxCompanies.
+    string? AccountType = null,
+    // PlatformControlled | GroupSelfServiceWithinLimit (default) | GroupDraftPlatformApproval
+    string? CompanyCreationMode = null);
+
+public record SetAccountTypeRequest(string AccountType);
+public record SetCompanyCreationModeRequest(string Mode);
 
 public record AddTenantAdminRequest(string Email, string? FullName, string Password);
 public record CreateTenantUserRequest(string Email, string? FullName, string Password, string? RoleName, bool? MustChangePassword);

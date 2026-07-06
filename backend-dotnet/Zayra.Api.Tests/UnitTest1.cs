@@ -20,15 +20,22 @@ public class DashboardControllerTests
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var earlier = today.AddDays(-2);
         SeedEmployees(db, tenantId);
         db.AttendanceRecords.AddRange(
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 1, WorkDate = today, Status = "Present", OvertimeHours = 2m },
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 2, WorkDate = today, Status = "Absent", OvertimeHours = 0m },
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 3, WorkDate = today, Status = "On Leave", OvertimeHours = 0m },
-            new AttendanceRecord { TenantId = tenantId, EmployeeId = 4, WorkDate = today.AddDays(-2), Status = "Present", OvertimeHours = 4.5m });
+            new AttendanceRecord { TenantId = tenantId, EmployeeId = 4, WorkDate = earlier, Status = "Present", OvertimeHours = 4.5m });
         await db.SaveChangesAsync();
 
         var result = await CreateController(db, tenantId).Summary(CancellationToken.None);
+
+        // Overtime is summed month-to-date; on the 1st/2nd of a month the "earlier" record
+        // falls in the previous month, so mirror the controller's window instead of
+        // hard-coding 6.5 (this test used to fail on those two days each month).
+        var monthStart = new DateOnly(today.Year, today.Month, 1);
+        var expectedOvertime = 2m + (earlier >= monthStart ? 4.5m : 0m);
 
         var summary = AssertOk<DashboardSummaryDto>(result);
         Assert.Equal(4, summary.TotalEmployees);
@@ -36,7 +43,7 @@ public class DashboardControllerTests
         Assert.Equal(1, summary.PresentToday);
         Assert.Equal(1, summary.Absent);
         Assert.Equal(1, summary.OnLeave);
-        Assert.Equal(6.5m, summary.OvertimeHours);
+        Assert.Equal(expectedOvertime, summary.OvertimeHours);
         Assert.Equal(2, summary.ChurnRisk);
     }
 

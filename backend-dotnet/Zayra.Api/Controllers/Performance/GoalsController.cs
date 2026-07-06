@@ -58,6 +58,10 @@ public class GoalsController : ControllerBase
             .FirstOrDefaultAsync(g => g.Id == id && g.TenantId == tenantId, ct);
         if (goal is null) return NotFound();
 
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(goal.EmployeeId))
+            return Forbid();
+
         var updates = await _db.GoalProgressUpdates
             .Where(u => u.TenantId == tenantId && u.GoalId == id)
             .OrderByDescending(u => u.UpdatedAtUtc)

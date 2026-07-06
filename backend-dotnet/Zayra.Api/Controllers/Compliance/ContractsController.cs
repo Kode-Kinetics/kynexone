@@ -7,7 +7,12 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Compliance;
 
-[Authorize]
+// Employment contracts carry compensation terms and other sensitive employment data. Contract
+// management is an HR-administrative function, so the whole controller (READS included) is gated to
+// HR roles. Previously only [Authorize] guarded the class, so GET / and GET /{id} were open to any
+// authenticated tenant user, leaking every employee's contract terms (IDOR, CWE-639). Write actions
+// keep their stricter Admin/HR-Manager attributes.
+[Authorize(Roles = "Admin,HR Manager,HR Officer")]
 [ApiController]
 [Route("api/compliance/contracts")]
 public class ContractsController : ControllerBase

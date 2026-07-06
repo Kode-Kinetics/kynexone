@@ -631,8 +631,9 @@ public class PayrollController : ControllerBase
             var glCompany  = await _db.Companies.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId, cancellationToken);
             var glCurrency = glCompany?.DefaultCurrency ?? "SAR";
+            var glOverrides = await LoadGlOverridesAsync(tenantId, cancellationToken);
             var (glLines, totalDebits, totalCredits) = BuildPayrollGlEntries(
-                tenantId, id, period, earnings, dedxns, totalNet, uid, uname, glCurrency);
+                tenantId, id, period, earnings, dedxns, totalNet, uid, uname, glCurrency, glOverrides);
             if (Math.Abs(totalDebits - totalCredits) > 0.01m)
                 return UnprocessableEntity(new
                 {
@@ -1530,6 +1531,9 @@ public class PayrollController : ControllerBase
     [HttpGet("reports/register/export")]
     public async Task<IActionResult> ExportRegister([FromQuery] Guid runId, CancellationToken cancellationToken)
     {
+        // Salary registers carry compensation data — exporting requires the explicit
+        // payroll export permission, same as every other payroll export endpoint.
+        if (!HasPermission("payroll.export")) return Forbid();
         var tenantId = GetTenantId();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == runId && x.TenantId == tenantId, cancellationToken);
@@ -1547,6 +1551,11 @@ public class PayrollController : ControllerBase
             s.GrossSalary.ToString("F2"), s.Deductions.ToString("F2"), s.NetSalary.ToString("F2"), s.Status
         });
         var csv = Csv.Build(headers, rows);
+        // Export audit: who exported which run's salary register, how many rows, and the
+        // company dimension — never the salary/IBAN values themselves.
+        await PayrollAudit("payroll.register.exported", "PayrollRun", runId.ToString(),
+            new { run.Year, run.Month, run.CompanyId, rowCount = slips.Count, scoped = !scope.IsUnrestricted }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
         Response.Headers["Content-Disposition"] = $"attachment; filename=salary-register-{run.Year}-{run.Month:D2}.csv";
         return Content(csv, "text/csv");
     }
@@ -1700,32 +1709,41 @@ public class PayrollController : ControllerBase
         Guid tenantId, Guid runId, string period,
         List<PayrollEarning> earnings, List<PayrollDeduction> deductions,
         decimal totalNetSalary, Guid? postedBy, string postedByName,
-        string currency = "SAR")  // default SAR since this is primarily a Saudi HRM
+        string currency = "SAR",  // default SAR since this is primarily a Saudi HRM
+        IReadOnlyDictionary<string, (string Code, string Name)>? accountOverrides = null)
     {
         var lines = new List<FinanceGlEntry>();
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
+        // Resolve a posting driver to "<code> - <name>": tenant override first, else built-in default.
+        string Account(string driverKey)
+        {
+            (string Code, string Name) acct;
+            if (accountOverrides is not null && accountOverrides.TryGetValue(driverKey, out var o)) acct = o;
+            else if (!PayrollGlCatalog.Defaults.TryGetValue(driverKey, out acct)) acct = ("9999", "Unmapped");
+            return $"{acct.Code} - {acct.Name}";
+        }
+
         // ── Earnings (Debit side) ──────────────────────────────────────────────
         foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
         {
-            var (acct, acctName) = (grp.First().Source, grp.Key) switch
+            var driver = grp.First().Source == "Bonus" ? "EARN:BONUS" : grp.Key switch
             {
-                ("Bonus", _)        => ("6100", "Employee Bonus Expense"),
-                (_, "BASIC")        => ("5001", "Basic Salary Expense"),
-                (_, "HOUSING")      => ("5002", "Housing Allowance Expense"),
-                (_, "TRANSPORT")    => ("5003", "Transport Allowance Expense"),
-                (_, "OTHER_ALLOWANCES") => ("5004", "Other Allowances Expense"),
-                (_, "OVERTIME")     => ("5005", "Overtime Expense"),
-                _                   => ("5099", $"Other Earnings — {grp.Key}"),
+                "BASIC"            => "EARN:BASIC",
+                "HOUSING"          => "EARN:HOUSING",
+                "TRANSPORT"        => "EARN:TRANSPORT",
+                "OTHER_ALLOWANCES" => "EARN:OTHER_ALLOWANCES",
+                "OVERTIME"         => "EARN:OVERTIME",
+                _                  => "EARN:OTHER",
             };
             lines.Add(new FinanceGlEntry
             {
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = "PayrollLock",
-                DebitAccount  = $"{acct} - {acctName}", CreditAccount = string.Empty,
+                DebitAccount  = Account(driver), CreditAccount = string.Empty,
                 Amount = grp.Sum(e => e.Amount), Currency = currency,
                 EntryDate = today, Period = period,
-                Description = $"Payroll earning: {acctName}",
+                Description = $"Payroll earning: {grp.Key}",
                 PostedBy = postedBy, PostedByName = postedByName,
             });
         }
@@ -1738,28 +1756,24 @@ public class PayrollController : ControllerBase
             if (isEmployerSide)
                 employerStatutoryTotal += grp.Sum(d => d.Amount); // aggregated into DR/CR pair below
 
-            var (acct, acctName) = (grp.Key.Source, isEmployerSide) switch
+            var driver = (grp.Key.Source, isEmployerSide) switch
             {
-                ("Statutory", true)  => ("2106", "Social Insurance Employer Payable"),
-                ("Statutory", false) => ("2101", "Social Insurance Payable (Employee)"),
-                ("Tax", _)           => ("2102", "Income Tax Payable"),
-                ("Loan", _)          => ("2107", "Loan & Advance Deductions Payable"),
-                ("Attendance", _)    => ("2104", "Attendance Adjustment Payable"),
-                ("Leave", _)         => ("2105", "Leave Deduction Payable"),
-                _ => grp.Key.ComponentCode switch
-                {
-                    "FIXED_DEDUCTION" => ("2103", "Fixed Deductions Payable"),
-                    _                 => ("2199", $"Other Deductions — {grp.Key.ComponentCode}"),
-                },
+                ("Statutory", true)  => "DED:STATUTORY_ER",
+                ("Statutory", false) => "DED:STATUTORY_EE",
+                ("Tax", _)           => "DED:TAX",
+                ("Loan", _)          => "DED:LOAN",
+                ("Attendance", _)    => "DED:ATTENDANCE",
+                ("Leave", _)         => "DED:LEAVE",
+                _ => grp.Key.ComponentCode == "FIXED_DEDUCTION" ? "DED:FIXED_DEDUCTION" : "DED:OTHER",
             };
             lines.Add(new FinanceGlEntry
             {
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = "PayrollLock",
-                DebitAccount = string.Empty, CreditAccount = $"{acct} - {acctName}",
+                DebitAccount = string.Empty, CreditAccount = Account(driver),
                 Amount = grp.Sum(d => d.Amount), Currency = currency,
                 EntryDate = today, Period = period,
-                Description = $"Payroll deduction: {acctName}",
+                Description = $"Payroll deduction: {grp.Key.ComponentCode}",
                 PostedBy = postedBy, PostedByName = postedByName,
             });
         }
@@ -1770,7 +1784,7 @@ public class PayrollController : ControllerBase
             {
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = "PayrollLock",
-                DebitAccount = "5101 - Employer Social Insurance Expense", CreditAccount = string.Empty,
+                DebitAccount = Account("EMPLOYER_STATUTORY_EXPENSE"), CreditAccount = string.Empty,
                 Amount = employerStatutoryTotal, Currency = currency,
                 EntryDate = today, Period = period,
                 Description = "Employer statutory contributions (social insurance)",
@@ -1782,7 +1796,7 @@ public class PayrollController : ControllerBase
         {
             TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
             SourceEntityRef = period, EventType = "PayrollLock",
-            DebitAccount = string.Empty, CreditAccount = "2100 - Salaries Payable",
+            DebitAccount = string.Empty, CreditAccount = Account("NET_PAYABLE"),
             Amount = totalNetSalary, Currency = currency,
             EntryDate = today, Period = period,
             Description = "Net salaries payable",
@@ -1792,6 +1806,17 @@ public class PayrollController : ControllerBase
         var totalDebits  = lines.Where(l => !string.IsNullOrEmpty(l.DebitAccount)).Sum(l => l.Amount);
         var totalCredits = lines.Where(l => !string.IsNullOrEmpty(l.CreditAccount)).Sum(l => l.Amount);
         return (lines, totalDebits, totalCredits);
+    }
+
+    /// <summary>Loads the tenant's driver→account overrides (active mappings joined to active accounts).</summary>
+    private async Task<IReadOnlyDictionary<string, (string Code, string Name)>> LoadGlOverridesAsync(Guid tenantId, CancellationToken ct)
+    {
+        var rows = await _db.GlAccountMappings.AsNoTracking()
+            .Where(m => m.TenantId == tenantId && m.IsActive)
+            .Join(_db.GlAccounts.AsNoTracking().Where(a => a.TenantId == tenantId && a.IsActive),
+                  m => m.AccountId, a => a.Id, (m, a) => new { m.DriverKey, a.Code, a.Name })
+            .ToListAsync(ct);
+        return rows.ToDictionary(r => r.DriverKey, r => (r.Code, r.Name));
     }
 
     // M1: audit log now captures caller IP and structured metadata

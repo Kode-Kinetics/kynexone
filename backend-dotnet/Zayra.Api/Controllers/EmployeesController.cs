@@ -119,6 +119,15 @@ public class EmployeesController : ControllerBase
             e.JoiningDate.ToString("yyyy-MM-dd")
         });
         var csv = Csv.Build(EmployeeCsvHeaders, rows);
+        // Export audit: actor, row count, and company-scope dimension — no PII values.
+        await _audit.WriteAsync("employees.exported", "Employee", "bulk", Context(),
+            JsonSerializer.Serialize(new
+            {
+                rowCount = emps.Count,
+                groupScope = entityScope.IsGroupLevel,
+                companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
+                exportType = "employees_csv",
+            }), ct);
         return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
@@ -966,7 +975,11 @@ public class EmployeesController : ControllerBase
     [HttpGet("{id:int}/history")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeHistoryDto>>> EmployeeHistory(int id, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
-        var history = await employeeManagement.GetHistoryAsync(RequireTenant(), id, cancellationToken);
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(id))
+            return Forbid();
+        var history = await employeeManagement.GetHistoryAsync(tenantId, id, cancellationToken);
         return Ok(history.Select(EmployeeHistoryDto.Project).ToList());
     }
 
@@ -1217,6 +1230,9 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> RenderTemplate(int id, string templateType, [FromQuery] string language = "en", CancellationToken cancellationToken = default)
     {
         var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(id))
+            return Forbid();
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
         var hijriJoining = _hijri.FromGregorian(DateOnly.FromDateTime(employee.JoiningDate));
@@ -1238,6 +1254,9 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> LocalizedDates(int id, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(id))
+            return Forbid();
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
         return Ok(new
@@ -1417,7 +1436,7 @@ public class EmployeesController : ControllerBase
 
     private async Task AddHistory(Employee employee, string eventType, DateOnly effectiveDate, CancellationToken cancellationToken)
     {
-        _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId ?? RequireTenant(), EmployeeId = employee.Id, EventType = eventType, EffectiveDate = effectiveDate, SnapshotJson = JsonSerializer.Serialize(employee), CreatedByUserId = GetUserId() });
+        _db.EmployeeHistories.Add(new EmployeeHistory { TenantId = employee.TenantId ?? RequireTenant(), EmployeeId = employee.Id, EventType = eventType, EffectiveDate = effectiveDate, SnapshotJson = EmployeeSafeSnapshot.Serialize(employee), CreatedByUserId = GetUserId() });
         await Task.CompletedTask;
     }
 

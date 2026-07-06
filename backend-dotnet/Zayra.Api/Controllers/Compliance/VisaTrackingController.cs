@@ -6,7 +6,13 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Compliance;
 
-[Authorize]
+// Visa/passport/work-permit tracking exposes national-ID-class immigration PII (visa numbers,
+// iqama, Emirates ID, sponsor). This is an HR-administrative function, not employee self-service —
+// so the whole controller (READS included) is restricted to HR roles. Previously the class carried
+// only [Authorize], leaving every GET open to any authenticated tenant user: a base employee could
+// call GET /api/compliance/visa-tracking and dump every colleague's immigration PII (IDOR / mass
+// PII disclosure, CWE-639). Write actions keep their own role attributes (a harmless subset).
+[Authorize(Roles = "Admin,HR Manager,HR Officer")]
 [ApiController]
 [Route("api/compliance/visa-tracking")]
 public class VisaTrackingController : ControllerBase
@@ -93,7 +99,7 @@ public class VisaTrackingController : ControllerBase
             TenantId = tid, EmployeeId = req.EmployeeId, EmployeeName = req.EmployeeName ?? string.Empty,
             ReminderType = "VisaExpiry", DocumentType = req.VisaType,
             ExpiryDate = req.ExpiryDate,
-            ScheduledAtUtc = req.ExpiryDate.ToDateTime(TimeOnly.MinValue).AddDays(-alertDays),
+            ScheduledAtUtc = req.ExpiryDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddDays(-alertDays),
         });
 
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
@@ -189,7 +195,7 @@ public class VisaTrackingController : ControllerBase
             TenantId = tid, EmployeeId = req.EmployeeId, EmployeeName = req.EmployeeName ?? string.Empty,
             ReminderType = "PassportExpiry", DocumentType = "Passport",
             ExpiryDate = req.ExpiryDate,
-            ScheduledAtUtc = req.ExpiryDate.ToDateTime(TimeOnly.MinValue).AddDays(-90),
+            ScheduledAtUtc = req.ExpiryDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddDays(-90),
         });
 
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog

@@ -156,8 +156,14 @@ public class LeaveController : ControllerBase
     {
         var tenantId = GetTenantId();
         year ??= DateTime.UtcNow.Year;
+        // Apply data-scope BEFORE honouring the client's employeeId (mirrors List above and the newer
+        // LeaveBalancesController). Without this, any employee could call GET /api/leave-requests/balances
+        // with no params and receive EVERY employee's leave balances in the tenant (IDOR, CWE-639).
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        var (singleId, setFilter) = scope.Constrain(employeeId);
         var query = _db.EmployeeLeaveBalances.Where(b => b.TenantId == tenantId && b.Year == year);
-        if (employeeId.HasValue) query = query.Where(b => b.EmployeeId == employeeId.Value);
+        if (setFilter is not null) query = query.Where(b => setFilter.Contains(b.EmployeeId));
+        else if (singleId.HasValue) query = query.Where(b => b.EmployeeId == singleId.Value);
         return Ok(await query.ToListAsync(cancellationToken));
     }
 
