@@ -55,6 +55,19 @@ export interface EmployeePayrollProfileRequest {
   bankRoutingCode?: string;
 }
 
+export interface EmployeeSalaryBreakdownRequest {
+  basicSalary?: number;
+  housingAllowance?: number;
+  transportAllowance?: number;
+  foodAllowance?: number;
+  mobileAllowance?: number;
+  otherAllowance?: number;
+  fixedDeduction?: number;
+  salaryStructureCode?: string;
+  effectiveDate?: string;
+  currency?: string;
+}
+
 export interface EmployeeComplianceRecordRequest {
   countryCode: string;
   fieldKey: string;
@@ -102,6 +115,7 @@ export interface EmployeeCreateRequest {
   leavePolicyCode?: string;
   attendancePolicyCode?: string;
   payrollProfile?: EmployeePayrollProfileRequest;
+  salaryBreakdown?: EmployeeSalaryBreakdownRequest;
   complianceRecords?: EmployeeComplianceRecordRequest[];
 }
 

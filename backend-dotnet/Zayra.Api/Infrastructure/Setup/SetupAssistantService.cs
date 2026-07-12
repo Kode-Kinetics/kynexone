@@ -50,6 +50,12 @@ public sealed class SetupAssistantService : ISetupAssistantService
         // 2. Always deterministic: working week + statutory (never trust an LLM with labour-law rates).
         if (profile.Sections.Shifts)
             draft = draft with { WorkingWeek = WorkingWeekFor(iso3) };
+        if (profile.Sections.Governance)
+            draft = draft with
+            {
+                EmployeeIdRule = EmployeeIdRuleFor(profile, iso3),
+                HrConfig = HrConfigFor(profile)
+            };
         if (profile.Sections.Payroll)
         {
             draft = draft with { StatutoryRules = StatutoryFor(iso3) };
@@ -89,12 +95,15 @@ public sealed class SetupAssistantService : ISetupAssistantService
     private static string SystemPrompt() =>
         "You are an HR systems configuration expert. Output ONLY a single JSON object, no prose. Schema: " +
         "{\"departments\":[{\"code\":\"\",\"nameEn\":\"\"}]," +
-        "\"designations\":[{\"code\":\"\",\"titleEn\":\"\",\"departmentCode\":\"\",\"jobLevel\":\"\",\"isManagerRole\":false,\"levelRank\":1}]," +
-        "\"grades\":[{\"code\":\"\",\"name\":\"\",\"band\":\"\",\"level\":1}]," +
+        "\"branches\":[{\"code\":\"\",\"nameEn\":\"\",\"city\":\"\",\"isHeadOffice\":true}]," +
+        "\"costCenters\":[{\"code\":\"\",\"name\":\"\",\"departmentCode\":\"\"}]," +
+        "\"designations\":[{\"code\":\"\",\"titleEn\":\"\",\"departmentCode\":\"\",\"gradeCode\":\"\",\"jobLevel\":\"\",\"isManagerRole\":false,\"levelRank\":1}]," +
+        "\"grades\":[{\"code\":\"\",\"name\":\"\",\"band\":\"\",\"level\":1,\"minSalary\":0,\"midSalary\":0,\"maxSalary\":0,\"currency\":\"\"}]," +
+        "\"gradePayComponents\":[{\"gradeCode\":\"\",\"componentCode\":\"\",\"componentName\":\"\",\"componentType\":\"Earning|Benefit|Deduction\",\"calculationType\":\"Fixed|PercentOfBasic\",\"amount\":0,\"percentage\":0,\"isTaxable\":false,\"frequency\":\"Monthly\"}]," +
         "\"leaveTypes\":[{\"code\":\"\",\"nameEn\":\"\",\"category\":\"\",\"isPaid\":true,\"maxConsecutiveDays\":0,\"requiresAttachment\":false,\"colorCode\":\"#2F6BFF\"}]," +
         "\"shifts\":[{\"code\":\"\",\"name\":\"\",\"start\":\"HH:mm\",\"end\":\"HH:mm\",\"breakMinutes\":60,\"color\":\"#2F6BFF\"}]," +
         "\"payComponents\":[{\"code\":\"\",\"name\":\"\",\"componentType\":\"Earning|Deduction\",\"calculationType\":\"Fixed|Percentage\",\"amount\":0,\"percentage\":0,\"isTaxable\":false}]}. " +
-        "Codes must be SHORT UPPER_SNAKE and unique within their list. designation.departmentCode must match a department code. Tailor counts/names to the industry, size and country.";
+        "Codes must be SHORT UPPER_SNAKE and unique within their list. designation.departmentCode must match a department code; designation.gradeCode and gradePayComponents.gradeCode must match a grade code. Tailor counts/names to the industry, size and country.";
 
     private static string UserPrompt(CompanyProfile p, string iso3)
     {
@@ -103,6 +112,7 @@ public sealed class SetupAssistantService : ISetupAssistantService
         if (!string.IsNullOrWhiteSpace(p.Notes)) sb.AppendLine($"Extra context: {p.Notes}");
         var want = new List<string>();
         if (p.Sections.Org) want.Add("departments, designations, grades");
+        if (p.Sections.Entity) want.Add("branches and costCenters");
         if (p.Sections.Leave) want.Add("leaveTypes (align entitlements/categories to the country's labour law)");
         if (p.Sections.Shifts) want.Add("shifts");
         if (p.Sections.Payroll) want.Add("payComponents (typical earnings & deductions for the country)");
@@ -127,14 +137,19 @@ public sealed class SetupAssistantService : ISetupAssistantService
                     ? (el.Deserialize<List<T>>(opt) ?? new()) : new();
 
             return new SetupDraft(
+                Arr<DraftBranch>("branches"),
                 Arr<DraftDepartment>("departments"),
+                Arr<DraftCostCenter>("costCenters"),
                 Arr<DraftDesignation>("designations"),
                 Arr<DraftGrade>("grades"),
+                Arr<DraftGradePayComponent>("gradePayComponents"),
                 Arr<DraftLeaveType>("leaveTypes"),
                 Arr<DraftShift>("shifts"),
                 null,
                 Arr<DraftPayComponent>("payComponents"),
-                new());
+                new(),
+                null,
+                null);
         }
         catch (Exception ex)
         {
@@ -153,18 +168,50 @@ public sealed class SetupAssistantService : ISetupAssistantService
             (string.IsNullOrWhiteSpace(c) ? fallback : c).Trim().ToUpperInvariant().Replace(' ', '_');
 
         // Org
+        var branches = !s.Entity ? new() : Dedup(d.Branches.Where(x => !string.IsNullOrWhiteSpace(x.NameEn))
+            .Select(x => x with { Code = Code(x.Code, x.NameEn), City = (x.City ?? "").Trim() }), x => x.Code);
+
         var depts = !s.Org ? new() : Dedup(d.Departments.Where(x => !string.IsNullOrWhiteSpace(x.NameEn))
             .Select(x => x with { Code = Code(x.Code, x.NameEn) }), x => x.Code);
         var deptCodes = depts.Select(x => x.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var grades = !s.Org ? new() : Dedup(d.Grades.Where(x => !string.IsNullOrWhiteSpace(x.Name))
+            .Select(x => x with
+            {
+                Code = Code(x.Code, x.Name),
+                Level = Math.Clamp(x.Level, 1, 20),
+                MinSalary = Math.Max(0, x.MinSalary),
+                MidSalary = Math.Max(0, x.MidSalary),
+                MaxSalary = Math.Max(0, Math.Max(x.MaxSalary, x.MidSalary)),
+                Currency = string.IsNullOrWhiteSpace(x.Currency) ? "SAR" : x.Currency.Trim().ToUpperInvariant(),
+            }), x => x.Code);
+        var gradeCodes = grades.Select(x => x.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var desigs = !s.Org ? new() : Dedup(d.Designations.Where(x => !string.IsNullOrWhiteSpace(x.TitleEn))
             .Select(x => x with
             {
                 Code = Code(x.Code, x.TitleEn),
                 DepartmentCode = deptCodes.Contains(x.DepartmentCode ?? "") ? x.DepartmentCode!.Trim().ToUpperInvariant() : "",
+                GradeCode = gradeCodes.Contains(x.GradeCode ?? "") ? x.GradeCode!.Trim().ToUpperInvariant() : "",
                 LevelRank = Math.Clamp(x.LevelRank, 1, 20),
             }), x => x.Code);
-        var grades = !s.Org ? new() : Dedup(d.Grades.Where(x => !string.IsNullOrWhiteSpace(x.Name))
-            .Select(x => x with { Code = Code(x.Code, x.Name), Level = Math.Clamp(x.Level, 1, 20) }), x => x.Code);
+        var costCenters = !s.Entity ? new() : Dedup(d.CostCenters.Where(x => !string.IsNullOrWhiteSpace(x.Name))
+            .Select(x => x with
+            {
+                Code = Code(x.Code, x.Name),
+                DepartmentCode = deptCodes.Contains(x.DepartmentCode ?? "") ? x.DepartmentCode!.Trim().ToUpperInvariant() : "",
+            }), x => x.Code);
+        var gradePay = !s.Payroll ? new() : Dedup(d.GradePayComponents.Where(x => !string.IsNullOrWhiteSpace(x.ComponentName))
+            .Select(x => x with
+            {
+                GradeCode = gradeCodes.Contains(x.GradeCode ?? "") ? x.GradeCode!.Trim().ToUpperInvariant() : "",
+                ComponentCode = Code(x.ComponentCode, x.ComponentName),
+                ComponentType = string.Equals(x.ComponentType, "Deduction", StringComparison.OrdinalIgnoreCase) ? "Deduction" :
+                    string.Equals(x.ComponentType, "Benefit", StringComparison.OrdinalIgnoreCase) ? "Benefit" : "Earning",
+                CalculationType = string.Equals(x.CalculationType, "PercentOfBasic", StringComparison.OrdinalIgnoreCase) ? "PercentOfBasic" :
+                    string.Equals(x.CalculationType, "Percentage", StringComparison.OrdinalIgnoreCase) ? "PercentOfBasic" : "Fixed",
+                Amount = Math.Max(0, x.Amount),
+                Percentage = Math.Clamp(x.Percentage, 0, 100),
+                Frequency = string.IsNullOrWhiteSpace(x.Frequency) ? "Monthly" : x.Frequency.Trim(),
+            }).Where(x => !string.IsNullOrWhiteSpace(x.GradeCode)), x => $"{x.GradeCode}:{x.ComponentCode}");
 
         // Leave
         var leaves = !s.Leave ? new() : Dedup(d.LeaveTypes.Where(x => !string.IsNullOrWhiteSpace(x.NameEn))
@@ -200,10 +247,13 @@ public sealed class SetupAssistantService : ISetupAssistantService
 
         return d with
         {
-            Departments = depts, Designations = desigs, Grades = grades,
+            Branches = branches, Departments = depts, CostCenters = costCenters, Designations = desigs, Grades = grades,
+            GradePayComponents = gradePay,
             LeaveTypes = leaves, Shifts = shifts, PayComponents = pay,
             WorkingWeek = s.Shifts ? d.WorkingWeek : null,
             StatutoryRules = s.Payroll ? d.StatutoryRules : new(),
+            EmployeeIdRule = s.Governance ? d.EmployeeIdRule : null,
+            HrConfig = s.Governance ? d.HrConfig : null,
         };
     }
 
@@ -275,19 +325,33 @@ public sealed class SetupAssistantService : ISetupAssistantService
         };
         var desigs = new List<DraftDesignation>
         {
-            new("CEO", "Chief Executive Officer", "ADMIN", "Executive", true, 1),
-            new("HR_MGR", "HR Manager", "HR", "Management", true, 3),
-            new("HR_OFF", "HR Officer", "HR", "Staff", false, 5),
-            new("ACCOUNTANT", "Accountant", "FIN", "Staff", false, 5),
-            new("IT_ENG", "IT Engineer", "IT", "Staff", false, 5),
-            new("SALES_EXEC", "Sales Executive", "SALES", "Staff", false, 5),
+            new("CEO", "Chief Executive Officer", "ADMIN", "G5", "Executive", true, 1),
+            new("HR_MGR", "HR Manager", "HR", "G4", "Management", true, 3),
+            new("HR_OFF", "HR Officer", "HR", "G2", "Staff", false, 5),
+            new("ACCOUNTANT", "Accountant", "FIN", "G2", "Staff", false, 5),
+            new("IT_ENG", "IT Engineer", "IT", "G3", "Staff", false, 5),
+            new("SALES_EXEC", "Sales Executive", "SALES", "G2", "Staff", false, 5),
         };
         var grades = new List<DraftGrade>
         {
-            new("G1", "Grade 1 — Entry", "Staff", 1), new("G2", "Grade 2 — Junior", "Staff", 2),
-            new("G3", "Grade 3 — Senior", "Professional", 3), new("G4", "Grade 4 — Lead", "Management", 4),
-            new("G5", "Grade 5 — Executive", "Executive", 5),
+            new("G1", "Grade 1 - Entry", "Staff", 1, 3000, 4500, 6000, p.CurrencyCode),
+            new("G2", "Grade 2 - Junior", "Staff", 2, 6000, 8000, 10000, p.CurrencyCode),
+            new("G3", "Grade 3 - Senior", "Professional", 3, 10000, 13500, 17000, p.CurrencyCode),
+            new("G4", "Grade 4 - Lead", "Management", 4, 17000, 22500, 28000, p.CurrencyCode),
+            new("G5", "Grade 5 - Executive", "Executive", 5, 28000, 39000, 50000, p.CurrencyCode),
         };
+        var gradePay = grades.SelectMany(g => new[]
+        {
+            new DraftGradePayComponent(g.Code, "BASIC", "Basic Salary", "Earning", "Fixed", Math.Round(g.MidSalary * 0.60m, 2), 0, false, "Monthly"),
+            new DraftGradePayComponent(g.Code, "HOUSING", "Housing Allowance", "Earning", "PercentOfBasic", 0, 25, false, "Monthly"),
+            new DraftGradePayComponent(g.Code, "TRANSPORT", "Transport Allowance", "Earning", "Fixed", Math.Round(g.MidSalary * 0.10m, 2), 0, false, "Monthly"),
+            new DraftGradePayComponent(g.Code, "OTHER", "Other Allowance", "Earning", "Fixed", Math.Round(g.MidSalary * 0.05m, 2), 0, false, "Monthly"),
+        }).ToList();
+        var branches = new List<DraftBranch>
+        {
+            new("HQ", "Head Office", string.IsNullOrWhiteSpace(p.BranchCity) ? "Riyadh" : p.BranchCity!, true),
+        };
+        var costCenters = depts.Select(d => new DraftCostCenter($"CC_{d.Code}", $"{d.NameEn} Cost Center", d.Code)).ToList();
         var leaves = new List<DraftLeaveType>
         {
             new("ANNUAL", "Annual Leave", "Standard", true, 30, false, "#00C896"),
@@ -310,8 +374,31 @@ public sealed class SetupAssistantService : ISetupAssistantService
             new("TRA", "Transport Allowance", "Earning", "Fixed", 0, 0, false),
             new("GOSI_DED", "GOSI Deduction", "Deduction", "Percentage", 0, 9.75m, false),
         };
-        return new SetupDraft(depts, desigs, grades, leaves, shifts, null, pay, new());
+        return new SetupDraft(branches, depts, costCenters, desigs, grades, gradePay, leaves, shifts, null, pay, new(), EmployeeIdRuleFor(p, iso3), HrConfigFor(p));
     }
+
+    private static DraftEmployeeIdRule EmployeeIdRuleFor(CompanyProfile profile, string iso3)
+    {
+        var prefix = string.IsNullOrWhiteSpace(profile.LegalEntityName)
+            ? "EMP"
+            : new string(profile.LegalEntityName.Where(char.IsLetterOrDigit).Take(3).ToArray()).ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(prefix)) prefix = "EMP";
+        return new DraftEmployeeIdRule(prefix, true, true, true, true, 4, 1, false);
+    }
+
+    private static DraftHrConfig HrConfigFor(CompanyProfile profile)
+        => new(
+            UseDeptHeadApproval: true,
+            UseHrFinalApproval: true,
+            UseSupervisorBeforeManager: string.Equals(profile.ApprovalModel, "SupervisorFirst", StringComparison.OrdinalIgnoreCase),
+            AllowDottedLineApproval: string.Equals(profile.OperatingModel, "Matrix", StringComparison.OrdinalIgnoreCase),
+            AutoCreateDeptOnImport: false,
+            AutoCreateDesignationOnImport: false,
+            RequireImportPreviewBeforeCommit: true,
+            AllowCrossDeptManager: !profile.StrictEntityScope,
+            AllowCrossLocationManager: !profile.StrictEntityScope,
+            RequireCostCenterForPayroll: profile.RequireCostCenterForPayroll,
+            RequireGradeForApprovalPolicy: profile.RequireGradeForApprovalPolicy);
 
     // ── Provider/model resolution (mirrors AiAdvisoryService) ────────────────
 

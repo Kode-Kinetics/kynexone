@@ -91,12 +91,13 @@ public class EmployeesController : ControllerBase
         {
             "EmployeeCode", "FullName", "ArabicName", "WorkEmail", "Phone", "Gender", "Nationality",
             "Department", "DepartmentCode", "Designation", "JobTitle", "EmploymentType", "ContractType",
-            "Status", "JoiningDate",
+            "Grade", "Status", "JoiningDate",
             // Hierarchy columns — resolved in Pass 2
             "ManagerEmployeeCode", "SupervisorEmployeeCode",
             // Payroll columns — creates EmployeePayrollProfile + EmployeeSalaryStructure on import
-            "BasicSalary", "HousingAllowance", "TransportAllowance", "OtherAllowance",
-            "Currency", "IBAN", "BankName", "MolId"
+            "SalaryStructureCode", "BasicSalary", "HousingAllowance", "TransportAllowance", "FoodAllowance",
+            "MobileAllowance", "OtherAllowance", "FixedDeduction", "Currency", "PayrollGroup",
+            "PaymentMethod", "IBAN", "AccountNumber", "BankName", "BankRoutingCode", "MolId"
         };
 
     [HttpGet("export")]
@@ -112,11 +113,36 @@ public class EmployeesController : ControllerBase
             exportQuery = exportQuery.Where(e => e.CompanyId.HasValue && accessibleIds.Contains(e.CompanyId.Value));
         }
         var emps = await exportQuery.OrderBy(e => e.EmployeeCode).ToListAsync(ct);
-        var rows = emps.Select(e => (IReadOnlyList<object?>)new object?[]
+        var empIds = emps.Select(e => e.Id).ToList();
+        var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && empIds.Contains(p.EmployeeId) && !p.IsDeleted)
+            .ToDictionaryAsync(p => p.EmployeeId, ct);
+        var salaryRows = await _db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && empIds.Contains(s.EmployeeId) && s.IsActive)
+            .ToListAsync(ct);
+        var salaries = salaryRows
+            .GroupBy(s => s.EmployeeId)
+            .Select(g => g.OrderByDescending(s => s.EffectiveDate).First())
+            .ToDictionary(s => s.EmployeeId);
+        var structures = await _db.SalaryStructures.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && !s.IsDeleted)
+            .ToDictionaryAsync(s => s.Id, ct);
+        var rows = emps.Select(e =>
+        {
+            profiles.TryGetValue(e.Id, out var profile);
+            salaries.TryGetValue(e.Id, out var salary);
+            var structureCode = salary is not null && structures.TryGetValue(salary.SalaryStructureId, out var structure) ? structure.Code : string.Empty;
+            return (IReadOnlyList<object?>)new object?[]
         {
             e.EmployeeCode, e.FullName, e.ArabicName, e.WorkEmail, e.Phone, e.Gender, e.Nationality,
-            e.Department, e.Designation, e.JobTitle, e.EmploymentType, e.ContractType, e.Status,
-            e.JoiningDate.ToString("yyyy-MM-dd")
+            e.Department, string.Empty, e.Designation, e.JobTitle, e.EmploymentType, e.ContractType,
+            e.Grade, e.Status, e.JoiningDate.ToString("yyyy-MM-dd"),
+            string.Empty, string.Empty,
+            structureCode, salary?.BasicSalary, salary?.HousingAllowance, salary?.TransportAllowance,
+            salary?.FoodAllowance, salary?.MobileAllowance, salary?.OtherAllowance, salary?.FixedDeduction,
+            salary?.Currency ?? profile?.SalaryCurrency, profile?.PayrollGroup, profile?.PaymentMethod,
+            profile?.Iban, profile?.AccountNumber, profile?.BankName, profile?.BankRoutingCode, profile?.MolId
+        };
         });
         var csv = Csv.Build(EmployeeCsvHeaders, rows);
         // Export audit: actor, row count, and company-scope dimension — no PII values.
@@ -180,7 +206,15 @@ public class EmployeesController : ControllerBase
         var desigByTitle = await _db.Designations
             .AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .ToDictionaryAsync(d => d.TitleEn.ToLowerInvariant(), d => d.Id, ct);
+            .ToDictionaryAsync(d => d.TitleEn.ToLowerInvariant(), d => new { d.Id, d.GradeId, d.TitleEn }, ct);
+        var gradeByCode = await _db.Grades
+            .AsNoTracking()
+            .Where(g => g.TenantId == tenantId && !g.IsDeleted)
+            .ToDictionaryAsync(g => g.Code.ToUpperInvariant(), g => g, ct);
+        var gradeByName = await _db.Grades
+            .AsNoTracking()
+            .Where(g => g.TenantId == tenantId && !g.IsDeleted)
+            .ToDictionaryAsync(g => g.Name.ToLowerInvariant(), g => g, ct);
 
         int created = 0, skipped = 0;
         var errors = new List<string>();
@@ -213,10 +247,36 @@ public class EmployeesController : ControllerBase
 
             var desigTitleRaw = row.GetValueOrDefault("Designation", string.Empty).Trim();
             Guid? resolvedDesigId = null;
-            if (!string.IsNullOrEmpty(desigTitleRaw) && desigByTitle.TryGetValue(desigTitleRaw.ToLowerInvariant(), out var dgId))
-                resolvedDesigId = dgId;
+            Guid? designationGradeId = null;
+            if (!string.IsNullOrEmpty(desigTitleRaw) && desigByTitle.TryGetValue(desigTitleRaw.ToLowerInvariant(), out var designation))
+            {
+                resolvedDesigId = designation.Id;
+                designationGradeId = designation.GradeId;
+            }
 
-            var finalCode = string.IsNullOrWhiteSpace(code) ? $"IMP-{Guid.NewGuid().ToString()[..6].ToUpperInvariant()}" : code;
+            var gradeRaw = row.GetValueOrDefault("Grade", string.Empty).Trim();
+            Grade? resolvedGrade = null;
+            if (!string.IsNullOrWhiteSpace(gradeRaw))
+            {
+                if (!gradeByCode.TryGetValue(gradeRaw.ToUpperInvariant(), out resolvedGrade))
+                    gradeByName.TryGetValue(gradeRaw.ToLowerInvariant(), out resolvedGrade);
+                if (resolvedGrade is null)
+                {
+                    skipped++;
+                    errors.Add($"Row {rowNum}: Grade '{gradeRaw}' not found.");
+                    continue;
+                }
+            }
+            if (designationGradeId is not null && resolvedGrade is not null && designationGradeId != resolvedGrade.Id)
+            {
+                skipped++;
+                errors.Add($"Row {rowNum}: Designation '{desigTitleRaw}' is not eligible for grade '{resolvedGrade.Code}'.");
+                continue;
+            }
+            var finalGradeId = resolvedGrade?.Id ?? designationGradeId;
+            var finalGradeCode = resolvedGrade?.Code ?? (finalGradeId is not null ? gradeByCode.Values.FirstOrDefault(g => g.Id == finalGradeId)?.Code ?? string.Empty : string.Empty);
+
+            var finalCode = string.IsNullOrWhiteSpace(code) ? await GenerateEmployeeCode(tenantId, ct) : code;
             var employee = new Employee
             {
                 TenantId = tenantId,
@@ -234,6 +294,8 @@ public class EmployeesController : ControllerBase
                 DepartmentId = resolvedDeptId,
                 Designation = desigTitleRaw,
                 DesignationId = resolvedDesigId,
+                GradeId = finalGradeId,
+                Grade = finalGradeCode,
                 JobTitle = row.GetValueOrDefault("JobTitle", desigTitleRaw),
                 EmploymentType = row.GetValueOrDefault("EmploymentType", "Full-time"),
                 ContractType = row.GetValueOrDefault("ContractType", string.Empty),
@@ -254,36 +316,58 @@ public class EmployeesController : ControllerBase
             var ibanRaw = rowData.GetValueOrDefault("IBAN", string.Empty).Trim();
             var bankNameRaw = rowData.GetValueOrDefault("BankName", string.Empty).Trim();
             var molIdRaw = rowData.GetValueOrDefault("MolId", string.Empty).Trim();
+            var accountRaw = rowData.GetValueOrDefault("AccountNumber", string.Empty).Trim();
+            var routingRaw = rowData.GetValueOrDefault("BankRoutingCode", string.Empty).Trim();
+            var payrollGroupRaw = rowData.GetValueOrDefault("PayrollGroup", string.Empty).Trim();
+            var paymentMethodRaw = rowData.GetValueOrDefault("PaymentMethod", string.Empty).Trim();
+            var structureCodeRaw = rowData.GetValueOrDefault("SalaryStructureCode", string.Empty).Trim();
             var currencyRaw = rowData.GetValueOrDefault("Currency", string.Empty).Trim();
-            var currency = string.IsNullOrWhiteSpace(currencyRaw) ? "SAR" : currencyRaw.ToUpperInvariant();
+            var currency = string.IsNullOrWhiteSpace(currencyRaw) ? await _db.ResolveTenantCurrencyAsync(tenantId, ct) : currencyRaw.ToUpperInvariant();
             _ = decimal.TryParse(rowData.GetValueOrDefault("BasicSalary", string.Empty), out var basicSalary);
             _ = decimal.TryParse(rowData.GetValueOrDefault("HousingAllowance", string.Empty), out var housing);
             _ = decimal.TryParse(rowData.GetValueOrDefault("TransportAllowance", string.Empty), out var transport);
+            _ = decimal.TryParse(rowData.GetValueOrDefault("FoodAllowance", string.Empty), out var food);
+            _ = decimal.TryParse(rowData.GetValueOrDefault("MobileAllowance", string.Empty), out var mobile);
             _ = decimal.TryParse(rowData.GetValueOrDefault("OtherAllowance", string.Empty), out var other);
+            _ = decimal.TryParse(rowData.GetValueOrDefault("FixedDeduction", string.Empty), out var fixedDeduction);
+            var gross = basicSalary + housing + transport + food + mobile + other;
+
+            var grade = emp.GradeId is not null ? gradeByCode.Values.FirstOrDefault(g => g.Id == emp.GradeId) : null;
+            if (grade is not null && gross > 0 && ((grade.MinSalary > 0 && gross < grade.MinSalary) || (grade.MaxSalary > 0 && gross > grade.MaxSalary)))
+            {
+                errors.Add($"Row for {emp.EmployeeCode}: Salary package {gross:N2} is outside grade {grade.Code} range {grade.MinSalary:N2}-{grade.MaxSalary:N2}.");
+                continue;
+            }
 
             bool hasPayroll = !string.IsNullOrEmpty(ibanRaw) || !string.IsNullOrEmpty(bankNameRaw) ||
-                              !string.IsNullOrEmpty(molIdRaw) || basicSalary > 0 || housing > 0 || transport > 0 || other > 0;
+                              !string.IsNullOrEmpty(molIdRaw) || gross > 0;
             if (!hasPayroll) continue;
 
             _db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
             {
                 TenantId = tenantId, EmployeeId = emp.Id,
                 BankName = bankNameRaw, Iban = ibanRaw, SalaryCurrency = currency,
+                AccountNumber = accountRaw, BankRoutingCode = routingRaw,
+                PaymentMethod = string.IsNullOrWhiteSpace(paymentMethodRaw) ? "BankTransfer" : paymentMethodRaw,
+                PayrollGroup = payrollGroupRaw, SalaryStructureReference = structureCodeRaw,
                 MolId = molIdRaw, WpsEligible = true, EosbEligible = true, CreatedBy = GetUserId()
             });
 
-            if (basicSalary > 0 || housing > 0 || transport > 0 || other > 0)
+            if (gross > 0)
             {
+                var structure = await ResolveImportSalaryStructureAsync(tenantId, emp.CompanyId, grade, structureCodeRaw, currency, ct);
                 _db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
                 {
-                    TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = Guid.Empty,
+                    TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = structure.Id,
                     BasicSalary = basicSalary, HousingAllowance = housing, TransportAllowance = transport,
-                    OtherAllowance = other, Currency = currency,
+                    FoodAllowance = food, MobileAllowance = mobile, OtherAllowance = other,
+                    FixedDeduction = fixedDeduction, Currency = currency,
                     EffectiveDate = DateOnly.FromDateTime(emp.JoiningDate), IsActive = true, CreatedBy = GetUserId()
                 });
-                emp.Salary = basicSalary + housing + transport + other;
+                emp.Salary = gross;
                 if (!string.IsNullOrEmpty(bankNameRaw)) emp.BankName = bankNameRaw;
                 if (!string.IsNullOrEmpty(ibanRaw)) emp.BankIban = ibanRaw;
+                if (!string.IsNullOrWhiteSpace(payrollGroupRaw)) emp.PayrollProfileCode = payrollGroupRaw;
                 _db.Employees.Update(emp);
             }
             payrollProfilesCreated++;
@@ -304,7 +388,7 @@ public class EmployeesController : ControllerBase
         {
             rowNum++;
             var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
-            if (!batchCodes.TryGetValue(code, out var emp)) continue; // skipped in pass 1
+            if (string.IsNullOrWhiteSpace(code) || !batchCodes.TryGetValue(code, out var emp)) continue; // skipped or auto-generated in pass 1
 
             var mgrCode = row.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim();
             var supCode  = row.GetValueOrDefault("SupervisorEmployeeCode", string.Empty).Trim();
@@ -383,6 +467,55 @@ public class EmployeesController : ControllerBase
 
     public record ImportEmployeesRequest(string CsvContent);
 
+    private async Task<SalaryStructure> ResolveImportSalaryStructureAsync(Guid tenantId, Guid? companyId, Grade? grade, string requestedCode, string currency, CancellationToken ct)
+    {
+        var code = string.IsNullOrWhiteSpace(requestedCode)
+            ? grade is not null ? $"GRADE-{grade.Code}" : "EMPLOYEE-IMPORT"
+            : requestedCode.Trim();
+
+        var existing = await _db.SalaryStructures
+            .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.Code == code && !s.IsDeleted, ct);
+        if (existing is not null) return existing;
+
+        var structure = new SalaryStructure
+        {
+            TenantId = tenantId,
+            CompanyId = companyId,
+            Code = code,
+            Name = grade is not null ? $"{grade.Name} salary structure" : "Imported employee salary structure",
+            Currency = string.IsNullOrWhiteSpace(currency) ? await _db.ResolveTenantCurrencyAsync(tenantId, ct) : currency,
+            EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow),
+            CreatedBy = GetUserId()
+        };
+        _db.SalaryStructures.Add(structure);
+
+        if (grade is not null)
+        {
+            var components = await _db.GradePayScaleComponents
+                .AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.GradeId == grade.Id && c.IsActive)
+                .OrderBy(c => c.SortOrder)
+                .ToListAsync(ct);
+            foreach (var component in components)
+            {
+                _db.SalaryComponents.Add(new SalaryComponent
+                {
+                    TenantId = tenantId,
+                    SalaryStructureId = structure.Id,
+                    Code = component.ComponentCode,
+                    Name = component.ComponentName,
+                    ComponentType = component.ComponentType,
+                    CalculationType = component.CalculationType,
+                    Amount = component.Amount,
+                    Percentage = component.Percentage,
+                    IsTaxable = component.IsTaxable
+                });
+            }
+        }
+
+        return structure;
+    }
+
     // ── Import preview (dry-run: validates without committing) ─────────────────
 
     [HttpPost("import-preview")]
@@ -438,8 +571,7 @@ public class EmployeesController : ControllerBase
             var rowErrors = new List<string>();
             string status;
 
-            if (string.IsNullOrEmpty(code)) { rowErrors.Add("EmployeeCode missing"); }
-            else if (existingCodes.Contains(code.ToUpperInvariant()) || seen.Contains(code.ToUpperInvariant()))
+            if (!string.IsNullOrEmpty(code) && (existingCodes.Contains(code.ToUpperInvariant()) || seen.Contains(code.ToUpperInvariant())))
             { rowErrors.Add($"Duplicate EmployeeCode '{code}'"); }
 
             if (!string.IsNullOrEmpty(mgrCode))
@@ -506,7 +638,12 @@ public class EmployeesController : ControllerBase
             }
 
             if (hasErrors) { status = "Error"; wouldSkip++; }
-            else { status = "WillCreate"; wouldCreate++; seen.Add(code.ToUpperInvariant()); }
+            else
+            {
+                status = "WillCreate";
+                wouldCreate++;
+                if (!string.IsNullOrWhiteSpace(code)) seen.Add(code.ToUpperInvariant());
+            }
 
             previewRows.Add(new
             {
@@ -1347,8 +1484,25 @@ public class EmployeesController : ControllerBase
 
     private async Task<string> GenerateEmployeeCode(Guid tenantId, CancellationToken cancellationToken)
     {
-        var count = await _db.Employees.CountAsync(x => x.TenantId == tenantId, cancellationToken) + 1;
-        return $"EMP-{count:00000}";
+        var rule = await _db.EmployeeIdRules
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, cancellationToken);
+        if (rule is null)
+        {
+            rule = new EmployeeIdRule { TenantId = tenantId, CreatedBy = GetUserId() };
+            _db.EmployeeIdRules.Add(rule);
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
+        var parts = new List<string> { rule.CompanyPrefix };
+        if (rule.UseYear) parts.Add(DateTime.UtcNow.Year.ToString());
+        var code = string.Join('-', parts.Where(x => !string.IsNullOrWhiteSpace(x)))
+            + "-"
+            + rule.NextSequence.ToString().PadLeft(rule.PaddingLength, '0');
+        rule.NextSequence += 1;
+        rule.UpdatedAtUtc = DateTime.UtcNow;
+        rule.UpdatedBy = GetUserId();
+        await _db.SaveChangesAsync(cancellationToken);
+        return code;
     }
 
     private async Task<Guid?> CreateEmployeeUserAccount(Employee employee, CancellationToken cancellationToken)

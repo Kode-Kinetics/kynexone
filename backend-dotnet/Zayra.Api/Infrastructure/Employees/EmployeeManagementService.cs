@@ -83,6 +83,7 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var employee = new Employee { TenantId = tenantId, EmployeeCode = code, CreatedBy = context.UserId };
         await ApplyEmployee(employee, request, tenantId, cancellationToken);
+        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         // Employees must always resolve to a legal entity: operational company scoping
         // treats null CompanyId as invisible to scoped users, so default it here.
         employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
@@ -92,6 +93,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _db.SaveChangesAsync(cancellationToken);
 
         await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
+        await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
         await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
@@ -109,10 +111,12 @@ public class EmployeeManagementService : IEmployeeManagementService
         TrackChange(employee, "Grade", employee.Grade, request.GradeId?.ToString() ?? employee.Grade, request.JoiningDate, "Grade update", context);
 
         await ApplyEmployee(employee, request, tenantId, cancellationToken);
+        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = context.UserId;
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
+        await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.updated", "Employee", id.ToString(), context, null, cancellationToken);
@@ -406,7 +410,18 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.CostCenterId = request.CostCenterId;
         employee.Branch = request.BranchId is null ? employee.Branch : await _db.Branches.Where(x => x.TenantId == tenantId && x.Id == request.BranchId).Select(x => x.NameEn).FirstOrDefaultAsync(cancellationToken) ?? employee.Branch;
         employee.Department = request.DepartmentId is null ? employee.Department : await _db.Departments.Where(x => x.TenantId == tenantId && x.Id == request.DepartmentId).Select(x => x.NameEn).FirstOrDefaultAsync(cancellationToken) ?? employee.Department;
-        employee.Designation = request.DesignationId is null ? employee.Designation : await _db.Designations.Where(x => x.TenantId == tenantId && x.Id == request.DesignationId).Select(x => x.TitleEn).FirstOrDefaultAsync(cancellationToken) ?? employee.Designation;
+        if (request.DesignationId is not null)
+        {
+            var designation = await _db.Designations
+                .Where(x => x.TenantId == tenantId && x.Id == request.DesignationId && !x.IsDeleted)
+                .Select(x => new { x.TitleEn, x.GradeId })
+                .FirstOrDefaultAsync(cancellationToken);
+            if (designation is not null)
+            {
+                employee.Designation = designation.TitleEn;
+                employee.GradeId ??= designation.GradeId;
+            }
+        }
         employee.Grade = request.GradeId is null ? employee.Grade : await _db.Grades.Where(x => x.TenantId == tenantId && x.Id == request.GradeId).Select(x => x.Code).FirstOrDefaultAsync(cancellationToken) ?? employee.Grade;
         employee.CostCenter = request.CostCenterId is null ? employee.CostCenter : await _db.CostCenters.Where(x => x.TenantId == tenantId && x.Id == request.CostCenterId).Select(x => x.Code).FirstOrDefaultAsync(cancellationToken) ?? employee.CostCenter;
         employee.JobTitle = Clean(request.JobTitle);
@@ -476,12 +491,148 @@ public class EmployeeManagementService : IEmployeeManagementService
         profile.WpsEligible = request.WpsEligible;
         profile.EosbEligible = request.EosbEligible;
         profile.SocialInsuranceReference = Clean(request.SocialInsuranceReference);
+        profile.MolId = Clean(request.MolId);
+        profile.BankRoutingCode = Clean(request.BankRoutingCode);
         profile.UpdatedAtUtc = DateTime.UtcNow;
         profile.UpdatedBy = context.UserId;
         employee.BankName = profile.BankName;
         employee.BankIban = profile.Iban;
         employee.WpsBankDetails = profile.PaymentMethod;
     }
+
+    private async Task ValidatePositionAndSalaryAsync(Employee employee, EmployeeSalaryBreakdownRequest? salary, Guid tenantId, CancellationToken cancellationToken)
+    {
+        if (employee.DesignationId is not null)
+        {
+            var designation = await _db.Designations
+                .AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Id == employee.DesignationId && x.IsActive && !x.IsDeleted)
+                .Select(x => new { x.GradeId, x.TitleEn })
+                .FirstOrDefaultAsync(cancellationToken);
+            if (designation is null) throw new InvalidOperationException("Selected designation is not active.");
+            if (designation.GradeId is not null && employee.GradeId is not null && designation.GradeId != employee.GradeId)
+                throw new InvalidOperationException($"Designation '{designation.TitleEn}' is eligible only for its configured grade.");
+            employee.GradeId ??= designation.GradeId;
+        }
+
+        if (employee.GradeId is null) return;
+
+        var grade = await _db.Grades
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employee.GradeId && x.IsActive && !x.IsDeleted, cancellationToken);
+        if (grade is null) throw new InvalidOperationException("Selected grade is not active.");
+        employee.Grade = grade.Code;
+
+        var grossSalary = GrossSalary(salary);
+        if (grossSalary <= 0) return;
+        if (grade.MinSalary > 0 && grossSalary < grade.MinSalary)
+            throw new InvalidOperationException($"Salary package {grossSalary:N2} is below grade {grade.Code} minimum {grade.MinSalary:N2} {grade.Currency}.");
+        if (grade.MaxSalary > 0 && grossSalary > grade.MaxSalary)
+            throw new InvalidOperationException($"Salary package {grossSalary:N2} exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}.");
+    }
+
+    private async Task UpsertEmployeeSalaryStructure(Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (employee.TenantId is null || employee.GradeId is null) return;
+        var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
+        if (grade is null) return;
+
+        var components = await _db.GradePayScaleComponents
+            .AsNoTracking()
+            .Where(x => x.TenantId == employee.TenantId && x.GradeId == grade.Id && x.IsActive)
+            .OrderBy(x => x.SortOrder)
+            .ToListAsync(cancellationToken);
+
+        var salary = BuildSalaryBreakdown(request, components);
+        if (GrossSalary(salary) <= 0) return;
+
+        await _db.EmployeeSalaryStructures
+            .Where(x => x.TenantId == employee.TenantId && x.EmployeeId == employee.Id && x.IsActive)
+            .ExecuteUpdateAsync(x => x.SetProperty(p => p.IsActive, false), cancellationToken);
+
+        var structureCode = Clean(request?.SalaryStructureCode);
+        if (string.IsNullOrWhiteSpace(structureCode)) structureCode = $"GRADE-{grade.Code}";
+        var structure = await _db.SalaryStructures.FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted, cancellationToken);
+        if (structure is null)
+        {
+            structure = new SalaryStructure
+            {
+                TenantId = employee.TenantId.Value,
+                CompanyId = employee.CompanyId,
+                Code = structureCode,
+                Name = $"{grade.Name} salary structure",
+                Currency = Clean(request?.Currency) is { Length: > 0 } requestCurrency ? requestCurrency.ToUpperInvariant() : grade.Currency,
+                EffectiveDate = request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate),
+                CreatedBy = context.UserId
+            };
+            _db.SalaryStructures.Add(structure);
+
+            foreach (var component in components)
+            {
+                _db.SalaryComponents.Add(new SalaryComponent
+                {
+                    TenantId = employee.TenantId.Value,
+                    SalaryStructureId = structure.Id,
+                    Code = component.ComponentCode,
+                    Name = component.ComponentName,
+                    ComponentType = component.ComponentType,
+                    CalculationType = component.CalculationType,
+                    Amount = component.Amount,
+                    Percentage = component.Percentage,
+                    IsTaxable = component.IsTaxable
+                });
+            }
+        }
+
+        var assignment = new EmployeeSalaryStructure
+        {
+            TenantId = employee.TenantId.Value,
+            EmployeeId = employee.Id,
+            SalaryStructureId = structure.Id,
+            BasicSalary = salary.BasicSalary ?? 0m,
+            HousingAllowance = salary.HousingAllowance ?? 0m,
+            TransportAllowance = salary.TransportAllowance ?? 0m,
+            FoodAllowance = salary.FoodAllowance ?? 0m,
+            MobileAllowance = salary.MobileAllowance ?? 0m,
+            OtherAllowance = salary.OtherAllowance ?? 0m,
+            FixedDeduction = salary.FixedDeduction ?? 0m,
+            EffectiveDate = request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate),
+            Currency = Clean(request?.Currency) is { Length: > 0 } currency ? currency.ToUpperInvariant() : structure.Currency,
+            CreatedBy = context.UserId
+        };
+        _db.EmployeeSalaryStructures.Add(assignment);
+        employee.Salary = GrossSalary(salary);
+        employee.PayrollProfileCode = string.IsNullOrWhiteSpace(employee.PayrollProfileCode) ? structure.Code : employee.PayrollProfileCode;
+    }
+
+    private static EmployeeSalaryBreakdownRequest BuildSalaryBreakdown(EmployeeSalaryBreakdownRequest? request, IReadOnlyCollection<GradePayScaleComponent> components)
+    {
+        if (request is not null && GrossSalary(request) > 0) return request;
+
+        decimal basic = 0, housing = 0, transport = 0, food = 0, mobile = 0, other = 0, fixedDeduction = 0;
+        foreach (var component in components)
+        {
+            var code = component.ComponentCode.ToUpperInvariant();
+            var amount = component.Amount;
+            if (code.Contains("BASIC")) basic += amount;
+            else if (code.Contains("HOUS")) housing += amount;
+            else if (code.Contains("TRANS")) transport += amount;
+            else if (code.Contains("FOOD")) food += amount;
+            else if (code.Contains("MOBILE")) mobile += amount;
+            else if (component.ComponentType.Equals("Deduction", StringComparison.OrdinalIgnoreCase)) fixedDeduction += amount;
+            else other += amount;
+        }
+
+        return new EmployeeSalaryBreakdownRequest(basic, housing, transport, food, mobile, other, fixedDeduction, request?.SalaryStructureCode, request?.EffectiveDate, request?.Currency);
+    }
+
+    private static decimal GrossSalary(EmployeeSalaryBreakdownRequest? salary)
+        => (salary?.BasicSalary ?? 0m)
+           + (salary?.HousingAllowance ?? 0m)
+           + (salary?.TransportAllowance ?? 0m)
+           + (salary?.FoodAllowance ?? 0m)
+           + (salary?.MobileAllowance ?? 0m)
+           + (salary?.OtherAllowance ?? 0m);
 
     private async Task UpsertComplianceRecords(Employee employee, IReadOnlyCollection<EmployeeComplianceRecordRequest> records, RequestContext context, CancellationToken cancellationToken)
     {

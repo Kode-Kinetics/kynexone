@@ -21,7 +21,7 @@ const employeesImportExport = {
     client.post<{ received: number; created: number; skipped: number; errors: string[] }>('/api/employees/import', { csvContent }).then(r => r.data),
 };
 import { branchesApi, companiesApi, costCentersApi, departmentsApi, designationsApi, gradesApi } from '../api/organization';
-import type { BranchDto, CompanyDto, CostCenterDto, DepartmentDto, DesignationDto, GradeDto } from '../api/organization';
+import type { BranchDto, CompanyDto, CostCenterDto, DepartmentDto, DesignationDto, GradeDto, GradePayScaleComponentDto } from '../api/organization';
 import { Avatar } from '../components/Avatar';
 import { useAutoTranslate } from '../hooks/useAutoTranslate';
 import { InfoTip } from '../components/InfoTip';
@@ -82,6 +82,18 @@ const emptyEmployee = (): EmployeeCreateRequest => ({
     socialInsuranceReference: '',
     molId: '',
     bankRoutingCode: '',
+  },
+  salaryBreakdown: {
+    basicSalary: undefined,
+    housingAllowance: undefined,
+    transportAllowance: undefined,
+    foodAllowance: undefined,
+    mobileAllowance: undefined,
+    otherAllowance: undefined,
+    fixedDeduction: undefined,
+    salaryStructureCode: '',
+    effectiveDate: new Date().toISOString().slice(0, 10),
+    currency: '',
   },
   complianceRecords: [
     { countryCode: 'UAE', fieldKey: 'passport_number', fieldLabel: 'Passport Number', fieldValue: '', isSensitive: true, isRequired: true },
@@ -169,6 +181,7 @@ export function EmployeesPage() {
   const [departments, setDepartments] = useState<DepartmentDto[]>([]);
   const [designations, setDesignations] = useState<DesignationDto[]>([]);
   const [grades, setGrades] = useState<GradeDto[]>([]);
+  const [gradePayScale, setGradePayScale] = useState<GradePayScaleComponentDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
 
   const pageSize = 25;
@@ -234,6 +247,33 @@ export function EmployeesPage() {
   }, [searchParams, selectedId]);
 
   const selectedEmployee = useMemo(() => detail ?? null, [detail]);
+  const selectedDesignation = useMemo(
+    () => designations.find((item) => item.id === form.designationId),
+    [designations, form.designationId],
+  );
+  const selectedGrade = useMemo(
+    () => grades.find((item) => item.id === form.gradeId),
+    [grades, form.gradeId],
+  );
+  const eligibleGrades = useMemo(
+    () => selectedDesignation?.gradeId ? grades.filter((grade) => grade.id === selectedDesignation.gradeId) : grades,
+    [grades, selectedDesignation],
+  );
+  const salaryTotal = useMemo(() => {
+    const s = form.salaryBreakdown;
+    return Number(s?.basicSalary ?? 0) + Number(s?.housingAllowance ?? 0) + Number(s?.transportAllowance ?? 0)
+      + Number(s?.foodAllowance ?? 0) + Number(s?.mobileAllowance ?? 0) + Number(s?.otherAllowance ?? 0);
+  }, [form.salaryBreakdown]);
+
+  useEffect(() => {
+    if (!form.gradeId) {
+      setGradePayScale([]);
+      return;
+    }
+    gradesApi.getPayScale(form.gradeId)
+      .then(setGradePayScale)
+      .catch(() => setGradePayScale([]));
+  }, [form.gradeId]);
 
   const openDetail = async (id: number, preserveTab = false) => {
     setSelectedId(id);
@@ -256,12 +296,34 @@ export function EmployeesPage() {
   const setField = (key: keyof EmployeeCreateRequest, value: string | boolean | number | undefined) =>
     setForm((current) => ({ ...current, [key]: value }));
 
+  const setDesignation = (value: string) =>
+    setForm((current) => {
+      const designation = designations.find((item) => item.id === value);
+      return {
+        ...current,
+        designationId: value,
+        gradeId: designation?.gradeId ?? current.gradeId,
+      };
+    });
+
+  const setGrade = (value: string) =>
+    setForm((current) => ({ ...current, gradeId: value }));
+
   const { translation: autoArabicName, isTranslating: translatingArabicName } = useAutoTranslate(form.englishName);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (autoArabicName && !form.arabicName) setField('arabicName', autoArabicName); }, [autoArabicName]);
 
   const setPayrollField = (key: string, value: string | boolean) =>
     setForm((current) => ({ ...current, payrollProfile: { ...current.payrollProfile!, [key]: value } }));
+
+  const setSalaryField = (key: string, value: string) =>
+    setForm((current) => ({
+      ...current,
+      salaryBreakdown: {
+        ...current.salaryBreakdown,
+        [key]: ['salaryStructureCode', 'effectiveDate', 'currency'].includes(key) ? value : (value === '' ? undefined : Number(value)),
+      },
+    }));
 
   const setComplianceValue = (index: number, key: string, value: string | boolean) =>
     setForm((current) => ({
@@ -273,6 +335,14 @@ export function EmployeesPage() {
     setError('');
     if (!form.englishName.trim() || !form.gender) {
       setError('English full name and gender are required.');
+      return;
+    }
+    if (selectedDesignation?.gradeId && form.gradeId && selectedDesignation.gradeId !== form.gradeId) {
+      setError('Selected designation is restricted to a different grade.');
+      return;
+    }
+    if (selectedGrade && salaryTotal > 0 && ((selectedGrade.minSalary > 0 && salaryTotal < selectedGrade.minSalary) || (selectedGrade.maxSalary > 0 && salaryTotal > selectedGrade.maxSalary))) {
+      setError(`Salary package must be within ${selectedGrade.currency} ${selectedGrade.minSalary.toLocaleString()} - ${selectedGrade.maxSalary.toLocaleString()} for ${selectedGrade.code}.`);
       return;
     }
     setSaving(true);
@@ -733,8 +803,14 @@ export function EmployeesPage() {
             <Lookup label="Company" value={form.companyId ?? ''} onChange={(v) => setField('companyId', v)} items={companies} textKey="legalNameEn" />
             <Lookup label="Branch" value={form.branchId ?? ''} onChange={(v) => setField('branchId', v)} items={branches} textKey="nameEn" />
             <Lookup label="Department" value={form.departmentId ?? ''} onChange={(v) => setField('departmentId', v)} items={departments} textKey="nameEn" />
-            <Lookup label="Designation" value={form.designationId ?? ''} onChange={(v) => setField('designationId', v)} items={designations} textKey="titleEn" />
-            <Lookup label="Grade" value={form.gradeId ?? ''} onChange={(v) => setField('gradeId', v)} items={grades} textKey="name" />
+            <Lookup label="Designation" value={form.designationId ?? ''} onChange={setDesignation} items={designations} textKey="titleEn" />
+            <Lookup label="Grade" value={form.gradeId ?? ''} onChange={setGrade} items={eligibleGrades} textKey="name" />
+            {selectedGrade && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
+                <p className="font-semibold text-slate-800 dark:text-white">{selectedGrade.code} salary band</p>
+                <p className="mt-1">{selectedGrade.currency} {selectedGrade.minSalary.toLocaleString()} - {selectedGrade.maxSalary.toLocaleString()}</p>
+              </div>
+            )}
             <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
             <Input label="Job title" value={form.jobTitle ?? ''} onChange={(v) => setField('jobTitle', v)} />
             <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={['Full-Time', 'Part-Time', 'Contractor', 'Intern']} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
@@ -752,6 +828,23 @@ export function EmployeesPage() {
             <Select label="Salary currency" value={form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setPayrollField('salaryCurrency', v)} options={['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR']} />
             <Input label="Payroll group" value={form.payrollProfile?.payrollGroup ?? ''} onChange={(v) => setPayrollField('payrollGroup', v)} />
             <Input label="Salary structure reference" value={form.payrollProfile?.salaryStructureReference ?? ''} onChange={(v) => setPayrollField('salaryStructureReference', v)} />
+          </Section>
+
+          <Section title="Salary Structure Breakdown">
+            <Input label="Basic salary" type="number" value={String(form.salaryBreakdown?.basicSalary ?? '')} onChange={(v) => setSalaryField('basicSalary', v)} />
+            <Input label="Housing allowance" type="number" value={String(form.salaryBreakdown?.housingAllowance ?? '')} onChange={(v) => setSalaryField('housingAllowance', v)} />
+            <Input label="Transport allowance" type="number" value={String(form.salaryBreakdown?.transportAllowance ?? '')} onChange={(v) => setSalaryField('transportAllowance', v)} />
+            <Input label="Food allowance" type="number" value={String(form.salaryBreakdown?.foodAllowance ?? '')} onChange={(v) => setSalaryField('foodAllowance', v)} />
+            <Input label="Mobile allowance" type="number" value={String(form.salaryBreakdown?.mobileAllowance ?? '')} onChange={(v) => setSalaryField('mobileAllowance', v)} />
+            <Input label="Other allowance" type="number" value={String(form.salaryBreakdown?.otherAllowance ?? '')} onChange={(v) => setSalaryField('otherAllowance', v)} />
+            <Input label="Fixed deduction" type="number" value={String(form.salaryBreakdown?.fixedDeduction ?? '')} onChange={(v) => setSalaryField('fixedDeduction', v)} />
+            <Input label="Salary structure code" value={form.salaryBreakdown?.salaryStructureCode ?? ''} onChange={(v) => setSalaryField('salaryStructureCode', v)} placeholder={selectedGrade ? `GRADE-${selectedGrade.code}` : undefined} />
+            <Select label="Breakdown currency" value={form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setSalaryField('currency', v)} options={['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR']} />
+            <Input label="Effective date" type="date" value={form.salaryBreakdown?.effectiveDate ?? form.joiningDate ?? ''} onChange={(v) => setSalaryField('effectiveDate', v)} />
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
+              <p className="font-semibold text-slate-800 dark:text-white">Gross package: {(form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode)} {salaryTotal.toLocaleString()}</p>
+              {gradePayScale.length > 0 && <p className="mt-1">Grade defaults: {gradePayScale.map((line) => `${line.componentName} ${line.amount || `${line.percentage}%`}`).join(' · ')}</p>}
+            </div>
           </Section>
 
           <Section title="Configurable GCC Compliance">
@@ -772,6 +865,16 @@ function cleanPayload(form: EmployeeCreateRequest): EmployeeCreateRequest {
   // The API expects null/absent for empty Guid and date fields — an empty string
   // fails JSON model binding with a 400 before validation even runs.
   const emptyToUndefined = (value?: string) => value?.trim() ? value.trim() : undefined;
+  const salaryBreakdown = form.salaryBreakdown
+    ? {
+        ...form.salaryBreakdown,
+        salaryStructureCode: emptyToUndefined(form.salaryBreakdown.salaryStructureCode),
+        effectiveDate: emptyToUndefined(form.salaryBreakdown.effectiveDate),
+        currency: emptyToUndefined(form.salaryBreakdown.currency || form.payrollProfile?.salaryCurrency),
+      }
+    : undefined;
+  const hasSalaryBreakdown = salaryBreakdown && Object.entries(salaryBreakdown)
+    .some(([key, value]) => !['salaryStructureCode', 'effectiveDate', 'currency'].includes(key) && Number(value ?? 0) > 0);
   return {
     ...form,
     employeeCode: emptyToUndefined(form.employeeCode),
@@ -787,6 +890,13 @@ function cleanPayload(form: EmployeeCreateRequest): EmployeeCreateRequest {
     confirmationDate: emptyToUndefined(form.confirmationDate),
     probationStartDate: emptyToUndefined(form.probationStartDate),
     probationEndDate: emptyToUndefined(form.probationEndDate),
+    payrollProfile: form.payrollProfile ? {
+      ...form.payrollProfile,
+      salaryCurrency: emptyToUndefined(form.payrollProfile.salaryCurrency),
+      payrollGroup: emptyToUndefined(form.payrollProfile.payrollGroup),
+      salaryStructureReference: emptyToUndefined(form.payrollProfile.salaryStructureReference),
+    } : undefined,
+    salaryBreakdown: hasSalaryBreakdown ? salaryBreakdown : undefined,
     complianceRecords: form.complianceRecords
       ?.filter((item) => item.fieldValue?.trim() || item.isRequired)
       .map((item) => ({ ...item, expiryDate: emptyToUndefined(item.expiryDate) })),

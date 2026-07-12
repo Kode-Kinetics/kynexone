@@ -39,6 +39,7 @@ public record EmployeeCreateRequest(
     [MaxLength(80)] string? LeavePolicyCode,
     [MaxLength(80)] string? AttendancePolicyCode,
     EmployeePayrollProfileRequest? PayrollProfile,
+    EmployeeSalaryBreakdownRequest? SalaryBreakdown,
     IReadOnlyCollection<EmployeeComplianceRecordRequest>? ComplianceRecords);
 
 public record EmployeePayrollProfileRequest(
@@ -51,7 +52,21 @@ public record EmployeePayrollProfileRequest(
     string? SalaryStructureReference,
     bool WpsEligible,
     bool EosbEligible,
-    string? SocialInsuranceReference);
+    string? SocialInsuranceReference,
+    string? MolId,
+    string? BankRoutingCode);
+
+public record EmployeeSalaryBreakdownRequest(
+    decimal? BasicSalary,
+    decimal? HousingAllowance,
+    decimal? TransportAllowance,
+    decimal? FoodAllowance,
+    decimal? MobileAllowance,
+    decimal? OtherAllowance,
+    decimal? FixedDeduction,
+    string? SalaryStructureCode,
+    DateOnly? EffectiveDate,
+    string? Currency);
 
 public record EmployeeComplianceRecordRequest(
     [Required, MaxLength(10)] string CountryCode,
