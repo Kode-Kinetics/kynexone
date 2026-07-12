@@ -280,12 +280,14 @@ public class OrganizationStructureImportController : ControllerBase
             refs: [("CompanyLegalName", companyNames, "Company")]);
         Merge(costCenterCodes, parsed.CostCenters.Select(x => Val(x, "Code")));
         AddRows("grades", parsed.Grades, "Code", "Name", required: ["Code", "Name"], known: gradeCodes, rows);
+        AddGradeSanityRows(parsed.Grades, rows);
         Merge(gradeCodes, parsed.Grades.Select(x => Val(x, "Code")));
         AddRows("departments", parsed.Departments, "Code", "NameEn", required: ["Code", "NameEn"], known: departmentCodes, rows,
             refs: [("BranchCode", branchCodes, "Branch"), ("CostCenterCode", costCenterCodes, "Cost center"), ("ParentDepartmentCode", departmentCodes, "Parent department")]);
         Merge(departmentCodes, parsed.Departments.Select(x => Val(x, "Code")));
         AddRows("gradePayComponents", parsed.GradePayComponents, "ComponentCode", "ComponentName", required: ["GradeCode", "ComponentCode", "ComponentName"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
             refs: [("GradeCode", gradeCodes, "Grade")]);
+        AddGradePayComponentSanityRows(parsed.GradePayComponents, rows);
         AddRows("designations", parsed.Designations, "Code", "TitleEn", required: ["Code", "TitleEn"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
             refs: [("DepartmentCode", departmentCodes, "Department"), ("GradeCode", gradeCodes, "Grade")]);
 
@@ -326,15 +328,70 @@ public class OrganizationStructureImportController : ControllerBase
             var row = source[i];
             var code = Val(row, codeKey);
             var errors = required.Where(key => string.IsNullOrWhiteSpace(Val(row, key))).Select(key => $"{key} is required").ToList();
+            var warnings = new List<string>();
             if (!string.IsNullOrWhiteSpace(code) && !seen.Add(code)) errors.Add($"Duplicate {codeKey} '{code}' in {section}");
+            if (!string.IsNullOrWhiteSpace(code) && known.Contains(code))
+                warnings.Add($"{section} record '{code}' already exists and will be updated");
             foreach (var (key, knownRefs, label) in refs ?? [])
             {
                 var value = Val(row, key);
                 if (!string.IsNullOrWhiteSpace(value) && !knownRefs.Contains(value))
                     errors.Add($"{label} reference '{value}' not found");
             }
-            var status = errors.Count > 0 ? ImportRowStatus.Error : ImportRowStatus.Ok;
-            rows.Add(new ImportRowResult(i + 2, $"{section}:{code}", Val(row, nameKey), status, errors, []));
+            var status = errors.Count > 0 ? ImportRowStatus.Error : warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok;
+            rows.Add(new ImportRowResult(i + 2, $"{section}:{code}", Val(row, nameKey), status, errors, warnings));
+        }
+    }
+
+    private static void AddGradeSanityRows(IReadOnlyList<Dictionary<string, string>> source, List<ImportRowResult> rows)
+    {
+        for (var i = 0; i < source.Count; i++)
+        {
+            var row = source[i];
+            var code = Val(row, "Code");
+            var min = Dec(row, "MinSalary");
+            var mid = Dec(row, "MidSalary");
+            var max = Dec(row, "MaxSalary");
+            var errors = new List<string>();
+            var warnings = new List<string>();
+            if (min < 0 || mid < 0 || max < 0) errors.Add("Salary range cannot contain negative values");
+            if (max > 0 && min > max) errors.Add("MinSalary cannot exceed MaxSalary");
+            if (mid > 0 && min > 0 && mid < min) warnings.Add("MidSalary is below MinSalary");
+            if (mid > 0 && max > 0 && mid > max) warnings.Add("MidSalary is above MaxSalary");
+            if (min == 0 && max == 0) warnings.Add("Grade has no salary range; employee salary eligibility cannot be enforced");
+            if (errors.Count == 0 && warnings.Count == 0) continue;
+            rows.Add(new ImportRowResult(i + 2, $"grades:{code}", Val(row, "Name"), errors.Count > 0 ? ImportRowStatus.Error : ImportRowStatus.Warning, errors, warnings));
+        }
+    }
+
+    private static void AddGradePayComponentSanityRows(IReadOnlyList<Dictionary<string, string>> source, List<ImportRowResult> rows)
+    {
+        var totals = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < source.Count; i++)
+        {
+            var row = source[i];
+            var gradeCode = Val(row, "GradeCode");
+            var code = Val(row, "ComponentCode");
+            var calculationType = Val(row, "CalculationType");
+            var amount = Dec(row, "Amount");
+            var percentage = Dec(row, "Percentage");
+            var errors = new List<string>();
+            var warnings = new List<string>();
+            if (string.Equals(calculationType, "PercentOfBasic", StringComparison.OrdinalIgnoreCase) && percentage <= 0)
+                errors.Add("PercentOfBasic components require a positive Percentage");
+            if (string.Equals(calculationType, "Fixed", StringComparison.OrdinalIgnoreCase) && amount <= 0)
+                warnings.Add("Fixed pay component has no positive Amount");
+            if (percentage < 0 || percentage > 100) errors.Add("Percentage must be between 0 and 100");
+            if (string.Equals(calculationType, "PercentOfBasic", StringComparison.OrdinalIgnoreCase))
+                totals[gradeCode] = totals.GetValueOrDefault(gradeCode) + percentage;
+            if (errors.Count == 0 && warnings.Count == 0) continue;
+            rows.Add(new ImportRowResult(i + 2, $"gradePayComponents:{gradeCode}/{code}", Val(row, "ComponentName"), errors.Count > 0 ? ImportRowStatus.Error : ImportRowStatus.Warning, errors, warnings));
+        }
+
+        foreach (var (gradeCode, total) in totals.Where(x => x.Value > 100m))
+        {
+            rows.Add(new ImportRowResult(0, $"gradePayComponents:{gradeCode}", "Component percentage total", ImportRowStatus.Warning, [],
+                [$"PercentOfBasic components total {total:0.##}% for grade {gradeCode}; confirm this is intentional"]));
         }
     }
 

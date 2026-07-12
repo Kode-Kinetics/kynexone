@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { FileUp, Wand2, CheckCircle2, Trash2, Sparkles } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Database, Eye, FileSpreadsheet, FileUp, GitBranch, Rocket, ShieldCheck, Sparkles, Trash2, UploadCloud, Wand2, XCircle } from 'lucide-react';
 import { orgStructureImportApi, setupAssistantApi, type CompanyProfile, type OrgStructureImportRequest, type OrgStructureImportResult, type SetupDraft } from '../api/setupAssistant';
 
 const COUNTRIES = [
@@ -252,14 +252,14 @@ export function AiSetupAssistant() {
   );
 }
 
-const IMPORT_KEYS: { key: keyof OrgStructureImportRequest; label: string }[] = [
-  { key: 'companiesCsv', label: 'Companies CSV' },
-  { key: 'branchesCsv', label: 'Branches CSV' },
-  { key: 'costCentersCsv', label: 'Cost centers CSV' },
-  { key: 'departmentsCsv', label: 'Departments CSV' },
-  { key: 'gradesCsv', label: 'Grades CSV' },
-  { key: 'gradePayComponentsCsv', label: 'Grade pay components CSV' },
-  { key: 'designationsCsv', label: 'Designations CSV' },
+const IMPORT_KEYS: { key: keyof OrgStructureImportRequest; section: string; label: string; phase: string; dependsOn: string[]; required: string[] }[] = [
+  { key: 'companiesCsv', section: 'companies', label: 'Legal entities', phase: 'Foundation', dependsOn: [], required: ['LegalNameEn', 'CountryCode', 'DefaultCurrency'] },
+  { key: 'branchesCsv', section: 'branches', label: 'Branches', phase: 'Entity wiring', dependsOn: ['companies'], required: ['CompanyLegalName', 'Code', 'NameEn'] },
+  { key: 'costCentersCsv', section: 'costCenters', label: 'Cost centers', phase: 'Finance wiring', dependsOn: ['companies'], required: ['CompanyLegalName', 'Code', 'Name'] },
+  { key: 'departmentsCsv', section: 'departments', label: 'Departments', phase: 'Org hierarchy', dependsOn: ['branches', 'costCenters'], required: ['Code', 'NameEn'] },
+  { key: 'gradesCsv', section: 'grades', label: 'Grades & salary bands', phase: 'Compensation rules', dependsOn: [], required: ['Code', 'Name', 'MinSalary', 'MaxSalary'] },
+  { key: 'gradePayComponentsCsv', section: 'gradePayComponents', label: 'Grade pay breakdown', phase: 'Payroll rules', dependsOn: ['grades'], required: ['GradeCode', 'ComponentCode', 'ComponentName'] },
+  { key: 'designationsCsv', section: 'designations', label: 'Designations', phase: 'Position eligibility', dependsOn: ['departments', 'grades'], required: ['Code', 'TitleEn'] },
 ];
 
 function OrgStructureImportPanel() {
@@ -267,12 +267,27 @@ function OrgStructureImportPanel() {
   const [result, setResult] = useState<OrgStructureImportResult | null>(null);
   const [loading, setLoading] = useState('');
   const [error, setError] = useState('');
+  const [packageName, setPackageName] = useState('');
 
   const setFile = async (key: keyof OrgStructureImportRequest, file?: File) => {
     if (!file) return;
     setPayload(p => ({ ...p, [key]: undefined }));
     const text = await file.text();
     setPayload(p => ({ ...p, [key]: text }));
+    setResult(null);
+  };
+
+  const setPackageFile = async (file?: File) => {
+    if (!file) return;
+    setError('');
+    const text = await file.text();
+    const parsed = splitOrgPackage(text);
+    if (Object.values(parsed).every(v => !v)) {
+      setError('Package file was not recognized. Use the generated package format with # companies, # branches, # departments, and related sections.');
+      return;
+    }
+    setPayload(p => ({ ...p, ...parsed }));
+    setPackageName(file.name);
     setResult(null);
   };
 
@@ -301,42 +316,152 @@ function OrgStructureImportPanel() {
   };
 
   const hasAny = Object.values(payload).some(Boolean);
+  const loadedCount = IMPORT_KEYS.filter(x => payload[x.key]).length;
+  const totalRows = IMPORT_KEYS.reduce((sum, x) => sum + countCsvRows(payload[x.key]), 0);
+  const blockingGroups = groupFindings(result, 'errors');
+  const warningGroups = groupFindings(result, 'warnings');
+  const impact = result ? summarizeImportImpact(result) : null;
+  const runway = [
+    { label: 'Load', done: hasAny, active: !result },
+    { label: 'Validate', done: Boolean(result && !result.hasBlockingErrors), active: Boolean(result && result.hasBlockingErrors) },
+    { label: 'Commit', done: Boolean(result?.committed), active: Boolean(result && !result.hasBlockingErrors && !result.committed) },
+  ];
+
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-white/[0.03]">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Bulk Organization Structure Import</h3>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Load the structure in dependency order: companies, branches, cost centers, departments, grades, pay components, designations.</p>
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-white/[0.03]">
+      <div className="border-b border-slate-100 bg-slate-50/80 p-5 dark:border-white/[0.06] dark:bg-white/[0.04]">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Organization Migration Cockpit</h3>
+            <p className="mt-1 max-w-3xl text-xs text-slate-500 dark:text-slate-400">
+              Import a complete existing organization structure with dependency validation across legal entity, branch, cost center, department, grade, payroll breakdown, and designation eligibility before anything is committed.
+            </p>
+          </div>
+          <button type="button" className="btn-secondary text-xs" onClick={template} disabled={loading === 'template'}><FileUp className="h-3.5 w-3.5" /> Template package</button>
         </div>
-        <button type="button" className="btn-secondary text-xs" onClick={template} disabled={loading === 'template'}><FileUp className="h-3.5 w-3.5" /> Template</button>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          {runway.map((step, idx) => (
+            <div key={step.label} className={`rounded-lg border p-3 ${step.done ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200' : step.active ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200' : 'border-slate-200 bg-white text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400'}`}>
+              <div className="flex items-center gap-2 text-xs font-semibold">
+                <span className="grid h-6 w-6 place-items-center rounded-full bg-white/70 text-[11px] dark:bg-black/20">{idx + 1}</span>
+                {step.label}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {IMPORT_KEYS.map(({ key, label }) => (
-          <label key={key} className="block rounded-lg border border-slate-200 p-3 text-xs dark:border-white/10">
-            <span className="mb-2 block font-medium text-slate-700 dark:text-slate-300">{label}</span>
-            <input type="file" accept=".csv,text/csv" onChange={e => setFile(key, e.target.files?.[0])} className="block w-full text-xs text-slate-500" />
-            {payload[key] && <span className="mt-2 block text-emerald-600">Loaded</span>}
-          </label>
-        ))}
-      </div>
-      {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
-      <div className="mt-4 flex gap-2">
-        <button type="button" className="btn-secondary" onClick={preview} disabled={!hasAny || loading === 'preview'}>Preview</button>
-        <button type="button" className="btn-primary" onClick={commit} disabled={!result || result.hasBlockingErrors || loading === 'commit'}>Commit Import</button>
-      </div>
-      {result && (
-        <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs dark:bg-white/[0.04]">
-          <p className="font-semibold text-slate-800 dark:text-white">{result.committed ? 'Committed' : 'Preview'} · {result.received} rows · {result.errors} errors · {result.warnings} warnings</p>
-          {Object.keys(result.applied ?? {}).length > 0 && <p className="mt-1 text-slate-600 dark:text-slate-300">{Object.entries(result.applied).map(([k, v]) => `${k}: ${v}`).join(' · ')}</p>}
-          <div className="mt-2 max-h-48 overflow-auto">
-            {result.rows.filter(r => r.errors.length || r.warnings.length).slice(0, 20).map((row, idx) => (
-              <p key={`${row.entityCode}-${idx}`} className={row.errors.length ? 'text-red-600' : 'text-amber-600'}>
-                Row {row.rowNumber} {row.entityCode}: {[...row.errors, ...row.warnings].join('; ')}
-              </p>
-            ))}
+
+      <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+        <div>
+          <div className="rounded-xl border border-dashed border-sapphire/30 bg-sapphire/[0.03] p-4 dark:border-cyanAccent/25 dark:bg-cyanAccent/[0.04]">
+            <div className="flex items-start gap-3">
+              <UploadCloud className="mt-0.5 h-5 w-5 text-sapphire dark:text-cyanAccent" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">Upload one migration package</p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Use the generated package with named sections, or upload individual CSV files below for controlled remediation.</p>
+                <input type="file" accept=".txt,.csv,text/plain,text/csv" onChange={e => setPackageFile(e.target.files?.[0])} className="mt-3 block w-full text-xs text-slate-500" />
+                {packageName && <p className="mt-2 text-xs font-medium text-emerald-600">Loaded package: {packageName}</p>}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            {IMPORT_KEYS.map(item => {
+              const rows = countCsvRows(payload[item.key]);
+              const ready = rows > 0;
+              const missingDeps = item.dependsOn.filter(dep => !payload[IMPORT_KEYS.find(x => x.section === dep)?.key ?? 'companiesCsv']);
+              return (
+                <label key={item.key} className={`block rounded-xl border p-3 text-xs transition ${ready ? 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-500/20 dark:bg-emerald-500/10' : 'border-slate-200 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20'}`}>
+                  <span className="flex items-start justify-between gap-2">
+                    <span>
+                      <span className="block font-semibold text-slate-800 dark:text-white">{item.label}</span>
+                      <span className="mt-0.5 block text-slate-500 dark:text-slate-400">{item.phase}</span>
+                    </span>
+                    <span className={`rounded-full px-2 py-0.5 font-medium ${ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`}>{rows} rows</span>
+                  </span>
+                  <span className="mt-2 flex flex-wrap gap-1">
+                    {item.required.slice(0, 3).map(req => <span key={req} className="rounded bg-white px-1.5 py-0.5 text-[10px] text-slate-500 ring-1 ring-slate-200 dark:bg-black/20 dark:text-slate-300 dark:ring-white/10">{req}</span>)}
+                  </span>
+                  {missingDeps.length > 0 && <span className="mt-2 flex items-center gap-1 text-amber-600 dark:text-amber-300"><GitBranch className="h-3 w-3" /> Depends on {missingDeps.join(', ')}</span>}
+                  <input type="file" accept=".csv,text/csv" onChange={e => setFile(item.key, e.target.files?.[0])} className="mt-3 block w-full text-xs text-slate-500" />
+                </label>
+              );
+            })}
           </div>
         </div>
-      )}
+
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-2">
+            <MetricCard icon={<FileSpreadsheet className="h-4 w-4" />} label="Files" value={`${loadedCount}/7`} />
+            <MetricCard icon={<Database className="h-4 w-4" />} label="Rows" value={String(result?.received ?? totalRows)} />
+            <MetricCard icon={<ShieldCheck className="h-4 w-4" />} label="Readiness" value={result ? result.hasBlockingErrors ? 'Blocked' : 'Clear' : 'Pending'} tone={result?.hasBlockingErrors ? 'danger' : result ? 'success' : 'neutral'} />
+          </div>
+
+          {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
+
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="btn-secondary" onClick={preview} disabled={!hasAny || loading === 'preview'}>
+              <Eye className="h-4 w-4" /> {loading === 'preview' ? 'Validating...' : 'Run validation'}
+            </button>
+            <button type="button" className="btn-primary" onClick={commit} disabled={!result || result.hasBlockingErrors || loading === 'commit'}>
+              <Rocket className="h-4 w-4" /> {loading === 'commit' ? 'Committing...' : 'Commit governed import'}
+            </button>
+          </div>
+
+          {result && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs dark:border-white/10 dark:bg-white/[0.04]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-semibold text-slate-900 dark:text-white">{result.committed ? 'Committed to master data' : 'Validation preview'} · {result.received} rows</p>
+                <div className="flex gap-1.5">
+                  <span className="rounded-full bg-red-100 px-2 py-0.5 text-red-700 dark:bg-red-500/15 dark:text-red-200">{result.errors} errors</span>
+                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200">{result.warnings} warnings</span>
+                </div>
+              </div>
+              {impact && (
+                <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                  <Impact label="Create" value={impact.create} />
+                  <Impact label="Update" value={impact.update} />
+                  <Impact label="Blocked" value={impact.blocked} />
+                </div>
+              )}
+              {Object.keys(result.applied ?? {}).length > 0 && <p className="mt-3 text-slate-600 dark:text-slate-300">{Object.entries(result.applied).map(([k, v]) => `${k}: ${v}`).join(' · ')}</p>}
+
+              <FindingGroup title="Blocking findings" icon={<XCircle className="h-4 w-4" />} groups={blockingGroups} tone="danger" />
+              <FindingGroup title="Review findings" icon={<AlertTriangle className="h-4 w-4" />} groups={warningGroups} tone="warning" />
+              {!result.hasBlockingErrors && result.warnings === 0 && <p className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"><CheckCircle2 className="h-4 w-4" /> Package is clean and ready to commit.</p>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ icon, label, value, tone = 'neutral' }: { icon: React.ReactNode; label: string; value: string; tone?: 'neutral' | 'success' | 'danger' }) {
+  const color = tone === 'success' ? 'text-emerald-600 dark:text-emerald-300' : tone === 'danger' ? 'text-red-600 dark:text-red-300' : 'text-slate-700 dark:text-slate-200';
+  return <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-white/[0.03]"><div className={`mb-1 ${color}`}>{icon}</div><p className="text-[11px] text-slate-500 dark:text-slate-400">{label}</p><p className={`mt-0.5 text-sm font-bold ${color}`}>{value}</p></div>;
+}
+
+function Impact({ label, value }: { label: string; value: number }) {
+  return <div className="rounded-lg bg-white px-3 py-2 ring-1 ring-slate-200 dark:bg-black/20 dark:ring-white/10"><p className="text-[11px] text-slate-500 dark:text-slate-400">{label}</p><p className="text-base font-bold text-slate-900 dark:text-white">{value}</p></div>;
+}
+
+function FindingGroup({ title, icon, groups, tone }: { title: string; icon: React.ReactNode; groups: Record<string, string[]>; tone: 'danger' | 'warning' }) {
+  const entries = Object.entries(groups);
+  if (entries.length === 0) return null;
+  const text = tone === 'danger' ? 'text-red-700 dark:text-red-200' : 'text-amber-700 dark:text-amber-200';
+  const bg = tone === 'danger' ? 'bg-red-50 dark:bg-red-500/10' : 'bg-amber-50 dark:bg-amber-500/10';
+  return (
+    <div className={`mt-3 rounded-lg p-3 ${bg}`}>
+      <p className={`flex items-center gap-2 font-semibold ${text}`}>{icon}{title}</p>
+      <div className="mt-2 max-h-56 space-y-2 overflow-auto pr-1">
+        {entries.slice(0, 8).map(([section, findings]) => (
+          <div key={section}>
+            <p className="font-semibold capitalize text-slate-800 dark:text-white">{section}</p>
+            {findings.slice(0, 5).map((finding, idx) => <p key={`${section}-${idx}`} className={text}>{finding}</p>)}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -349,6 +474,54 @@ function downloadText(content: string, filename: string) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function countCsvRows(content?: string): number {
+  if (!content) return 0;
+  return content.split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(1).length;
+}
+
+function splitOrgPackage(content: string): OrgStructureImportRequest {
+  const out: OrgStructureImportRequest = {};
+  const sectionToKey = Object.fromEntries(IMPORT_KEYS.map(x => [x.section.toLowerCase(), x.key])) as Record<string, keyof OrgStructureImportRequest>;
+  let current: keyof OrgStructureImportRequest | null = null;
+  const buffers: Partial<Record<keyof OrgStructureImportRequest, string[]>> = {};
+  for (const line of content.replace(/\r\n/g, '\n').split('\n')) {
+    const match = line.trim().match(/^#\s*([A-Za-z]+)\s*$/);
+    if (match) {
+      current = sectionToKey[match[1].toLowerCase()] ?? null;
+      if (current && !buffers[current]) buffers[current] = [];
+      continue;
+    }
+    if (current) buffers[current]?.push(line);
+  }
+  for (const [key, lines] of Object.entries(buffers) as [keyof OrgStructureImportRequest, string[]][]) {
+    const csv = lines.join('\n').trim();
+    if (csv) out[key] = csv;
+  }
+  return out;
+}
+
+function groupFindings(result: OrgStructureImportResult | null, key: 'errors' | 'warnings'): Record<string, string[]> {
+  if (!result) return {};
+  return result.rows.reduce<Record<string, string[]>>((acc, row) => {
+    const findings = row[key] ?? [];
+    if (findings.length === 0) return acc;
+    const section = row.entityCode?.split(':')[0] || 'general';
+    acc[section] ??= [];
+    for (const finding of findings) acc[section].push(`Row ${row.rowNumber || '-'} ${row.entityCode ?? ''}: ${finding}`.trim());
+    return acc;
+  }, {});
+}
+
+function summarizeImportImpact(result: OrgStructureImportResult): { create: number; update: number; blocked: number } {
+  let update = 0;
+  let blocked = 0;
+  for (const row of result.rows) {
+    if (row.errors.length) blocked++;
+    if (row.warnings.some(w => w.includes('already exists and will be updated'))) update++;
+  }
+  return { create: Math.max(result.received - update - blocked, 0), update, blocked };
 }
 
 function DraftSection({ title, rows, onRemove }: { title: string; rows: [string, string][]; onRemove: (idx: number) => void }) {
