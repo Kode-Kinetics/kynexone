@@ -60,10 +60,11 @@ public sealed class AiAuditService : IAiAuditService
         {
             _logger.LogError(
                 ex,
-                "AI audit logging failed for tenant {TenantId}, user {UserId}, intent {Intent}. Returning AI response without audit persistence.",
+                "AI audit logging failed for tenant {TenantId}, user {UserId}, intent {Intent}. Blocking AI response because audit persistence is mandatory.",
                 entry.TenantId,
                 entry.UserId,
                 entry.IntentClassified);
+            throw new InvalidOperationException("ai_audit_persistence_failed", ex);
         }
     }
 

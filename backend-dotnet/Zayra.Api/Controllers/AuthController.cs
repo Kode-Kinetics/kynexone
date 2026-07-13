@@ -28,7 +28,13 @@ public class AuthController : ControllerBase
             if (result.RequiresMfa)
                 return Ok(new { mfaRequired = true, challengeToken = result.Challenge!.ChallengeToken, expiresInSeconds = result.Challenge.ExpiresInSeconds });
             if (result.RequiresMfaEnrollment)
-                return Ok(new { mfaEnrollmentRequired = true, message = "Your organization requires multi-factor authentication. Please set up MFA to continue." });
+                return Ok(new
+                {
+                    mfaEnrollmentRequired = true,
+                    enrollmentToken = result.EnrollmentChallenge!.ChallengeToken,
+                    expiresInSeconds = result.EnrollmentChallenge.ExpiresInSeconds,
+                    message = "Your organization requires multi-factor authentication. Please set up MFA to continue."
+                });
             return Ok(result.Tokens);
         }
         catch (UnauthorizedAccessException ex) { return Unauthorized(new { message = ex.Message }); }

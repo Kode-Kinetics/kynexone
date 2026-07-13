@@ -142,7 +142,7 @@ public sealed class SaudiComplianceDashboardService
             .ToListAsync(ct);
 
         var salaries = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(s => s.TenantId == tenantId)
+            .Where(s => s.TenantId == tenantId && s.IsActive)
             .ToListAsync(ct);
 
         // IgnoreQueryFilters is intentional: same as GosiReadinessReportService — Guid.Empty

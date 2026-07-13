@@ -276,6 +276,9 @@ internal sealed class NullMfaService : IMfaService
 {
     public Task<MfaSetupInitDto> InitiateSetupAsync(Guid u, Guid t, CancellationToken c) => throw new NotImplementedException();
     public Task<bool> VerifySetupAsync(Guid u, Guid t, MfaVerifySetupRequest r, CancellationToken c) => throw new NotImplementedException();
+    public Task<string> CreateEnrollmentChallengeAsync(Guid u, Guid t, string ip, CancellationToken c) => throw new NotImplementedException();
+    public Task<MfaSetupInitDto?> InitiateEnrollmentSetupAsync(string token, CancellationToken c) => throw new NotImplementedException();
+    public Task<bool> VerifyEnrollmentSetupAsync(string token, MfaVerifySetupRequest r, CancellationToken c) => throw new NotImplementedException();
     public Task<string> CreateChallengeAsync(Guid u, Guid t, string ip, CancellationToken c) => throw new NotImplementedException();
     public Task<User?> VerifyChallengeAsync(string token, string code, CancellationToken c) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid u, Guid t, string code, CancellationToken c) => throw new NotImplementedException();

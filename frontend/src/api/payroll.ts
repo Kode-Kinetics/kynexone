@@ -3,12 +3,24 @@ import type { PagedResult } from './organization';
 
 export interface SalaryStructure {
   id: string;
+  companyId: string | null;
+  companyName: string | null;
   code: string;
   name: string;
   currency: string;
   effectiveDate: string;
+  minGrossSalary: number;
+  maxGrossSalary: number;
+  minBasicSalary: number;
+  maxBasicSalary: number;
+  eligibleGradeIds: string[];
+  eligibleDesignationIds: string[];
+  versionNumber: number;
+  previousVersionId: string | null;
   isActive: boolean;
   createdAtUtc: string;
+  assignedEmployeeCount: number;
+  components: SalaryComponent[];
 }
 
 export interface SalaryComponent {
@@ -111,6 +123,10 @@ export interface PayrollPaymentBatch {
   totalAmount: number;
   currency: string;
   status: string;
+  wpsStatus: string;
+  wpsStatusChangedAtUtc: string | null;
+  wpsSubmissionReference: string | null;
+  wpsRejectionReason: string | null;
   createdAtUtc: string;
 }
 
@@ -444,11 +460,23 @@ export const payrollApi = {
   generateWpsFile: (batchId: string) =>
     client.post<WPSFileBatch>(`/api/payroll/payment-batches/${batchId}/wps-file`).then((r) => r.data),
 
+  updateWpsStatus: (batchId: string, body: { status: string; reference?: string; notes?: string }) =>
+    client.post<{ batchId: string; wpsStatus: string }>(`/api/payroll/payment-batches/${batchId}/wps-status`, body).then((r) => r.data),
+
   listSalaryStructures: () =>
     client.get<SalaryStructure[]>('/api/payroll/salary-structures').then((r) => r.data),
 
+  getSalaryStructure: (id: string) =>
+    client.get<SalaryStructure>(`/api/payroll/salary-structures/${id}`).then((r) => r.data),
+
   createSalaryStructure: (payload: unknown) =>
     client.post<SalaryStructure>('/api/payroll/salary-structures', payload).then((r) => r.data),
+
+  updateSalaryStructure: (id: string, payload: unknown) =>
+    client.put<SalaryStructure>(`/api/payroll/salary-structures/${id}`, payload).then((r) => r.data),
+
+  deleteSalaryStructure: (id: string) =>
+    client.delete(`/api/payroll/salary-structures/${id}`).then((r) => r.data),
 
   listEmployeeSalaryStructures: (employeeId?: number) =>
     client.get<EmployeeSalaryStructure[]>('/api/payroll/employee-salary-structures', { params: employeeId ? { employeeId } : undefined }).then((r) => r.data),

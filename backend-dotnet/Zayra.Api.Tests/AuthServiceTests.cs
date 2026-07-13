@@ -120,6 +120,76 @@ public class AuthServiceTests
         Assert.True(await db.AuditLogs.AnyAsync(x => x.Action == "auth.refresh"));
     }
 
+    [Fact]
+    public async Task Login_UsesTenantRefreshTokenExpiryPolicy()
+    {
+        var (db, _, _) = await SeedUserAsync();
+        var sec = await db.SecuritySettings.FirstAsync();
+        sec.RefreshTokenExpiryDays = 2;
+        await db.SaveChangesAsync();
+
+        var auth = BuildService(db);
+        await auth.LoginAsync(new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+
+        var token = await db.RefreshTokens.SingleAsync();
+        Assert.True(token.ExpiresAtUtc <= DateTime.UtcNow.AddDays(2).AddMinutes(1));
+        Assert.True(token.ExpiresAtUtc > DateTime.UtcNow.AddDays(1));
+    }
+
+    [Fact]
+    public async Task Login_DisallowsMultipleSessions_WhenTenantPolicyDisablesThem()
+    {
+        var (db, _, _) = await SeedUserAsync();
+        var sec = await db.SecuritySettings.FirstAsync();
+        sec.AllowMultipleSessions = false;
+        await db.SaveChangesAsync();
+
+        var auth = BuildService(db);
+        await auth.LoginAsync(new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+        await auth.LoginAsync(new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+
+        Assert.Equal(2, await db.RefreshTokens.CountAsync());
+        Assert.Equal(1, await db.RefreshTokens.CountAsync(x => x.RevokedAtUtc == null));
+        Assert.Equal(1, await db.RefreshTokens.CountAsync(x => x.RevokedAtUtc != null));
+    }
+
+    [Fact]
+    public async Task Refresh_RejectsTokenPastTenantSessionTimeout_AndRevokesIt()
+    {
+        var (db, _, _) = await SeedUserAsync();
+        var sec = await db.SecuritySettings.FirstAsync();
+        sec.SessionTimeoutMinutes = 15;
+        await db.SaveChangesAsync();
+
+        var auth = BuildService(db);
+        var login = await auth.LoginAsync(new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+        var stored = await db.RefreshTokens.SingleAsync();
+        stored.CreatedAtUtc = DateTime.UtcNow.AddMinutes(-16);
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => auth.RefreshAsync(new RefreshTokenRequest(login.Tokens!.RefreshToken), TestCtx, CancellationToken.None));
+
+        Assert.NotNull((await db.RefreshTokens.SingleAsync()).RevokedAtUtc);
+    }
+
+    [Fact]
+    public async Task Refresh_TenantRequiresMfaForUnenrolledUser_RejectsExistingSession()
+    {
+        var (db, _, _) = await SeedUserAsync();
+        var auth = BuildService(db);
+        var login = await auth.LoginAsync(new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+
+        var sec = await db.SecuritySettings.FirstAsync();
+        sec.MfaRequired = true;
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => auth.RefreshAsync(new RefreshTokenRequest(login.Tokens!.RefreshToken), TestCtx, CancellationToken.None));
+
+        Assert.NotNull((await db.RefreshTokens.SingleAsync()).RevokedAtUtc);
+    }
+
     // ── Tenant-mandated MFA enforcement ───────────────────────────────────────
 
     [Fact]
@@ -137,6 +207,8 @@ public class AuthServiceTests
         Assert.Null(login.Tokens);                       // NO session is issued
         Assert.Null(login.Challenge);
         Assert.True(login.RequiresMfaEnrollment);        // client is told to enroll
+        Assert.NotNull(login.EnrollmentChallenge);
+        Assert.False(string.IsNullOrWhiteSpace(login.EnrollmentChallenge!.ChallengeToken));
         Assert.True(await db.AuditLogs.AnyAsync(x => x.Action == "auth.mfa_enrollment_required"));
     }
 
@@ -320,6 +392,9 @@ file sealed class NullMfaService : IMfaService
 {
     public Task<MfaSetupInitDto> InitiateSetupAsync(Guid userId, Guid tenantId, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> VerifySetupAsync(Guid userId, Guid tenantId, MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
+    public Task<string> CreateEnrollmentChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken ct) => Task.FromResult("test-enrollment-token");
+    public Task<MfaSetupInitDto?> InitiateEnrollmentSetupAsync(string token, CancellationToken ct) => throw new NotImplementedException();
+    public Task<bool> VerifyEnrollmentSetupAsync(string token, MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
     public Task<string> CreateChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Domain.Entities.User?> VerifyChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();

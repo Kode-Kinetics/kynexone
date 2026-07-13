@@ -163,6 +163,30 @@ export interface EmployeeEntity {
   shiftPolicyCode: string;
   leavePolicyCode: string;
   attendancePolicyCode: string;
+  salary?: number;
+  bankName: string;
+  bankIban: string;
+  wpsBankDetails: string;
+  sponsorName: string;
+  passportIssueDate?: string;
+  passportNumber: string;
+  passportExpiryDate?: string;
+  visaIssueDate?: string;
+  visaNumber: string;
+  visaExpiryDate?: string;
+  visaFileNumber: string;
+  iqamaNumber: string;
+  muqeemNumber: string;
+  gosiReference: string;
+  qiwaContractNumber: string;
+  emiratesId: string;
+  laborCardNumber: string;
+  qid: string;
+  workPermitNumber: string;
+  workPermitIssueDate?: string;
+  civilId: string;
+  residencyNumber: string;
+  residencyIssueDate?: string;
   profileCompletenessScore: number;
 }
 

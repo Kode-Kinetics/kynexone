@@ -337,7 +337,10 @@ public class AuthSeeder : IAuthSeeder
             ("approvals.read", "Approvals", "Read approval workflows and approval requests"),
             ("approvals.write", "Approvals", "Create approval workflows and start approval requests"),
             ("approvals.decide", "Approvals", "Approve or reject approval requests"),
+            ("approvals.override", "Approvals", "Override configured approver role controls"),
             ("approvals.manage", "Approvals", "Manage approval workflow definitions"),
+            // Enterprise setup
+            ("organization.setup.apply", "Setup", "Apply AI-generated organization setup changes"),
             // Reports
             ("reports.read", "Reports", "Run and view reports"),
             ("reports.schedule", "Reports", "Create scheduled reports"),

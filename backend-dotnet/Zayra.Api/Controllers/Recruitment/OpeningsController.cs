@@ -176,7 +176,7 @@ public class OpeningsController : ControllerBase
 
     // ── Export / Import / Template ───────────────────────────────────────────
     private static readonly string[] JobOpeningCsvHeaders =
-        { "Title", "DepartmentName", "DesignationTitle", "EmploymentType", "HeadCount", "Location", "SalaryFrom", "SalaryTo", "Description", "Requirements", "Status" };
+        { "Title", "DepartmentName", "DesignationTitle", "EmploymentType", "HeadCount", "Location", "SalaryFrom", "SalaryTo", "Description", "Requirements", "Responsibilities", "AssignedHrName", "Status" };
 
     [HttpGet("export")]
     public async Task<IActionResult> Export(CancellationToken ct)
@@ -189,7 +189,7 @@ public class OpeningsController : ControllerBase
         var rows = openings.Select(j => (IReadOnlyList<object?>)new object?[]
         {
             j.Title, j.DepartmentName, j.DesignationTitle, j.EmploymentType, j.HeadCount,
-            j.Location, j.SalaryFrom, j.SalaryTo, j.Description, j.Requirements, j.Status
+            j.Location, j.SalaryFrom, j.SalaryTo, j.Description, j.Requirements, j.Responsibilities, j.AssignedHrName, j.Status
         });
         var csv = Csv.Build(JobOpeningCsvHeaders, rows);
         Response.Headers["Content-Disposition"] = "attachment; filename=job_openings_export.csv";
@@ -240,6 +240,8 @@ public class OpeningsController : ControllerBase
                 SalaryTo = salaryTo > 0 ? salaryTo : null,
                 Description = row.GetValueOrDefault("Description", string.Empty),
                 Requirements = row.GetValueOrDefault("Requirements", string.Empty),
+                Responsibilities = row.GetValueOrDefault("Responsibilities", string.Empty),
+                AssignedHrName = row.GetValueOrDefault("AssignedHrName", string.Empty),
                 Status = row.GetValueOrDefault("Status", "Open"),
                 PublishedAtUtc = DateTime.UtcNow
             });

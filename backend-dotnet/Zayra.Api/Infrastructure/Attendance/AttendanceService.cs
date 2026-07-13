@@ -539,7 +539,9 @@ public class AttendanceService : IAttendanceService
         var query = _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && !x.IsDeleted && x.WorkDate >= from && x.WorkDate <= to);
         if (scopeIds is not null) query = query.Where(x => scopeIds.Contains(x.EmployeeId));
         else if (employeeId is not null) query = query.Where(x => x.EmployeeId == employeeId);
-        if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+        if (string.Equals(status, "PendingApproval", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(x => x.Status == "Submitted" || x.Status == "PendingHRApproval");
+        else if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         var total = await query.CountAsync(ct);
         var items = await query.OrderByDescending(x => x.WorkDate).ThenBy(x => x.EmployeeName).Skip((page - 1) * pageSize).Take(pageSize).Select(x => x.ToDto()).ToListAsync(ct);
         return new PagedResult<AttendanceDailyDto>(items, total, page, pageSize);
@@ -617,14 +619,13 @@ public class AttendanceService : IAttendanceService
         if (reg is null) return null;
         if (context.UserId.HasValue && reg.RequestedByUserId == context.UserId)
             throw new InvalidOperationException("Cannot approve your own correction request.");
-        if (reg.Status != "Submitted")
+        if (reg.Status != "Submitted" && reg.Status != "PendingHRApproval")
             throw new InvalidOperationException($"Request is in '{reg.Status}' status and cannot be approved.");
         if (reg.PayrollLockChecked)
             throw new InvalidOperationException("Attendance period is payroll locked.");
         var beforeStatus = reg.Status;
-        reg.Status = "Approved";
-        reg.DecidedAtUtc = DateTime.UtcNow;
-        var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RegularizationRequestId == id && x.ApprovalLevel == "HR", ct);
+        var activeLevel = reg.Status == "Submitted" ? "Manager" : "HR";
+        var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RegularizationRequestId == id && x.ApprovalLevel == activeLevel, ct);
         if (approval is not null)
         {
             approval.Decision = "Approved";
@@ -632,6 +633,22 @@ public class AttendanceService : IAttendanceService
             approval.DecidedAtUtc = DateTime.UtcNow;
             approval.DecidedByUserId = context.UserId;
         }
+
+        if (activeLevel == "Manager")
+        {
+            reg.Status = "PendingHRApproval";
+            await Audit(tenantId, context, "attendance.regularization.manager_approved", "AttendanceRegularizationRequest", reg.Id.ToString(),
+                JsonSerializer.Serialize(new { before = beforeStatus, after = reg.Status }), ct);
+            await _db.SaveChangesAsync(ct);
+            await _notifications.NotifyAsync(tenantId, null,
+                "Correction Request Pending HR",
+                $"Attendance correction for {reg.WorkDate:yyyy-MM-dd} is pending HR approval.",
+                "AttendanceRegularizationRequest", reg.Id.ToString(), ct);
+            return reg;
+        }
+
+        reg.Status = "Approved";
+        reg.DecidedAtUtc = DateTime.UtcNow;
         await ApplyRegularization(tenantId, reg, context, ct);
         await Audit(tenantId, context, "attendance.regularization.approved", "AttendanceRegularizationRequest", reg.Id.ToString(),
             JsonSerializer.Serialize(new { before = beforeStatus, after = "Approved" }), ct);
@@ -647,12 +664,13 @@ public class AttendanceService : IAttendanceService
     {
         var reg = await _db.AttendanceRegularizationRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
         if (reg is null) return null;
-        if (reg.Status != "Submitted")
+        if (reg.Status != "Submitted" && reg.Status != "PendingHRApproval")
             throw new InvalidOperationException($"Request is in '{reg.Status}' status and cannot be rejected.");
         var beforeStatus = reg.Status;
         reg.Status = "Rejected";
         reg.DecidedAtUtc = DateTime.UtcNow;
-        var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RegularizationRequestId == id && x.ApprovalLevel == "Manager", ct);
+        var activeLevel = beforeStatus == "Submitted" ? "Manager" : "HR";
+        var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RegularizationRequestId == id && x.ApprovalLevel == activeLevel, ct);
         if (approval is not null)
         {
             approval.Decision = "Rejected";

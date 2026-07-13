@@ -12,8 +12,10 @@ public class EmployeeChangeRequest : ITenantOwned
     public DateOnly EffectiveDate { get; set; }
     public string SensitiveFields { get; set; } = string.Empty;
     public string ProposedChangesJson { get; set; } = "{}";
+    public Guid? ApprovalRequestId { get; set; }
     public Guid? ApprovedByUserId { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? ApprovedAtUtc { get; set; }
     public DateTime? AppliedAtUtc { get; set; }
+    public string RejectionReason { get; set; } = string.Empty;
 }

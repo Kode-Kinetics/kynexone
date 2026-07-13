@@ -34,7 +34,12 @@ public class ScopeFilteringTests
 
     private static EmployeeSelfServiceController EssController(ZayraDbContext db, Guid tenantId, int employeeId)
     {
-        var controller = new EmployeeSelfServiceController(db, new StubLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1), new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalPolicyService(db)));
+        var controller = new EmployeeSelfServiceController(
+            db,
+            new StubLetterService(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1),
+            new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalPolicyService(db)),
+            new Zayra.Api.Infrastructure.Attendance.AttendanceService(db, new StubNotificationService(), new StubHttpClientFactory()));
         controller.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext
@@ -251,5 +256,16 @@ public class ScopeFilteringTests
         public Task<byte[]> GenerateAppointmentLetterAsync(LetterData data, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
         public Task<byte[]> GenerateExperienceLetterAsync(LetterData data, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
         public Task<byte[]> GenerateOfferLetterAsync(OfferLetterData data, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
+    }
+
+    private sealed class StubNotificationService : Zayra.Api.Infrastructure.Notifications.INotificationService
+    {
+        public Task NotifyAsync(Guid t, Guid? u, string title, string msg, string entity, string? entityId, CancellationToken ct) => Task.CompletedTask;
+        public Task SendEmailAsync(Guid t, string code, string to, string name, Dictionary<string, string> vars, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class StubHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new();
     }
 }

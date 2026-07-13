@@ -50,6 +50,51 @@ public class MfaService : IMfaService
         return true;
     }
 
+    public Task<string> CreateEnrollmentChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken ct) =>
+        CreateChallengeAsync(userId, tenantId, ip, ct);
+
+    public async Task<MfaSetupInitDto?> InitiateEnrollmentSetupAsync(string enrollmentToken, CancellationToken ct)
+    {
+        var challenge = await LoadValidTenantChallengeAsync(enrollmentToken, ct);
+        if (challenge is null) return null;
+
+        var user = await LoadUser(challenge.UserId!.Value, ct);
+        if (user is null || user.TenantId != challenge.TenantId || user.MFAEnabled || !string.IsNullOrEmpty(user.MfaSecretEncrypted))
+            return null;
+
+        return await InitiateSetupAsync(user.Id, user.TenantId, ct);
+    }
+
+    public async Task<bool> VerifyEnrollmentSetupAsync(string enrollmentToken, MfaVerifySetupRequest request, CancellationToken ct)
+    {
+        var challenge = await LoadValidTenantChallengeAsync(enrollmentToken, ct);
+        if (challenge is null) return false;
+
+        var user = await LoadUser(challenge.UserId!.Value, ct);
+        if (user is null || user.TenantId != challenge.TenantId || user.MFAEnabled || !string.IsNullOrEmpty(user.MfaSecretEncrypted))
+            return false;
+
+        if (!_totp.Verify(request.TempSecret, request.TotpCode))
+        {
+            challenge.FailedAttempts++;
+            if (challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts)
+                challenge.UsedAtUtc = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+            return false;
+        }
+
+        user.MFAEnabled = true;
+        user.MfaSecretEncrypted = _totp.EncryptSecret(request.TempSecret);
+        user.MfaConfiguredAtUtc = DateTime.UtcNow;
+        user.MfaFailedCount = 0;
+        user.UpdatedAtUtc = DateTime.UtcNow;
+        challenge.UsedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        await _audit.WriteAsync("auth.mfa.enabled", "User", user.Id.ToString(),
+            new RequestContext(null, null, user.Id, user.TenantId), "{\"via\":\"enrollment_challenge\"}", ct);
+        return true;
+    }
+
     public async Task<string> CreateChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken ct)
     {
         var rawToken = _tokenService.CreateSecureToken();
@@ -63,6 +108,14 @@ public class MfaService : IMfaService
         });
         await _db.SaveChangesAsync(ct);
         return rawToken;
+    }
+
+    private async Task<MfaChallengeToken?> LoadValidTenantChallengeAsync(string rawToken, CancellationToken ct)
+    {
+        var hash = _tokenService.HashToken(rawToken);
+        var challenge = await _db.MfaChallengeTokens
+            .FirstOrDefaultAsync(x => x.TokenHash == hash && x.UserId != null && x.PlatformUserId == null, ct);
+        return challenge is null || !challenge.IsValid ? null : challenge;
     }
 
     public async Task<User?> VerifyChallengeAsync(string rawToken, string totpCode, CancellationToken ct)

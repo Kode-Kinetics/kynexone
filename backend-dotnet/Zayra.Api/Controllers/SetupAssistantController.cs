@@ -1,7 +1,10 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Setup;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -16,11 +19,13 @@ public class SetupAssistantController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly ISetupAssistantService _assistant;
+    private readonly IAuditService _audit;
 
-    public SetupAssistantController(ZayraDbContext db, ISetupAssistantService assistant)
+    public SetupAssistantController(ZayraDbContext db, ISetupAssistantService assistant, IAuditService audit)
     {
         _db = db;
         _assistant = assistant;
+        _audit = audit;
     }
 
     /// <summary>Generate a proposed starter configuration — does NOT write anything.</summary>
@@ -37,6 +42,7 @@ public class SetupAssistantController : ControllerBase
     [HttpPost("apply")]
     public async Task<IActionResult> Apply([FromBody] ApplySetupRequest req, CancellationToken ct)
     {
+        if (!HasPermission("organization.setup.apply")) return Forbid();
         var tenantId = GetTenantId();
         var d = req.Draft;
         var counts = new Dictionary<string, int>();
@@ -346,6 +352,20 @@ public class SetupAssistantController : ControllerBase
         }
 
         await _db.SaveChangesAsync(ct);
+        await _audit.WriteAsync(
+            "setup.assistant_applied",
+            "SetupDraft",
+            "bulk",
+            Context(tenantId),
+            JsonSerializer.Serialize(new
+            {
+                countryCode = req.CountryCode,
+                currencyCode = req.CurrencyCode,
+                legalEntityName = req.LegalEntityName,
+                applied = counts,
+                total = counts.Values.Sum()
+            }),
+            ct);
         return Ok(new { applied = counts, total = counts.Values.Sum() });
     }
 
@@ -353,6 +373,15 @@ public class SetupAssistantController : ControllerBase
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id)
         ? id
         : Guid.TryParse(User.FindFirstValue("sub"), out id) ? id : null;
+    private bool HasPermission(string permission) =>
+        User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+    private RequestContext Context(Guid tenantId) => new(
+        HttpContext.Connection.RemoteIpAddress?.ToString(),
+        Request.Headers.UserAgent.ToString(),
+        GetUserId(),
+        tenantId,
+        User.Claims.Where(c => c.Type == ClaimTypes.Role).Select(c => c.Value).ToList(),
+        User.Claims.Where(c => c.Type == "permission").Select(c => c.Value).ToList());
 }
 
 public record ApplySetupRequest(SetupDraft Draft, string CountryCode, string CurrencyCode, string? LegalEntityName = null);

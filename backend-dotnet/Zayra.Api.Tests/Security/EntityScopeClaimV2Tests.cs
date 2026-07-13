@@ -150,6 +150,16 @@ public class EntityScopeClaimV2Tests
     }
 
     [Fact]
+    public void ProductionEntityScope_DefaultsToStrictMode()
+    {
+        EntityScopeOptions.ResolveStrictMode(isProduction: true, configuredStrictMode: false)
+            .Should().BeTrue("production must fail closed for tokens missing entity-scope claims");
+
+        EntityScopeOptions.ResolveStrictMode(isProduction: false, configuredStrictMode: false)
+            .Should().BeFalse("non-production keeps the documented compatibility default unless configured");
+    }
+
+    [Fact]
     public void LegacyV1Tokens_StillParse_OnTheCompatPath()
     {
         // Pre-cutover token: no v2 claim, one legacy entity_access row.

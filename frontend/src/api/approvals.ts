@@ -10,6 +10,22 @@ export interface ApprovalRequest {
   status: string;
   currentStepOrder: number;
   requestedByUserId: string | null;
+  requestedForEmployeeId: number | null;
+  companyId: string | null;
+  currentApproverEmployeeId: number | null;
+  currentApproverUserId: string | null;
+  currentApproverName: string;
+  currentApproverRole: string;
+  currentApproverType: string;
+  currentQueue: string;
+  slaHours: number;
+  dueAtUtc: string | null;
+  isOverdue: boolean;
+  ageHours: number;
+  lastRoutedAtUtc: string | null;
+  escalatedAtUtc: string | null;
+  escalatedToRole: string;
+  priority: string;
   createdAtUtc: string;
   completedAtUtc: string | null;
   decisions: ApprovalDecision[];
@@ -24,7 +40,7 @@ export interface ApprovalDecision {
 }
 
 export const approvalsApi = {
-  list: (params: { status?: string; entityName?: string; page?: number; pageSize?: number } = {}) =>
+  list: (params: { status?: string; entityName?: string; queue?: string; page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<ApprovalRequest>>('/api/approval-requests', { params }).then((r) => r.data),
 
   get: (id: string) =>

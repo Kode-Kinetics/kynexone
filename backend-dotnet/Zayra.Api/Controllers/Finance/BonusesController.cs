@@ -319,7 +319,7 @@ public class BonusesController : ControllerBase
         // Load salary structures once — keyed by Employee.Id
         var empIds = employees.Select(e => e.Id).ToList();
         var salaryMap = await _db.EmployeeSalaryStructures
-            .Where(s => empIds.Contains(s.EmployeeId) && s.IsActive)
+            .Where(s => empIds.Contains(s.EmployeeId) && s.IsActive && s.EffectiveDate <= DateOnly.FromDateTime(DateTime.UtcNow))
             .GroupBy(s => s.EmployeeId)
             .Select(g => new { EmployeeId = g.Key, BasicSalary = g.OrderByDescending(s => s.EffectiveDate).First().BasicSalary })
             .ToDictionaryAsync(x => x.EmployeeId, x => x.BasicSalary, ct);

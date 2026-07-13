@@ -37,7 +37,15 @@ public class HrmHierarchyTests
         return (svc, db, tenantId);
     }
 
-    private static async Task<Employee> AddEmp(ZayraDbContext db, Guid tenantId, string code, int? managerId = null)
+    private static async Task<Employee> AddEmp(
+        ZayraDbContext db,
+        Guid tenantId,
+        string code,
+        int? managerId = null,
+        Guid? companyId = null,
+        Guid? departmentId = null,
+        string? department = null,
+        string? designation = null)
     {
         var emp = new Employee
         {
@@ -47,6 +55,10 @@ public class HrmHierarchyTests
             Status = "Active",
             JoiningDate = DateTime.UtcNow.AddDays(-30),
             ManagerEmployeeId = managerId,
+            CompanyId = companyId,
+            DepartmentId = departmentId,
+            Department = department ?? string.Empty,
+            Designation = designation ?? string.Empty,
         };
         db.Employees.Add(emp);
         await db.SaveChangesAsync();
@@ -180,6 +192,96 @@ public class HrmHierarchyTests
         Assert.Contains(chart, node => node.EmployeeCode == "MINE");
     }
 
+    [Fact]
+    public async Task SetManager_RejectsCrossCompanyManager()
+    {
+        var (svc, db, tid) = Setup();
+        var companyA = Guid.NewGuid();
+        var companyB = Guid.NewGuid();
+        var emp = await AddEmp(db, tid, "EMP", companyId: companyA);
+        var mgr = await AddEmp(db, tid, "MGR", companyId: companyB);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.SetManagerAsync(tid, emp.Id, mgr.Id, Ctx(tid), default));
+
+        Assert.Contains("Cross-company", ex.Message);
+    }
+
+    // ── Hierarchy resolver ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ResolveHierarchy_ReturnsManagerChainAndApprovalAnchors()
+    {
+        var (svc, db, tid) = Setup();
+        var companyId = Guid.NewGuid();
+        var ceo = await AddEmp(db, tid, "CEO", companyId: companyId, department: "Executive", designation: "CEO");
+        var director = await AddEmp(db, tid, "DIR", ceo.Id, companyId, department: "Operations", designation: "Director");
+        var gm = await AddEmp(db, tid, "GM", director.Id, companyId, department: "Operations", designation: "GM");
+        var senior = await AddEmp(db, tid, "SNR", gm.Id, companyId, department: "Operations", designation: "Senior Manager");
+        var manager = await AddEmp(db, tid, "MGR", senior.Id, companyId, department: "Operations", designation: "Manager");
+        var employee = await AddEmp(db, tid, "EMP", manager.Id, companyId, department: "Operations", designation: "Analyst");
+
+        var branch = new Branch { TenantId = tid, CompanyId = companyId, Code = "HQ", NameEn = "HQ", CountryCode = "SA", City = "Riyadh", IsActive = true };
+        db.Branches.Add(branch);
+        await db.SaveChangesAsync();
+        db.Departments.Add(new Department
+        {
+            TenantId = tid,
+            BranchId = branch.Id,
+            Code = "OPS",
+            NameEn = "Operations",
+            ManagerEmployeeId = gm.Id,
+            IsActive = true
+        });
+        await db.SaveChangesAsync();
+
+        var result = await svc.ResolveHierarchyAsync(tid, employee.Id, 10, default);
+
+        Assert.Equal(new[] { "MGR", "SNR", "GM", "DIR", "CEO" }, result.ManagerChain.Select(x => x.EmployeeCode));
+        Assert.Equal(manager.Id, result.DirectManager!.EmployeeId);
+        Assert.Equal(senior.Id, result.SecondLevelManager!.EmployeeId);
+        Assert.Equal(gm.Id, result.DepartmentHead!.EmployeeId);
+        Assert.Equal(ceo.Id, result.CompanyHead!.EmployeeId);
+    }
+
+    [Fact]
+    public async Task ResolveWorkflowApprovers_MapsBusinessWorkflowsToHierarchy()
+    {
+        var (svc, db, tid) = Setup();
+        var companyId = Guid.NewGuid();
+        var ceo = await AddEmp(db, tid, "CEO", companyId: companyId, department: "Operations");
+        var deptHead = await AddEmp(db, tid, "HEAD", ceo.Id, companyId, department: "Operations");
+        var manager = await AddEmp(db, tid, "MGR", deptHead.Id, companyId, department: "Operations");
+        var employee = await AddEmp(db, tid, "EMP", manager.Id, companyId, department: "Operations");
+
+        var branch = new Branch { TenantId = tid, CompanyId = companyId, Code = "HQ", NameEn = "HQ", CountryCode = "SA", City = "Riyadh", IsActive = true };
+        db.Branches.Add(branch);
+        await db.SaveChangesAsync();
+        db.Departments.Add(new Department { TenantId = tid, BranchId = branch.Id, Code = "OPS", NameEn = "Operations", ManagerEmployeeId = deptHead.Id, IsActive = true });
+        await db.SaveChangesAsync();
+
+        var leave = await svc.ResolveWorkflowApproversAsync(tid, employee.Id, "Leave", default);
+        var kpi = await svc.ResolveWorkflowApproversAsync(tid, employee.Id, "KPI", default);
+        var payroll = await svc.ResolveWorkflowApproversAsync(tid, employee.Id, "Payroll", default);
+
+        Assert.Equal(new[] { "MGR", "HEAD" }, leave.Approvers.Select(x => x.EmployeeCode));
+        Assert.Equal(new[] { "MGR", "HEAD" }, kpi.Approvers.Select(x => x.EmployeeCode));
+        Assert.Equal(new[] { "MGR", "HEAD", "CEO" }, payroll.Approvers.Select(x => x.EmployeeCode));
+        Assert.Empty(payroll.MissingRoles);
+    }
+
+    [Fact]
+    public async Task ResolveWorkflowApprovers_ReportsMissingManagerForRootEmployee()
+    {
+        var (svc, db, tid) = Setup();
+        var employee = await AddEmp(db, tid, "ROOT", companyId: Guid.NewGuid(), department: "Executive");
+
+        var result = await svc.ResolveWorkflowApproversAsync(tid, employee.Id, "Leave", default);
+
+        Assert.Contains("DirectManager", result.MissingRoles);
+        Assert.Empty(result.Approvers);
+    }
+
     // ── Reporting lines ───────────────────────────────────────────────────────
 
     [Fact]
@@ -223,7 +325,7 @@ public class HrmHierarchyTests
         var added = await svc.AddReportingLineAsync(tid, emp.Id,
             new AddReportingLineRequest(mgr.Id, "Functional", null, null), Ctx(tid), default);
 
-        var removed = await svc.RemoveReportingLineAsync(tid, added.Id, Ctx(tid), default);
+        var removed = await svc.RemoveReportingLineAsync(tid, emp.Id, added.Id, Ctx(tid), default);
         Assert.True(removed);
 
         var line = await db.ReportingLines.FindAsync(added.Id);
@@ -242,8 +344,26 @@ public class HrmHierarchyTests
         var added = await svc.AddReportingLineAsync(tid, emp.Id,
             new AddReportingLineRequest(mgr.Id, "Functional", null, null), Ctx(tid), default);
 
-        var removed = await svc.RemoveReportingLineAsync(otherTenant, added.Id, Ctx(otherTenant), default);
+        var removed = await svc.RemoveReportingLineAsync(otherTenant, emp.Id, added.Id, Ctx(otherTenant), default);
         Assert.False(removed);
+    }
+
+    [Fact]
+    public async Task RemoveReportingLine_ReturnsFalseForWrongEmployeeId()
+    {
+        var (svc, db, tid) = Setup();
+        var mgr = await AddEmp(db, tid, "MGR");
+        var emp = await AddEmp(db, tid, "EMP");
+        var other = await AddEmp(db, tid, "OTHER");
+
+        var added = await svc.AddReportingLineAsync(tid, emp.Id,
+            new AddReportingLineRequest(mgr.Id, "Functional", null, null), Ctx(tid), default);
+
+        var removed = await svc.RemoveReportingLineAsync(tid, other.Id, added.Id, Ctx(tid), default);
+
+        Assert.False(removed);
+        var line = await db.ReportingLines.FindAsync(added.Id);
+        Assert.True(line!.IsActive);
     }
 
     // ── Org chart tree structure ──────────────────────────────────────────────

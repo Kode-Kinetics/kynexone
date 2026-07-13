@@ -190,7 +190,7 @@ public class GosiController : ControllerBase
         if (employee is null) return NotFound();
 
         var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(s => s.TenantId == tenantId && s.EmployeeId == employeeId)
+            .Where(s => s.TenantId == tenantId && s.EmployeeId == employeeId && s.IsActive && s.EffectiveDate <= DateOnly.FromDateTime(DateTime.UtcNow))
             .OrderByDescending(s => s.EffectiveDate)
             .FirstOrDefaultAsync(ct);
 

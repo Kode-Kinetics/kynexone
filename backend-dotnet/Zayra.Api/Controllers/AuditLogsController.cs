@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Audit;
 
 namespace Zayra.Api.Controllers;
 
@@ -30,6 +31,21 @@ public class AuditLogsController : ControllerBase
             .Take(limit)
             .ToListAsync(cancellationToken);
         return Ok(logs);
+    }
+
+    [HttpGet("integrity")]
+    public async Task<IActionResult> Integrity(CancellationToken cancellationToken = default)
+    {
+        var tenantId = GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var logs = await _db.AuditLogs
+            .AsNoTracking()
+            .Where(x => x.TenantId == tenantId)
+            .OrderBy(x => x.CreatedAtUtc)
+            .ThenBy(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        return Ok(AuditService.VerifyChain(logs));
     }
 
     private Guid? GetTenantId()

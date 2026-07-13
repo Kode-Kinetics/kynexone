@@ -168,6 +168,24 @@ public class OnboardingChecklist : ITenantOwned
     public bool IsDeleted { get; set; }
 }
 
+public class OnboardingChecklistTemplateTask : ITenantOwned
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid ChecklistId { get; set; }
+    public string TaskTitle { get; set; } = string.Empty;
+    public string TaskDescription { get; set; } = string.Empty;
+    public string Category { get; set; } = "General";
+    public string AssignedToName { get; set; } = string.Empty;
+    public Guid? AssignedToUserId { get; set; }
+    public int DueOffsetDays { get; set; }
+    public int OrderIndex { get; set; }
+    public bool IsMandatory { get; set; } = true;
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedAtUtc { get; set; }
+}
+
 // ── Onboarding Task (instance) ────────────────────────────────────────────────
 
 public class OnboardingTask : ITenantOwned

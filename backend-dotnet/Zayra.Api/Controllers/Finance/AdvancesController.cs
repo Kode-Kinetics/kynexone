@@ -197,6 +197,8 @@ public class AdvancesController : ControllerBase
         var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (adv == null) return NotFound();
         if (adv.Status != "Pending") return BadRequest("Advance is not in Pending status.");
+        if (adv.CreatedBy.HasValue && uid.HasValue && adv.CreatedBy == uid)
+            return BadRequest("Maker-checker control: requester cannot approve their own salary advance.");
 
         var oldStatus = adv.Status;
         adv.Status = "Active"; adv.ApprovedAmount = req.ApprovedAmount;

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
@@ -29,7 +30,7 @@ public class EmployeesController : ControllerBase
         "salary", "bankName", "bankIban", "wpsBankDetails", "passportNumber", "passportExpiryDate", "visaNumber",
         "dateOfBirth", "salary", "bankName", "bankIban", "wpsBankDetails", "passportNumber", "passportIssueDate",
         "passportExpiryDate", "visaNumber", "visaIssueDate", "visaExpiryDate", "iqamaNumber", "muqeemNumber",
-        "gosiReference", "emiratesId", "laborCardNumber", "visaFileNumber", "qid", "civilId", "residencyNumber",
+        "gosiReference", "qiwaContractNumber", "emiratesId", "laborCardNumber", "visaFileNumber", "qid", "civilId", "residencyNumber",
         "residencyIssueDate", "workPermitNumber", "workPermitIssueDate", "medicalInformation", "disciplinaryRecords",
         "terminationReason"
     };
@@ -42,8 +43,14 @@ public class EmployeesController : ControllerBase
     private readonly IHijriDateService _hijri;
     private readonly IDataScopeService _scopeService;
     private readonly ILetterService _letters;
+    private readonly IApprovalWorkflowService _approvalWorkflow;
 
     public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters)
+        : this(db, passwordHasher, audit, documents, notifications, hijri, scopeService, letters, new Zayra.Api.Infrastructure.Approvals.ApprovalWorkflowService(db, audit))
+    {
+    }
+
+    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService approvalWorkflow)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -53,6 +60,7 @@ public class EmployeesController : ControllerBase
         _hijri = hijri;
         _scopeService = scopeService;
         _letters = letters;
+        _approvalWorkflow = approvalWorkflow;
     }
 
     [HttpGet]
@@ -90,15 +98,24 @@ public class EmployeesController : ControllerBase
     private static readonly string[] EmployeeCsvHeaders =
         {
             "EmployeeCode", "CompanyLegalName", "BranchCode", "CostCenterCode", "WorkLocation",
-            "FullName", "ArabicName", "WorkEmail", "Phone", "Gender", "Nationality",
+            "FullName", "ArabicName", "PreferredName", "WorkEmail", "PersonalEmail", "Phone", "Gender",
+            "DateOfBirth", "Nationality", "MaritalStatus", "CountryCode",
             "Department", "DepartmentCode", "Designation", "JobTitle", "EmploymentType", "ContractType",
-            "Grade", "Status", "JoiningDate",
+            "Grade", "PositionCode", "Status", "JoiningDate", "ConfirmationDate", "ProbationStartDate",
+            "ProbationEndDate", "NoticePeriodDays", "ShiftPolicyCode", "LeavePolicyCode", "AttendancePolicyCode",
             // Hierarchy columns — resolved in Pass 2
             "ManagerEmployeeCode", "SupervisorEmployeeCode",
             // Payroll columns — creates EmployeePayrollProfile + EmployeeSalaryStructure on import
             "SalaryStructureCode", "BasicSalary", "HousingAllowance", "TransportAllowance", "FoodAllowance",
             "MobileAllowance", "OtherAllowance", "FixedDeduction", "Currency", "PayrollGroup",
-            "PaymentMethod", "IBAN", "AccountNumber", "BankName", "BankRoutingCode", "MolId"
+            "PaymentMethod", "IBAN", "AccountNumber", "BankName", "BankRoutingCode", "MolId",
+            // GCC/statutory identity columns stored on the employee master record.
+            "PassportNumber", "PassportIssueDate", "PassportExpiryDate", "VisaNumber", "VisaIssueDate",
+            "VisaExpiryDate", "IqamaNumber", "MuqeemNumber", "GosiReference", "EmiratesId", "LaborCardNumber",
+            "VisaFileNumber", "Qid", "CivilId", "ResidencyNumber", "ResidencyIssueDate", "WorkPermitNumber",
+            "WorkPermitIssueDate", "SponsorName", "SaudiOrNonSaudi", "IdType", "IdNumber", "OccupationCode",
+            "EstablishmentId", "WorkLocationId", "ContractReference", "WorkPermitReference", "QiwaEmployeeReference",
+            "QiwaSyncStatus"
         };
 
     [HttpGet("export")]
@@ -131,6 +148,9 @@ public class EmployeesController : ControllerBase
         var structures = await _db.SalaryStructures.AsNoTracking()
             .Where(s => s.TenantId == tenantId && !s.IsDeleted)
             .ToDictionaryAsync(s => s.Id, ct);
+        var positionCodes = await _db.Positions.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && !p.IsDeleted)
+            .ToDictionaryAsync(p => p.Id, p => p.Code, ct);
         var rows = emps.Select(e =>
         {
             profiles.TryGetValue(e.Id, out var profile);
@@ -139,14 +159,22 @@ public class EmployeesController : ControllerBase
             return (IReadOnlyList<object?>)new object?[]
         {
             e.EmployeeCode, string.Empty, string.Empty, e.CostCenter, e.WorkLocation,
-            e.FullName, e.ArabicName, e.WorkEmail, e.Phone, e.Gender, e.Nationality,
+            e.FullName, e.ArabicName, e.PreferredName, e.WorkEmail, e.PersonalEmail, e.Phone, e.Gender,
+            e.DateOfBirth, e.Nationality, e.MaritalStatus, e.CountryCode,
             e.Department, string.Empty, e.Designation, e.JobTitle, e.EmploymentType, e.ContractType,
-            e.Grade, e.Status, e.JoiningDate.ToString("yyyy-MM-dd"),
+            e.Grade, e.PositionId is not null && positionCodes.TryGetValue(e.PositionId.Value, out var positionCode) ? positionCode : string.Empty, e.Status, e.JoiningDate.ToString("yyyy-MM-dd"),
+            e.ConfirmationDate, e.ProbationStartDate, e.ProbationEndDate, e.NoticePeriodDays, e.ShiftPolicyCode, e.LeavePolicyCode, e.AttendancePolicyCode,
             string.Empty, string.Empty,
             structureCode, salary?.BasicSalary, salary?.HousingAllowance, salary?.TransportAllowance,
             salary?.FoodAllowance, salary?.MobileAllowance, salary?.OtherAllowance, salary?.FixedDeduction,
             salary?.Currency ?? profile?.SalaryCurrency, profile?.PayrollGroup, profile?.PaymentMethod,
-            profile?.Iban, profile?.AccountNumber, profile?.BankName, profile?.BankRoutingCode, profile?.MolId
+            profile?.Iban, profile?.AccountNumber, profile?.BankName, profile?.BankRoutingCode, profile?.MolId,
+            e.PassportNumber, e.PassportIssueDate, e.PassportExpiryDate, e.VisaNumber, e.VisaIssueDate,
+            e.VisaExpiryDate, e.IqamaNumber, e.MuqeemNumber, e.GosiReference, e.EmiratesId, e.LaborCardNumber,
+            e.VisaFileNumber, e.Qid, e.CivilId, e.ResidencyNumber, e.ResidencyIssueDate, e.WorkPermitNumber,
+            e.WorkPermitIssueDate, e.SponsorName, e.SaudiOrNonSaudi, e.IdType, e.IdNumber, e.OccupationCode,
+            e.EstablishmentId, e.WorkLocationId, e.ContractReference, e.WorkPermitReference, e.QiwaEmployeeReference,
+            e.QiwaSyncStatus
         };
         });
         var csv = Csv.Build(EmployeeCsvHeaders, rows);
@@ -238,6 +266,9 @@ public class EmployeesController : ControllerBase
             .AsNoTracking()
             .Where(g => g.TenantId == tenantId && !g.IsDeleted)
             .ToDictionaryAsync(g => g.Name.ToLowerInvariant(), g => g, ct);
+        var positionsByCode = await _db.Positions
+            .Where(p => p.TenantId == tenantId && !p.IsDeleted)
+            .ToDictionaryAsync(p => p.Code.ToUpperInvariant(), ct);
 
         int created = 0, skipped = 0;
         var errors = new List<string>();
@@ -245,6 +276,7 @@ public class EmployeesController : ControllerBase
         // Track employee codes created in this batch for Pass 2 resolution
         var batchCodes = new Dictionary<string, Employee>(StringComparer.OrdinalIgnoreCase);
         var batchPayroll = new Dictionary<string, (Employee emp, Dictionary<string, string> rowData)>(StringComparer.OrdinalIgnoreCase);
+        var claimedPositionCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // ── Pass 1: create all employee records ──────────────────────────────────
         foreach (var row in rows)
@@ -333,7 +365,42 @@ public class EmployeesController : ControllerBase
                 continue;
             }
             var finalGradeId = resolvedGrade?.Id ?? designationGradeId;
-            var finalGradeCode = resolvedGrade?.Code ?? (finalGradeId is not null ? gradeByCode.Values.FirstOrDefault(g => g.Id == finalGradeId)?.Code ?? string.Empty : string.Empty);
+            var finalGrade = resolvedGrade ?? (finalGradeId is not null ? gradeByCode.Values.FirstOrDefault(g => g.Id == finalGradeId) : null);
+            var finalGradeCode = finalGrade?.Code ?? string.Empty;
+            var positionCodeRaw = row.GetValueOrDefault("PositionCode", string.Empty).Trim().ToUpperInvariant();
+            Position? position = null;
+            if (!string.IsNullOrWhiteSpace(positionCodeRaw))
+            {
+                if (!positionsByCode.TryGetValue(positionCodeRaw, out position))
+                {
+                    skipped++; errors.Add($"Row {rowNum}: PositionCode '{positionCodeRaw}' not found."); continue;
+                }
+                if (position.Status is PositionStatuses.Frozen or PositionStatuses.Closed || position.IncumbentEmployeeId is not null || !claimedPositionCodes.Add(positionCodeRaw))
+                {
+                    skipped++; errors.Add($"Row {rowNum}: PositionCode '{positionCodeRaw}' is not available for assignment."); continue;
+                }
+                if ((position.CompanyId is not null && position.CompanyId != resolvedCompany?.Id) ||
+                    (position.BranchId is not null && position.BranchId != resolvedBranch?.Id) ||
+                    (position.DepartmentId is not null && position.DepartmentId != resolvedDeptId) ||
+                    (position.DesignationId is not null && position.DesignationId != resolvedDesigId) ||
+                    (position.GradeId is not null && position.GradeId != finalGradeId))
+                {
+                    skipped++; errors.Add($"Row {rowNum}: PositionCode '{positionCodeRaw}' is not eligible for the supplied organization, designation, or grade."); continue;
+                }
+            }
+            var grossSalary = GrossSalaryFromRow(row);
+            if (grossSalary > 0 && finalGrade is null)
+            {
+                skipped++;
+                errors.Add($"Row {rowNum}: Salary package requires a valid grade so salary eligibility can be enforced.");
+                continue;
+            }
+            if (finalGrade is not null && grossSalary > 0 && ((finalGrade.MinSalary > 0 && grossSalary < finalGrade.MinSalary) || (finalGrade.MaxSalary > 0 && grossSalary > finalGrade.MaxSalary)))
+            {
+                skipped++;
+                errors.Add($"Row {rowNum}: Salary package {grossSalary:N2} is outside grade {finalGrade.Code} range {finalGrade.MinSalary:N2}-{finalGrade.MaxSalary:N2}.");
+                continue;
+            }
 
             var finalCode = string.IsNullOrWhiteSpace(code) ? await GenerateEmployeeCode(tenantId, ct) : code;
             var employee = new Employee
@@ -346,24 +413,66 @@ public class EmployeesController : ControllerBase
                 FullName = name,
                 EnglishName = name,
                 ArabicName = row.GetValueOrDefault("ArabicName", string.Empty),
+                PreferredName = row.GetValueOrDefault("PreferredName", string.Empty),
+                PersonalEmail = row.GetValueOrDefault("PersonalEmail", string.Empty),
                 WorkEmail = row.GetValueOrDefault("WorkEmail", string.Empty),
                 Phone = row.GetValueOrDefault("Phone", string.Empty),
                 Gender = row.GetValueOrDefault("Gender", string.Empty),
+                DateOfBirth = ReadCsvDate(row, "DateOfBirth"),
                 Nationality = row.GetValueOrDefault("Nationality", string.Empty),
+                MaritalStatus = row.GetValueOrDefault("MaritalStatus", string.Empty),
+                CountryCode = row.GetValueOrDefault("CountryCode", string.Empty).Trim().ToUpperInvariant(),
                 Department = deptNameRaw,
                 DepartmentId = resolvedDeptId,
                 Designation = desigTitleRaw,
                 DesignationId = resolvedDesigId,
                 GradeId = finalGradeId,
+                PositionId = position?.Id,
                 Grade = finalGradeCode,
                 JobTitle = row.GetValueOrDefault("JobTitle", desigTitleRaw),
                 EmploymentType = row.GetValueOrDefault("EmploymentType", "Full-time"),
                 ContractType = row.GetValueOrDefault("ContractType", string.Empty),
                 Status = string.IsNullOrWhiteSpace(statusVal) ? "Active" : statusVal,
                 JoiningDate = jd == default ? DateTime.UtcNow : jd,
+                ConfirmationDate = ReadCsvDate(row, "ConfirmationDate"),
+                ProbationStartDate = ReadCsvDate(row, "ProbationStartDate"),
+                ProbationEndDate = ReadCsvDate(row, "ProbationEndDate"),
+                NoticePeriodDays = ReadCsvInt(row, "NoticePeriodDays"),
                 Branch = resolvedBranch?.NameEn ?? string.Empty,
                 CostCenter = resolvedCostCenter?.Code ?? string.Empty,
                 WorkLocation = row.GetValueOrDefault("WorkLocation", string.Empty).Trim(),
+                ShiftPolicyCode = row.GetValueOrDefault("ShiftPolicyCode", string.Empty).Trim(),
+                LeavePolicyCode = row.GetValueOrDefault("LeavePolicyCode", string.Empty).Trim(),
+                AttendancePolicyCode = row.GetValueOrDefault("AttendancePolicyCode", string.Empty).Trim(),
+                PassportNumber = row.GetValueOrDefault("PassportNumber", string.Empty).Trim(),
+                PassportIssueDate = ReadCsvDate(row, "PassportIssueDate"),
+                PassportExpiryDate = ReadCsvDate(row, "PassportExpiryDate"),
+                VisaNumber = row.GetValueOrDefault("VisaNumber", string.Empty).Trim(),
+                VisaIssueDate = ReadCsvDate(row, "VisaIssueDate"),
+                VisaExpiryDate = ReadCsvDate(row, "VisaExpiryDate"),
+                IqamaNumber = row.GetValueOrDefault("IqamaNumber", string.Empty).Trim(),
+                MuqeemNumber = row.GetValueOrDefault("MuqeemNumber", string.Empty).Trim(),
+                GosiReference = row.GetValueOrDefault("GosiReference", string.Empty).Trim(),
+                EmiratesId = row.GetValueOrDefault("EmiratesId", string.Empty).Trim(),
+                LaborCardNumber = row.GetValueOrDefault("LaborCardNumber", string.Empty).Trim(),
+                VisaFileNumber = row.GetValueOrDefault("VisaFileNumber", string.Empty).Trim(),
+                Qid = row.GetValueOrDefault("Qid", string.Empty).Trim(),
+                CivilId = row.GetValueOrDefault("CivilId", string.Empty).Trim(),
+                ResidencyNumber = row.GetValueOrDefault("ResidencyNumber", string.Empty).Trim(),
+                ResidencyIssueDate = ReadCsvDate(row, "ResidencyIssueDate"),
+                WorkPermitNumber = row.GetValueOrDefault("WorkPermitNumber", string.Empty).Trim(),
+                WorkPermitIssueDate = ReadCsvDate(row, "WorkPermitIssueDate"),
+                SponsorName = row.GetValueOrDefault("SponsorName", string.Empty).Trim(),
+                SaudiOrNonSaudi = row.GetValueOrDefault("SaudiOrNonSaudi", string.Empty).Trim(),
+                IdType = row.GetValueOrDefault("IdType", string.Empty).Trim(),
+                IdNumber = row.GetValueOrDefault("IdNumber", string.Empty).Trim(),
+                OccupationCode = row.GetValueOrDefault("OccupationCode", string.Empty).Trim(),
+                EstablishmentId = row.GetValueOrDefault("EstablishmentId", string.Empty).Trim(),
+                WorkLocationId = row.GetValueOrDefault("WorkLocationId", string.Empty).Trim(),
+                ContractReference = row.GetValueOrDefault("ContractReference", string.Empty).Trim(),
+                WorkPermitReference = row.GetValueOrDefault("WorkPermitReference", string.Empty).Trim(),
+                QiwaEmployeeReference = row.GetValueOrDefault("QiwaEmployeeReference", string.Empty).Trim(),
+                QiwaSyncStatus = row.GetValueOrDefault("QiwaSyncStatus", string.Empty).Trim(),
             };
             _db.Employees.Add(employee);
             batchCodes[finalCode] = employee;
@@ -371,6 +480,21 @@ public class EmployeesController : ControllerBase
             created++;
         }
         await _db.SaveChangesAsync(ct);
+        var importedPositionAssignments = batchCodes.Values.Where(e => e.PositionId is not null).ToList();
+        if (importedPositionAssignments.Count > 0)
+        {
+            var assignedPositionIds = importedPositionAssignments.Select(e => e.PositionId!.Value).ToList();
+            var positions = await _db.Positions.Where(p => p.TenantId == tenantId && assignedPositionIds.Contains(p.Id)).ToListAsync(ct);
+            foreach (var position in positions)
+            {
+                var incumbent = importedPositionAssignments.Single(e => e.PositionId == position.Id);
+                position.IncumbentEmployeeId = incumbent.Id;
+                position.Status = PositionStatuses.Filled;
+                position.UpdatedAtUtc = DateTime.UtcNow;
+                position.UpdatedBy = GetUserId();
+            }
+            await _db.SaveChangesAsync(ct);
+        }
 
         // ── Pass 1b: payroll profiles + salary structures ────────────────────────
         int payrollProfilesCreated = 0;
@@ -399,11 +523,6 @@ public class EmployeesController : ControllerBase
             var gross = basicSalary + housing + transport + food + mobile + other;
 
             var grade = emp.GradeId is not null ? gradeByCode.Values.FirstOrDefault(g => g.Id == emp.GradeId) : null;
-            if (grade is not null && gross > 0 && ((grade.MinSalary > 0 && gross < grade.MinSalary) || (grade.MaxSalary > 0 && gross > grade.MaxSalary)))
-            {
-                errors.Add($"Row for {emp.EmployeeCode}: Salary package {gross:N2} is outside grade {grade.Code} range {grade.MinSalary:N2}-{grade.MaxSalary:N2}.");
-                continue;
-            }
 
             bool hasPayroll = !string.IsNullOrEmpty(ibanRaw) || !string.IsNullOrEmpty(bankNameRaw) ||
                               !string.IsNullOrEmpty(molIdRaw) || gross > 0;
@@ -532,6 +651,30 @@ public class EmployeesController : ControllerBase
     }
 
     public record ImportEmployeesRequest(string CsvContent);
+
+    private static decimal GrossSalaryFromRow(Dictionary<string, string> row)
+    {
+        static decimal Amount(Dictionary<string, string> source, string key) =>
+            decimal.TryParse(source.GetValueOrDefault(key, string.Empty), out var value) ? value : 0m;
+        return Amount(row, "BasicSalary")
+               + Amount(row, "HousingAllowance")
+               + Amount(row, "TransportAllowance")
+               + Amount(row, "FoodAllowance")
+               + Amount(row, "MobileAllowance")
+               + Amount(row, "OtherAllowance");
+    }
+
+    private static DateOnly? ReadCsvDate(Dictionary<string, string> row, string key)
+    {
+        var value = row.GetValueOrDefault(key, string.Empty).Trim();
+        return DateOnly.TryParse(value, out var date) ? date : null;
+    }
+
+    private static int? ReadCsvInt(Dictionary<string, string> row, string key)
+    {
+        var value = row.GetValueOrDefault(key, string.Empty).Trim();
+        return int.TryParse(value, out var number) ? number : null;
+    }
 
     private async Task<SalaryStructure> ResolveImportSalaryStructureAsync(Guid tenantId, Guid? companyId, Grade? grade, string requestedCode, string currency, CancellationToken ct)
     {
@@ -761,6 +904,8 @@ public class EmployeesController : ControllerBase
     {
         try
         {
+            if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
+            if (req.ManagerEmployeeId.HasValue && !await CanAccessEmployeeAsync(req.ManagerEmployeeId.Value, ct)) return Forbid();
             await hierarchy.SetManagerAsync(RequireTenant(), id, req.ManagerEmployeeId, Context(), ct);
             return NoContent();
         }
@@ -777,6 +922,7 @@ public class EmployeesController : ControllerBase
         CancellationToken ct)
     {
         var tenantId = RequireTenant();
+        if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
         return Ok(await hierarchy.GetReportingLinesAsync(tenantId, id, ct));
     }
 
@@ -790,6 +936,8 @@ public class EmployeesController : ControllerBase
     {
         try
         {
+            if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
+            if (!await CanAccessEmployeeAsync(req.ManagerEmployeeId, ct)) return Forbid();
             var line = await hierarchy.AddReportingLineAsync(RequireTenant(), id, req, Context(), ct);
             return Created($"/api/employees/{id}/reporting-lines/{line.Id}", line);
         }
@@ -804,7 +952,40 @@ public class EmployeesController : ControllerBase
         [FromServices] IHrmHierarchyService hierarchy,
         CancellationToken ct)
     {
-        return await hierarchy.RemoveReportingLineAsync(RequireTenant(), lineId, Context(), ct) ? NoContent() : NotFound();
+        if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
+        return await hierarchy.RemoveReportingLineAsync(RequireTenant(), id, lineId, Context(), ct) ? NoContent() : NotFound();
+    }
+
+    [HttpGet("{id:int}/hierarchy")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
+    public async Task<ActionResult<HierarchyResolverDto>> ResolveHierarchy(
+        int id,
+        [FromServices] IHrmHierarchyService hierarchy,
+        [FromQuery] int maxDepth = 10,
+        CancellationToken ct = default)
+    {
+        if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
+        try
+        {
+            return Ok(await hierarchy.ResolveHierarchyAsync(RequireTenant(), id, maxDepth, ct));
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpGet("{id:int}/workflow-approvers")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Payroll Manager,Payroll Officer,Finance Approver,Finance Controller,Auditor")]
+    public async Task<ActionResult<WorkflowApproverResolutionDto>> ResolveWorkflowApprovers(
+        int id,
+        [FromQuery] string workflowType,
+        [FromServices] IHrmHierarchyService hierarchy,
+        CancellationToken ct)
+    {
+        if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
+        try
+        {
+            return Ok(await hierarchy.ResolveWorkflowApproversAsync(RequireTenant(), id, workflowType, ct));
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     public record SetManagerRequest(int? ManagerEmployeeId);
@@ -1100,6 +1281,20 @@ public class EmployeesController : ControllerBase
         if (sensitive.Count > 0)
         {
             if (!CanEditSensitive()) return Forbid();
+            var sensitiveChanges = request.Changes
+                .Where(x => SensitiveFields.Contains(x.Key))
+                .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+            var immediateChanges = request.Changes
+                .Where(x => !SensitiveFields.Contains(x.Key))
+                .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+
+            if (immediateChanges.Count > 0)
+            {
+                ApplyChanges(employee, immediateChanges);
+                employee.UpdatedAtUtc = DateTime.UtcNow;
+                await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
+            }
+
             var change = new EmployeeChangeRequest
             {
                 TenantId = tenantId,
@@ -1107,13 +1302,35 @@ public class EmployeesController : ControllerBase
                 RequestedByUserId = GetUserId(),
                 EffectiveDate = request.EffectiveDate,
                 SensitiveFields = string.Join(',', sensitive),
-                ProposedChangesJson = JsonSerializer.Serialize(request.Changes)
+                ProposedChangesJson = JsonSerializer.Serialize(sensitiveChanges)
             };
             _db.EmployeeChangeRequests.Add(change);
+            var workflow = await EnsureEmployeeChangeWorkflowAsync(tenantId, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
-            await Notify("Sensitive employee change requires approval", $"Fields requiring approval: {change.SensitiveFields}.", "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
+            var approval = await _approvalWorkflow.CreateRequestAsync(
+                tenantId,
+                new CreateApprovalRequest(
+                    workflow.Id,
+                    nameof(EmployeeChangeRequest),
+                    change.Id.ToString(),
+                    $"Employee change approval - {employee.EmployeeCode} {employee.FullName}",
+                    employee.Id,
+                    employee.CompanyId,
+                    "High"),
+                Context(),
+                cancellationToken);
+            change.ApprovalRequestId = approval.Id;
+            await _db.SaveChangesAsync(cancellationToken);
+            await Notify("Sensitive employee change requires approval", $"Fields requiring approval: {change.SensitiveFields}. Routed to {approval.CurrentQueue}. Due {approval.DueAtUtc:yyyy-MM-dd HH:mm} UTC.", "ApprovalRequest", approval.Id.ToString(), cancellationToken);
             await Audit("employee.change_requested", "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
-            return Accepted(new { changeRequestId = change.Id, requiresApproval = true, sensitiveFields = sensitive });
+            return Accepted(new
+            {
+                changeRequestId = change.Id,
+                approvalRequestId = approval.Id,
+                requiresApproval = true,
+                sensitiveFields = sensitive,
+                appliedFields = immediateChanges.Keys.ToList()
+            });
         }
 
         ApplyChanges(employee, request.Changes);
@@ -1227,12 +1444,19 @@ public class EmployeesController : ControllerBase
         if (employee is null) return NotFound();
 
         var context = Context();
+        var deletedAt = DateTime.UtcNow;
         employee.IsDeleted = true;
-        employee.DeletedAtUtc = DateTime.UtcNow;
+        employee.DeletedAtUtc = deletedAt;
         employee.DeletedBy = context.UserId;
         employee.Status = "Inactive";
+        employee.PrivacyStatus = "RetainedForStatutoryAudit";
+        employee.RetentionUntilUtc = deletedAt.AddYears(7);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employees.deleted", "Employee", id.ToString(), context, null, cancellationToken);
+        await _audit.WriteAsync("employees.deleted", "Employee", id.ToString(), context, JsonSerializer.Serialize(new
+        {
+            employee.PrivacyStatus,
+            employee.RetentionUntilUtc
+        }), cancellationToken);
         return NoContent();
     }
 
@@ -1243,19 +1467,76 @@ public class EmployeesController : ControllerBase
         var tenantId = RequireTenant();
         var change = await _db.EmployeeChangeRequests.FirstOrDefaultAsync(x => x.Id == changeId && x.TenantId == tenantId, cancellationToken);
         if (change is null) return NotFound();
+        if (!string.Equals(change.Status, "PendingApproval", StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { message = "Change request has already been decided." });
+        var approverId = GetUserId();
+        if (approverId is not null && change.RequestedByUserId == approverId)
+            return BadRequest(new { message = "Maker-checker violation: requester cannot approve their own sensitive change." });
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        if (change.EffectiveDate > today)
+            return BadRequest(new { message = "Future-dated sensitive changes cannot be applied before their effective date." });
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == change.EmployeeId && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
         ApplyChanges(employee, changes);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         change.Status = "ApprovedApplied";
-        change.ApprovedByUserId = GetUserId();
+        change.ApprovedByUserId = approverId;
         change.ApprovedAtUtc = DateTime.UtcNow;
         change.AppliedAtUtc = DateTime.UtcNow;
         await AddHistory(employee, "SensitiveChangeApproved", change.EffectiveDate, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await Audit("employee.change_approved", "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
         return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
+    }
+
+    private async Task<ApprovalWorkflow> EnsureEmployeeChangeWorkflowAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        var workflow = await _db.ApprovalWorkflows
+            .Include(w => w.Steps)
+            .FirstOrDefaultAsync(w => w.TenantId == tenantId && w.Code == "EMPLOYEE-CHANGE" && w.IsActive, cancellationToken);
+        if (workflow is null)
+        {
+            workflow = new ApprovalWorkflow
+            {
+                TenantId = tenantId,
+                Code = "EMPLOYEE-CHANGE",
+                Name = "Employee Master Change Approval",
+                EntityName = nameof(EmployeeChangeRequest),
+                IsActive = true
+            };
+            _db.ApprovalWorkflows.Add(workflow);
+        }
+        if (workflow.Steps.Count != 2
+            || workflow.Steps.All(x => !string.Equals(x.ApproverType, "Manager", StringComparison.OrdinalIgnoreCase))
+            || workflow.Steps.All(x => !string.Equals(x.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)))
+        {
+            _db.ApprovalWorkflowSteps.RemoveRange(workflow.Steps);
+            workflow.Steps.Clear();
+            workflow.Steps.Add(new ApprovalWorkflowStep
+            {
+                TenantId = tenantId,
+                WorkflowId = workflow.Id,
+                StepOrder = 1,
+                StepName = "Direct Manager Review",
+                ApproverRole = "Manager",
+                ApproverType = "Manager",
+                EscalationAfterHours = 24,
+                IsFinalStep = false
+            });
+            workflow.Steps.Add(new ApprovalWorkflowStep
+            {
+                TenantId = tenantId,
+                WorkflowId = workflow.Id,
+                StepOrder = 2,
+                StepName = "HR Final Approval",
+                ApproverRole = "HR Manager",
+                ApproverType = "Role",
+                EscalationAfterHours = 48,
+                IsFinalStep = true
+            });
+        }
+        return workflow;
     }
 
     [HttpPost("{id:int}/transfer")]
@@ -1269,25 +1550,30 @@ public class EmployeesController : ControllerBase
 
     [HttpPost("transfers/{transferId:guid}/approve-current-manager")]
     [Authorize(Roles = "Admin,HR Manager,Manager")]
-    public Task<IActionResult> ApproveCurrentManager(Guid transferId, CancellationToken cancellationToken) => AdvanceTransfer(transferId, "PendingNewManager", x => x.CurrentManagerApprovedAtUtc = DateTime.UtcNow, cancellationToken);
+    public Task<IActionResult> ApproveCurrentManager(Guid transferId, CancellationToken cancellationToken) =>
+        AdvanceTransfer(transferId, "PendingCurrentManager", "PendingNewManager", x => x.CurrentManagerEmployeeId, x => x.CurrentManagerApprovedAtUtc = DateTime.UtcNow, cancellationToken);
 
     [HttpPost("transfers/{transferId:guid}/approve-new-manager")]
     [Authorize(Roles = "Admin,HR Manager,Manager")]
-    public Task<IActionResult> ApproveNewManager(Guid transferId, CancellationToken cancellationToken) => AdvanceTransfer(transferId, "PendingHrApproval", x => x.NewManagerApprovedAtUtc = DateTime.UtcNow, cancellationToken);
+    public Task<IActionResult> ApproveNewManager(Guid transferId, CancellationToken cancellationToken) =>
+        AdvanceTransfer(transferId, "PendingNewManager", "PendingHrApproval", x => x.NewManagerEmployeeId, x => x.NewManagerApprovedAtUtc = DateTime.UtcNow, cancellationToken);
 
     [HttpPost("transfers/{transferId:guid}/approve-hr")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> ApproveHrTransfer(Guid transferId, CancellationToken cancellationToken)
+    public async Task<IActionResult> ApproveHrTransfer(Guid transferId, [FromServices] IHrmHierarchyService hierarchy, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
         var transfer = await _db.EmployeeTransferRequests.FirstOrDefaultAsync(x => x.Id == transferId && x.TenantId == tenantId, cancellationToken);
         if (transfer is null) return NotFound();
+        if (transfer.Status != "PendingHrApproval")
+            return BadRequest(new { message = $"Transfer is in '{transfer.Status}' status and cannot be HR-approved." });
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == transfer.EmployeeId && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
         employee.Department = transfer.NewDepartment;
         employee.Branch = transfer.NewBranch;
-        employee.ManagerEmployeeId = transfer.NewManagerEmployeeId;
         employee.UpdatedAtUtc = DateTime.UtcNow;
+        if (employee.ManagerEmployeeId != transfer.NewManagerEmployeeId)
+            await hierarchy.SetManagerAsync(tenantId, employee.Id, transfer.NewManagerEmployeeId, Context(), cancellationToken);
         transfer.Status = "ApprovedApplied";
         transfer.HrApprovedAtUtc = DateTime.UtcNow;
         await AddHistory(employee, "TransferApproved", transfer.EffectiveDate, cancellationToken);
@@ -1392,7 +1678,8 @@ public class EmployeesController : ControllerBase
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId && !x.IsDeleted, cancellationToken);
         if (employee is null) return NotFound();
         var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
-        var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.IsActive).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(cancellationToken);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.IsActive && x.EffectiveDate <= today).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(cancellationToken);
         var apptCurrency = !string.IsNullOrWhiteSpace(salary?.Currency)
             ? salary.Currency
             : await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
@@ -1422,7 +1709,8 @@ public class EmployeesController : ControllerBase
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId && !x.IsDeleted, cancellationToken);
         if (employee is null) return NotFound();
         var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
-        var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.IsActive).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(cancellationToken);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.IsActive && x.EffectiveDate <= today).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(cancellationToken);
         var expCurrency = !string.IsNullOrWhiteSpace(salary?.Currency)
             ? salary.Currency
             : await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
@@ -1486,15 +1774,39 @@ public class EmployeesController : ControllerBase
         });
     }
 
-    private async Task<IActionResult> AdvanceTransfer(Guid transferId, string nextStatus, Action<EmployeeTransferRequest> stamp, CancellationToken cancellationToken)
+    private async Task<IActionResult> AdvanceTransfer(
+        Guid transferId,
+        string expectedStatus,
+        string nextStatus,
+        Func<EmployeeTransferRequest, int?> expectedManagerId,
+        Action<EmployeeTransferRequest> stamp,
+        CancellationToken cancellationToken)
     {
         var transfer = await _db.EmployeeTransferRequests.FirstOrDefaultAsync(x => x.Id == transferId && x.TenantId == RequireTenant(), cancellationToken);
         if (transfer is null) return NotFound();
+        if (transfer.Status != expectedStatus)
+            return BadRequest(new { message = $"Transfer is in '{transfer.Status}' status and cannot move to '{nextStatus}'." });
+        if (!User.IsInRole("Admin") && !User.IsInRole("HR Manager"))
+        {
+            var callerEmployeeId = await GetCallerEmployeeId(cancellationToken);
+            if (callerEmployeeId is null || expectedManagerId(transfer) != callerEmployeeId)
+                return Forbid();
+        }
         stamp(transfer);
         transfer.Status = nextStatus;
         await _db.SaveChangesAsync(cancellationToken);
         await Audit("employee.transfer_advanced", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
         return Ok(transfer);
+    }
+
+    private async Task<int?> GetCallerEmployeeId(CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        if (userId is null) return null;
+        return await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == RequireTenant() && !e.IsDeleted && e.UserAccountId == userId)
+            .Select(e => (int?)e.Id)
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     private async Task<EmployeeDraft?> FindDraft(Guid draftId, CancellationToken cancellationToken) => await _db.EmployeeDrafts.FirstOrDefaultAsync(x => x.Id == draftId && x.TenantId == RequireTenant(), cancellationToken);
@@ -1724,6 +2036,11 @@ public class EmployeesController : ControllerBase
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id") ?? throw new UnauthorizedAccessException("Tenant claim missing."));
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
+    private async Task<bool> CanAccessEmployeeAsync(int employeeId, CancellationToken cancellationToken)
+    {
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), cancellationToken);
+        return scope.CanAccessEmployee(employeeId);
+    }
     private Task Audit(string action, string entity, string? entityId, CancellationToken cancellationToken) => _audit.WriteAsync(action, entity, entityId, new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant()), null, cancellationToken);
 }
 

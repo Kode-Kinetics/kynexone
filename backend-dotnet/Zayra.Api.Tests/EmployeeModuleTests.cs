@@ -1,3 +1,4 @@
+using FluentAssertions;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -8,6 +9,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Documents.Letters;
@@ -54,6 +56,37 @@ public class EmployeeModuleTests
         var unchanged = await db.Employees.FindAsync(employee.Id);
         Assert.Equal(10000m, unchanged!.Salary);
         Assert.True(await db.EmployeeChangeRequests.AnyAsync(x => x.EmployeeId == employee.Id && x.SensitiveFields == "salary"));
+        Assert.True(await db.ApprovalRequests.AnyAsync(x => x.EntityName == nameof(EmployeeChangeRequest) && x.Status == "Pending"));
+    }
+
+    [Fact]
+    public async Task ApprovalCenterDecision_AppliesSensitiveEmployeeChange()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var requesterId = Guid.NewGuid();
+        var approverId = Guid.NewGuid();
+        var employee = new Employee { TenantId = tenantId, EmployeeCode = "EMP-00002", FullName = "Omar Khan", Department = "People", Designation = "HR Officer", Status = "Active", JoiningDate = DateTime.UtcNow.Date, Salary = 10000m };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        var controller = CreateController(db, tenantId, requesterId);
+
+        var result = await controller.UpdateEmployee(employee.Id, new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date), new() { ["salary"] = System.Text.Json.JsonDocument.Parse("15000").RootElement }), CancellationToken.None);
+
+        Assert.IsType<AcceptedResult>(result);
+        var approval = await db.ApprovalRequests.SingleAsync(x => x.EntityName == nameof(EmployeeChangeRequest));
+        var service = new ApprovalWorkflowService(db, new AuditService(db));
+
+        var decided = await service.DecideAsync(
+            tenantId,
+            approval.Id,
+            new Zayra.Api.Application.Approvals.ApprovalDecisionRequest("Approve", "Verified"),
+            new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests", approverId, tenantId, ["HR Manager"], []),
+            CancellationToken.None);
+
+        decided!.Status.Should().Be("Approved");
+        (await db.Employees.FindAsync(employee.Id))!.Salary.Should().Be(15000m);
+        (await db.EmployeeChangeRequests.SingleAsync(x => x.EmployeeId == employee.Id)).Status.Should().Be("ApprovedApplied");
     }
 
     private static ZayraDbContext CreateDb()
@@ -79,11 +112,12 @@ public class EmployeeModuleTests
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
+        await SeedGrade(db, tenantId, "G3", 1_000m, 20_000m);
         var ctrl = CreateController(db, tenantId);
 
         const string csv =
-            "EmployeeCode,FullName,WorkEmail,JoiningDate,BasicSalary,HousingAllowance,TransportAllowance,OtherAllowance,Currency,IBAN,BankName,MolId\n" +
-            "EMP-PAY-001,Ahmad Al-Rashidi,ahmad@test.com,2024-01-15,8000,2000,1000,500,SAR,SA0380000000608010167519,Al Rajhi Bank,MOL-001\n";
+            "EmployeeCode,FullName,WorkEmail,JoiningDate,Grade,BasicSalary,HousingAllowance,TransportAllowance,OtherAllowance,Currency,IBAN,BankName,MolId\n" +
+            "EMP-PAY-001,Ahmad Al-Rashidi,ahmad@test.com,2024-01-15,G3,8000,2000,1000,500,SAR,SA0380000000608010167519,Al Rajhi Bank,MOL-001\n";
 
         var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
@@ -113,6 +147,71 @@ public class EmployeeModuleTests
         Assert.True(salary.IsActive);
     }
 
+    [Fact]
+    public void EmployeeImportTemplate_IncludesModalAndStatutoryFields()
+    {
+        using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var ctrl = CreateController(db, tenantId);
+
+        var result = ctrl.ImportTemplate();
+
+        var file = Assert.IsType<FileContentResult>(result);
+        var csv = System.Text.Encoding.UTF8.GetString(file.FileContents);
+        foreach (var header in new[]
+        {
+            "PreferredName", "PersonalEmail", "DateOfBirth", "MaritalStatus",
+            "ConfirmationDate", "ProbationStartDate", "ProbationEndDate", "NoticePeriodDays",
+            "ShiftPolicyCode", "LeavePolicyCode", "AttendancePolicyCode",
+            "BasicSalary", "HousingAllowance", "TransportAllowance", "FixedDeduction",
+            "PassportNumber", "PassportExpiryDate", "VisaNumber", "VisaExpiryDate",
+            "EmiratesId", "IqamaNumber", "GosiReference", "SaudiOrNonSaudi", "QiwaSyncStatus"
+        })
+        {
+            Assert.Contains(header, csv);
+        }
+    }
+
+    [Fact]
+    public async Task EmployeeImport_WithModalAndStatutoryColumns_PersistsEmployeeMasterFields()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        await SeedGrade(db, tenantId, "G4", 1_000m, 30_000m);
+        var ctrl = CreateController(db, tenantId);
+
+        const string csv =
+            "EmployeeCode,FullName,ArabicName,PreferredName,PersonalEmail,WorkEmail,Phone,Gender,DateOfBirth,Nationality,MaritalStatus,CountryCode,JoiningDate,ConfirmationDate,ProbationStartDate,ProbationEndDate,NoticePeriodDays,Grade,BasicSalary,Currency,ShiftPolicyCode,LeavePolicyCode,AttendancePolicyCode,PassportNumber,PassportExpiryDate,VisaNumber,VisaExpiryDate,EmiratesId,IqamaNumber,GosiReference,SaudiOrNonSaudi,IdType,IdNumber,QiwaSyncStatus\n" +
+            "EMP-FULL-001,Fatima Noor,فاطمة نور,Fati,fatima.personal@test.com,fatima@test.com,+971500000001,Female,1992-03-05,UAE,Married,AE,2024-01-15,2024-07-15,2024-01-15,2024-07-15,30,G4,12000,AED,SHIFT-DAY,UAE-ANNUAL,ATT-STD,P1234567,2030-01-01,V7654321,2027-01-01,784-1992-1234567-1,IQ-123,GOSI-123,NonSaudi,EmiratesId,784-1992-1234567-1,Ready\n";
+
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        var employee = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-FULL-001");
+        Assert.Equal("Fati", employee.PreferredName);
+        Assert.Equal("fatima.personal@test.com", employee.PersonalEmail);
+        Assert.Equal(new DateOnly(1992, 3, 5), employee.DateOfBirth);
+        Assert.Equal("Married", employee.MaritalStatus);
+        Assert.Equal("AE", employee.CountryCode);
+        Assert.Equal(new DateOnly(2024, 7, 15), employee.ConfirmationDate);
+        Assert.Equal(new DateOnly(2024, 1, 15), employee.ProbationStartDate);
+        Assert.Equal(new DateOnly(2024, 7, 15), employee.ProbationEndDate);
+        Assert.Equal(30, employee.NoticePeriodDays);
+        Assert.Equal("SHIFT-DAY", employee.ShiftPolicyCode);
+        Assert.Equal("UAE-ANNUAL", employee.LeavePolicyCode);
+        Assert.Equal("ATT-STD", employee.AttendancePolicyCode);
+        Assert.Equal("P1234567", employee.PassportNumber);
+        Assert.Equal(new DateOnly(2030, 1, 1), employee.PassportExpiryDate);
+        Assert.Equal("V7654321", employee.VisaNumber);
+        Assert.Equal(new DateOnly(2027, 1, 1), employee.VisaExpiryDate);
+        Assert.Equal("784-1992-1234567-1", employee.EmiratesId);
+        Assert.Equal("IQ-123", employee.IqamaNumber);
+        Assert.Equal("GOSI-123", employee.GosiReference);
+        Assert.Equal("NonSaudi", employee.SaudiOrNonSaudi);
+        Assert.Equal("EmiratesId", employee.IdType);
+        Assert.Equal("Ready", employee.QiwaSyncStatus);
+    }
+
     // ── Test: Currency defaults to SAR when blank ─────────────────────────────
 
     [Fact]
@@ -120,11 +219,12 @@ public class EmployeeModuleTests
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
+        await SeedGrade(db, tenantId, "G3", 1_000m, 20_000m);
         var ctrl = CreateController(db, tenantId);
 
         const string csv =
-            "EmployeeCode,FullName,JoiningDate,BasicSalary,Currency\n" +
-            "EMP-CUR-001,Test Employee,2024-01-15,5000,\n";
+            "EmployeeCode,FullName,JoiningDate,Grade,BasicSalary,Currency\n" +
+            "EMP-CUR-001,Test Employee,2024-01-15,G3,5000,\n";
 
         await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
@@ -170,11 +270,12 @@ public class EmployeeModuleTests
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
+        await SeedGrade(db, tenantId, "G3", 1_000m, 20_000m);
         var ctrl = CreateController(db, tenantId);
 
-        var headerLine = "EmployeeCode,FullName,Department,JoiningDate,BasicSalary,Currency";
+        var headerLine = "EmployeeCode,FullName,Department,JoiningDate,Grade,BasicSalary,Currency";
         var dataLines = Enumerable.Range(1, 15).Select(i =>
-            $"EMP-{i:D3},Employee {i},Engineering,2024-01-01,{5000 + i * 100},SAR");
+            $"EMP-{i:D3},Employee {i},Engineering,2024-01-01,G3,{5000 + i * 100},SAR");
         var csv = string.Join("\n", new[] { headerLine }.Concat(dataLines)) + "\n";
 
         var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
@@ -194,14 +295,72 @@ public class EmployeeModuleTests
         Assert.Equal(15, salaryCount);
     }
 
-    private static EmployeesController CreateController(ZayraDbContext db, Guid tenantId)
+    [Fact]
+    public async Task EmployeeImport_WithSalaryButNoGrade_SkipsBeforeCreatingEmployee()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var ctrl = CreateController(db, tenantId);
+
+        const string csv =
+            "EmployeeCode,FullName,JoiningDate,BasicSalary,Currency\n" +
+            "EMP-NOGRADE-001,No Grade Salary,2024-01-15,5000,SAR\n";
+
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("\"created\":0", json);
+        Assert.Contains("requires a valid grade", json);
+        Assert.False(await db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-NOGRADE-001"));
+    }
+
+    [Fact]
+    public async Task EmployeeImport_WithSalaryOutsideGradeRange_SkipsBeforeCreatingEmployee()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        await SeedGrade(db, tenantId, "G1", 1_000m, 4_000m);
+        var ctrl = CreateController(db, tenantId);
+
+        const string csv =
+            "EmployeeCode,FullName,JoiningDate,Grade,BasicSalary,Currency\n" +
+            "EMP-RANGE-001,Range Fail,2024-01-15,G1,5000,SAR\n";
+
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("\"created\":0", json);
+        Assert.Contains("outside grade G1 range", json);
+        Assert.False(await db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-RANGE-001"));
+    }
+
+    private static async Task SeedGrade(ZayraDbContext db, Guid tenantId, string code, decimal min, decimal max)
+    {
+        db.Grades.Add(new Grade
+        {
+            TenantId = tenantId,
+            Code = code,
+            Name = code,
+            Level = 1,
+            MinSalary = min,
+            MidSalary = (min + max) / 2,
+            MaxSalary = max,
+            Currency = "SAR",
+            IsActive = true
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private static EmployeesController CreateController(ZayraDbContext db, Guid tenantId, Guid? userId = null)
     {
         var controller = new EmployeesController(db, new Pbkdf2PasswordHasher(), new AuditService(db), new FakeDocumentStorage(), new NotificationService(db, new FakeEmailService(), NullLogger<NotificationService>.Instance), new FakeHijriDateService(), new Zayra.Api.Infrastructure.Common.DataScopeService(db), new FakeLetterService());
-        var userId = Guid.NewGuid();
+        var effectiveUserId = userId ?? Guid.NewGuid();
         var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
         {
             new Claim("tenant_id", tenantId.ToString()),
-            new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, effectiveUserId.ToString()),
             new Claim(ClaimTypes.Role, "Admin")
         }, "Test"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } };

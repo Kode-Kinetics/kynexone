@@ -105,6 +105,49 @@ public class AccessManagementScopeTests
         result.Should().BeNull("permission overrides are user-admin actions and must honor target population scope");
     }
 
+    [Fact]
+    public async Task AssignRoles_RevokesActiveRefreshTokens_ForTargetUser()
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        var service = CreateService(db);
+        await EnsureRoleAsync(db, w.TenantId, "Employee");
+        await AddActiveRefreshTokenAsync(db, w.UserA);
+
+        await service.AssignRolesAsync(
+            w.TenantId,
+            w.UserA,
+            new AssignRolesRequest(new[] { "Employee" }),
+            EntityScopeContext.GroupLevel,
+            new RequestContext("10.10.10.10", "tests", Guid.NewGuid(), w.TenantId),
+            CancellationToken.None);
+
+        var token = await db.RefreshTokens.SingleAsync(t => t.UserId == w.UserA);
+        token.RevokedAtUtc.Should().NotBeNull("role assignments change access-token role claims");
+        token.RevokedByIp.Should().Be("10.10.10.10");
+    }
+
+    [Fact]
+    public async Task PermissionOverride_RevokesActiveRefreshTokens_ForTargetUser()
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        var service = CreateService(db);
+        await AddActiveRefreshTokenAsync(db, w.UserA);
+
+        await service.SetPermissionOverrideAsync(
+            w.TenantId,
+            w.UserA,
+            new PermissionOverrideRequest("employees.read", "Allow", "security-test", null),
+            EntityScopeContext.GroupLevel,
+            new RequestContext("10.20.30.40", "tests", Guid.NewGuid(), w.TenantId),
+            CancellationToken.None);
+
+        var token = await db.RefreshTokens.SingleAsync(t => t.UserId == w.UserA);
+        token.RevokedAtUtc.Should().NotBeNull("permission overrides change effective permissions in newly issued access tokens");
+        token.RevokedByIp.Should().Be("10.20.30.40");
+    }
+
     private async Task<World> SeedWorld()
     {
         await using var db = _fx.CreateDb();
@@ -164,6 +207,35 @@ public class AccessManagementScopeTests
         IsActive = true,
         IsEmailConfirmed = true
     };
+
+    private static async Task EnsureRoleAsync(ZayraDbContext db, Guid tenantId, string roleName)
+    {
+        var normalized = AuthService.Normalize(roleName);
+        if (await db.Roles.AnyAsync(r => r.TenantId == tenantId && r.NormalizedName == normalized))
+            return;
+        db.Roles.Add(new Role
+        {
+            TenantId = tenantId,
+            Name = roleName,
+            NormalizedName = normalized,
+            Description = roleName,
+            IsActive = true,
+            IsEditable = true
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task AddActiveRefreshTokenAsync(ZayraDbContext db, Guid userId)
+    {
+        db.RefreshTokens.Add(new RefreshToken
+        {
+            UserId = userId,
+            TokenHash = Guid.NewGuid().ToString("N"),
+            ExpiresAtUtc = DateTime.UtcNow.AddDays(7),
+            CreatedByIp = "seed"
+        });
+        await db.SaveChangesAsync();
+    }
 
     private static AccessManagementService CreateService(ZayraDbContext db) =>
         new(db, new Pbkdf2PasswordHasher(), new NullAuditService(), new FakeTokenService());

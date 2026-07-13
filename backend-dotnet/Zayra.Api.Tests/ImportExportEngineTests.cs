@@ -58,6 +58,18 @@ public class ImportExportEngineTests
         return string.Join('\n', new[] { header }.Concat(dataRows)) + '\n';
     }
 
+    private static string BuildCompanyCsv(params string[] dataRows)
+    {
+        var header = "LegalNameEn,LegalNameAr,TradeName,CountryCode,Jurisdiction,RegistrationNumber,TaxNumber,WpsEmployerId,GosiEmployerId,QiwaEstablishmentId,DefaultCurrency,IsActive";
+        return string.Join('\n', new[] { header }.Concat(dataRows)) + '\n';
+    }
+
+    private static string BuildBranchCsv(params string[] dataRows)
+    {
+        var header = "CompanyLegalName,Code,NameEn,NameAr,CountryCode,City,AddressLine1,AddressLine2,TimeZoneId,LaborOfficeCode,IsHeadOffice,IsActive";
+        return string.Join('\n', new[] { header }.Concat(dataRows)) + '\n';
+    }
+
     private static string BuildDesigCsv(params string[] dataRows)
     {
         var header = "Code,TitleEn,TitleAr,DepartmentCode,JobGrade,IsActive";
@@ -88,6 +100,56 @@ public class ImportExportEngineTests
     }
 
     // ── Test 1: Department import preview — valid rows ─────────────────────────
+
+    [Fact]
+    public async Task CompanyImport_PersistsStatutoryAndComplianceIdentifiers()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var svc = new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new Zayra.Api.Infrastructure.Audit.AuditService(db));
+        var ctrl = new CompaniesController(svc, db);
+        ctrl.ControllerContext = MakeContext(tenantId);
+
+        var csv = BuildCompanyCsv("Acme Arabia LLC,أكمي,Acme,SA,KSA-mainland,REG-001,TAX-001,WPS-001,GOSI-001,QIWA-001,SAR,true");
+        var result = await ctrl.Import(new CompanyImportRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var commit = Assert.IsType<ImportCommitResult>(ok.Value);
+        Assert.Equal(1, commit.Created);
+
+        var company = await db.Companies.SingleAsync(c => c.TenantId == tenantId && c.LegalNameEn == "Acme Arabia LLC");
+        Assert.Equal("KSA-mainland", company.Jurisdiction);
+        Assert.Equal("WPS-001", company.WpsEmployerId);
+        Assert.Equal("GOSI-001", company.GosiEmployerId);
+        Assert.Equal("QIWA-001", company.QiwaEstablishmentId);
+    }
+
+    [Fact]
+    public async Task BranchImport_PersistsAddressTimezoneAndLaborOffice()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Acme Arabia LLC", CountryCode = "SA", RegistrationNumber = "REG-001", DefaultCurrency = "SAR" };
+        db.Companies.Add(company);
+        await db.SaveChangesAsync();
+
+        var svc = new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new Zayra.Api.Infrastructure.Audit.AuditService(db));
+        var ctrl = new BranchesController(svc, db);
+        ctrl.ControllerContext = MakeContext(tenantId);
+
+        var csv = BuildBranchCsv("Acme Arabia LLC,RYD,Riyadh HQ,الرياض,SA,Riyadh,King Fahd Road,Level 9,Asia/Riyadh,LAB-RYD-001,true,true");
+        var result = await ctrl.Import(new BranchImportRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var commit = Assert.IsType<ImportCommitResult>(ok.Value);
+        Assert.Equal(1, commit.Created);
+
+        var branch = await db.Branches.SingleAsync(b => b.TenantId == tenantId && b.Code == "RYD");
+        Assert.Equal("King Fahd Road", branch.AddressLine1);
+        Assert.Equal("Level 9", branch.AddressLine2);
+        Assert.Equal("Asia/Riyadh", branch.TimeZoneId);
+        Assert.Equal("LAB-RYD-001", branch.LaborOfficeCode);
+    }
 
     [Fact]
     public async Task DepartmentPreview_ValidRows_ReturnsWouldCreate()

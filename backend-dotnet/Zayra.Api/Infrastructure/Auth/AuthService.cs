@@ -41,9 +41,10 @@ public class AuthService : IAuthService
         if (user is null)                    failReason = "user_not_found";
         else if (user.Tenant is null)        failReason = "tenant_not_loaded";
         else if (!user.IsActive)             failReason = "user_inactive";
-        else if (!user.Tenant.IsActive)      failReason = "tenant_inactive";
-        else if (IsNoLogin(user))            failReason = "access_mode_no_login";
-        else if (RequiresPasswordSetup(user)) failReason = "requires_password_setup";
+	        else if (!user.Tenant.IsActive)      failReason = "tenant_inactive";
+	        else if (IsNoLogin(user))            failReason = "access_mode_no_login";
+	        else if (RequiresPasswordSetup(user)) failReason = "requires_password_setup";
+	        else if (await IsSsoOnlyUserAsync(user, cancellationToken)) failReason = "sso_required";
 
         if (failReason is not null)
         {
@@ -143,9 +144,11 @@ public class AuthService : IAuthService
         // actual enforcement — password-only login still worked for un-enrolled users.
         if (sec?.MfaRequired == true)
         {
+            var enrollmentToken = await _mfaService.CreateEnrollmentChallengeAsync(
+                user.Id, user.TenantId, context.IpAddress ?? string.Empty, cancellationToken);
             await _auditService.WriteAsync("auth.mfa_enrollment_required", "User", user.Id.ToString(),
                 context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
-            return new AuthLoginResult(null, null, RequiresMfaEnrollment: true);
+            return new AuthLoginResult(null, null, RequiresMfaEnrollment: true, EnrollmentChallenge: new MfaChallengeDto(enrollmentToken, 300));
         }
 
         // Phase 5 — successful login: clear all lockout state and issue tokens
@@ -154,7 +157,7 @@ public class AuthService : IAuthService
         user.LockoutEnd       = null;
         user.LastLoginAtUtc   = DateTime.UtcNow;
         user.UpdatedAtUtc     = DateTime.UtcNow;
-        var refreshToken = AddRefreshToken(user, context);
+        var refreshToken = await AddRefreshTokenAsync(user, context, sec, cancellationToken);
         _db.LoginActivities.Add(new LoginActivity
         {
             TenantId      = user.TenantId,
@@ -184,7 +187,25 @@ public class AuthService : IAuthService
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
         }
 
-        var newRefreshToken = AddRefreshToken(storedToken.User, context);
+        var policy = await LoadSecuritySettingAsync(storedToken.User.TenantId, cancellationToken);
+        if (policy?.MfaRequired == true && !storedToken.User.MFAEnabled)
+        {
+            storedToken.RevokedAtUtc = DateTime.UtcNow;
+            storedToken.RevokedByIp = context.IpAddress;
+            await _db.SaveChangesAsync(cancellationToken);
+            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+        }
+
+        var sessionTimeoutMinutes = Math.Clamp(policy?.SessionTimeoutMinutes ?? 480, 15, 1440);
+        if (storedToken.CreatedAtUtc.AddMinutes(sessionTimeoutMinutes) <= DateTime.UtcNow)
+        {
+            storedToken.RevokedAtUtc = DateTime.UtcNow;
+            storedToken.RevokedByIp = context.IpAddress;
+            await _db.SaveChangesAsync(cancellationToken);
+            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+        }
+
+        var newRefreshToken = await AddRefreshTokenAsync(storedToken.User, context, policy, cancellationToken);
         storedToken.RevokedAtUtc = DateTime.UtcNow;
         storedToken.RevokedByIp = context.IpAddress;
         storedToken.ReplacedByTokenHash = _tokenService.HashToken(newRefreshToken);
@@ -304,7 +325,7 @@ public class AuthService : IAuthService
         link.Status = "Active";
         link.InvitationAcceptedAtUtc = DateTime.UtcNow;
         link.UpdatedAtUtc = DateTime.UtcNow;
-        var refreshToken = AddRefreshToken(user, context);
+        var refreshToken = await AddRefreshTokenAsync(user, context, null, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("auth.invitation_accepted", "User", user.Id.ToString(), context with { UserId = user.Id, TenantId = user.TenantId }, $"{{\"employeeId\":{link.EmployeeId}}}", cancellationToken);
         return BuildAuthResponse(user, refreshToken);
@@ -325,7 +346,7 @@ public class AuthService : IAuthService
         user.LockoutEnd       = null;
         user.LastLoginAtUtc   = DateTime.UtcNow;
         user.UpdatedAtUtc     = DateTime.UtcNow;
-        var refreshToken = AddRefreshToken(user, context);
+        var refreshToken = await AddRefreshTokenAsync(user, context, null, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("auth.login", "User", user.Id.ToString(),
             context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
@@ -371,17 +392,50 @@ public class AuthService : IAuthService
             .FirstOrDefaultAsync(x => x.Id == userId, cancellationToken);
     }
 
-    private string AddRefreshToken(User user, RequestContext context)
+    private async Task<string> AddRefreshTokenAsync(User user, RequestContext context, SecuritySetting? policy, CancellationToken cancellationToken)
     {
+        policy ??= await LoadSecuritySettingAsync(user.TenantId, cancellationToken);
+        if (policy?.AllowMultipleSessions == false)
+            await RevokeActiveRefreshTokensAsync(user.Id, context.IpAddress, cancellationToken);
+
+        var refreshDays = Math.Clamp(policy?.RefreshTokenExpiryDays ?? _jwtOptions.RefreshTokenDays, 1, 90);
         var refreshToken = _tokenService.CreateSecureToken();
         _db.RefreshTokens.Add(new RefreshToken
         {
             UserId = user.Id,
             TokenHash = _tokenService.HashToken(refreshToken),
-            ExpiresAtUtc = DateTime.UtcNow.AddDays(_jwtOptions.RefreshTokenDays),
+            ExpiresAtUtc = DateTime.UtcNow.AddDays(refreshDays),
             CreatedByIp = context.IpAddress
         });
         return refreshToken;
+    }
+
+    private Task<SecuritySetting?> LoadSecuritySettingAsync(Guid tenantId, CancellationToken cancellationToken) =>
+        _db.SecuritySettings.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
+
+    private async Task<bool> IsSsoOnlyUserAsync(User user, CancellationToken cancellationToken)
+    {
+        if (user.IdentityProvider.Equals("Local", StringComparison.OrdinalIgnoreCase)) return false;
+        var setting = await _db.TenantIdentityProviderSettings.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == user.TenantId, cancellationToken);
+        if (setting?.EnforceSsoLogin != true) return false;
+        var domain = user.Email.Split('@').LastOrDefault() ?? string.Empty;
+        var allowed = setting.AllowedDomainsCsv
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return allowed.Length == 0 || allowed.Contains(domain, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task RevokeActiveRefreshTokensAsync(Guid userId, string? ipAddress, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var activeTokens = await _db.RefreshTokens
+            .Where(x => x.UserId == userId && x.RevokedAtUtc == null && x.ExpiresAtUtc > now)
+            .ToListAsync(cancellationToken);
+        foreach (var token in activeTokens)
+        {
+            token.RevokedAtUtc = now;
+            token.RevokedByIp = ipAddress;
+        }
     }
 
     private AuthResponse BuildAuthResponse(User user, string refreshToken)

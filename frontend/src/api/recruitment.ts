@@ -336,6 +336,20 @@ export interface OnboardingTask {
   createdAtUtc: string;
 }
 
+export interface OnboardingChecklistTemplateTask {
+  id: string;
+  checklistId: string;
+  taskTitle: string;
+  taskDescription: string;
+  category: string;
+  assignedToName: string;
+  assignedToUserId: string | null;
+  dueOffsetDays: number;
+  orderIndex: number;
+  isMandatory: boolean;
+  isActive: boolean;
+}
+
 // ── Extended API Clients ───────────────────────────────────────────────────────
 
 export const workforcePlanningApi = {
@@ -421,6 +435,18 @@ export const offersApi = {
 export const onboardingApi = {
   listChecklists: () =>
     client.get<OnboardingChecklist[]>('/api/recruitment/onboarding/checklists').then(r => r.data),
+
+  createChecklist: (body: { code: string; name: string; description?: string; applicableTo?: string; departmentName?: string }) =>
+    client.post<OnboardingChecklist>('/api/recruitment/onboarding/checklists', body).then(r => r.data),
+
+  listTemplateTasks: (checklistId: string) =>
+    client.get<OnboardingChecklistTemplateTask[]>(`/api/recruitment/onboarding/checklists/${checklistId}/template-tasks`).then(r => r.data),
+
+  upsertTemplateTask: (checklistId: string, body: { taskTitle: string; taskDescription?: string; category?: string; assignedToName?: string; assignedToUserId?: string; dueOffsetDays: number; orderIndex: number; isMandatory: boolean; isActive?: boolean }) =>
+    client.post<OnboardingChecklistTemplateTask>(`/api/recruitment/onboarding/checklists/${checklistId}/template-tasks`, body).then(r => r.data),
+
+  createBulk: (body: { checklistId?: string; employeeId?: string; applicationId?: string; startDate?: string; tasks?: unknown[] }) =>
+    client.post<{ count: number; tasks: OnboardingTask[] }>('/api/recruitment/onboarding/tasks/bulk', body).then(r => r.data),
 
   listTasks: (params: { employeeId?: string; applicationId?: string; status?: string; page?: number } = {}) =>
     client.get<{ total: number; items: OnboardingTask[] }>('/api/recruitment/onboarding/tasks', { params }).then(r => r.data),

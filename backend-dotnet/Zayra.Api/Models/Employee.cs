@@ -52,6 +52,7 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public Guid? DesignationId { get; set; }
     public Guid? GradeId { get; set; }
     public Guid? CostCenterId { get; set; }
+    public Guid? PositionId { get; set; }
     public string WorkLocation { get; set; } = string.Empty;
     public string Branch { get; set; } = string.Empty;
     public int? ManagerEmployeeId { get; set; }
@@ -146,4 +147,7 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAtUtc { get; set; }
     public Guid? DeletedBy { get; set; }
+    public DateTime? RetentionUntilUtc { get; set; }
+    public string PrivacyStatus { get; set; } = string.Empty;
+    public DateTime? RedactedAtUtc { get; set; }
 }

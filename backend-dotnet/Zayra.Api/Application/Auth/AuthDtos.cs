@@ -226,7 +226,7 @@ public record MfaChallengeDto(string ChallengeToken, int ExpiresInSeconds);
 
 /// <summary>Result from LoginAsync — one of: Tokens (success), Challenge (MFA code needed),
 /// or RequiresMfaEnrollment (tenant mandates MFA but this user hasn't set it up yet).</summary>
-public record AuthLoginResult(AuthResponse? Tokens, MfaChallengeDto? Challenge, bool RequiresMfaEnrollment = false)
+public record AuthLoginResult(AuthResponse? Tokens, MfaChallengeDto? Challenge, bool RequiresMfaEnrollment = false, MfaChallengeDto? EnrollmentChallenge = null)
 {
     public bool RequiresMfa => Challenge is not null;
 }
@@ -235,6 +235,14 @@ public record AuthLoginResult(AuthResponse? Tokens, MfaChallengeDto? Challenge, 
 /// The provisioning URI contains the base32 secret embedded and is safe to return once.
 /// After setup confirmation neither the secret nor URI is ever returned again.</summary>
 public record MfaSetupInitResponse(string ProvisioningUri);
+
+public record MfaEnrollmentSetupRequest(
+    [System.ComponentModel.DataAnnotations.Required] string EnrollmentToken);
+
+public record MfaEnrollmentVerifySetupRequest(
+    [System.ComponentModel.DataAnnotations.Required] string EnrollmentToken,
+    [System.ComponentModel.DataAnnotations.Required] string TempSecret,
+    [System.ComponentModel.DataAnnotations.Required] string TotpCode);
 
 public record MfaVerifySetupRequest(
     [System.ComponentModel.DataAnnotations.Required] string TempSecret,

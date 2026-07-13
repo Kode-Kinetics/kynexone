@@ -604,6 +604,7 @@ public class AccessController : ControllerBase
             CreatedBy = actorId,
         };
         _db.UserEntityAccesses.Add(grant);
+        await RevokeActiveRefreshTokensAsync(request.UserId, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         return CreatedAtAction(nameof(ListEntityGrants), new EntityGrantDto(grant.Id, grant.UserId, grant.CompanyId, grant.Role, grant.CreatedAtUtc, grant.GrantMode));
     }
@@ -619,6 +620,7 @@ public class AccessController : ControllerBase
         if (grant is null) return NotFound();
         grant.IsActive = false;
         grant.UpdatedAtUtc = DateTime.UtcNow;
+        await RevokeActiveRefreshTokensAsync(grant.UserId, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
@@ -654,10 +656,23 @@ public class AccessController : ControllerBase
             PerformedByName = User.FindFirstValue("name") ?? actorId.ToString()!,
         });
 
+        await RevokeActiveRefreshTokensAsync(userId, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        await _db.RefreshTokens.Where(x => x.UserId == userId && x.RevokedAtUtc == null)
-            .ExecuteUpdateAsync(x => x.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), cancellationToken);
         return NoContent();
+    }
+
+    private async Task RevokeActiveRefreshTokensAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var activeTokens = await _db.RefreshTokens
+            .Where(x => x.UserId == userId && x.RevokedAtUtc == null && x.ExpiresAtUtc > now)
+            .ToListAsync(cancellationToken);
+        foreach (var token in activeTokens)
+        {
+            token.RevokedAtUtc = now;
+            token.RevokedByIp = ip;
+        }
     }
 }
 

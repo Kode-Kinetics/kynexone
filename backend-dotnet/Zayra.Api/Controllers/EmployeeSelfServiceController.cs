@@ -4,6 +4,8 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Attendance;
+using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
@@ -27,13 +29,15 @@ public class EmployeeSelfServiceController : ControllerBase
     private readonly ILetterService _letters;
     private readonly PdfRenderGate _pdfGate;
     private readonly Application.Leave.ILeaveService _leaveService;
+    private readonly IAttendanceService _attendanceService;
 
-    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService)
+    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService)
     {
         _letters = letters;
         _db = db;
         _pdfGate = pdfGate;
         _leaveService = leaveService;
+        _attendanceService = attendanceService;
     }
 
     [HttpGet("dashboard")]
@@ -72,8 +76,11 @@ public class EmployeeSelfServiceController : ControllerBase
             {
                 var run = await _db.PayrollRuns.AsNoTracking()
                     .FirstOrDefaultAsync(x => x.Id == lastSlip.RunId, cancellationToken);
+                var salaryAsOf = run is null
+                    ? DateOnly.FromDateTime(DateTime.UtcNow)
+                    : new DateOnly(run.Year, run.Month, DateTime.DaysInMonth(run.Year, run.Month));
                 var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
-                    .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.IsActive)
+                    .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.IsActive && x.EffectiveDate <= salaryAsOf)
                     .OrderByDescending(x => x.EffectiveDate)
                     .FirstOrDefaultAsync(cancellationToken);
                 var currency = !string.IsNullOrWhiteSpace(salary?.Currency) ? salary.Currency : await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
@@ -327,20 +334,11 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
         if (!essOk) return BadRequest(new { message = ctxError });
-        var regularization = new AttendanceRegularizationRequest
-        {
-            TenantId = tenantId,
-            EmployeeId = employeeId,
-            WorkDate = request.WorkDate,
-            RequestType = request.RequestType,
-            RequestedInUtc = request.RequestedInUtc,
-            RequestedOutUtc = request.RequestedOutUtc,
-            Reason = request.Reason,
-            RequestedByUserId = GetUserId(),
-            PayrollLockChecked = true
-        };
-        _db.AttendanceRegularizationRequests.Add(regularization);
-        await _db.SaveChangesAsync(cancellationToken);
+        var regularization = await _attendanceService.CreateRegularizationAsync(
+            tenantId,
+            new RegularizationRequestDto(employeeId, request.WorkDate, request.RequestType, request.RequestedInUtc, request.RequestedOutUtc, request.Reason),
+            Context(),
+            cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.attendance_regularization.created", "AttendanceRegularizationRequest", regularization.Id.ToString(), cancellationToken);
         return Created($"/api/ess/attendance/regularization/{regularization.Id}", regularization);
     }
@@ -671,6 +669,7 @@ public class EmployeeSelfServiceController : ControllerBase
 
     private bool HasPermission(string permission) => User.Claims.Any(x => x.Type == "permission" && x.Value == permission);
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
+    private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), Guid.Parse(User.FindFirstValue("tenant_id")!));
 
     private async Task EssAudit(Guid tenantId, int employeeId, string action, string entityName, string entityId, CancellationToken cancellationToken)
     {

@@ -16,6 +16,9 @@ public record ApprovalWorkflowStepDto(
     int StepOrder,
     string StepName,
     string ApproverRole,
+    string ApproverType,
+    int? SpecificEmployeeId,
+    int? EscalationAfterHours,
     bool IsFinalStep);
 
 public record ApprovalWorkflowRequest(
@@ -29,7 +32,10 @@ public record ApprovalWorkflowStepRequest(
     [Range(1, 50)] int StepOrder,
     [Required, MaxLength(120)] string StepName,
     [Required, MaxLength(80)] string ApproverRole,
-    bool IsFinalStep);
+    [MaxLength(60)] string? ApproverType = null,
+    int? SpecificEmployeeId = null,
+    [Range(1, 720)] int? EscalationAfterHours = null,
+    bool IsFinalStep = false);
 
 public record ApprovalRequestDto(
     Guid Id,
@@ -40,6 +46,22 @@ public record ApprovalRequestDto(
     string Status,
     int CurrentStepOrder,
     Guid? RequestedByUserId,
+    int? RequestedForEmployeeId,
+    Guid? CompanyId,
+    int? CurrentApproverEmployeeId,
+    Guid? CurrentApproverUserId,
+    string CurrentApproverName,
+    string CurrentApproverRole,
+    string CurrentApproverType,
+    string CurrentQueue,
+    int SlaHours,
+    DateTime? DueAtUtc,
+    bool IsOverdue,
+    decimal AgeHours,
+    DateTime? LastRoutedAtUtc,
+    DateTime? EscalatedAtUtc,
+    string EscalatedToRole,
+    string Priority,
     DateTime CreatedAtUtc,
     DateTime? CompletedAtUtc,
     IReadOnlyCollection<ApprovalDecisionDto> Decisions);
@@ -48,7 +70,10 @@ public record CreateApprovalRequest(
     [Required] Guid WorkflowId,
     [Required, MaxLength(120)] string EntityName,
     [Required, MaxLength(80)] string EntityId,
-    [Required, MaxLength(240)] string Title);
+    [Required, MaxLength(240)] string Title,
+    int? RequestedForEmployeeId = null,
+    Guid? CompanyId = null,
+    [MaxLength(40)] string? Priority = null);
 
 public record ApprovalDecisionRequest(
     [Required, RegularExpression("Approve|Reject", ErrorMessage = "Decision must be Approve or Reject.")] string Decision,
@@ -77,6 +102,9 @@ public static class ApprovalMappings
         step.StepOrder,
         step.StepName,
         step.ApproverRole,
+        step.ApproverType,
+        step.SpecificEmployeeId,
+        step.EscalationAfterHours,
         step.IsFinalStep);
 
     public static ApprovalRequestDto ToDto(this ApprovalRequest request) => new(
@@ -88,6 +116,22 @@ public static class ApprovalMappings
         request.Status,
         request.CurrentStepOrder,
         request.RequestedByUserId,
+        request.RequestedForEmployeeId,
+        request.CompanyId,
+        request.CurrentApproverEmployeeId,
+        request.CurrentApproverUserId,
+        request.CurrentApproverName,
+        request.CurrentApproverRole,
+        request.CurrentApproverType,
+        request.CurrentQueue,
+        request.SlaHours,
+        request.DueAtUtc,
+        request.Status == "Pending" && request.DueAtUtc is not null && request.DueAtUtc < DateTime.UtcNow,
+        Math.Round((decimal)(DateTime.UtcNow - request.CreatedAtUtc).TotalHours, 1),
+        request.LastRoutedAtUtc,
+        request.EscalatedAtUtc,
+        request.EscalatedToRole,
+        request.Priority,
         request.CreatedAtUtc,
         request.CompletedAtUtc,
         request.Decisions.OrderBy(x => x.StepOrder).Select(x => x.ToDto()).ToList());

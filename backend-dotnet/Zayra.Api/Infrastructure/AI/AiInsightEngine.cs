@@ -118,9 +118,10 @@ public sealed class AiInsightEngine : BackgroundService
 
         var assignedCount = await db.EmployeeSalaryStructures
             .AsNoTracking()
-            .Where(s => s.TenantId == tenantId && s.IsActive)
+            .Where(s => s.TenantId == tenantId && s.IsActive && s.EffectiveDate <= DateOnly.FromDateTime(DateTime.UtcNow))
             .Join(db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted && e.Status == "Active"),
-                  s => s.EmployeeId, e => e.Id, (s, e) => s.Id)
+                  s => s.EmployeeId, e => e.Id, (s, e) => s.EmployeeId)
+            .Distinct()
             .CountAsync(ct);
 
         var missingSalary = activeCount - assignedCount;
@@ -155,8 +156,9 @@ public sealed class AiInsightEngine : BackgroundService
 
             var basicSalaries = await db.EmployeeSalaryStructures
                 .AsNoTracking()
-                .Where(s => s.TenantId == tenantId && s.IsActive)
-                .Select(s => (double)s.BasicSalary)
+                .Where(s => s.TenantId == tenantId && s.IsActive && s.EffectiveDate <= DateOnly.FromDateTime(DateTime.UtcNow))
+                .GroupBy(s => s.EmployeeId)
+                .Select(g => (double)g.OrderByDescending(s => s.EffectiveDate).First().BasicSalary)
                 .ToListAsync(ct);
             var avgBasic = basicSalaries.Count > 0 ? basicSalaries.Average() : 0.0;
 

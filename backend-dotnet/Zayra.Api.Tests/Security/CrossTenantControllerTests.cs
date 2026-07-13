@@ -68,7 +68,12 @@ public class CrossTenantControllerTests
 
     private static EmployeeSelfServiceController EssController(ZayraDbContext db, Guid tenantId, int employeeId)
     {
-        var controller = new EmployeeSelfServiceController(db, new StubLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8), new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalPolicyService(db)));
+        var controller = new EmployeeSelfServiceController(
+            db,
+            new StubLetterService(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8),
+            new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalPolicyService(db)),
+            new AttendanceService(db, new StubNotificationService(), new StubHttpClientFactory()));
         controller.ControllerContext = new ControllerContext { HttpContext = BuildEssHttpContext(tenantId, employeeId) };
         return controller;
     }
@@ -211,7 +216,10 @@ public class CrossTenantControllerTests
 
     private static OvertimeController OvertimeCtrl(ZayraDbContext db, Guid tenantId)
     {
-        var c = new OvertimeController(db, new DataScopeService(db));
+        var c = new OvertimeController(
+            db,
+            new DataScopeService(db),
+            new Zayra.Api.Infrastructure.Organization.HrmHierarchyService(db, new AuditService(db)));
         c.ControllerContext = new ControllerContext { HttpContext = BuildHttpContext(tenantId, "Admin") };
         return c;
     }

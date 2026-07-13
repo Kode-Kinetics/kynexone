@@ -18,6 +18,7 @@ public class PolicyDocumentController : ControllerBase
     {
         var tid = GetTenantId();
         if (tid is null) return Unauthorized();
+        if (!CanReadPolicyDocuments()) return Forbid();
         return Ok(await _svc.ListAsync(tid.Value, ct));
     }
 
@@ -53,9 +54,21 @@ public class PolicyDocumentController : ControllerBase
     {
         var tid = GetTenantId();
         if (tid is null) return Unauthorized();
+        if (!CanAskPolicyAi()) return Forbid();
         var response = await _svc.AskAsync(tid.Value, request.Question, ct);
         return Ok(response);
     }
+
+    private bool CanReadPolicyDocuments() =>
+        User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Officer") ||
+        HasPermission("policy.documents.read") || HasPermission("ai.policy.ask");
+
+    private bool CanAskPolicyAi() =>
+        User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Officer") ||
+        HasPermission("ai.query") || HasPermission("ai.policy.ask");
+
+    private bool HasPermission(string permission) =>
+        User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
     private Guid? GetTenantId()
     {

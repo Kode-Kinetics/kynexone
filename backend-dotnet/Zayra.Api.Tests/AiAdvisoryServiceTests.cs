@@ -235,7 +235,7 @@ public class AiAdvisoryServiceTests
     }
 
     [Fact]
-    public async Task AiQuery_DoesNotCrashWhenAuditPersistenceFails()
+    public async Task AiQuery_FailsClosedWhenAuditPersistenceFails()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
@@ -249,14 +249,13 @@ public class AiAdvisoryServiceTests
         var audit = new AiAuditService(failingDb, new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false), new AiRedactionService(), NullLogger<AiAuditService>.Instance);
         var service = CreateService(db, auditService: audit, options: new AiOptions("fallback", string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, 4096, true, false));
 
-        var response = await service.QueryAsync(
+        var act = () => service.QueryAsync(
             new AiUserContext(tenantId, Guid.NewGuid(), new[] { "Employee" }, Array.Empty<string>(), null),
             new AIQueryRequest("How many active employees are there?", null),
             CancellationToken.None);
 
-        Assert.True(response.IsAdvisory);
-        Assert.Equal("fallback", response.Provider);
-        Assert.Contains("active employees", response.Answer, StringComparison.OrdinalIgnoreCase);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(act);
+        Assert.Equal("ai_audit_persistence_failed", ex.Message);
     }
 
     [Fact]

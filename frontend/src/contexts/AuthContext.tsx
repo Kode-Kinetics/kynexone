@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { authApi, isMfaChallenge } from '../api/auth';
+import { authApi, isMfaChallenge, isMfaEnrollment } from '../api/auth';
 import type { AuthUser } from '../api/auth';
 
 // Returned when the backend requires a TOTP code before issuing full tokens.
@@ -10,12 +10,20 @@ export interface MfaPendingState {
   expiresInSeconds: number;
 }
 
+export interface MfaEnrollmentPendingState {
+  enrollmentToken: string;
+  expiresInSeconds: number;
+}
+
+export type LoginOutcome = 'authenticated' | 'mfa' | 'mfa-enroll';
+
 interface AuthContextValue {
   user: AuthUser | null;
   isLoading: boolean;
   mfaPending: MfaPendingState | null;
+  mfaEnrollmentPending: MfaEnrollmentPendingState | null;
   /** Normal credential login. Returns mfaPending state when TOTP is required. */
-  login: (email: string, password: string, tenantSlug?: string) => Promise<void>;
+  login: (email: string, password: string, tenantSlug?: string) => Promise<LoginOutcome>;
   /** Complete login after TOTP entry during challenge flow. */
   verifyMfaChallenge: (totpCode: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -29,6 +37,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [mfaPending, setMfaPending] = useState<MfaPendingState | null>(null);
+  const [mfaEnrollmentPending, setMfaEnrollmentPending] = useState<MfaEnrollmentPendingState | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem('zayra_access_token');
@@ -51,12 +60,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (isMfaChallenge(res)) {
       // Credentials verified; TOTP step required before tokens are issued.
       setMfaPending({ challengeToken: res.challengeToken, expiresInSeconds: res.expiresInSeconds });
-      return;
+      setMfaEnrollmentPending(null);
+      return 'mfa';
+    }
+    if (isMfaEnrollment(res)) {
+      // Credentials verified, but tenant policy requires first-time MFA setup before any session is issued.
+      setMfaEnrollmentPending({ enrollmentToken: res.enrollmentToken, expiresInSeconds: res.expiresInSeconds });
+      setMfaPending(null);
+      return 'mfa-enroll';
     }
     localStorage.setItem('zayra_access_token', res.accessToken);
     localStorage.setItem('zayra_refresh_token', res.refreshToken);
     setMfaPending(null);
+    setMfaEnrollmentPending(null);
     setUser(res.user);
+    return 'authenticated';
   }, []);
 
   const verifyMfaChallenge = useCallback(async (totpCode: string) => {
@@ -65,6 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('zayra_access_token', res.accessToken);
     localStorage.setItem('zayra_refresh_token', res.refreshToken);
     setMfaPending(null);
+    setMfaEnrollmentPending(null);
     setUser(res.user);
   }, [mfaPending]);
 
@@ -78,6 +97,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('zayra_access_token');
     localStorage.removeItem('zayra_refresh_token');
     setUser(null);
+    setMfaPending(null);
+    setMfaEnrollmentPending(null);
   }, []);
 
   const hasPermission = useCallback(
@@ -91,7 +112,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, mfaPending, login, verifyMfaChallenge, logout, hasPermission, hasRole }}>
+    <AuthContext.Provider value={{ user, isLoading, mfaPending, mfaEnrollmentPending, login, verifyMfaChallenge, logout, hasPermission, hasRole }}>
       {children}
     </AuthContext.Provider>
   );

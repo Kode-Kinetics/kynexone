@@ -20,6 +20,7 @@ public class AnalyticsController : ControllerBase
     [HttpGet("kpis")]
     public async Task<IActionResult> GetKPIs(CancellationToken ct)
     {
+        if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var thisMonth = new DateOnly(today.Year, today.Month, 1);
@@ -80,6 +81,7 @@ public class AnalyticsController : ControllerBase
     [HttpGet("trends/headcount")]
     public async Task<IActionResult> HeadcountTrend([FromQuery] int months = 6, CancellationToken ct = default)
     {
+        if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var result = new List<object>();
@@ -102,6 +104,7 @@ public class AnalyticsController : ControllerBase
     [Authorize(Roles = "Admin,Finance,HR Manager")]
     public async Task<IActionResult> PayrollTrend([FromQuery] int months = 6, CancellationToken ct = default)
     {
+        if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         return Ok(await _db.PayrollRuns.Where(x => x.TenantId == tid)
             .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
@@ -114,6 +117,7 @@ public class AnalyticsController : ControllerBase
     [HttpGet("trends/attendance")]
     public async Task<IActionResult> AttendanceTrend([FromQuery] int days = 30, CancellationToken ct = default)
     {
+        if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var from = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-days));
         return Ok(await _db.AttendanceDailyRecords
@@ -127,6 +131,7 @@ public class AnalyticsController : ControllerBase
     [HttpGet("trends/leave")]
     public async Task<IActionResult> LeaveTrend([FromQuery] int months = 6, CancellationToken ct = default)
     {
+        if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var from = DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(-months));
         var rows = await _db.LeaveRequests
@@ -143,6 +148,7 @@ public class AnalyticsController : ControllerBase
     [HttpGet("trends/overtime")]
     public async Task<IActionResult> OvertimeTrend([FromQuery] int months = 6, CancellationToken ct = default)
     {
+        if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var from = DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(-months));
         var rows = await _db.OvertimeRequests
@@ -160,6 +166,7 @@ public class AnalyticsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,Finance")]
     public async Task<IActionResult> DepartmentComparison(CancellationToken ct)
     {
+        if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var latestRun = await _db.PayrollRuns.Where(x => x.TenantId == tid)
             .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month).FirstOrDefaultAsync(ct);
@@ -179,4 +186,7 @@ public class AnalyticsController : ControllerBase
 
         return Ok(new { headcountByDept, payrollByDept });
     }
+
+    private bool HasPermission(string permission) =>
+        User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 }

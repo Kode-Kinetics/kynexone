@@ -161,7 +161,13 @@ public class OffboardingController : ControllerBase
         off.CompletedAtUtc = DateTime.UtcNow;
         off.UpdatedAtUtc = DateTime.UtcNow;
         var emp = await _db.Employees.FirstOrDefaultAsync(e => e.Id == off.EmployeeId && e.TenantId == off.TenantId, ct);
-        if (emp is not null) { emp.Status = "Archived"; emp.UpdatedAtUtc = DateTime.UtcNow; }
+        if (emp is not null)
+        {
+            emp.Status = "Archived";
+            emp.UpdatedAtUtc = DateTime.UtcNow;
+            await RevokeEmployeeAccessAsync(emp, this.GetUserId(), ct);
+            off.AccessRevoked = true;
+        }
         await _db.SaveChangesAsync(ct);
         return Ok(off);
     }
@@ -186,6 +192,38 @@ public class OffboardingController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         return await _db.EmployeeOffboardings.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
+    }
+
+    private async Task RevokeEmployeeAccessAsync(Employee employee, Guid? actorUserId, CancellationToken ct)
+    {
+        if (employee.UserAccountId is not Guid userId) return;
+
+        var user = await _db.Users
+            .Include(u => u.EmployeeUserAccounts)
+            .FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == employee.TenantId && !u.IsDeleted, ct);
+        if (user is null) return;
+
+        user.IsActive = false;
+        user.Status = "Deactivated";
+        user.AccessMode = AccessModes.NoLogin;
+        user.UpdatedAtUtc = DateTime.UtcNow;
+        foreach (var link in user.EmployeeUserAccounts.Where(l => l.TenantId == employee.TenantId && l.EmployeeId == employee.Id && !l.IsDeleted))
+        {
+            link.AccessMode = AccessModes.NoLogin;
+            link.Status = "NoLogin";
+            link.RequiresPasswordSetup = false;
+            link.LoginDisabledReason = "Offboarding completed";
+            link.UpdatedAtUtc = DateTime.UtcNow;
+            link.UpdatedBy = actorUserId;
+        }
+
+        var activeTokens = await _db.RefreshTokens
+            .Where(t => t.UserId == userId && t.RevokedAtUtc == null)
+            .ToListAsync(ct);
+        foreach (var token in activeTokens)
+            token.RevokedAtUtc = DateTime.UtcNow;
+
+        employee.UserAccountId = null;
     }
 }
 

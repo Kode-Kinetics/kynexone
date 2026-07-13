@@ -243,6 +243,14 @@ public class SalaryStructure : ITenantOwned, ICompanyScoped
     public string Name { get; set; } = string.Empty;
     public string Currency { get; set; } = "AED";
     public DateOnly EffectiveDate { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
+    public decimal MinGrossSalary { get; set; }
+    public decimal MaxGrossSalary { get; set; }
+    public decimal MinBasicSalary { get; set; }
+    public decimal MaxBasicSalary { get; set; }
+    public string EligibleGradeIdsJson { get; set; } = "[]";
+    public string EligibleDesignationIdsJson { get; set; } = "[]";
+    public int VersionNumber { get; set; } = 1;
+    public Guid? PreviousVersionId { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
@@ -350,6 +358,90 @@ public class PayrollDeduction : ITenantOwned, ICompanyScopedOperational
     public bool IsEmployerContribution { get; set; }
 }
 
+public class BenefitPlan : ITenantOwned, ICompanyScoped
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public string Code { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string PlanType { get; set; } = "Medical";
+    public string Currency { get; set; } = "AED";
+    public DateOnly EffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
+    public DateOnly? EffectiveTo { get; set; }
+    public bool RequiresEnrollment { get; set; } = true;
+    public bool IsActive { get; set; } = true;
+    public bool IsDeleted { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? CreatedBy { get; set; }
+}
+
+public class BenefitEligibilityRule : ITenantOwned, ICompanyScoped
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BenefitPlanId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Guid? GradeId { get; set; }
+    public DateOnly EffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
+    public DateOnly? EffectiveTo { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? CreatedBy { get; set; }
+}
+
+public class BenefitEnrollment : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Guid BenefitPlanId { get; set; }
+    public int EmployeeId { get; set; }
+    public string EmployeeName { get; set; } = string.Empty;
+    public string CoverageTier { get; set; } = "Employee";
+    public DateOnly EffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
+    public DateOnly? EffectiveTo { get; set; }
+    public string Status { get; set; } = "Active";
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? CreatedBy { get; set; }
+    public DateTime? UpdatedAtUtc { get; set; }
+    public Guid? UpdatedBy { get; set; }
+}
+
+public class BenefitContribution : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Guid BenefitEnrollmentId { get; set; }
+    public Guid BenefitPlanId { get; set; }
+    public int EmployeeId { get; set; }
+    public decimal EmployeeAmount { get; set; }
+    public decimal EmployerAmount { get; set; }
+    public string Frequency { get; set; } = "Monthly";
+    public string PayrollComponentCode { get; set; } = string.Empty;
+    public DateOnly EffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
+    public DateOnly? EffectiveTo { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? CreatedBy { get; set; }
+}
+
+public class BenefitPayrollDeductionLink : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Guid BenefitEnrollmentId { get; set; }
+    public Guid BenefitContributionId { get; set; }
+    public Guid PayrollDeductionId { get; set; }
+    public Guid PayrollRunId { get; set; }
+    public int EmployeeId { get; set; }
+    public decimal LinkedAmount { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? CreatedBy { get; set; }
+}
+
 public class PayrollAllowance : ITenantOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -449,6 +541,9 @@ public class PayrollPaymentBatch : ITenantOwned
 
     /// <summary>WPS submission lifecycle. See <see cref="WpsStatuses"/>.</summary>
     public string WpsStatus { get; set; } = "Draft";
+    public DateTime? WpsStatusChangedAtUtc { get; set; }
+    public string? WpsSubmissionReference { get; set; }
+    public string? WpsRejectionReason { get; set; }
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
@@ -506,6 +601,26 @@ public class PayrollPaymentRecord : ITenantOwned
     public string WpsReference { get; set; } = string.Empty;
 }
 
+public class PayrollOpeningBalance : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public int EmployeeId { get; set; }
+    public string EmployeeCode { get; set; } = string.Empty;
+    public int Year { get; set; }
+    public string BalanceType { get; set; } = string.Empty;
+    public string ComponentCode { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = "AED";
+    public string SourceSystem { get; set; } = string.Empty;
+    public string SourceRecordId { get; set; } = string.Empty;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? CreatedBy { get; set; }
+    public DateTime? UpdatedAtUtc { get; set; }
+    public Guid? UpdatedBy { get; set; }
+}
+
 public class BankTransferFile : ITenantOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -526,6 +641,14 @@ public class WPSFileBatch : ITenantOwned, ICompanyScopedOperational
     public string SifFileName { get; set; } = string.Empty;
     public string Status { get; set; } = "Generated";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public string FilingStatus { get; set; } = WpsStatuses.Generated;
+    public Guid? ResubmissionOfWpsFileBatchId { get; set; }
+    public int ResubmissionNumber { get; set; }
+    public string? SubmissionReference { get; set; }
+    public DateTime? SubmittedAtUtc { get; set; }
+    public DateTime? AcknowledgedAtUtc { get; set; }
+    public DateTime? RejectedAtUtc { get; set; }
+    public string? RejectionReason { get; set; }
 
     // ── Export metadata (Track A PR-2) ────────────────────────────────────────
     /// <summary>User who triggered the SIF file generation.</summary>

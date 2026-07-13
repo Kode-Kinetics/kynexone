@@ -128,16 +128,29 @@ public class PostgresDateTimeIntegrationTests : IClassFixture<PostgresFixture>
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        db.Grades.Add(new Grade
+        {
+            TenantId = tenantId,
+            Code = "G3",
+            Name = "Grade 3",
+            Level = 3,
+            MinSalary = 1_000m,
+            MidSalary = 15_000m,
+            MaxSalary = 30_000m,
+            Currency = "SAR",
+            IsActive = true
+        });
+        await db.SaveChangesAsync();
         var ctrl = CreateController(db, tenantId);
 
         // 5-row sample with YYYY-MM-DD dates (no Z suffix) — the format that was causing 500s
         const string csv =
-            "EmployeeCode,FullName,ArabicName,JoiningDate,BasicSalary,HousingAllowance,TransportAllowance,OtherAllowance,Currency,IBAN,BankName,MolId\n" +
-            "EMP-PG-001,Ahmed Al-Rashidi,أحمد الراشدي,2024-01-15,8000,2000,1000,500,SAR,SA0380000000608010167519,Al Rajhi Bank,MOL-001\n" +
-            "EMP-PG-002,Fatima Al-Zahrani,فاطمة الزهراني,2023-06-01,7000,1500,800,300,SAR,SA0380000000608010167520,Al Rajhi Bank,MOL-002\n" +
-            "EMP-PG-003,Mohammed Al-Harbi,محمد الحربي,2022-03-20,9000,2500,1200,400,SAR,SA0380000000608010167521,Al Rajhi Bank,MOL-003\n" +
-            "EMP-PG-004,Noura Al-Ghamdi,نورة الغامدي,2021-09-10,6500,1200,700,200,,SA0380000000608010167522,Al Rajhi Bank,\n" +
-            "EMP-PG-005,Khalid Al-Dosari,خالد الدوسري,2020-12-05,10000,3000,1500,600,SAR,SA0380000000608010167523,Al Rajhi Bank,MOL-005\n";
+            "EmployeeCode,FullName,ArabicName,JoiningDate,Grade,BasicSalary,HousingAllowance,TransportAllowance,OtherAllowance,Currency,IBAN,BankName,MolId\n" +
+            "EMP-PG-001,Ahmed Al-Rashidi,أحمد الراشدي,2024-01-15,G3,8000,2000,1000,500,SAR,SA0380000000608010167519,Al Rajhi Bank,MOL-001\n" +
+            "EMP-PG-002,Fatima Al-Zahrani,فاطمة الزهراني,2023-06-01,G3,7000,1500,800,300,SAR,SA0380000000608010167520,Al Rajhi Bank,MOL-002\n" +
+            "EMP-PG-003,Mohammed Al-Harbi,محمد الحربي,2022-03-20,G3,9000,2500,1200,400,SAR,SA0380000000608010167521,Al Rajhi Bank,MOL-003\n" +
+            "EMP-PG-004,Noura Al-Ghamdi,نورة الغامدي,2021-09-10,G3,6500,1200,700,200,,SA0380000000608010167522,Al Rajhi Bank,\n" +
+            "EMP-PG-005,Khalid Al-Dosari,خالد الدوسري,2020-12-05,G3,10000,3000,1500,600,SAR,SA0380000000608010167523,Al Rajhi Bank,MOL-005\n";
 
         var result = await ctrl.Import(
             new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);

@@ -20,7 +20,11 @@ public class BranchesController : ControllerBase
     private readonly ZayraDbContext _db;
 
     private static readonly string[] CsvHeaders =
-        { "CompanyLegalName", "Code", "NameEn", "NameAr", "CountryCode", "City", "IsHeadOffice", "IsActive" };
+        {
+            "CompanyLegalName", "Code", "NameEn", "NameAr", "CountryCode", "City",
+            "AddressLine1", "AddressLine2", "TimeZoneId", "LaborOfficeCode",
+            "IsHeadOffice", "IsActive"
+        };
 
     public BranchesController(IOrganizationSetupService organization, ZayraDbContext db)
     {
@@ -98,7 +102,8 @@ public class BranchesController : ControllerBase
         var rows = branches.Select(x => (IReadOnlyList<object?>)new object?[]
         {
             x.c.LegalNameEn, x.b.Code, x.b.NameEn, x.b.NameAr,
-            x.b.CountryCode, x.b.City, x.b.IsHeadOffice ? "true" : "false",
+            x.b.CountryCode, x.b.City, x.b.AddressLine1, x.b.AddressLine2,
+            x.b.TimeZoneId, x.b.LaborOfficeCode, x.b.IsHeadOffice ? "true" : "false",
             x.b.IsActive ? "true" : "false"
         });
         return File(Encoding.UTF8.GetBytes(Csv.Build(CsvHeaders, rows)), "text/csv", $"branches_{DateTime.UtcNow:yyyyMMdd}.csv");
@@ -112,8 +117,8 @@ public class BranchesController : ControllerBase
     {
         var sb = new StringBuilder();
         sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("IntelliFlow Systems LLC,HQ,Head Office,المقر الرئيسي,AE,Dubai,true,true\n");
-        sb.Append("IntelliFlow Systems LLC,RYD,Riyadh Office,,SA,Riyadh,false,true\n");
+        sb.Append("IntelliFlow Systems LLC,HQ,Head Office,المقر الرئيسي,AE,Dubai,Sheikh Zayed Road,Floor 21,Asia/Dubai,DXB-LAB-001,true,true\n");
+        sb.Append("IntelliFlow Systems LLC,RYD,Riyadh Office,,SA,Riyadh,King Fahd Road,,Asia/Riyadh,RYD-LAB-001,false,true\n");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "branches_import_template.csv");
     }
 
@@ -204,12 +209,21 @@ public class BranchesController : ControllerBase
             bool isActive = !row.TryGetValue("IsActive", out var av) || !string.Equals(av, "false", StringComparison.OrdinalIgnoreCase);
             var country = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
             var city = row.GetValueOrDefault("City", string.Empty).Trim();
+            var addressLine1 = row.GetValueOrDefault("AddressLine1", string.Empty).Trim();
+            var addressLine2 = row.GetValueOrDefault("AddressLine2", string.Empty).Trim();
+            var timeZoneId = row.GetValueOrDefault("TimeZoneId", string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(timeZoneId)) timeZoneId = "Asia/Dubai";
+            var laborOfficeCode = row.GetValueOrDefault("LaborOfficeCode", string.Empty).Trim();
 
             if (existingByCode.TryGetValue(code.ToUpperInvariant(), out var existing))
             {
                 existing.NameEn = nameEn;
                 existing.NameAr = row.GetValueOrDefault("NameAr", existing.NameAr).Trim();
                 existing.CountryCode = country; existing.City = city;
+                existing.AddressLine1 = addressLine1;
+                existing.AddressLine2 = addressLine2;
+                existing.TimeZoneId = timeZoneId;
+                existing.LaborOfficeCode = laborOfficeCode;
                 existing.IsHeadOffice = isHeadOffice; existing.IsActive = isActive;
                 existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
             }
@@ -220,7 +234,11 @@ public class BranchesController : ControllerBase
                     TenantId = tenantId, CompanyId = company!.Id, Code = code,
                     NameEn = nameEn, NameAr = row.GetValueOrDefault("NameAr", string.Empty).Trim(),
                     CountryCode = country, City = city, IsHeadOffice = isHeadOffice,
-                    IsActive = isActive, TimeZoneId = "Asia/Dubai",
+                    AddressLine1 = addressLine1,
+                    AddressLine2 = addressLine2,
+                    TimeZoneId = timeZoneId,
+                    LaborOfficeCode = laborOfficeCode,
+                    IsActive = isActive,
                 }); created++;
             }
             rowResults.Add(new ImportRowResult(rowNum, code, nameEn, ImportRowStatus.Ok, errors, new List<string>()));

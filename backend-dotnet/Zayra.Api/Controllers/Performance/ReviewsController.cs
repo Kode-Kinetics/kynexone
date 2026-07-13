@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Application.Performance;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
@@ -16,12 +17,14 @@ public class ReviewsController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly IPerformanceService _svc;
     private readonly IDataScopeService _scopeService;
+    private readonly IHrmHierarchyService _hierarchyService;
 
-    public ReviewsController(ZayraDbContext db, IPerformanceService svc, IDataScopeService scopeService)
+    public ReviewsController(ZayraDbContext db, IPerformanceService svc, IDataScopeService scopeService, IHrmHierarchyService hierarchyService)
     {
         _db = db;
         _svc = svc;
         _scopeService = scopeService;
+        _hierarchyService = hierarchyService;
     }
 
     [HttpGet]
@@ -203,6 +206,15 @@ public class ReviewsController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(review.EmployeeId))
             return Forbid();
+        var resolvedApprovers = await _hierarchyService.ResolveWorkflowApproversAsync(tenantId, review.EmployeeId, "APPRAISAL", ct);
+        var callerIsResolvedApprover = scope.CallerEmployeeId.HasValue
+            && resolvedApprovers.Approvers.Any(a => a.EmployeeId == scope.CallerEmployeeId.Value);
+        var hasOverride = scope.IsUnrestricted || HasPermission("appraisal.view_all") || HasPermission("performance.approve");
+        if (!callerIsResolvedApprover && !hasOverride)
+            return Forbid();
+        var reviewer = callerIsResolvedApprover
+            ? resolvedApprovers.Approvers.First(a => a.EmployeeId == scope.CallerEmployeeId!.Value)
+            : resolvedApprovers.Approvers.FirstOrDefault();
 
         // GAP 6: review must be in a reviewable state and cycle must be open for manager review
         if (review.Status is not ("SelfAssessmentSubmitted" or "ManagerReview" or "SelfAssessmentDue"))
@@ -222,8 +234,8 @@ public class ReviewsController : ControllerBase
         review.FeedbackScore     = req.FeedbackScore;
         review.DisciplineScore   = req.DisciplineScore;
         review.ManagerNotes      = req.ManagerNotes ?? string.Empty;
-        review.ReviewerManagerId = req.ReviewerManagerId;
-        review.ReviewerManagerName = req.ReviewerManagerName ?? string.Empty;
+        review.ReviewerManagerId = reviewer?.EmployeeId;
+        review.ReviewerManagerName = reviewer?.FullName ?? User.Identity?.Name ?? "Manager";
         review.Status            = "ManagerReviewComplete";
         review.ManagerReviewedAt = DateTime.UtcNow;
         review.UpdatedAtUtc      = DateTime.UtcNow;
@@ -257,7 +269,7 @@ public class ReviewsController : ControllerBase
 
         await _svc.LogAuditAsync(tenantId, "AppraisalReview", id.ToString(),
             "ManagerReviewSubmitted", $"Score:{oldScore}", $"Score:{newScore}",
-            req.ManagerNotes ?? string.Empty, userId, req.ReviewerManagerName ?? "Manager", ct);
+            req.ManagerNotes ?? string.Empty, userId, review.ReviewerManagerName, ct);
 
         return Ok(review);
     }

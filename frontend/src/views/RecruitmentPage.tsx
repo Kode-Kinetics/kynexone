@@ -37,7 +37,7 @@ import type {
   ApplicationDetail, KanbanStage, OfferLetter,
   RecruitmentStats, RequisitionStats,
   WorkforcePlan, InterviewSchedule as ExtInterviewSchedule,
-  CandidateAssessment, OnboardingTask,
+  CandidateAssessment, OnboardingChecklist, OnboardingChecklistTemplateTask, OnboardingTask,
 } from '../api/recruitment';
 import { StatusChip } from '../components/StatusChip';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -2026,14 +2026,24 @@ function OffersTab() {
 
 function OnboardingTab() {
   const [tasks, setTasks] = useState<OnboardingTask[]>([]);
+  const [checklists, setChecklists] = useState<OnboardingChecklist[]>([]);
+  const [selectedChecklistId, setSelectedChecklistId] = useState('');
+  const [templateTasks, setTemplateTasks] = useState<OnboardingChecklistTemplateTask[]>([]);
   const [summary, setSummary] = useState<{ total: number; pending: number; completed: number; blocked: number; completionPct: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showAdd, setShowAdd] = useState(false);
+  const [showTemplate, setShowTemplate] = useState(false);
+  const [checklistForm, setChecklistForm] = useState({ code: '', name: '', description: '', applicableTo: 'All', departmentName: '' });
+  const [templateForm, setTemplateForm] = useState({
+    taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueOffsetDays: 0, orderIndex: 0, isMandatory: true,
+  });
+  const [generateForm, setGenerateForm] = useState({ employeeId: '', applicationId: '', startDate: '' });
   const [taskForm, setTaskForm] = useState({
     taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueDate: '', isMandatory: false,
   });
   const [taskSaving, setTaskSaving] = useState(false);
+  const [templateSaving, setTemplateSaving] = useState(false);
   const [taskError, setTaskError] = useState('');
   const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
 
@@ -2049,6 +2059,65 @@ function OnboardingTab() {
   };
 
   useEffect(() => { load(); }, [statusFilter]);
+
+  const loadChecklists = async () => {
+    try {
+      const items = await onboardingApi.listChecklists();
+      setChecklists(items);
+      setSelectedChecklistId(current => current || items[0]?.id || '');
+    } catch (e) { notifyApiError(e); }
+  };
+
+  const loadTemplateTasks = async (checklistId: string) => {
+    if (!checklistId) { setTemplateTasks([]); return; }
+    try { setTemplateTasks(await onboardingApi.listTemplateTasks(checklistId)); }
+    catch (e) { notifyApiError(e); }
+  };
+
+  useEffect(() => { loadChecklists(); }, []);
+  useEffect(() => { loadTemplateTasks(selectedChecklistId); }, [selectedChecklistId]);
+
+  const createChecklist = async () => {
+    if (!checklistForm.code || !checklistForm.name) { setTaskError('Checklist code and name are required.'); return; }
+    setTemplateSaving(true); setTaskError('');
+    try {
+      const created = await onboardingApi.createChecklist(checklistForm);
+      setChecklistForm({ code: '', name: '', description: '', applicableTo: 'All', departmentName: '' });
+      await loadChecklists();
+      setSelectedChecklistId(created.id);
+    } catch (e) { notifyApiError(e); }
+    finally { setTemplateSaving(false); }
+  };
+
+  const saveTemplateTask = async () => {
+    if (!selectedChecklistId || !templateForm.taskTitle) { setTaskError('Select a checklist and enter a template task title.'); return; }
+    setTemplateSaving(true); setTaskError('');
+    try {
+      await onboardingApi.upsertTemplateTask(selectedChecklistId, templateForm);
+      setTemplateForm({ taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueOffsetDays: 0, orderIndex: 0, isMandatory: true });
+      await loadTemplateTasks(selectedChecklistId);
+    } catch (e) { notifyApiError(e); }
+    finally { setTemplateSaving(false); }
+  };
+
+  const generateFromChecklist = async () => {
+    if (!selectedChecklistId || (!generateForm.employeeId && !generateForm.applicationId)) {
+      setTaskError('Select a checklist and provide an employee or application ID.');
+      return;
+    }
+    setTemplateSaving(true); setTaskError('');
+    try {
+      await onboardingApi.createBulk({
+        checklistId: selectedChecklistId,
+        employeeId: generateForm.employeeId || undefined,
+        applicationId: generateForm.applicationId || undefined,
+        startDate: generateForm.startDate || undefined,
+      });
+      setGenerateForm({ employeeId: '', applicationId: '', startDate: '' });
+      load();
+    } catch (e) { notifyApiError(e); }
+    finally { setTemplateSaving(false); }
+  };
 
   const submitTask = async () => {
     if (!taskForm.taskTitle) { setTaskError('Task title is required.'); return; }
@@ -2098,6 +2167,105 @@ function OnboardingTab() {
           </div>
         </div>
       )}
+
+      <div className="surface p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <select title="Onboarding checklist" value={selectedChecklistId} onChange={e => setSelectedChecklistId(e.target.value)}
+            className="min-w-64 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
+            <option value="">Select checklist</option>
+            {checklists.map(c => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
+          </select>
+          {selectedChecklistId && (
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              {templateTasks.length} template tasks
+            </span>
+          )}
+          <button type="button" onClick={() => setShowTemplate(v => !v)}
+            className="ml-auto flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
+            <ClipboardList className="h-3.5 w-3.5" />Checklist Templates
+          </button>
+        </div>
+
+        {showTemplate && (
+          <div className="mt-4 grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+            <div className="space-y-3">
+              <p className="text-sm font-semibold text-slate-800 dark:text-white">Checklist Setup</p>
+              <div className="grid grid-cols-2 gap-2">
+                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Code"
+                  value={checklistForm.code} onChange={e => setChecklistForm(f => ({ ...f, code: e.target.value }))} />
+                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Name"
+                  value={checklistForm.name} onChange={e => setChecklistForm(f => ({ ...f, name: e.target.value }))} />
+                <select title="Applicable to" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  value={checklistForm.applicableTo} onChange={e => setChecklistForm(f => ({ ...f, applicableTo: e.target.value }))}>
+                  {['All', 'ByDepartment', 'ByRole'].map(v => <option key={v}>{v}</option>)}
+                </select>
+                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Department"
+                  value={checklistForm.departmentName} onChange={e => setChecklistForm(f => ({ ...f, departmentName: e.target.value }))} />
+                <input className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
+                  value={checklistForm.description} onChange={e => setChecklistForm(f => ({ ...f, description: e.target.value }))} />
+              </div>
+              <button type="button" onClick={createChecklist} disabled={templateSaving}
+                className="rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
+                {templateSaving ? 'Saving…' : 'Create Checklist'}
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-sm font-semibold text-slate-800 dark:text-white">Template Tasks</p>
+              <div className="grid grid-cols-2 gap-2">
+                <input className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Task title"
+                  value={templateForm.taskTitle} onChange={e => setTemplateForm(f => ({ ...f, taskTitle: e.target.value }))} />
+                <select title="Template category" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  value={templateForm.category} onChange={e => setTemplateForm(f => ({ ...f, category: e.target.value }))}>
+                  {['General', 'Document', 'IT', 'Training', 'Policy', 'Access'].map(c => <option key={c}>{c}</option>)}
+                </select>
+                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Owner"
+                  value={templateForm.assignedToName} onChange={e => setTemplateForm(f => ({ ...f, assignedToName: e.target.value }))} />
+                <input type="number" title="Due offset days" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  value={templateForm.dueOffsetDays} onChange={e => setTemplateForm(f => ({ ...f, dueOffsetDays: Number(e.target.value) }))} />
+                <input type="number" title="Order" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  value={templateForm.orderIndex} onChange={e => setTemplateForm(f => ({ ...f, orderIndex: Number(e.target.value) }))} />
+                <input className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
+                  value={templateForm.taskDescription} onChange={e => setTemplateForm(f => ({ ...f, taskDescription: e.target.value }))} />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+                  <input type="checkbox" className="h-4 w-4 rounded border-slate-300 text-sapphire"
+                    checked={templateForm.isMandatory} onChange={e => setTemplateForm(f => ({ ...f, isMandatory: e.target.checked }))} />
+                  Mandatory
+                </label>
+                <button type="button" onClick={saveTemplateTask} disabled={templateSaving || !selectedChecklistId}
+                  className="rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
+                  {templateSaving ? 'Saving…' : 'Save Template Task'}
+                </button>
+              </div>
+              {templateTasks.length > 0 && (
+                <div className="max-h-36 overflow-auto rounded-lg border border-slate-100 dark:border-white/10">
+                  {templateTasks.map(t => (
+                    <div key={t.id} className="flex items-center justify-between border-b border-slate-100 px-3 py-2 text-xs last:border-0 dark:border-white/10">
+                      <span className="font-medium text-slate-700 dark:text-slate-200">{t.orderIndex}. {t.taskTitle}</span>
+                      <span className="text-slate-500">{t.category} · +{t.dueOffsetDays}d</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="grid grid-cols-3 gap-2">
+                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Employee ID"
+                  value={generateForm.employeeId} onChange={e => setGenerateForm(f => ({ ...f, employeeId: e.target.value }))} />
+                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Application ID"
+                  value={generateForm.applicationId} onChange={e => setGenerateForm(f => ({ ...f, applicationId: e.target.value }))} />
+                <input type="date" title="Start date" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  value={generateForm.startDate} onChange={e => setGenerateForm(f => ({ ...f, startDate: e.target.value }))} />
+              </div>
+              <button type="button" onClick={generateFromChecklist} disabled={templateSaving || !selectedChecklistId}
+                className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-500/30 dark:text-emerald-400">
+                Generate Tasks From Checklist
+              </button>
+            </div>
+          </div>
+        )}
+        {taskError && <p className="mt-3 text-xs text-rose-500">{taskError}</p>}
+      </div>
 
       <div className="flex items-center gap-3">
         <select title="Filter by task status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}

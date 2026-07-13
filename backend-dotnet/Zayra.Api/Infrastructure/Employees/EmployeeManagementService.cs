@@ -83,14 +83,15 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var employee = new Employee { TenantId = tenantId, EmployeeCode = code, CreatedBy = context.UserId };
         await ApplyEmployee(employee, request, tenantId, cancellationToken);
-        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         // Employees must always resolve to a legal entity: operational company scoping
         // treats null CompanyId as invisible to scoped users, so default it here.
         employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
+        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         employee.Status = "Draft";
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         _db.Employees.Add(employee);
         await _db.SaveChangesAsync(cancellationToken);
+        await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
 
         await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
         await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
@@ -105,6 +106,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
+        var priorPositionId = employee.PositionId;
         TrackChange(employee, "Department", employee.Department, request.DepartmentId?.ToString() ?? employee.Department, request.JoiningDate, "Department update", context);
         TrackChange(employee, "Designation", employee.Designation, request.DesignationId?.ToString() ?? employee.Designation, request.JoiningDate, "Designation update", context);
         TrackChange(employee, "Manager", employee.ManagerEmployeeId?.ToString() ?? "", request.ReportingManagerEmployeeId?.ToString() ?? "", request.JoiningDate, "Manager update", context);
@@ -119,6 +121,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+        await SynchronizePositionIncumbencyAsync(employee, priorPositionId, context, cancellationToken);
         await _audit.WriteAsync("employee.updated", "Employee", id.ToString(), context, null, cancellationToken);
         return await GetAsync(tenantId, id, true, context, cancellationToken);
     }
@@ -408,6 +411,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.DesignationId = request.DesignationId;
         employee.GradeId = request.GradeId;
         employee.CostCenterId = request.CostCenterId;
+        employee.PositionId = request.PositionId;
         employee.Branch = request.BranchId is null ? employee.Branch : await _db.Branches.Where(x => x.TenantId == tenantId && x.Id == request.BranchId).Select(x => x.NameEn).FirstOrDefaultAsync(cancellationToken) ?? employee.Branch;
         employee.Department = request.DepartmentId is null ? employee.Department : await _db.Departments.Where(x => x.TenantId == tenantId && x.Id == request.DepartmentId).Select(x => x.NameEn).FirstOrDefaultAsync(cancellationToken) ?? employee.Department;
         if (request.DesignationId is not null)
@@ -502,6 +506,34 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     private async Task ValidatePositionAndSalaryAsync(Employee employee, EmployeeSalaryBreakdownRequest? salary, Guid tenantId, CancellationToken cancellationToken)
     {
+        if (employee.PositionId is not null)
+        {
+            var position = await _db.Positions.AsNoTracking()
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employee.PositionId && !x.IsDeleted, cancellationToken);
+            if (position is null) throw new InvalidOperationException("Selected position was not found.");
+            if (position.Status is PositionStatuses.Frozen or PositionStatuses.Closed)
+                throw new InvalidOperationException($"Position '{position.Code}' is {position.Status.ToLowerInvariant()} and cannot receive an employee.");
+            if (position.EffectiveFrom > DateOnly.FromDateTime(employee.JoiningDate))
+                throw new InvalidOperationException($"Position '{position.Code}' is not effective on the employee joining date.");
+            if (position.EffectiveTo is not null && position.EffectiveTo < DateOnly.FromDateTime(employee.JoiningDate))
+                throw new InvalidOperationException($"Position '{position.Code}' expired before the employee joining date.");
+            if (position.IncumbentEmployeeId is not null && position.IncumbentEmployeeId != employee.Id)
+                throw new InvalidOperationException($"Position '{position.Code}' is already occupied by another employee.");
+
+            void RequireMatch(Guid? expected, Guid? actual, string label)
+            {
+                if (expected is not null && actual != expected)
+                    throw new InvalidOperationException($"Position '{position.Code}' requires {label} '{expected}'.");
+            }
+
+            RequireMatch(position.CompanyId, employee.CompanyId, "its configured legal entity");
+            RequireMatch(position.BranchId, employee.BranchId, "its configured branch");
+            RequireMatch(position.DepartmentId, employee.DepartmentId, "its configured department");
+            RequireMatch(position.CostCenterId, employee.CostCenterId, "its configured cost center");
+            RequireMatch(position.DesignationId, employee.DesignationId, "its configured designation");
+            RequireMatch(position.GradeId, employee.GradeId, "its configured grade");
+        }
+
         if (employee.DesignationId is not null)
         {
             var designation = await _db.Designations
@@ -531,6 +563,30 @@ public class EmployeeManagementService : IEmployeeManagementService
             throw new InvalidOperationException($"Salary package {grossSalary:N2} exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}.");
     }
 
+    private async Task SynchronizePositionIncumbencyAsync(Employee employee, Guid? priorPositionId, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (priorPositionId is not null && priorPositionId != employee.PositionId)
+        {
+            var prior = await _db.Positions.FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == priorPositionId && !x.IsDeleted, cancellationToken);
+            if (prior?.IncumbentEmployeeId == employee.Id)
+            {
+                prior.IncumbentEmployeeId = null;
+                prior.Status = PositionStatuses.Open;
+                prior.UpdatedAtUtc = DateTime.UtcNow;
+                prior.UpdatedBy = context.UserId;
+            }
+        }
+        if (employee.PositionId is not null)
+        {
+            var position = await _db.Positions.FirstAsync(x => x.TenantId == employee.TenantId && x.Id == employee.PositionId && !x.IsDeleted, cancellationToken);
+            position.IncumbentEmployeeId = employee.Id;
+            position.Status = PositionStatuses.Filled;
+            position.UpdatedAtUtc = DateTime.UtcNow;
+            position.UpdatedBy = context.UserId;
+        }
+        await _db.SaveChangesAsync(cancellationToken);
+    }
+
     private async Task UpsertEmployeeSalaryStructure(Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken)
     {
         if (employee.TenantId is null || employee.GradeId is null) return;
@@ -546,8 +602,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         var salary = BuildSalaryBreakdown(request, components);
         if (GrossSalary(salary) <= 0) return;
 
+        var effectiveDate = request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate);
         await _db.EmployeeSalaryStructures
-            .Where(x => x.TenantId == employee.TenantId && x.EmployeeId == employee.Id && x.IsActive)
+            .Where(x => x.TenantId == employee.TenantId && x.EmployeeId == employee.Id && x.IsActive && x.EffectiveDate == effectiveDate)
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.IsActive, false), cancellationToken);
 
         var structureCode = Clean(request?.SalaryStructureCode);
@@ -562,7 +619,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 Code = structureCode,
                 Name = $"{grade.Name} salary structure",
                 Currency = Clean(request?.Currency) is { Length: > 0 } requestCurrency ? requestCurrency.ToUpperInvariant() : grade.Currency,
-                EffectiveDate = request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate),
+                EffectiveDate = effectiveDate,
                 CreatedBy = context.UserId
             };
             _db.SalaryStructures.Add(structure);
@@ -596,7 +653,7 @@ public class EmployeeManagementService : IEmployeeManagementService
             MobileAllowance = salary.MobileAllowance ?? 0m,
             OtherAllowance = salary.OtherAllowance ?? 0m,
             FixedDeduction = salary.FixedDeduction ?? 0m,
-            EffectiveDate = request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate),
+            EffectiveDate = effectiveDate,
             Currency = Clean(request?.Currency) is { Length: > 0 } currency ? currency.ToUpperInvariant() : structure.Currency,
             CreatedBy = context.UserId
         };
@@ -701,6 +758,9 @@ public class EmployeeManagementService : IEmployeeManagementService
             case "emirates_id": employee.EmiratesId = record.FieldValue; break;
             case "labor_card_number": employee.LaborCardNumber = record.FieldValue; break;
             case "visa_file_number": employee.VisaFileNumber = record.FieldValue; break;
+            case "qid": employee.Qid = record.FieldValue; break;
+            case "civil_id": employee.CivilId = record.FieldValue; break;
+            case "residency_number": employee.ResidencyNumber = record.FieldValue; break;
             case "work_permit": employee.WorkPermitNumber = record.FieldValue; break;
             case "sponsor": employee.SponsorName = record.FieldValue; break;
         }

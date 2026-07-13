@@ -28,6 +28,12 @@ public interface IMfaService
     Task<MfaSetupInitDto> InitiateSetupAsync(Guid userId, Guid tenantId, CancellationToken cancellationToken);
     /// <summary>Verifies the setup code; if valid, persists the encrypted secret and enables MFA.</summary>
     Task<bool> VerifySetupAsync(Guid userId, Guid tenantId, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken);
+    /// <summary>Creates a short-lived setup-only token after password verification when tenant policy requires first-time MFA enrollment.</summary>
+    Task<string> CreateEnrollmentChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken cancellationToken);
+    /// <summary>Generates a TOTP setup URI only when a valid setup-only enrollment token is presented.</summary>
+    Task<MfaSetupInitDto?> InitiateEnrollmentSetupAsync(string enrollmentToken, CancellationToken cancellationToken);
+    /// <summary>Verifies setup for a setup-only enrollment token. Consumes the token on success or after repeated bad codes.</summary>
+    Task<bool> VerifyEnrollmentSetupAsync(string enrollmentToken, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken);
     /// <summary>Creates a short-lived MFA challenge token after the user passes password verification.</summary>
     Task<string> CreateChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken cancellationToken);
     /// <summary>Verifies the challenge token + TOTP code; returns the user if both are valid.</summary>
@@ -44,6 +50,21 @@ public interface IMfaService
 }
 
 public record MfaSetupInitDto(string ProvisioningUri, string TempSecret);
+
+public interface IEnterpriseIdentityService
+{
+    Task<EnterpriseIdentitySettingsDto> GetSettingsAsync(Guid tenantId, CancellationToken ct);
+    Task<EnterpriseIdentitySettingsDto> UpdateSettingsAsync(Guid tenantId, UpdateEnterpriseIdentitySettingsRequest request, RequestContext context, CancellationToken ct);
+    Task<RotateScimTokenResponse> RotateScimTokenAsync(Guid tenantId, RequestContext context, CancellationToken ct);
+    Task<SamlServiceProviderMetadataDto?> GetSamlMetadataAsync(string tenantSlug, string baseUrl, CancellationToken ct);
+    Task<OidcTenantMetadataDto?> GetOidcMetadataAsync(string tenantSlug, string baseUrl, CancellationToken ct);
+    Task<EnterpriseIdentityValidationResult> ValidateSettingsAsync(Guid tenantId, CancellationToken ct);
+    Task<Guid?> ValidateScimTokenAsync(string rawToken, CancellationToken ct);
+    Task<ScimListResponse> ListScimUsersAsync(Guid tenantId, int startIndex, int count, CancellationToken ct);
+    Task<ScimUserResource> UpsertScimUserAsync(Guid tenantId, ScimUserUpsertRequest request, RequestContext context, CancellationToken ct);
+    Task<ScimUserResource?> PatchScimUserAsync(Guid tenantId, Guid userId, ScimPatchRequest request, RequestContext context, CancellationToken ct);
+    Task<bool> DeactivateScimUserAsync(Guid tenantId, Guid userId, RequestContext context, CancellationToken ct);
+}
 
 public interface IAuthSeeder
 {

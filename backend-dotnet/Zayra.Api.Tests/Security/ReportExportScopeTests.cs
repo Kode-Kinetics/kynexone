@@ -120,6 +120,7 @@ public class ReportExportScopeTests
             new Claim(ClaimTypes.Role, "HR Manager"),
             new Claim("permission", "employees.read"),
             new Claim("permission", "employees.write"),
+            new Claim("permission", "reports.read"),
             new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { companyId } })),
         }, "Test"));
 

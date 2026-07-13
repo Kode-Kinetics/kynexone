@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -15,11 +16,13 @@ public class OvertimeController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
+    private readonly IHrmHierarchyService _hierarchyService;
 
-    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService)
+    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService)
     {
         _db = db;
         _scopeService = scopeService;
+        _hierarchyService = hierarchyService;
     }
 
     [HttpGet("policies")]
@@ -178,6 +181,9 @@ public class OvertimeController : ControllerBase
         var isAdmin = User.IsInRole("Admin");
         var isHR = User.IsInRole("HR Manager");
         var isManager = User.IsInRole("Manager") || User.IsInRole("Supervisor");
+        if (request.Status == "PendingManager" && isManager && !isAdmin && !isHR
+            && !await IsCurrentUserResolvedApproverAsync(tenantId, request.EmployeeId, "Overtime", ct))
+            return Forbid();
 
         _db.OvertimeApprovals.Add(new OvertimeApproval
         {
@@ -232,6 +238,15 @@ public class OvertimeController : ControllerBase
         var tenantId = RequireTenant();
         var request = await _db.OvertimeRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
         if (request is null) return NotFound();
+        if (!request.Status.StartsWith("Pending")) return BadRequest(new { message = "Only pending overtime can be rejected." });
+        var isAdmin = User.IsInRole("Admin");
+        var isHR = User.IsInRole("HR Manager");
+        var isManager = User.IsInRole("Manager") || User.IsInRole("Supervisor");
+        if (request.Status == "PendingManager" && isManager && !isAdmin && !isHR
+            && !await IsCurrentUserResolvedApproverAsync(tenantId, request.EmployeeId, "Overtime", ct))
+            return Forbid();
+        if (request.Status == "PendingHR" && !isAdmin && !isHR)
+            return Forbid();
         request.Status = "Rejected";
         request.DecidedAtUtc = DateTime.UtcNow;
         _db.OvertimeApprovals.Add(new OvertimeApproval { TenantId = tenantId, OvertimeRequestId = id, Decision = "Rejected", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
@@ -328,7 +343,7 @@ public class OvertimeController : ControllerBase
             ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.OvertimePolicyId && !x.IsDeleted, ct)
             : await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
         policy ??= new OvertimePolicy { TenantId = tenantId, HourlyRateBasis = "BasicSalary", StandardMonthlyHours = 240 };
-        var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId && x.IsActive).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(ct);
+        var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId && x.IsActive && x.EffectiveDate <= request.WorkDate).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(ct);
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.EmployeeId, ct);
         var basic = salary?.BasicSalary ?? employee?.Salary ?? 0m;
         var gross = salary is null ? basic : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance;
@@ -359,6 +374,18 @@ public class OvertimeController : ControllerBase
 
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id")!);
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
+    private async Task<bool> IsCurrentUserResolvedApproverAsync(Guid tenantId, int employeeId, string workflowType, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        if (userId is null) return false;
+        var callerEmployeeId = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.UserAccountId == userId)
+            .Select(e => (int?)e.Id)
+            .FirstOrDefaultAsync(ct);
+        if (callerEmployeeId is null) return false;
+        var resolved = await _hierarchyService.ResolveWorkflowApproversAsync(tenantId, employeeId, workflowType, ct);
+        return resolved.Approvers.Any(a => a.EmployeeId == callerEmployeeId.Value);
+    }
 }
 
 public record OvertimePolicyRequest(string Code, string Name, string? HourlyRateBasis, decimal FixedHourlyRate, int StandardMonthlyHours, int MinimumMinutes, int MaximumMinutesPerDay, int MonthlyCapMinutes, string? RoundingRule, bool RequiresApproval, bool AllowCompOffConversion, decimal RegularDayMultiplier, decimal WeekendMultiplier, decimal HolidayMultiplier);

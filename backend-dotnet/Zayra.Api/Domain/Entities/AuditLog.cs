@@ -14,5 +14,8 @@ public class AuditLog : INullableTenantOwned, ICompanyScoped
     public string? IpAddress { get; set; }
     public string? UserAgent { get; set; }
     public string? Metadata { get; set; }
+    public string PreviousHash { get; set; } = string.Empty;
+    public string EntryHash { get; set; } = string.Empty;
+    public string HashAlgorithm { get; set; } = "SHA-256";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

@@ -32,6 +32,29 @@ public record AddReportingLineRequest(
     DateTime? EffectiveTo,
     bool IsPrimary = false);
 
+public record HierarchyPersonDto(
+    int EmployeeId,
+    string EmployeeCode,
+    string FullName,
+    string Designation,
+    string Department,
+    Guid? CompanyId,
+    int Level);
+
+public record HierarchyResolverDto(
+    int EmployeeId,
+    IReadOnlyList<HierarchyPersonDto> ManagerChain,
+    HierarchyPersonDto? DirectManager,
+    HierarchyPersonDto? SecondLevelManager,
+    HierarchyPersonDto? DepartmentHead,
+    HierarchyPersonDto? CompanyHead);
+
+public record WorkflowApproverResolutionDto(
+    string WorkflowType,
+    int EmployeeId,
+    IReadOnlyList<HierarchyPersonDto> Approvers,
+    IReadOnlyList<string> MissingRoles);
+
 // ── Service interface ─────────────────────────────────────────────────────────
 
 public interface IHrmHierarchyService
@@ -52,7 +75,13 @@ public interface IHrmHierarchyService
     Task<ReportingLineDto> AddReportingLineAsync(Guid tenantId, int employeeId, AddReportingLineRequest req, RequestContext context, CancellationToken ct);
 
     /// <summary>Deactivates a reporting line (soft end-date).</summary>
-    Task<bool> RemoveReportingLineAsync(Guid tenantId, Guid reportingLineId, RequestContext context, CancellationToken ct);
+    Task<bool> RemoveReportingLineAsync(Guid tenantId, int employeeId, Guid reportingLineId, RequestContext context, CancellationToken ct);
+
+    /// <summary>Resolves the manager chain and common hierarchy anchors for an employee.</summary>
+    Task<HierarchyResolverDto> ResolveHierarchyAsync(Guid tenantId, int employeeId, int maxDepth, CancellationToken ct);
+
+    /// <summary>Resolves workflow approvers from the hierarchy source of truth.</summary>
+    Task<WorkflowApproverResolutionDto> ResolveWorkflowApproversAsync(Guid tenantId, int employeeId, string workflowType, CancellationToken ct);
 
     /// <summary>
     /// Validates that setting employee as manager of subject would not create a circular chain.

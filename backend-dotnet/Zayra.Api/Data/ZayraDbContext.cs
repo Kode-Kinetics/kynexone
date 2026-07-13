@@ -98,6 +98,7 @@ public class ZayraDbContext : DbContext
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         var now = DateTime.UtcNow;
+        EnforceAuditLogAppendOnly();
         foreach (var entry in ChangeTracker.Entries())
         {
             if (entry.State == EntityState.Added)
@@ -118,6 +119,20 @@ public class ZayraDbContext : DbContext
         }
         await EnforceCompanyScopeOnWritesAsync(cancellationToken);
         return await base.SaveChangesAsync(cancellationToken);
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        EnforceAuditLogAppendOnly();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    private void EnforceAuditLogAppendOnly()
+    {
+        var auditMutation = ChangeTracker.Entries<AuditLog>()
+            .FirstOrDefault(e => e.State is EntityState.Modified or EntityState.Deleted);
+        if (auditMutation is not null)
+            throw new InvalidOperationException("audit_log_append_only_violation: central audit log rows cannot be modified or deleted.");
     }
 
     /// <summary>
@@ -306,6 +321,7 @@ public class ZayraDbContext : DbContext
     }
 
     public DbSet<Employee> Employees => Set<Employee>();
+    public DbSet<Position> Positions => Set<Position>();
     public DbSet<AttendanceRecord> AttendanceRecords => Set<AttendanceRecord>();
     public DbSet<AttendanceDevice> AttendanceDevices => Set<AttendanceDevice>();
     public DbSet<AttendanceDeviceConnector> AttendanceDeviceConnectors => Set<AttendanceDeviceConnector>();
@@ -372,6 +388,11 @@ public class ZayraDbContext : DbContext
     public DbSet<PayrollRunEmployee> PayrollRunEmployees => Set<PayrollRunEmployee>();
     public DbSet<PayrollEarning> PayrollEarnings => Set<PayrollEarning>();
     public DbSet<PayrollDeduction> PayrollDeductions => Set<PayrollDeduction>();
+    public DbSet<BenefitPlan> BenefitPlans => Set<BenefitPlan>();
+    public DbSet<BenefitEligibilityRule> BenefitEligibilityRules => Set<BenefitEligibilityRule>();
+    public DbSet<BenefitEnrollment> BenefitEnrollments => Set<BenefitEnrollment>();
+    public DbSet<BenefitContribution> BenefitContributions => Set<BenefitContribution>();
+    public DbSet<BenefitPayrollDeductionLink> BenefitPayrollDeductionLinks => Set<BenefitPayrollDeductionLink>();
     public DbSet<PayrollAllowance> PayrollAllowances => Set<PayrollAllowance>();
     public DbSet<PayrollAdjustment> PayrollAdjustments => Set<PayrollAdjustment>();
     public DbSet<PayrollApproval> PayrollApprovals => Set<PayrollApproval>();
@@ -382,6 +403,7 @@ public class ZayraDbContext : DbContext
     public DbSet<PayslipTemplate> PayslipTemplates => Set<PayslipTemplate>();
     public DbSet<PayrollPaymentBatch> PayrollPaymentBatches => Set<PayrollPaymentBatch>();
     public DbSet<PayrollPaymentRecord> PayrollPaymentRecords => Set<PayrollPaymentRecord>();
+    public DbSet<PayrollOpeningBalance> PayrollOpeningBalances => Set<PayrollOpeningBalance>();
     public DbSet<BankTransferFile> BankTransferFiles => Set<BankTransferFile>();
     public DbSet<WPSFileBatch> WPSFileBatches => Set<WPSFileBatch>();
     public DbSet<SIFFileRecord> SIFFileRecords => Set<SIFFileRecord>();
@@ -501,6 +523,7 @@ public class ZayraDbContext : DbContext
     public DbSet<CandidateAssessment> CandidateAssessments => Set<CandidateAssessment>();
     public DbSet<OfferApproval> OfferApprovals => Set<OfferApproval>();
     public DbSet<OnboardingChecklist> OnboardingChecklists => Set<OnboardingChecklist>();
+    public DbSet<OnboardingChecklistTemplateTask> OnboardingChecklistTemplateTasks => Set<OnboardingChecklistTemplateTask>();
     public DbSet<OnboardingTask> OnboardingTasks => Set<OnboardingTask>();
     public DbSet<RecruitmentAuditLog> RecruitmentAuditLogs => Set<RecruitmentAuditLog>();
     // ── Compliance Module ──────────────────────────────────────────────────────
@@ -537,6 +560,7 @@ public class ZayraDbContext : DbContext
     public DbSet<Permission> Permissions => Set<Permission>();
     public DbSet<UserRole> UserRoles => Set<UserRole>();
     public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
+    public DbSet<MigrationImportBatch> MigrationImportBatches => Set<MigrationImportBatch>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
@@ -586,6 +610,8 @@ public class ZayraDbContext : DbContext
     public DbSet<ReportExecutionLog> ReportExecutionLogs => Set<ReportExecutionLog>();
     // ── Identity & Security ────────────────────────────────────────────────────
     public DbSet<SecuritySetting> SecuritySettings => Set<SecuritySetting>();
+    public DbSet<TenantIdentityProviderSetting> TenantIdentityProviderSettings => Set<TenantIdentityProviderSetting>();
+    public DbSet<EnterpriseIdentityProvisioningEvent> EnterpriseIdentityProvisioningEvents => Set<EnterpriseIdentityProvisioningEvent>();
     public DbSet<PermissionGrantorRecord> PermissionGrantorRecords => Set<PermissionGrantorRecord>();
     public DbSet<UserEntityAccess> UserEntityAccesses => Set<UserEntityAccess>();
     // ── HR Workflow Configuration ──────────────────────────────────────────────
@@ -606,10 +632,26 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.FullName).HasMaxLength(150).IsRequired();
             entity.Property(x => x.Salary).HasPrecision(12, 2);
             entity.Property(x => x.ProfileCompletenessScore).HasPrecision(5, 2);
+            entity.Property(x => x.PrivacyStatus).HasMaxLength(80);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeCode }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.Department });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
+            entity.HasIndex(x => new { x.TenantId, x.PositionId });
+        });
+
+        modelBuilder.Entity<Position>(entity =>
+        {
+            entity.ToTable("positions");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Code).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.Title).HasMaxLength(180).IsRequired();
+            entity.Property(x => x.Fte).HasPrecision(6, 2);
+            entity.Property(x => x.BudgetedMonthlyCost).HasPrecision(14, 2);
+            entity.Property(x => x.Currency).HasMaxLength(8);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
         });
 
         modelBuilder.Entity<QiwaApiCredential>(entity =>
@@ -692,7 +734,11 @@ public class ZayraDbContext : DbContext
         {
             entity.ToTable("employee_change_requests");
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.Status).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.SensitiveFields).HasMaxLength(1000);
             entity.Property(x => x.ProposedChangesJson).HasColumnType("json");
+            entity.Property(x => x.RejectionReason).HasMaxLength(1000);
+            entity.HasIndex(x => x.ApprovalRequestId);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
         });
 
@@ -1018,7 +1064,17 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.EntityId).HasMaxLength(80);
             entity.Property(x => x.Status).HasMaxLength(40);
             entity.Property(x => x.Title).HasMaxLength(240);
+            entity.Property(x => x.CurrentApproverName).HasMaxLength(180);
+            entity.Property(x => x.CurrentApproverRole).HasMaxLength(80);
+            entity.Property(x => x.CurrentApproverType).HasMaxLength(60);
+            entity.Property(x => x.CurrentQueue).HasMaxLength(180);
+            entity.Property(x => x.EscalatedToRole).HasMaxLength(80);
+            entity.Property(x => x.Priority).HasMaxLength(40);
             entity.HasIndex(x => new { x.TenantId, x.EntityName, x.EntityId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.Status, x.CurrentApproverUserId });
+            entity.HasIndex(x => new { x.TenantId, x.Status, x.CurrentApproverEmployeeId });
+            entity.HasIndex(x => new { x.TenantId, x.Status, x.DueAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
             entity.HasMany(x => x.Decisions).WithOne().HasForeignKey(x => x.ApprovalRequestId).OnDelete(DeleteBehavior.Cascade);
         });
 
@@ -1300,7 +1356,7 @@ public class ZayraDbContext : DbContext
         modelBuilder.Entity<OvertimeCompOffConversion>(entity => { entity.ToTable("overtime_comp_off_conversions"); entity.HasKey(x => x.Id); entity.Property(x => x.OvertimeHours).HasPrecision(8,2); entity.Property(x => x.CompOffDays).HasPrecision(6,2); });
         modelBuilder.Entity<OvertimeAuditLog>(entity => { entity.ToTable("overtime_audit_logs"); entity.HasKey(x => x.Id); entity.Property(x => x.MetadataJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.EntityName, x.EntityId }); });
 
-        modelBuilder.Entity<SalaryStructure>(entity => { entity.ToTable("salary_structures"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId }); });
+        modelBuilder.Entity<SalaryStructure>(entity => { entity.ToTable("salary_structures"); entity.HasKey(x => x.Id); entity.Property(x => x.MinGrossSalary).HasPrecision(14,2); entity.Property(x => x.MaxGrossSalary).HasPrecision(14,2); entity.Property(x => x.MinBasicSalary).HasPrecision(14,2); entity.Property(x => x.MaxBasicSalary).HasPrecision(14,2); entity.Property(x => x.EligibleGradeIdsJson).HasColumnType("json"); entity.Property(x => x.EligibleDesignationIdsJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId }); });
         modelBuilder.Entity<SalaryComponent>(entity => { entity.ToTable("salary_components"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.Percentage).HasPrecision(6,3); entity.HasIndex(x => new { x.TenantId, x.SalaryStructureId, x.Code }); });
         modelBuilder.Entity<EmployeeSalaryStructure>(entity => { entity.ToTable("employee_salary_structures"); entity.HasKey(x => x.Id); entity.Property(x => x.BasicSalary).HasPrecision(14,2); entity.Property(x => x.HousingAllowance).HasPrecision(14,2); entity.Property(x => x.TransportAllowance).HasPrecision(14,2); entity.Property(x => x.FoodAllowance).HasPrecision(14,2); entity.Property(x => x.MobileAllowance).HasPrecision(14,2); entity.Property(x => x.OtherAllowance).HasPrecision(14,2); entity.Property(x => x.FixedDeduction).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.IsActive }); });
         modelBuilder.Entity<PayrollGroup>(entity => { entity.ToTable("payroll_groups"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique(); });
@@ -1308,6 +1364,11 @@ public class ZayraDbContext : DbContext
         modelBuilder.Entity<PayrollRunEmployee>(entity => { entity.ToTable("payroll_run_employees"); entity.HasKey(x => x.Id); entity.Property(x => x.GrossEarnings).HasPrecision(14,2); entity.Property(x => x.TotalDeductions).HasPrecision(14,2); entity.Property(x => x.NetPay).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
         modelBuilder.Entity<PayrollEarning>(entity => { entity.ToTable("payroll_earnings"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
         modelBuilder.Entity<PayrollDeduction>(entity => { entity.ToTable("payroll_deductions"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.IsEmployerContribution).HasDefaultValue(false); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
+        modelBuilder.Entity<BenefitPlan>(entity => { entity.ToTable("benefit_plans"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive }); });
+        modelBuilder.Entity<BenefitEligibilityRule>(entity => { entity.ToTable("benefit_eligibility_rules"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.CompanyId, x.GradeId, x.IsActive }); });
+        modelBuilder.Entity<BenefitEnrollment>(entity => { entity.ToTable("benefit_enrollments"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
+        modelBuilder.Entity<BenefitContribution>(entity => { entity.ToTable("benefit_contributions"); entity.HasKey(x => x.Id); entity.Property(x => x.EmployeeAmount).HasPrecision(14,2); entity.Property(x => x.EmployerAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.BenefitEnrollmentId, x.IsActive }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
+        modelBuilder.Entity<BenefitPayrollDeductionLink>(entity => { entity.ToTable("benefit_payroll_deduction_links"); entity.HasKey(x => x.Id); entity.Property(x => x.LinkedAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.BenefitEnrollmentId, x.PayrollRunId }); entity.HasIndex(x => new { x.TenantId, x.PayrollDeductionId }).IsUnique(); });
         modelBuilder.Entity<PayrollAllowance>(entity => { entity.ToTable("payroll_allowances"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); });
         modelBuilder.Entity<PayrollAdjustment>(entity => { entity.ToTable("payroll_adjustments"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
         modelBuilder.Entity<PayrollApproval>(entity => { entity.ToTable("payroll_approvals"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId }); });
@@ -1324,10 +1385,36 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.Name, x.Version });
         });
         modelBuilder.Entity<PayslipComponent>(entity => { entity.ToTable("payslip_components"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayslipId }); });
-        modelBuilder.Entity<PayrollPaymentBatch>(entity => { entity.ToTable("payroll_payment_batches"); entity.HasKey(x => x.Id); entity.Property(x => x.TotalAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId }); });
+        modelBuilder.Entity<PayrollPaymentBatch>(entity =>
+        {
+            entity.ToTable("payroll_payment_batches");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.TotalAmount).HasPrecision(14,2);
+            entity.Property(x => x.WpsStatus).HasMaxLength(40);
+            entity.Property(x => x.WpsSubmissionReference).HasMaxLength(120);
+            entity.Property(x => x.WpsRejectionReason).HasMaxLength(1000);
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
+        });
         modelBuilder.Entity<PayrollPaymentRecord>(entity => { entity.ToTable("payroll_payment_records"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PaymentBatchId, x.EmployeeId }); });
+        modelBuilder.Entity<PayrollOpeningBalance>(entity =>
+        {
+            entity.ToTable("payroll_opening_balances");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Year, x.BalanceType, x.ComponentCode }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Year });
+        });
         modelBuilder.Entity<BankTransferFile>(entity => { entity.ToTable("bank_transfer_files"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PaymentBatchId }); });
-        modelBuilder.Entity<WPSFileBatch>(entity => { entity.ToTable("wps_file_batches"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PaymentBatchId }); });
+        modelBuilder.Entity<WPSFileBatch>(entity =>
+        {
+            entity.ToTable("wps_file_batches");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.FilingStatus).HasMaxLength(40);
+            entity.Property(x => x.SubmissionReference).HasMaxLength(120);
+            entity.Property(x => x.RejectionReason).HasMaxLength(1000);
+            entity.HasIndex(x => new { x.TenantId, x.PaymentBatchId });
+            entity.HasIndex(x => new { x.TenantId, x.FilingStatus });
+        });
         modelBuilder.Entity<SIFFileRecord>(entity => {
             entity.ToTable("sif_file_records"); entity.HasKey(x => x.Id);
             entity.Property(x => x.WPSFileBatchId).HasColumnName("wps_file_batch_id");
@@ -1345,8 +1432,12 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.TotalDeductions).HasPrecision(14, 2);
             entity.Property(x => x.TotalNetSalary).HasPrecision(14, 2);
             entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.ErpPostingStatus).HasMaxLength(40);
+            entity.Property(x => x.ErpPostingReference).HasMaxLength(120);
+            entity.Property(x => x.ErpPostingFailureReason).HasMaxLength(1000);
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Year, x.Month });
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.ErpPostingStatus });
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Year, x.Month }).IsUnique()
                 .HasDatabaseName("IX_payroll_runs_tenant_id_company_id_year_month")
                 .HasFilter("\"status\" != 'Voided'");
@@ -1493,6 +1584,9 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.PhoneNumber).HasMaxLength(40);
             entity.Property(x => x.PreferredLanguage).HasMaxLength(10).HasDefaultValue("en");
             entity.Property(x => x.Timezone).HasMaxLength(80).HasDefaultValue("UTC");
+            entity.Property(x => x.ExternalId).HasMaxLength(256).HasDefaultValue("");
+            entity.Property(x => x.IdentityProvider).HasMaxLength(40).HasDefaultValue("Local");
+            entity.Property(x => x.ProvisioningSource).HasMaxLength(40).HasDefaultValue("Local");
             entity.Property(x => x.Status).HasMaxLength(40).HasDefaultValue("Active");
             entity.Property(x => x.AccessMode).HasMaxLength(40).HasDefaultValue("FullPortal");
             entity.Property(x => x.MfaSecretEncrypted).HasMaxLength(1024);
@@ -1507,6 +1601,34 @@ public class ZayraDbContext : DbContext
             entity.ToTable("security_settings");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.TenantId).IsUnique();
+        });
+
+        modelBuilder.Entity<TenantIdentityProviderSetting>(entity =>
+        {
+            entity.ToTable("tenant_identity_provider_settings");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.AllowedDomainsCsv).HasMaxLength(2000);
+            entity.Property(x => x.SamlEntityId).HasMaxLength(512);
+            entity.Property(x => x.SamlSsoUrl).HasMaxLength(1024);
+            entity.Property(x => x.SamlCertificateThumbprint).HasMaxLength(160);
+            entity.Property(x => x.OidcAuthority).HasMaxLength(1024);
+            entity.Property(x => x.OidcClientId).HasMaxLength(256);
+            entity.Property(x => x.ScimTokenHash).HasMaxLength(128);
+            entity.HasIndex(x => x.TenantId).IsUnique();
+            entity.HasIndex(x => x.ScimTokenHash);
+        });
+
+        modelBuilder.Entity<EnterpriseIdentityProvisioningEvent>(entity =>
+        {
+            entity.ToTable("enterprise_identity_provisioning_events");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Protocol).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.Action).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.ExternalId).HasMaxLength(256);
+            entity.Property(x => x.Status).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.DetailsJson).HasColumnType("json");
+            entity.HasIndex(x => new { x.TenantId, x.ExternalId });
+            entity.HasIndex(x => new { x.TenantId, x.Action, x.CreatedAtUtc });
         });
 
         modelBuilder.Entity<PermissionGrantorRecord>(entity =>
@@ -1551,6 +1673,19 @@ public class ZayraDbContext : DbContext
             entity.HasOne(x => x.User).WithMany(x => x.UserRoles).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(x => x.Role).WithMany(x => x.UserRoles).HasForeignKey(x => x.RoleId).OnDelete(DeleteBehavior.Cascade);
         });
+        modelBuilder.Entity<MigrationImportBatch>(entity =>
+        {
+            entity.ToTable("migration_import_batches");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.PackageType).HasMaxLength(80).HasDefaultValue("OrganizationStructure");
+            entity.Property(x => x.PayloadJson).HasColumnType("json");
+            entity.Property(x => x.ReconciliationJson).HasColumnType("json");
+            entity.Property(x => x.ErrorJson).HasColumnType("json");
+            entity.Property(x => x.ResultJson).HasColumnType("json");
+            entity.HasIndex(x => new { x.TenantId, x.ExternalBatchId }).IsUnique().HasFilter("external_batch_id IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.PackageChecksum });
+            entity.HasIndex(x => new { x.TenantId, x.Status, x.CreatedAtUtc });
+        });
 
         modelBuilder.Entity<RolePermission>(entity =>
         {
@@ -1592,8 +1727,12 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.IpAddress).HasMaxLength(64);
             entity.Property(x => x.UserAgent).HasMaxLength(512);
             entity.Property(x => x.Metadata).HasColumnType("json");
+            entity.Property(x => x.PreviousHash).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.EntryHash).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.HashAlgorithm).HasMaxLength(32).IsRequired();
             entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc });
             entity.HasIndex(x => new { x.UserId, x.CreatedAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.EntryHash });
             // Entity audit trail: "show all changes to Employee #123" — covers the common
             // WHERE tenant_id = ? AND entity_name = ? AND entity_id = ? ORDER BY created_at_utc
             entity.HasIndex(x => new { x.TenantId, x.EntityName, x.EntityId, x.CreatedAtUtc });
@@ -2235,6 +2374,14 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.IsActive, x.IsDeleted });
         });
 
+        modelBuilder.Entity<OnboardingChecklistTemplateTask>(entity =>
+        {
+            entity.ToTable("onboarding_checklist_template_tasks");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.ChecklistId, x.OrderIndex });
+            entity.HasIndex(x => new { x.TenantId, x.ChecklistId, x.TaskTitle }).IsUnique();
+        });
+
         modelBuilder.Entity<OnboardingTask>(entity =>
         {
             entity.ToTable("onboarding_tasks");
@@ -2608,8 +2755,12 @@ public class ZayraDbContext : DbContext
             entity.ToTable("finance_gl_entries");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Amount).HasColumnType("decimal(18,4)");
+            entity.Property(x => x.ErpPostingStatus).HasMaxLength(40);
+            entity.Property(x => x.ErpDocumentNumber).HasMaxLength(120);
+            entity.Property(x => x.ErpRejectionReason).HasMaxLength(1000);
             entity.HasIndex(x => new { x.TenantId, x.SourceModule, x.SourceEntityId });
             entity.HasIndex(x => new { x.TenantId, x.Period });
+            entity.HasIndex(x => new { x.TenantId, x.ErpPostingStatus });
         });
 
         // ── Reports & Analytics ────────────────────────────────────────────────

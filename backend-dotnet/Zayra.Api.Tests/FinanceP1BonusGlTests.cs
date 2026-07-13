@@ -453,14 +453,14 @@ public class FinanceP1BonusGlTests
         var ctrl = MakePayrollCtrl(db, tenantId);
         await ctrl.Process(run.Id, CancellationToken.None);
 
-        // Move to Processed so Lock() accepts it
-        run.Status = "Processed";
+        // Move to Approved so Lock() accepts it
+        run.Status = "Approved";
         await db.SaveChangesAsync();
 
         var lockResult = await ctrl.Lock(run.Id, CancellationToken.None);
 
         lockResult.Should().NotBeOfType<UnprocessableEntityObjectResult>(
-            "GL must balance for a normal processed run");
+            "GL must balance for a normal approved run");
         lockResult.Should().BeOfType<OkObjectResult>("Lock must succeed");
 
         var glEntries = await db.FinanceGlEntries
@@ -472,6 +472,28 @@ public class FinanceP1BonusGlTests
         var totalCredits = glEntries.Where(e => !string.IsNullOrEmpty(e.CreditAccount)).Sum(e => e.Amount);
         Math.Abs(totalDebits - totalCredits).Should().BeLessThan(0.01m,
             $"GL must be balanced: DR={totalDebits}, CR={totalCredits}");
+    }
+
+    [Fact]
+    public async Task Lock_BlocksProcessedRunUntilFinanceApproval()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+
+        var tenantId = Guid.NewGuid();
+        var (_, run, _) = await SeedMinimalRun(db, tenantId);
+
+        var ctrl = MakePayrollCtrl(db, tenantId);
+        await ctrl.Process(run.Id, CancellationToken.None);
+        run.Status = "Processed";
+        await db.SaveChangesAsync();
+
+        var lockResult = await ctrl.Lock(run.Id, CancellationToken.None);
+
+        lockResult.Should().BeOfType<BadRequestObjectResult>();
+        (await db.FinanceGlEntries.CountAsync(x => x.SourceModule == "Payroll" && x.SourceEntityId == run.Id)).Should().Be(0);
+        (await db.PayrollRuns.AsNoTracking().SingleAsync(x => x.Id == run.Id)).Status.Should().Be("Processed");
     }
 
     // ── Test 5: Re-lock does not double-post GL (idempotency) ─────────────────
@@ -489,7 +511,7 @@ public class FinanceP1BonusGlTests
         var ctrl = MakePayrollCtrl(db, tenantId);
         await ctrl.Process(run.Id, CancellationToken.None);
 
-        run.Status = "Processed";
+        run.Status = "Approved";
         await db.SaveChangesAsync();
 
         // First lock
@@ -498,7 +520,7 @@ public class FinanceP1BonusGlTests
             .CountAsync(x => x.SourceModule == "Payroll" && x.SourceEntityId == run.Id);
 
         // Unlock manually for test purposes — simulate re-lock
-        run.Status = "Processed";
+        run.Status = "Approved";
         await db.SaveChangesAsync();
 
         // Second lock
@@ -536,7 +558,7 @@ public class FinanceP1BonusGlTests
             ComponentCode = "PHANTOM", ComponentName = "Phantom Earning",
             Amount = 99_999m, Source = "Salary",
         });
-        run.Status = "Processed";
+        run.Status = "Approved";
         // Intentionally NOT updating run.TotalNetSalary so DR > CR
         await db.SaveChangesAsync();
 
@@ -769,7 +791,7 @@ public class FinanceP1BonusGlTests
         var ctrl = MakeKsaPackPayrollCtrl(db, tenantId);
         await ctrl.Process(run.Id, CancellationToken.None);
 
-        run.Status = "Processed";
+        run.Status = "Approved";
         await db.SaveChangesAsync();
 
         var lockResult = await ctrl.Lock(run.Id, CancellationToken.None);
@@ -792,7 +814,7 @@ public class FinanceP1BonusGlTests
             $"GL must be balanced with employer lines: DR={totalDebits}, CR={totalCredits}");
 
         // Re-lock idempotency: count must not increase.
-        run.Status = "Processed";
+        run.Status = "Approved";
         await db.SaveChangesAsync();
         await ctrl.Lock(run.Id, CancellationToken.None);
 

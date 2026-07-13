@@ -20,11 +20,45 @@ public class PayrollRun : ITenantOwned, ICompanyScopedOperational
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? ProcessedAtUtc { get; set; }
     public DateTime? LockedAtUtc { get; set; }
+    public string ErpPostingStatus { get; set; } = ErpPostingStatuses.NotReady;
+    public DateTime? ErpPostingStatusChangedAtUtc { get; set; }
+    public string? ErpPostingReference { get; set; }
+    public string? ErpPostingFailureReason { get; set; }
     // Void tracking — populated only when Status == "Voided".
     public string? VoidReason { get; set; }
     public DateTime? VoidedAtUtc { get; set; }
     public Guid? VoidedByUserId { get; set; }
     public string? VoidedByName { get; set; }
+}
+
+public static class ErpPostingStatuses
+{
+    public const string NotReady = "NotReady";
+    public const string ReadyForErp = "ReadyForErp";
+    public const string Exported = "Exported";
+    public const string Posted = "Posted";
+    public const string Rejected = "Rejected";
+
+    public static readonly string[] All = { NotReady, ReadyForErp, Exported, Posted, Rejected };
+}
+
+public static class ErpPostingTransitions
+{
+    private static readonly IReadOnlyDictionary<string, string[]> Allowed =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            [ErpPostingStatuses.NotReady] = new[] { ErpPostingStatuses.ReadyForErp },
+            [ErpPostingStatuses.ReadyForErp] = new[] { ErpPostingStatuses.Exported, ErpPostingStatuses.Posted, ErpPostingStatuses.Rejected },
+            [ErpPostingStatuses.Exported] = new[] { ErpPostingStatuses.Posted, ErpPostingStatuses.Rejected },
+            [ErpPostingStatuses.Rejected] = new[] { ErpPostingStatuses.Exported, ErpPostingStatuses.Posted },
+            [ErpPostingStatuses.Posted] = Array.Empty<string>(),
+        };
+
+    public static bool IsAllowed(string from, string to) =>
+        Allowed.TryGetValue(from, out var next) && next.Contains(to, StringComparer.OrdinalIgnoreCase);
+
+    public static string[] AllowedFrom(string from) =>
+        Allowed.TryGetValue(from, out var next) ? next : Array.Empty<string>();
 }
 
 public class PayrollSlip : ITenantOwned, ICompanyScopedOperational

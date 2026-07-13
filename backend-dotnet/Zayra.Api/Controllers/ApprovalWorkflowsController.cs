@@ -80,5 +80,11 @@ public class ApprovalWorkflowsController : ControllerBase
     }
 
     private Guid RequireTenant() => this.GetTenantId() ?? throw new UnauthorizedAccessException("Tenant claim missing.");
-    private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), RequireTenant());
+    private RequestContext Context() => new(
+        HttpContext.Connection.RemoteIpAddress?.ToString(),
+        Request.Headers.UserAgent.ToString(),
+        this.GetUserId(),
+        RequireTenant(),
+        User.Claims.Where(c => c.Type == System.Security.Claims.ClaimTypes.Role).Select(c => c.Value).ToList(),
+        User.Claims.Where(c => c.Type == "permission").Select(c => c.Value).ToList());
 }

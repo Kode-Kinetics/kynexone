@@ -16,4 +16,7 @@ namespace Zayra.Api.Application.Common;
 public sealed class EntityScopeOptions
 {
     public bool StrictMode { get; set; } = false;
+
+    public static bool ResolveStrictMode(bool isProduction, bool configuredStrictMode) =>
+        isProduction || configuredStrictMode;
 }

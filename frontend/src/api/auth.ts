@@ -47,10 +47,21 @@ export interface MfaChallengeResponse {
   expiresInSeconds: number;
 }
 
-export type LoginResponse = AuthResponse | MfaChallengeResponse;
+export interface MfaEnrollmentResponse {
+  mfaEnrollmentRequired: true;
+  enrollmentToken: string;
+  expiresInSeconds: number;
+  message: string;
+}
+
+export type LoginResponse = AuthResponse | MfaChallengeResponse | MfaEnrollmentResponse;
 
 export function isMfaChallenge(r: LoginResponse): r is MfaChallengeResponse {
   return (r as MfaChallengeResponse).mfaRequired === true;
+}
+
+export function isMfaEnrollment(r: LoginResponse): r is MfaEnrollmentResponse {
+  return (r as MfaEnrollmentResponse).mfaEnrollmentRequired === true;
 }
 
 export const authApi = {
@@ -65,6 +76,12 @@ export const authApi = {
 
   mfaVerifySetup: (tempSecret: string, totpCode: string) =>
     client.post('/api/auth/mfa/verify-setup', { tempSecret, totpCode }),
+
+  mfaEnrollmentSetup: (enrollmentToken: string) =>
+    client.post<{ provisioningUri: string }>('/api/auth/mfa/enrollment/setup', { enrollmentToken }).then((r) => r.data),
+
+  mfaEnrollmentVerifySetup: (enrollmentToken: string, tempSecret: string, totpCode: string) =>
+    client.post('/api/auth/mfa/enrollment/verify-setup', { enrollmentToken, tempSecret, totpCode }),
 
   mfaDisable: (totpCode: string) =>
     client.post('/api/auth/mfa/disable', { totpCode }),

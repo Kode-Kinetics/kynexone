@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -17,12 +18,14 @@ public class AttendanceController : ControllerBase
 {
     private readonly IAttendanceService _attendance;
     private readonly IDataScopeService _scopeService;
+    private readonly IHrmHierarchyService _hierarchyService;
     private readonly ZayraDbContext _db;
 
-    public AttendanceController(IAttendanceService attendance, IDataScopeService scopeService, ZayraDbContext db)
+    public AttendanceController(IAttendanceService attendance, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, ZayraDbContext db)
     {
         _attendance = attendance;
         _scopeService = scopeService;
+        _hierarchyService = hierarchyService;
         _db = db;
     }
 
@@ -222,7 +225,7 @@ public class AttendanceController : ControllerBase
     {
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         var (_, setFilter) = scope.Constrain(null);
-        return await _attendance.GetRegularizationAsync(RequireTenant(), null, "Submitted", page, pageSize, ct, setFilter);
+        return await _attendance.GetRegularizationAsync(RequireTenant(), null, "PendingApproval", page, pageSize, ct, setFilter);
     }
 
     [HttpPost("regularization/{id:guid}/approve")]
@@ -231,10 +234,12 @@ public class AttendanceController : ControllerBase
     public async Task<ActionResult<AttendanceRegularizationRequest>> ApproveRegularization(Guid id, RegularizationDecisionRequest request, CancellationToken ct)
     {
         // Scope guard: managers can only approve corrections for employees in their scope.
-        var empId = await GetRegularizationEmployeeId(RequireTenant(), id, ct);
-        if (empId is null) return NotFound();
+        var reg = await GetRegularizationAuthorizationContext(RequireTenant(), id, ct);
+        if (reg is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(empId.Value))
+        if (!scope.CanAccessEmployee(reg.EmployeeId))
+            return Forbid();
+        if (!await CanDecideRegularizationAsync(RequireTenant(), reg.EmployeeId, reg.Status, scope, ct))
             return Forbid();
         try
         {
@@ -250,9 +255,11 @@ public class AttendanceController : ControllerBase
     public async Task<ActionResult<AttendanceRegularizationRequest>> RejectRegularization(Guid id, RegularizationDecisionRequest request, CancellationToken ct)
     {
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        var empId = await GetRegularizationEmployeeId(RequireTenant(), id, ct);
-        if (empId is null) return NotFound();
-        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(empId.Value))
+        var reg = await GetRegularizationAuthorizationContext(RequireTenant(), id, ct);
+        if (reg is null) return NotFound();
+        if (!scope.CanAccessEmployee(reg.EmployeeId))
+            return Forbid();
+        if (!await CanDecideRegularizationAsync(RequireTenant(), reg.EmployeeId, reg.Status, scope, ct))
             return Forbid();
         try
         {
@@ -353,6 +360,29 @@ public class AttendanceController : ControllerBase
             .Where(x => x.TenantId == tenantId && x.Id == id)
             .Select(x => (int?)x.EmployeeId)
             .FirstOrDefaultAsync(ct);
+
+    private Task<RegularizationAuthContext?> GetRegularizationAuthorizationContext(Guid tenantId, Guid id, CancellationToken ct) =>
+        _db.AttendanceRegularizationRequests
+            .Where(x => x.TenantId == tenantId && x.Id == id)
+            .Select(x => new RegularizationAuthContext(x.EmployeeId, x.Status))
+            .FirstOrDefaultAsync(ct);
+
+    private async Task<bool> CanDecideRegularizationAsync(Guid tenantId, int employeeId, string status, DataScope scope, CancellationToken ct)
+    {
+        if (User.IsInRole("Admin")) return true;
+        if (string.Equals(status, "PendingHRApproval", StringComparison.OrdinalIgnoreCase))
+            return User.IsInRole("HR Director") || User.IsInRole("HR Manager");
+        if (!string.Equals(status, "Submitted", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (User.IsInRole("HR Director") || User.IsInRole("HR Manager"))
+            return true;
+        if (scope.CallerEmployeeId is not int callerEmployeeId)
+            return false;
+        var resolved = await _hierarchyService.ResolveWorkflowApproversAsync(tenantId, employeeId, "Attendance", ct);
+        return resolved.Approvers.Any(a => a.EmployeeId == callerEmployeeId);
+    }
+
+    private record RegularizationAuthContext(int EmployeeId, string Status);
 }
 
 public record CancelRegularizationRequest(string? Reason);

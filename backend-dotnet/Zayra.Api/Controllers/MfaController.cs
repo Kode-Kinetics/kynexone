@@ -51,6 +51,33 @@ public class MfaController : ControllerBase
         return ok ? NoContent() : BadRequest(new { message = "Invalid TOTP code." });
     }
 
+    /// <summary>Initiates first-time TOTP setup for tenants that mandate MFA.
+    /// The enrollment token is setup-only and is not an application session.</summary>
+    [HttpPost("enrollment/setup")]
+    [AllowAnonymous]
+    [EnableRateLimiting("auth_login")]
+    public async Task<IActionResult> InitiateEnrollmentSetup([FromBody] MfaEnrollmentSetupRequest request, CancellationToken ct)
+    {
+        var dto = await _mfa.InitiateEnrollmentSetupAsync(request.EnrollmentToken, ct);
+        return dto is null
+            ? Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." })
+            : Ok(new MfaSetupInitResponse(dto.ProvisioningUri));
+    }
+
+    /// <summary>Confirms first-time TOTP setup using only the setup-only enrollment token.
+    /// No access or refresh token is issued by this endpoint; the user must complete normal login.</summary>
+    [HttpPost("enrollment/verify-setup")]
+    [AllowAnonymous]
+    [EnableRateLimiting("auth_login")]
+    public async Task<IActionResult> VerifyEnrollmentSetup([FromBody] MfaEnrollmentVerifySetupRequest request, CancellationToken ct)
+    {
+        var ok = await _mfa.VerifyEnrollmentSetupAsync(
+            request.EnrollmentToken,
+            new MfaVerifySetupRequest(request.TempSecret, request.TotpCode),
+            ct);
+        return ok ? NoContent() : Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." });
+    }
+
     // ── Challenge verify (unauthenticated — the challenge token IS the auth) ──
 
     /// <summary>Verifies the MFA challenge token + TOTP code issued during login.

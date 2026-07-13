@@ -100,6 +100,7 @@ export interface OrgStructureImportRequest {
   gradesCsv?: string;
   gradePayComponentsCsv?: string;
   designationsCsv?: string;
+  positionsCsv?: string;
 }
 
 export interface OrgStructureImportResult {

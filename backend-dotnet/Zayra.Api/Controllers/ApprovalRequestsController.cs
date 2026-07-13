@@ -19,11 +19,11 @@ public class ApprovalRequestsController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<ActionResult<PagedResult<ApprovalRequestDto>>> Search([FromQuery] string? status, [FromQuery] string? entityName, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
+    public async Task<ActionResult<PagedResult<ApprovalRequestDto>>> Search([FromQuery] string? status, [FromQuery] string? entityName, [FromQuery] string? queue, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await _approvals.GetRequestsAsync(tenantId.Value, status, entityName, page, pageSize, cancellationToken));
+        return Ok(await _approvals.GetRequestsAsync(tenantId.Value, status, entityName, queue, page, pageSize, Context(), cancellationToken));
     }
 
     [HttpGet("{id:guid}")]
@@ -63,5 +63,11 @@ public class ApprovalRequestsController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
-    private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
+    private RequestContext Context() => new(
+        HttpContext.Connection.RemoteIpAddress?.ToString(),
+        Request.Headers.UserAgent.ToString(),
+        this.GetUserId(),
+        this.GetTenantId(),
+        User.Claims.Where(c => c.Type == System.Security.Claims.ClaimTypes.Role).Select(c => c.Value).ToList(),
+        User.Claims.Where(c => c.Type == "permission").Select(c => c.Value).ToList());
 }

@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Reports;
@@ -31,6 +33,7 @@ public class ReportsController : ControllerBase
     [HttpGet("catalog")]
     public IActionResult GetCatalog()
     {
+        if (!HasAnyPermission("reports.read", "reports.schedule", "audit.read")) return Forbid();
         var catalog = new[]
         {
             new { key = "hr.headcount", name = "Headcount Report", category = "HR", description = "Total active employees by department/branch" },
@@ -71,6 +74,7 @@ public class ReportsController : ControllerBase
     [HttpPost("run")]
     public async Task<IActionResult> RunReport([FromBody] RunReportRequest req, CancellationToken ct)
     {
+        if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
@@ -109,21 +113,16 @@ public class ReportsController : ControllerBase
             _ => null,
         };
 
-        if (data == null) return NotFound($"Report '{req.ReportKey}' not found.");
+        if (data == null)
+        {
+            await LogReportExecution(tid, uid, req, "Failed", 0, (int)sw.ElapsedMilliseconds, $"Report '{req.ReportKey}' not found.", ct);
+            return NotFound($"Report '{req.ReportKey}' not found.");
+        }
 
         sw.Stop();
         var rowCount = data is System.Collections.ICollection c ? c.Count : 0;
 
-        // Log execution
-        _db.ReportExecutionLogs.Add(new ReportExecutionLog
-        {
-            TenantId = tid, ReportKey = req.ReportKey, ReportName = req.ReportKey,
-            FiltersJson = System.Text.Json.JsonSerializer.Serialize(req.Filters),
-            ExportFormat = "JSON", Status = "Success",
-            RowCount = rowCount, RunBy = uid, RunByName = GetUserName(),
-            DurationMs = (int)sw.ElapsedMilliseconds,
-        });
-        await _db.SaveChangesAsync(ct);
+        await LogReportExecution(tid, uid, req, "Success", rowCount, (int)sw.ElapsedMilliseconds, null, ct);
 
         return Ok(new { reportKey = req.ReportKey, generatedAt = DateTime.UtcNow, rowCount, durationMs = sw.ElapsedMilliseconds, data });
     }
@@ -609,6 +608,7 @@ public class ReportsController : ControllerBase
     [HttpGet("saved")]
     public async Task<IActionResult> ListSavedReports(CancellationToken ct)
     {
+        if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         return Ok(await _db.SavedReports
@@ -619,6 +619,9 @@ public class ReportsController : ControllerBase
     [HttpPost("saved")]
     public async Task<IActionResult> SaveReport([FromBody] SaveReportRequest req, CancellationToken ct)
     {
+        if (!HasPermission("reports.read")) return Forbid();
+        if (req.IsShared && !TryValidateControlledOverride(req.GovernanceOverride, "report.saved.share", out var rejection))
+            return rejection!;
         var tid = GetTenantId();
         var uid = GetUserId();
         var r = new SavedReport
@@ -629,19 +632,26 @@ public class ReportsController : ControllerBase
             IsShared = req.IsShared, CreatedBy = uid!.Value, CreatedByName = GetUserName(),
         };
         _db.SavedReports.Add(r);
+        if (req.IsShared)
+            AddGovernanceAudit("governance.controlled_override.report_saved_shared", "SavedReport", r.Id.ToString(), req.GovernanceOverride!, new { r.ReportKey, r.Name, r.Category });
         await _db.SaveChangesAsync(ct);
         return Ok(r);
     }
 
     [HttpDelete("saved/{id:guid}")]
-    public async Task<IActionResult> DeleteSavedReport(Guid id, CancellationToken ct)
+    public async Task<IActionResult> DeleteSavedReport(Guid id, [FromBody] GovernanceOverrideRequest? governanceOverride, CancellationToken ct)
     {
+        if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         var r = await _db.SavedReports.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (r == null) return NotFound();
         if (r.CreatedBy != uid && !User.IsInRole("Admin")) return Forbid();
+        if (r.IsShared && !TryValidateControlledOverride(governanceOverride, "report.saved.delete_shared", out var rejection))
+            return rejection!;
         r.IsDeleted = true; r.UpdatedAtUtc = DateTime.UtcNow;
+        if (r.IsShared)
+            AddGovernanceAudit("governance.controlled_override.report_saved_deleted", "SavedReport", r.Id.ToString(), governanceOverride!, new { r.ReportKey, r.Name, r.Category });
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -652,6 +662,7 @@ public class ReportsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ListSchedules(CancellationToken ct)
     {
+        if (!HasPermission("reports.schedule")) return Forbid();
         var tid = GetTenantId();
         return Ok(await _db.ReportSchedules.Where(x => x.TenantId == tid && !x.IsDeleted)
             .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct));
@@ -661,6 +672,9 @@ public class ReportsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> CreateSchedule([FromBody] CreateScheduleRequest req, CancellationToken ct)
     {
+        if (!HasPermission("reports.schedule")) return Forbid();
+        if (!TryValidateControlledOverride(req.GovernanceOverride, "report.schedule.create", out var rejection))
+            return rejection!;
         var tid = GetTenantId();
         var uid = GetUserId();
         var s = new ReportSchedule
@@ -672,30 +686,39 @@ public class ReportsController : ControllerBase
             CreatedBy = uid,
         };
         _db.ReportSchedules.Add(s);
+        AddGovernanceAudit("governance.controlled_override.report_schedule_created", "ReportSchedule", s.Id.ToString(), req.GovernanceOverride!, new { s.ReportKey, s.ReportName, s.Frequency, s.DeliveryMethod, s.ExportFormat });
         await _db.SaveChangesAsync(ct);
         return Ok(s);
     }
 
     [HttpPatch("schedules/{id:guid}/toggle")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> ToggleSchedule(Guid id, CancellationToken ct)
+    public async Task<IActionResult> ToggleSchedule(Guid id, [FromBody] GovernanceOverrideRequest? governanceOverride, CancellationToken ct)
     {
+        if (!HasPermission("reports.schedule")) return Forbid();
+        if (!TryValidateControlledOverride(governanceOverride, "report.schedule.toggle", out var rejection))
+            return rejection!;
         var tid = GetTenantId();
         var s = await _db.ReportSchedules.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (s == null) return NotFound();
         s.IsActive = !s.IsActive; s.UpdatedAtUtc = DateTime.UtcNow;
+        AddGovernanceAudit("governance.controlled_override.report_schedule_toggled", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName, s.IsActive });
         await _db.SaveChangesAsync(ct);
         return Ok(s);
     }
 
     [HttpDelete("schedules/{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> DeleteSchedule(Guid id, CancellationToken ct)
+    public async Task<IActionResult> DeleteSchedule(Guid id, [FromBody] GovernanceOverrideRequest? governanceOverride, CancellationToken ct)
     {
+        if (!HasPermission("reports.schedule")) return Forbid();
+        if (!TryValidateControlledOverride(governanceOverride, "report.schedule.delete", out var rejection))
+            return rejection!;
         var tid = GetTenantId();
         var s = await _db.ReportSchedules.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (s == null) return NotFound();
         s.IsDeleted = true; s.UpdatedAtUtc = DateTime.UtcNow;
+        AddGovernanceAudit("governance.controlled_override.report_schedule_deleted", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName });
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -706,12 +729,88 @@ public class ReportsController : ControllerBase
     public async Task<IActionResult> GetExecutionHistory(
         [FromQuery] string? reportKey, [FromQuery] int page = 1, [FromQuery] int pageSize = 30, CancellationToken ct = default)
     {
+        if (!HasAnyPermission("reports.schedule", "audit.read")) return Forbid();
         var tid = GetTenantId();
         var q = _db.ReportExecutionLogs.Where(x => x.TenantId == tid);
         if (!string.IsNullOrEmpty(reportKey)) q = q.Where(x => x.ReportKey == reportKey);
         var total = await q.CountAsync(ct);
         var items = await q.OrderByDescending(x => x.CreatedAtUtc).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
         return Ok(new { total, items });
+    }
+
+    private async Task LogReportExecution(Guid tid, Guid? uid, RunReportRequest req, string status, int rowCount, int durationMs, string? errorMessage, CancellationToken ct)
+    {
+        _db.ReportExecutionLogs.Add(new ReportExecutionLog
+        {
+            TenantId = tid,
+            ReportKey = req.ReportKey,
+            ReportName = req.ReportKey,
+            FiltersJson = System.Text.Json.JsonSerializer.Serialize(req.Filters),
+            ExportFormat = "JSON",
+            Status = status,
+            RowCount = rowCount,
+            RunBy = uid,
+            RunByName = GetUserName(),
+            DurationMs = durationMs,
+            ErrorMessage = errorMessage
+        });
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private bool HasPermission(string permission) =>
+        User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    private bool HasAnyPermission(params string[] permissions) => permissions.Any(HasPermission);
+
+    private bool TryValidateControlledOverride(GovernanceOverrideRequest? request, string controlCode, out IActionResult? rejection)
+    {
+        rejection = null;
+        if (request is null || !request.Acknowledged ||
+            string.IsNullOrWhiteSpace(request.TicketReference) ||
+            string.IsNullOrWhiteSpace(request.Reason) ||
+            request.Reason.Trim().Length < 12)
+        {
+            rejection = Conflict(new
+            {
+                code = "controlled_override_required",
+                controlCode,
+                message = "This governance-impacting report change requires an explicit controlled override with acknowledgement, ticket reference, and reason."
+            });
+            return false;
+        }
+        return true;
+    }
+
+    private void AddGovernanceAudit(string action, string entityName, string entityId, GovernanceOverrideRequest governanceOverride, object evidence)
+    {
+        var tenantId = GetTenantId();
+        var previousHash = _db.AuditLogs
+            .Where(x => x.TenantId == tenantId)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Select(x => x.EntryHash)
+            .FirstOrDefault() ?? string.Empty;
+        var log = new AuditLog
+        {
+            TenantId = tenantId,
+            UserId = GetUserId(),
+            Action = action,
+            EntityName = entityName,
+            EntityId = entityId,
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            UserAgent = Request.Headers.UserAgent.ToString(),
+            Metadata = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                governanceOverride.TicketReference,
+                reason = governanceOverride.Reason.Trim(),
+                acknowledged = governanceOverride.Acknowledged,
+                evidence
+            }),
+            PreviousHash = previousHash,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        log.EntryHash = AuditService.ComputeHash(log);
+        _db.AuditLogs.Add(log);
     }
 }
 
@@ -727,5 +826,6 @@ public class ReportFilters
 }
 
 public record RunReportRequest(string ReportKey, ReportFilters? Filters);
-public record SaveReportRequest(string ReportKey, string Name, string Category, ReportFilters? Filters, string[]? Columns, bool IsShared);
-public record CreateScheduleRequest(string ReportKey, string ReportName, string Category, ReportFilters? Filters, string Frequency, string DeliveryMethod, string? Recipients, string ExportFormat);
+public record SaveReportRequest(string ReportKey, string Name, string Category, ReportFilters? Filters, string[]? Columns, bool IsShared, GovernanceOverrideRequest? GovernanceOverride = null);
+public record CreateScheduleRequest(string ReportKey, string ReportName, string Category, ReportFilters? Filters, string Frequency, string DeliveryMethod, string? Recipients, string ExportFormat, GovernanceOverrideRequest? GovernanceOverride = null);
+public record GovernanceOverrideRequest(string TicketReference, string Reason, bool Acknowledged);

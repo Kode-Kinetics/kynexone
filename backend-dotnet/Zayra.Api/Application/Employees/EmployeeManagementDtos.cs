@@ -40,7 +40,8 @@ public record EmployeeCreateRequest(
     [MaxLength(80)] string? AttendancePolicyCode,
     EmployeePayrollProfileRequest? PayrollProfile,
     EmployeeSalaryBreakdownRequest? SalaryBreakdown,
-    IReadOnlyCollection<EmployeeComplianceRecordRequest>? ComplianceRecords);
+    IReadOnlyCollection<EmployeeComplianceRecordRequest>? ComplianceRecords,
+    Guid? PositionId = null);
 
 public record EmployeePayrollProfileRequest(
     string? BankName,
@@ -158,6 +159,7 @@ public record EmployeeDetailDto
     public Guid? DesignationId { get; init; }
     public Guid? GradeId { get; init; }
     public Guid? CostCenterId { get; init; }
+    public Guid? PositionId { get; init; }
     public int? ManagerEmployeeId { get; init; }
     public int? SecondLevelManagerEmployeeId { get; init; }
     public int? SupervisorEmployeeId { get; init; }
@@ -278,6 +280,7 @@ public record EmployeeDetailDto
             DesignationId                 = e.DesignationId,
             GradeId                       = e.GradeId,
             CostCenterId                  = e.CostCenterId,
+            PositionId                    = e.PositionId,
             ManagerEmployeeId             = e.ManagerEmployeeId,
             SecondLevelManagerEmployeeId  = e.SecondLevelManagerEmployeeId,
             SupervisorEmployeeId          = e.SupervisorEmployeeId,

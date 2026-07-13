@@ -27,10 +27,19 @@ import { useAutoTranslate } from '../hooks/useAutoTranslate';
 import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
+import { useCompany } from '../contexts/CompanyContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'compliance' | 'documents' | 'history' | 'transfers';
+type EditField = { key: string; label: string; type?: 'text' | 'email' | 'date' | 'number' | 'select'; options?: string[]; sensitive?: boolean; section: string };
+type ComplianceFieldDefinition = {
+  fieldKey: string;
+  fieldLabel: string;
+  entityKey?: string;
+  expiryEntityKey?: string;
+  required?: boolean;
+};
 
 const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'Probation', 'Confirmed', 'On leave', 'Suspended', 'Resigned', 'Notice period', 'Terminated', 'Retired', 'Absconded', 'Inactive', 'Blacklisted'];
 const tabs: { id: DetailTab; label: string }[] = [
@@ -95,16 +104,12 @@ const emptyEmployee = (): EmployeeCreateRequest => ({
     effectiveDate: new Date().toISOString().slice(0, 10),
     currency: '',
   },
-  complianceRecords: [
-    { countryCode: 'UAE', fieldKey: 'passport_number', fieldLabel: 'Passport Number', fieldValue: '', isSensitive: true, isRequired: true },
-    { countryCode: 'UAE', fieldKey: 'visa_number', fieldLabel: 'Visa Number', fieldValue: '', isSensitive: true, isRequired: false },
-    { countryCode: 'UAE', fieldKey: 'emirates_id', fieldLabel: 'Emirates ID', fieldValue: '', isSensitive: true, isRequired: false },
-  ],
+  complianceRecords: [],
 });
 
 // Editable fields for the Edit Details modal. Sensitive ones are routed by the
 // backend into an approval workflow (202) instead of applying immediately.
-const EDIT_FIELDS: { key: string; label: string; type?: 'text' | 'email' | 'date' | 'number' | 'select'; options?: string[]; sensitive?: boolean; section: string }[] = [
+const EDIT_FIELDS: EditField[] = [
   { section: 'Personal', key: 'englishName', label: 'English full name' },
   { section: 'Personal', key: 'arabicName', label: 'Arabic name' },
   { section: 'Personal', key: 'preferredName', label: 'Preferred name' },
@@ -130,12 +135,102 @@ const EDIT_FIELDS: { key: string; label: string; type?: 'text' | 'email' | 'date
   { section: 'Payroll & Banking', key: 'salary', label: 'Salary', type: 'number', sensitive: true },
   { section: 'Payroll & Banking', key: 'bankName', label: 'Bank name', sensitive: true },
   { section: 'Payroll & Banking', key: 'bankIban', label: 'IBAN', sensitive: true },
-  { section: 'Compliance Documents', key: 'passportNumber', label: 'Passport number', sensitive: true },
-  { section: 'Compliance Documents', key: 'passportExpiryDate', label: 'Passport expiry', type: 'date', sensitive: true },
-  { section: 'Compliance Documents', key: 'emiratesId', label: 'Emirates ID', sensitive: true },
-  { section: 'Compliance Documents', key: 'visaNumber', label: 'Visa number', sensitive: true },
-  { section: 'Compliance Documents', key: 'visaExpiryDate', label: 'Visa expiry', type: 'date', sensitive: true },
 ];
+
+const COMMON_COMPLIANCE_FIELDS: ComplianceFieldDefinition[] = [
+  { fieldKey: 'passport_number', fieldLabel: 'Passport Number', entityKey: 'passportNumber', expiryEntityKey: 'passportExpiryDate', required: true },
+];
+
+const COUNTRY_COMPLIANCE_PROFILES: Record<string, ComplianceFieldDefinition[]> = {
+  SA: [
+    ...COMMON_COMPLIANCE_FIELDS,
+    { fieldKey: 'iqama_number', fieldLabel: 'Saudi National ID / Iqama', entityKey: 'iqamaNumber', required: true },
+    { fieldKey: 'muqeem_reference', fieldLabel: 'Muqeem Reference', entityKey: 'muqeemNumber' },
+    { fieldKey: 'gosi_reference', fieldLabel: 'GOSI Reference', entityKey: 'gosiReference' },
+    { fieldKey: 'qiwa_contract_reference', fieldLabel: 'Qiwa Contract Number', entityKey: 'qiwaContractNumber' },
+    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+  ],
+  AE: [
+    ...COMMON_COMPLIANCE_FIELDS,
+    { fieldKey: 'emirates_id', fieldLabel: 'Emirates ID', entityKey: 'emiratesId', required: true },
+    { fieldKey: 'visa_number', fieldLabel: 'Visa Number', entityKey: 'visaNumber', expiryEntityKey: 'visaExpiryDate' },
+    { fieldKey: 'visa_file_number', fieldLabel: 'Visa File Number', entityKey: 'visaFileNumber' },
+    { fieldKey: 'labor_card_number', fieldLabel: 'Labour Card Number', entityKey: 'laborCardNumber' },
+  ],
+  QA: [
+    ...COMMON_COMPLIANCE_FIELDS,
+    { fieldKey: 'qid', fieldLabel: 'Qatar ID', entityKey: 'qid', required: true },
+    { fieldKey: 'visa_number', fieldLabel: 'Visa Number', entityKey: 'visaNumber', expiryEntityKey: 'visaExpiryDate' },
+    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+  ],
+  KW: [
+    ...COMMON_COMPLIANCE_FIELDS,
+    { fieldKey: 'civil_id', fieldLabel: 'Civil ID', entityKey: 'civilId', required: true },
+    { fieldKey: 'residency_number', fieldLabel: 'Residency Number', entityKey: 'residencyNumber', expiryEntityKey: 'residencyIssueDate' },
+    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+  ],
+  OM: [
+    ...COMMON_COMPLIANCE_FIELDS,
+    { fieldKey: 'civil_id', fieldLabel: 'Civil ID', entityKey: 'civilId', required: true },
+    { fieldKey: 'residency_number', fieldLabel: 'Residency Number', entityKey: 'residencyNumber', expiryEntityKey: 'residencyIssueDate' },
+    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+  ],
+  BH: [
+    ...COMMON_COMPLIANCE_FIELDS,
+    { fieldKey: 'civil_id', fieldLabel: 'CPR / Civil ID', entityKey: 'civilId', required: true },
+    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+  ],
+};
+
+function normalizeCountryCode(value?: string) {
+  const code = (value ?? '').trim().toUpperCase();
+  const compact = code.replace(/[^A-Z]/g, '');
+  if (['SAU', 'KSA', 'SAUDIARABIA', 'KINGDOMOFSAUDIARABIA'].includes(compact)) return 'SA';
+  if (['ARE', 'UAE', 'UNITEDARABEMIRATES', 'UNITEDARABEMIRATE'].includes(compact)) return 'AE';
+  if (['QAT', 'QATAR'].includes(compact)) return 'QA';
+  if (['KWT', 'KUWAIT'].includes(compact)) return 'KW';
+  if (['OMN', 'OMAN'].includes(compact)) return 'OM';
+  if (['BHR', 'BAHRAIN'].includes(compact)) return 'BH';
+  return code.length === 2 ? code : '';
+}
+
+function complianceProfileForCountry(countryCode?: string) {
+  const country = normalizeCountryCode(countryCode);
+  return COUNTRY_COMPLIANCE_PROFILES[country] ?? COMMON_COMPLIANCE_FIELDS;
+}
+
+function complianceRecordsForCountry(countryCode?: string, existing: EmployeeCreateRequest['complianceRecords'] = []) {
+  const country = normalizeCountryCode(countryCode);
+  if (!country) return [];
+  const existingByKey = new Map((existing ?? []).map((record) => [record.fieldKey, record]));
+  return complianceProfileForCountry(country).map((field) => {
+    const current = existingByKey.get(field.fieldKey);
+    return {
+      countryCode: country,
+      fieldKey: field.fieldKey,
+      fieldLabel: field.fieldLabel,
+      fieldValue: current?.fieldValue ?? '',
+      issueDate: current?.issueDate,
+      expiryDate: current?.expiryDate,
+      isSensitive: true,
+      isRequired: Boolean(field.required),
+    };
+  });
+}
+
+function complianceEditFieldsForCountry(countryCode?: string): EditField[] {
+  return complianceProfileForCountry(countryCode).flatMap((field) => {
+    const fields: EditField[] = [];
+    if (field.entityKey) fields.push({ section: 'Compliance Documents', key: field.entityKey, label: field.fieldLabel, sensitive: true });
+    if (field.expiryEntityKey) fields.push({ section: 'Compliance Documents', key: field.expiryEntityKey, label: `${field.fieldLabel} expiry`, type: 'date', sensitive: true });
+    return fields;
+  });
+}
+
+function documentTypesForCountry(countryCode?: string) {
+  const statutory = complianceProfileForCountry(countryCode).map((field) => field.fieldLabel);
+  return [...new Set([...statutory, 'Contract', 'Offer letter', 'NDA', 'Policy acknowledgment'])];
+}
 
 interface EmployeeUsageData {
   activeEmployees: number;
@@ -148,6 +243,7 @@ interface EmployeeUsageData {
 export function EmployeesPage() {
   const searchParams = useSearchParams();
   const { currencyCode } = useTenantSettings();
+  const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -155,6 +251,7 @@ export function EmployeesPage() {
   const [status, setStatus] = useState<StatusFilter>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [actionNotice, setActionNotice] = useState('');
   const [subscriptionBanner, setSubscriptionBanner] = useState('');
   const [usage, setUsage] = useState<EmployeeUsageData | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -176,6 +273,7 @@ export function EmployeesPage() {
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentType, setDocumentType] = useState('Passport');
   const [documentExpiry, setDocumentExpiry] = useState('');
+  const [statusSaving, setStatusSaving] = useState(false);
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
   const [branches, setBranches] = useState<BranchDto[]>([]);
   const [departments, setDepartments] = useState<DepartmentDto[]>([]);
@@ -186,6 +284,12 @@ export function EmployeesPage() {
 
   const pageSize = 25;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const defaultCompany = useMemo(() => companies.length === 1 ? companies[0] : undefined, [companies]);
+  const selectedFormCompany = useMemo(
+    () => companies.find((item) => item.id === form.companyId) ?? defaultCompany,
+    [companies, defaultCompany, form.companyId],
+  );
+  const formCountryCode = normalizeCountryCode(selectedFormCompany?.countryCode);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -247,6 +351,23 @@ export function EmployeesPage() {
   }, [searchParams, selectedId]);
 
   const selectedEmployee = useMemo(() => detail ?? null, [detail]);
+  const selectedEmployeeCompanyCountry =
+    companies.find((item) => item.id === selectedEmployee?.companyId)?.countryCode
+    ?? accessibleCompanies.find((item) => item.id === selectedEmployee?.companyId)?.countryCode
+    ?? accessibleCompanies.find((item) => item.id === selectedCompanyId)?.countryCode
+    ?? (accessibleCompanies.length === 1 ? accessibleCompanies[0].countryCode : undefined);
+  const selectedEmployeeCountryCode = useMemo(
+    () => normalizeCountryCode(selectedEmployeeCompanyCountry || selectedEmployee?.countryCode),
+    [selectedEmployeeCompanyCountry, selectedEmployee?.countryCode],
+  );
+  const editFields = useMemo(
+    () => [...EDIT_FIELDS, ...complianceEditFieldsForCountry(selectedEmployeeCountryCode)],
+    [selectedEmployeeCountryCode],
+  );
+  const selectedDocumentTypes = useMemo(
+    () => documentTypesForCountry(selectedEmployeeCountryCode),
+    [selectedEmployeeCountryCode],
+  );
   const selectedDesignation = useMemo(
     () => designations.find((item) => item.id === form.designationId),
     [designations, form.designationId],
@@ -275,6 +396,23 @@ export function EmployeesPage() {
       .catch(() => setGradePayScale([]));
   }, [form.gradeId]);
 
+  useEffect(() => {
+    if (!formOpen) return;
+    setForm((current) => {
+      const desired = complianceRecordsForCountry(formCountryCode, current.complianceRecords);
+      const currentKeys = (current.complianceRecords ?? []).map((record) => `${normalizeCountryCode(record.countryCode)}:${record.fieldKey}`).join('|');
+      const desiredKeys = desired.map((record) => `${record.countryCode}:${record.fieldKey}`).join('|');
+      if (currentKeys === desiredKeys) return current;
+      return { ...current, complianceRecords: desired };
+    });
+  }, [formCountryCode, formOpen]);
+
+  useEffect(() => {
+    if (selectedDocumentTypes.length > 0 && !selectedDocumentTypes.includes(documentType)) {
+      setDocumentType(selectedDocumentTypes[0]);
+    }
+  }, [documentType, selectedDocumentTypes]);
+
   const openDetail = async (id: number, preserveTab = false) => {
     setSelectedId(id);
     setDetailLoading(true);
@@ -291,6 +429,24 @@ export function EmployeesPage() {
   const refreshAll = () => {
     load();
     if (selectedId) openDetail(selectedId, true);
+  };
+
+  const openCreateEmployee = () => {
+    const next = emptyEmployee();
+    if (defaultCompany) {
+      next.companyId = defaultCompany.id;
+      next.payrollProfile = {
+        ...next.payrollProfile!,
+        salaryCurrency: defaultCompany.defaultCurrency || next.payrollProfile?.salaryCurrency || currencyCode,
+      };
+      next.salaryBreakdown = {
+        ...next.salaryBreakdown!,
+        currency: defaultCompany.defaultCurrency || next.salaryBreakdown?.currency || currencyCode,
+      };
+      next.complianceRecords = complianceRecordsForCountry(defaultCompany.countryCode);
+    }
+    setForm(next);
+    setFormOpen(true);
   };
 
   const setField = (key: keyof EmployeeCreateRequest, value: string | boolean | number | undefined) =>
@@ -375,7 +531,7 @@ export function EmployeesPage() {
     if (!selectedEmployee) return;
     const source = selectedEmployee as unknown as Record<string, unknown>;
     const snapshot: Record<string, string> = {};
-    for (const f of EDIT_FIELDS) {
+    for (const f of editFields) {
       const raw = source[f.key];
       if (raw === null || raw === undefined) { snapshot[f.key] = ''; continue; }
       snapshot[f.key] = f.type === 'date' ? String(raw).slice(0, 10) : String(raw);
@@ -392,10 +548,11 @@ export function EmployeesPage() {
     if (!selectedId || editChangedKeys.length === 0) return;
     setEditSaving(true);
     setEditNotice('');
+    setActionNotice('');
     try {
       const changes: Record<string, unknown> = {};
       for (const key of editChangedKeys) {
-        const field = EDIT_FIELDS.find((f) => f.key === key)!;
+        const field = editFields.find((f) => f.key === key)!;
         const value = editForm[key].trim();
         if (value === '') changes[key] = null;
         else if (field.type === 'number') changes[key] = Number(value);
@@ -403,10 +560,15 @@ export function EmployeesPage() {
       }
       const res = await employeesApi.update(selectedId, new Date().toISOString().slice(0, 10), changes);
       if (res.status === 202) {
-        const fields = (res.data as { sensitiveFields?: string[] })?.sensitiveFields ?? [];
-        setEditNotice(`Submitted for approval — sensitive fields need sign-off before they apply: ${fields.join(', ')}.`);
-        setEditOriginal({ ...editForm });
+        const data = res.data as { sensitiveFields?: string[]; approvalRequestId?: string; appliedFields?: string[] };
+        const fields = data.sensitiveFields ?? [];
+        const applied = data.appliedFields?.length ? ` Immediate fields saved: ${data.appliedFields.join(', ')}.` : '';
+        setActionNotice(`Sensitive changes submitted to Approval Center${data.approvalRequestId ? ` (${data.approvalRequestId.slice(0, 8)})` : ''}: ${fields.join(', ')}.${applied}`);
+        setEditOpen(false);
+        await openDetail(selectedId, true);
+        await load();
       } else {
+        setActionNotice('Employee details saved.');
         setEditOpen(false);
         await openDetail(selectedId, true);
         await load();
@@ -435,14 +597,46 @@ export function EmployeesPage() {
 
   const changeStatus = async () => {
     if (!selectedId || !newStatus || !statusReason.trim()) return;
-    const updated = await employeesApi.changeStatus(selectedId, {
-      status: newStatus,
-      effectiveDate: new Date().toISOString().slice(0, 10),
-      reason: statusReason,
-    });
-    setDetail(updated);
-    setStatusReason('');
-    await load();
+    setStatusSaving(true);
+    setActionNotice('');
+    setError('');
+    try {
+      const updated = await employeesApi.changeStatus(selectedId, {
+        status: newStatus,
+        effectiveDate: new Date().toISOString().slice(0, 10),
+        reason: statusReason,
+      });
+      setDetail(updated);
+      setStatusReason('');
+      setActionNotice(`Employee status changed to ${newStatus}.`);
+      await load();
+    } catch (e: unknown) {
+      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not change employee status.');
+    } finally {
+      setStatusSaving(false);
+    }
+  };
+
+  const activateEmployee = async () => {
+    if (!selectedId) return;
+    setStatusSaving(true);
+    setActionNotice('');
+    setError('');
+    try {
+      const updated = await employeesApi.activate(selectedId, {
+        effectiveDate: new Date().toISOString().slice(0, 10),
+        reason: statusReason.trim() || 'Activated from employee profile',
+      });
+      setDetail(updated);
+      setNewStatus('Active');
+      setStatusReason('');
+      setActionNotice('Employee activated and is now live.');
+      await load();
+    } catch (e: unknown) {
+      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not activate employee.');
+    } finally {
+      setStatusSaving(false);
+    }
   };
 
   const uploadDocument = async () => {
@@ -497,7 +691,7 @@ export function EmployeesPage() {
           <div className="relative group">
             <button
               type="button"
-              onClick={() => { if (!atEmployeeLimit) { setForm(emptyEmployee()); setFormOpen(true); } }}
+              onClick={() => { if (!atEmployeeLimit) openCreateEmployee(); }}
               disabled={atEmployeeLimit}
               className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -514,6 +708,7 @@ export function EmployeesPage() {
       </div>
 
       {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
+      {actionNotice && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">{actionNotice}</p>}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
         <section className="space-y-4">
@@ -662,7 +857,7 @@ export function EmployeesPage() {
                   <div className="space-y-3">
                     <div className="grid gap-2">
                       <select value={documentType} onChange={(e) => setDocumentType(e.target.value)} className="select w-full" aria-label="Document type">
-                        {['Passport', 'Visa', 'Iqama', 'Emirates ID', 'National ID', 'Labor card', 'Contract', 'Offer letter', 'NDA', 'Policy acknowledgment'].map((item) => <option key={item}>{item}</option>)}
+                        {selectedDocumentTypes.map((item) => <option key={item}>{item}</option>)}
                       </select>
                       <input type="date" value={documentExpiry} onChange={(e) => setDocumentExpiry(e.target.value)} className="input w-full" aria-label="Document expiry" />
                       <input type="file" onChange={(e) => setDocumentFile(e.target.files?.[0] ?? null)} className="input w-full" aria-label="Upload document file" />
@@ -709,9 +904,15 @@ export function EmployeesPage() {
                       {statusOptions.filter(Boolean).map((item) => <option key={item} value={item}>{item}</option>)}
                     </select>
                     <input value={statusReason} onChange={(e) => setStatusReason(e.target.value)} className="input w-full" placeholder="Required reason" />
-                    <button type="button" onClick={changeStatus} disabled={!statusReason.trim()} className="btn-secondary justify-center disabled:opacity-40">
+                    {selectedEmployee.status !== 'Active' && (
+                      <button type="button" onClick={activateEmployee} disabled={statusSaving} className="btn-primary justify-center disabled:opacity-50">
+                        <UserRound className="h-4 w-4" />
+                        {statusSaving ? 'Activating...' : 'Activate employee'}
+                      </button>
+                    )}
+                    <button type="button" onClick={changeStatus} disabled={!statusReason.trim() || statusSaving} className="btn-secondary justify-center disabled:opacity-40">
                       <History className="h-4 w-4" />
-                      Save status history
+                      {statusSaving ? 'Saving...' : 'Save status history'}
                     </button>
                   </div>
                 </div>
@@ -744,16 +945,16 @@ export function EmployeesPage() {
           {editNotice && (
             <p className={`rounded-lg px-3 py-2.5 text-sm ${editNotice.startsWith('Submitted') ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' : 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400'}`}>{editNotice}</p>
           )}
-          {[...new Set(EDIT_FIELDS.map((f) => f.section))].map((section) => (
+          {[...new Set(editFields.map((f) => f.section))].map((section) => (
             <fieldset key={section} className="space-y-3">
               <legend className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
                 {section}
-                {EDIT_FIELDS.some((f) => f.section === section && f.sensitive) && (
+                {editFields.some((f) => f.section === section && f.sensitive) && (
                   <InfoTip text="Fields marked 'approval' are sensitive (payroll/identity). Saving them submits a change request that an authorised approver must sign off before it takes effect." />
                 )}
               </legend>
               <div className="grid gap-3 sm:grid-cols-2">
-                {EDIT_FIELDS.filter((f) => f.section === section).map((f) => (
+                {editFields.filter((f) => f.section === section).map((f) => (
                   <label key={f.key} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                     <span className="flex items-center gap-1.5">
                       {f.label}
@@ -800,7 +1001,28 @@ export function EmployeesPage() {
           </Section>
 
           <Section title="Employment Details">
-            <Lookup label="Company" value={form.companyId ?? ''} onChange={(v) => setField('companyId', v)} items={companies} textKey="legalNameEn" />
+            <Lookup
+              label="Company"
+              value={form.companyId ?? ''}
+              onChange={(v) => {
+                const company = companies.find((item) => item.id === v);
+                setForm((current) => ({
+                  ...current,
+                  companyId: v,
+                  payrollProfile: {
+                    ...current.payrollProfile!,
+                    salaryCurrency: company?.defaultCurrency || current.payrollProfile?.salaryCurrency || currencyCode,
+                  },
+                  salaryBreakdown: {
+                    ...current.salaryBreakdown!,
+                    currency: company?.defaultCurrency || current.salaryBreakdown?.currency || currencyCode,
+                  },
+                  complianceRecords: complianceRecordsForCountry(company?.countryCode, current.complianceRecords),
+                }));
+              }}
+              items={companies}
+              textKey="legalNameEn"
+            />
             <Lookup label="Branch" value={form.branchId ?? ''} onChange={(v) => setField('branchId', v)} items={branches} textKey="nameEn" />
             <Lookup label="Department" value={form.departmentId ?? ''} onChange={(v) => setField('departmentId', v)} items={departments} textKey="nameEn" />
             <Lookup label="Designation" value={form.designationId ?? ''} onChange={setDesignation} items={designations} textKey="titleEn" />

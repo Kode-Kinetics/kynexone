@@ -165,6 +165,7 @@ public class AccessManagementService : IAccessManagementService
         user.UserRoles.Clear();
         foreach (var role in roles) user.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id, Role = role });
         user.UpdatedAtUtc = DateTime.UtcNow;
+        await RevokeActiveRefreshTokensAsync(user.Id, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.roles_assigned", "User", user.Id.ToString(), context, $"{{\"roles\":[{string.Join(',', roles.Select(r => $"\"{r.Name}\""))}]}}", cancellationToken);
         return ToUserDto(user, user.Tenant!, roles);
@@ -193,6 +194,7 @@ public class AccessManagementService : IAccessManagementService
         user.AccessMode = accessMode;
         user.IsActive = accessMode != AccessModes.NoLogin;
         user.UpdatedAtUtc = DateTime.UtcNow;
+        await RevokeActiveRefreshTokensAsync(user.Id, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.mode_changed", "User", user.Id.ToString(), context, $"{{\"accessMode\":\"{accessMode}\",\"reason\":\"{request.Reason ?? string.Empty}\"}}", cancellationToken);
         return ToAccessDto(user);
@@ -217,6 +219,7 @@ public class AccessManagementService : IAccessManagementService
         ov.IsActive = true;
         ov.UpdatedAtUtc = DateTime.UtcNow;
         ov.UpdatedBy = context.UserId;
+        await RevokeActiveRefreshTokensAsync(user.Id, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.permission_override", "UserPermissionOverride", ov.Id.ToString(), context, $"{{\"userId\":\"{userId}\",\"permission\":\"{request.PermissionKey}\",\"effect\":\"{effect}\"}}", cancellationToken);
         return await GetUserAccessAsync(tenantId, userId, entityScope, cancellationToken);
@@ -400,7 +403,7 @@ public class AccessManagementService : IAccessManagementService
         user.IsActive = false;
         user.Status = "Suspended";
         user.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.RefreshTokens.Where(x => x.UserId == userId && x.RevokedAtUtc == null).ExecuteUpdateAsync(x => x.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), cancellationToken);
+        await RevokeActiveRefreshTokensAsync(userId, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.user_suspended", "User", user.Id.ToString(), context, $"{{\"reason\":\"{reason}\"}}", cancellationToken);
     }
@@ -413,7 +416,7 @@ public class AccessManagementService : IAccessManagementService
         user.LockoutEnd = DateTime.UtcNow.AddDays(1);
         user.Status = "Locked";
         user.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.RefreshTokens.Where(x => x.UserId == userId && x.RevokedAtUtc == null).ExecuteUpdateAsync(x => x.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), cancellationToken);
+        await RevokeActiveRefreshTokensAsync(userId, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.user_locked", "User", user.Id.ToString(), context, $"{{\"reason\":\"{reason}\"}}", cancellationToken);
     }
@@ -450,7 +453,7 @@ public class AccessManagementService : IAccessManagementService
             link.Status = "Active";
             link.UpdatedAtUtc = DateTime.UtcNow;
         }
-        await _db.RefreshTokens.Where(x => x.UserId == userId && x.RevokedAtUtc == null).ExecuteUpdateAsync(x => x.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), cancellationToken);
+        await RevokeActiveRefreshTokensAsync(userId, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.admin_password_reset", "User", user.Id.ToString(), context, null, cancellationToken);
     }
@@ -467,7 +470,7 @@ public class AccessManagementService : IAccessManagementService
         user.IsActive = false;
         user.Status = "Deactivated";
         user.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.RefreshTokens.Where(x => x.UserId == userId && x.RevokedAtUtc == null).ExecuteUpdateAsync(x => x.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), cancellationToken);
+        await RevokeActiveRefreshTokensAsync(userId, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.user_deleted", "User", user.Id.ToString(), context, null, cancellationToken);
         return true;
@@ -590,6 +593,7 @@ public class AccessManagementService : IAccessManagementService
             CreatedBy = context.UserId
         };
         _db.PermissionGrantorRecords.Add(record);
+        await RevokeActiveRefreshTokensAsync(request.GrantorUserId, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.grantor_added", "PermissionGrantorRecord", record.Id.ToString(), context,
             $"{{\"grantorUserId\":\"{request.GrantorUserId}\",\"scope\":\"{request.PermissionScope}\",\"canSubDelegate\":{request.CanSubDelegate.ToString().ToLowerInvariant()}}}", cancellationToken);
@@ -602,6 +606,7 @@ public class AccessManagementService : IAccessManagementService
         var record = await _db.PermissionGrantorRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == recordId, cancellationToken);
         if (record is null) return false;
         record.IsActive = false;
+        await RevokeActiveRefreshTokensAsync(record.GrantorUserId, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.grantor_revoked", "PermissionGrantorRecord", recordId.ToString(), context, null, cancellationToken);
         return true;
@@ -626,7 +631,7 @@ public class AccessManagementService : IAccessManagementService
         if (request.Effect.Equals("Remove", StringComparison.OrdinalIgnoreCase))
         {
             var existing = user.PermissionOverrides.FirstOrDefault(x => x.PermissionKey == request.PermissionKey);
-            if (existing is not null) { existing.IsActive = false; await _db.SaveChangesAsync(cancellationToken); }
+            if (existing is not null) existing.IsActive = false;
         }
         else
         {
@@ -646,9 +651,10 @@ public class AccessManagementService : IAccessManagementService
             ov.IsActive = true;
             ov.UpdatedAtUtc = DateTime.UtcNow;
             ov.UpdatedBy = callerUserId;
-            await _db.SaveChangesAsync(cancellationToken);
         }
 
+        await RevokeActiveRefreshTokensAsync(targetUserId, new RequestContext(null, null, callerUserId, tenantId), cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.permission_granted", "UserPermissionOverride", targetUserId.ToString(), new RequestContext(null, null, callerUserId, tenantId),
             $"{{\"permission\":\"{request.PermissionKey}\",\"effect\":\"{request.Effect}\"}}", cancellationToken);
         return await GetUserAccessAsync(tenantId, targetUserId, entityScope, cancellationToken);
@@ -816,6 +822,7 @@ public class AccessManagementService : IAccessManagementService
         if (request.AuthorityLevel.HasValue) role.AuthorityLevel = request.AuthorityLevel.Value;
         role.UpdatedAtUtc = DateTime.UtcNow;
         role.UpdatedBy = context.UserId;
+        await RevokeActiveRefreshTokensForRoleAsync(role.Id, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.role_updated", "Role", roleId.ToString(), context, $"{{\"name\":\"{role.Name}\"}}", cancellationToken);
         return ToRoleDto(role);
@@ -828,6 +835,7 @@ public class AccessManagementService : IAccessManagementService
         role.IsActive = true;
         role.UpdatedAtUtc = DateTime.UtcNow;
         role.UpdatedBy = context.UserId;
+        await RevokeActiveRefreshTokensForRoleAsync(role.Id, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.role_activated", "Role", roleId.ToString(), context, null, cancellationToken);
         return true;
@@ -841,6 +849,7 @@ public class AccessManagementService : IAccessManagementService
         role.IsActive = false;
         role.UpdatedAtUtc = DateTime.UtcNow;
         role.UpdatedBy = context.UserId;
+        await RevokeActiveRefreshTokensForRoleAsync(role.Id, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.role_deactivated", "Role", roleId.ToString(), context, null, cancellationToken);
         return true;
@@ -858,6 +867,7 @@ public class AccessManagementService : IAccessManagementService
         foreach (var p in permissions) role.RolePermissions.Add(new RolePermission { RoleId = role.Id, PermissionId = p.Id, Permission = p });
         role.UpdatedAtUtc = DateTime.UtcNow;
         role.UpdatedBy = context.UserId;
+        await RevokeActiveRefreshTokensForRoleAsync(role.Id, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.role_permissions_set", "Role", roleId.ToString(), context, $"{{\"count\":{permissions.Count}}}", cancellationToken);
         return ToRoleDto(role);
@@ -903,6 +913,7 @@ public class AccessManagementService : IAccessManagementService
             role.UpdatedAtUtc = DateTime.UtcNow;
             role.UpdatedBy = context.UserId;
         }
+        await RevokeActiveRefreshTokensForRolesAsync(roles.Select(r => r.Id), context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.permission_matrix_saved", "Tenant", tenantId.ToString(), context, null, cancellationToken);
     }
@@ -931,9 +942,50 @@ public class AccessManagementService : IAccessManagementService
         var ov = await _db.UserPermissionOverrides.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.UserId == userId && x.Id == overrideId, cancellationToken);
         if (ov is null) return false;
         _db.UserPermissionOverrides.Remove(ov);
+        await RevokeActiveRefreshTokensAsync(userId, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.permission_override_deleted", "UserPermissionOverride", overrideId.ToString(), context, null, cancellationToken);
         return true;
+    }
+
+    private async Task RevokeActiveRefreshTokensForRoleAsync(Guid roleId, RequestContext context, CancellationToken cancellationToken)
+    {
+        var userIds = await _db.UserRoles
+            .Where(x => x.RoleId == roleId)
+            .Select(x => x.UserId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        await RevokeActiveRefreshTokensAsync(userIds, context, cancellationToken);
+    }
+
+    private async Task RevokeActiveRefreshTokensForRolesAsync(IEnumerable<Guid> roleIds, RequestContext context, CancellationToken cancellationToken)
+    {
+        var ids = roleIds.Distinct().ToList();
+        if (ids.Count == 0) return;
+        var userIds = await _db.UserRoles
+            .Where(x => ids.Contains(x.RoleId))
+            .Select(x => x.UserId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        await RevokeActiveRefreshTokensAsync(userIds, context, cancellationToken);
+    }
+
+    private Task RevokeActiveRefreshTokensAsync(Guid userId, RequestContext context, CancellationToken cancellationToken) =>
+        RevokeActiveRefreshTokensAsync(new[] { userId }, context, cancellationToken);
+
+    private async Task RevokeActiveRefreshTokensAsync(IEnumerable<Guid> userIds, RequestContext context, CancellationToken cancellationToken)
+    {
+        var ids = userIds.Distinct().ToList();
+        if (ids.Count == 0) return;
+        var now = DateTime.UtcNow;
+        var activeTokens = await _db.RefreshTokens
+            .Where(x => ids.Contains(x.UserId) && x.RevokedAtUtc == null && x.ExpiresAtUtc > now)
+            .ToListAsync(cancellationToken);
+        foreach (var token in activeTokens)
+        {
+            token.RevokedAtUtc = now;
+            token.RevokedByIp = context.IpAddress;
+        }
     }
 }
 

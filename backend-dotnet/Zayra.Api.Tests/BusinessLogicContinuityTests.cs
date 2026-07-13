@@ -721,7 +721,10 @@ public class BusinessLogicContinuityTests
 
     private static OvertimeController CreateOvertimeController(ZayraDbContext db, Guid tenantId, string role = "Admin")
     {
-        var ctrl = new OvertimeController(db, new FakeDataScopeService());
+        var ctrl = new OvertimeController(
+            db,
+            new FakeDataScopeService(),
+            new Zayra.Api.Infrastructure.Organization.HrmHierarchyService(db, new Zayra.Api.Infrastructure.Audit.AuditService(db)));
         ctrl.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext { User = MakePrincipal(tenantId, Guid.NewGuid(), role) }

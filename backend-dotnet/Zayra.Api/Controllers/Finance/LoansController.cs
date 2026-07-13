@@ -211,13 +211,15 @@ public class LoansController : ControllerBase
         var uid = GetUserId();
         var approval = await _db.LoanApprovals.FirstOrDefaultAsync(x => x.Id == approvalId && x.LoanId == id && x.TenantId == tid, ct);
         if (approval == null) return NotFound();
+        var loan = await _db.EmployeeLoans.FirstAsync(x => x.Id == id && x.TenantId == tid, ct);
+        if (req.Decision == "Approved" && loan.CreatedBy.HasValue && uid.HasValue && loan.CreatedBy == uid)
+            return BadRequest("Maker-checker control: requester cannot approve their own loan.");
 
         var oldStatus = approval.Status;
         approval.Status = req.Decision; approval.Comments = req.Comments ?? string.Empty;
         approval.ApprovedBy = uid; approval.ApprovedByName = GetUserName();
         approval.DecidedAtUtc = DateTime.UtcNow;
 
-        var loan = await _db.EmployeeLoans.FirstAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (req.Decision == "Rejected")
         {
             loan.Status = "Rejected"; loan.RejectionReason = req.Comments;

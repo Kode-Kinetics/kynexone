@@ -260,6 +260,7 @@ const IMPORT_KEYS: { key: keyof OrgStructureImportRequest; section: string; labe
   { key: 'gradesCsv', section: 'grades', label: 'Grades & salary bands', phase: 'Compensation rules', dependsOn: [], required: ['Code', 'Name', 'MinSalary', 'MaxSalary'] },
   { key: 'gradePayComponentsCsv', section: 'gradePayComponents', label: 'Grade pay breakdown', phase: 'Payroll rules', dependsOn: ['grades'], required: ['GradeCode', 'ComponentCode', 'ComponentName'] },
   { key: 'designationsCsv', section: 'designations', label: 'Designations', phase: 'Position eligibility', dependsOn: ['departments', 'grades'], required: ['Code', 'TitleEn'] },
+  { key: 'positionsCsv', section: 'positions', label: 'Positions', phase: 'Headcount control', dependsOn: ['companies', 'branches', 'departments', 'designations', 'grades'], required: ['Code', 'Title'] },
 ];
 
 function OrgStructureImportPanel() {

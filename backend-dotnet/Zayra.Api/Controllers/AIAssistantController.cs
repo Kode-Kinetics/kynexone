@@ -44,6 +44,7 @@ public class AIAssistantController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        if (!HasPermission("ai.query")) return Forbid();
 
         var userId = this.GetUserId();
         var roles = User.Claims
@@ -87,6 +88,9 @@ public class AIAssistantController : ControllerBase
 
         return Ok(response);
     }
+
+    private bool HasPermission(string permission) =>
+        User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
     private async Task<IActionResult?> CheckUsageLimitAsync(Guid tenantId, CancellationToken ct)
     {

@@ -395,6 +395,85 @@ public class MfaTests
         Assert.NotEqual(init.TempSecret, stored.MfaSecretEncrypted);
     }
 
+    [Fact]
+    public async Task EnrollmentChallenge_AllowsFirstTimeSetup_WithoutExistingSession()
+    {
+        var (db, totp, tokens) = MakeServices();
+        var svc = MakeMfaService(db, totp, tokens);
+        var user = MakeUser(TenantA);
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        var enrollmentToken = await svc.CreateEnrollmentChallengeAsync(user.Id, TenantA, "127.0.0.1", CancellationToken.None);
+        var init = await svc.InitiateEnrollmentSetupAsync(enrollmentToken, CancellationToken.None);
+
+        Assert.NotNull(init);
+        Assert.Contains("otpauth://totp/", init!.ProvisioningUri);
+
+        var code = ComputeTotpDirectly(init.TempSecret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
+        var enabled = await svc.VerifyEnrollmentSetupAsync(
+            enrollmentToken,
+            new MfaVerifySetupRequest(init.TempSecret, code),
+            CancellationToken.None);
+
+        Assert.True(enabled);
+        var stored = await db.Users.FirstAsync(x => x.Id == user.Id);
+        Assert.True(stored.MFAEnabled);
+        Assert.NotNull(stored.MfaSecretEncrypted);
+        Assert.NotEqual(init.TempSecret, stored.MfaSecretEncrypted);
+        Assert.NotNull((await db.MfaChallengeTokens.SingleAsync()).UsedAtUtc);
+    }
+
+    [Fact]
+    public async Task EnrollmentChallenge_CannotBeUsedAsMfaLoginChallenge()
+    {
+        var (db, totp, tokens) = MakeServices();
+        var svc = MakeMfaService(db, totp, tokens);
+        var user = MakeUser(TenantA);
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        var enrollmentToken = await svc.CreateEnrollmentChallengeAsync(user.Id, TenantA, "127.0.0.1", CancellationToken.None);
+        var init = await svc.InitiateEnrollmentSetupAsync(enrollmentToken, CancellationToken.None);
+        var code = ComputeTotpDirectly(init!.TempSecret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
+
+        var loginResult = await svc.VerifyChallengeAsync(enrollmentToken, code, CancellationToken.None);
+
+        Assert.Null(loginResult);
+        Assert.False((await db.Users.FirstAsync(x => x.Id == user.Id)).MFAEnabled);
+        Assert.Equal(1, await db.MfaChallengeTokens.CountAsync());
+    }
+
+    [Fact]
+    public async Task EnrollmentChallenge_ConsumesAfterRepeatedWrongSetupCodes()
+    {
+        var (db, totp, tokens) = MakeServices();
+        var svc = MakeMfaService(db, totp, tokens);
+        var user = MakeUser(TenantA);
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        var enrollmentToken = await svc.CreateEnrollmentChallengeAsync(user.Id, TenantA, "127.0.0.1", CancellationToken.None);
+        var init = await svc.InitiateEnrollmentSetupAsync(enrollmentToken, CancellationToken.None);
+
+        for (var i = 0; i < MfaChallengeToken.MaxAttempts; i++)
+        {
+            var ok = await svc.VerifyEnrollmentSetupAsync(
+                enrollmentToken,
+                new MfaVerifySetupRequest(init!.TempSecret, "000000"),
+                CancellationToken.None);
+            Assert.False(ok);
+        }
+
+        var challenge = await db.MfaChallengeTokens.SingleAsync();
+        Assert.NotNull(challenge.UsedAtUtc);
+        Assert.False(await svc.VerifyEnrollmentSetupAsync(
+            enrollmentToken,
+            new MfaVerifySetupRequest(init!.TempSecret, ComputeTotpDirectly(init.TempSecret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6")),
+            CancellationToken.None));
+        Assert.False((await db.Users.FirstAsync(x => x.Id == user.Id)).MFAEnabled);
+    }
+
     // ── Disable flow ──────────────────────────────────────────────────────────
 
     [Fact]

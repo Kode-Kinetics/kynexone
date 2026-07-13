@@ -89,7 +89,7 @@ public class PayrollVoidTests
         var (_, _, run) = await SeedKsaRunProcessed(db, tenantId, year: 2026, month: 3);
 
         // Lock the run so GL entries are written
-        run.Status = "Processed";
+        run.Status = "Approved";
         await db.SaveChangesAsync();
         (await BuildCtrl(db, tenantId, "Finance Controller").Lock(run.Id, CancellationToken.None))
             .Should().BeOfType<OkObjectResult>("lock must succeed before void test");
@@ -265,7 +265,7 @@ public class PayrollVoidTests
         (await ctrl.Process(runB.Id, CancellationToken.None))
             .Should().BeOfType<OkObjectResult>("replacement run must process successfully");
 
-        runB.Status = "Processed";
+        runB.Status = "Approved";
         await db.SaveChangesAsync();
         (await ctrl.Lock(runB.Id, CancellationToken.None))
             .Should().BeOfType<OkObjectResult>("replacement run lock must succeed");

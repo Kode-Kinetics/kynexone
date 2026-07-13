@@ -422,7 +422,10 @@ public class SensitiveFieldMaskingTests
         db.EmployeeTransferRequests.Add(transfer);
         await db.SaveChangesAsync();
 
-        var result = await controller.ApproveHrTransfer(transfer.Id, CancellationToken.None);
+        var result = await controller.ApproveHrTransfer(
+            transfer.Id,
+            new Zayra.Api.Infrastructure.Organization.HrmHierarchyService(db, new AuditService(db)),
+            CancellationToken.None);
 
         var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result).Value);
         dto.Should().NotBeNull("ApproveHrTransfer must return EmployeeDetailDto");
@@ -453,7 +456,10 @@ public class SensitiveFieldMaskingTests
         await db.SaveChangesAsync();
 
         var managerController = CreateController(db, tenantId, "Manager");
-        var result = await managerController.ApproveHrTransfer(transfer.Id, CancellationToken.None);
+        var result = await managerController.ApproveHrTransfer(
+            transfer.Id,
+            new Zayra.Api.Infrastructure.Organization.HrmHierarchyService(db, new AuditService(db)),
+            CancellationToken.None);
 
         var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result).Value);
         dto.Salary.Should().BeNull("Manager must NOT see salary in transfer approval response");
@@ -594,6 +600,11 @@ public class SensitiveFieldMaskingTests
         public Task SendEmailAsync(Guid t, string code, string to, string name, Dictionary<string, string> vars, CancellationToken ct) => Task.CompletedTask;
     }
 
+    private sealed class FakeHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new();
+    }
+
     private sealed class FakeHijriDateService : IHijriDateService
     {
         public DateConversionDto FromGregorian(DateOnly date) =>
@@ -602,7 +613,12 @@ public class SensitiveFieldMaskingTests
 
     private static EmployeeSelfServiceController CreateEssController(ZayraDbContext db, Guid tenantId, int employeeId)
     {
-        var controller = new EmployeeSelfServiceController(db, new FakeLetterService(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1), new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalPolicyService(db)));
+        var controller = new EmployeeSelfServiceController(
+            db,
+            new FakeLetterService(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1),
+            new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalPolicyService(db)),
+            new Zayra.Api.Infrastructure.Attendance.AttendanceService(db, new FakeNotificationService(), new FakeHttpClientFactory()));
         var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
         {
             new Claim("tenant_id", tenantId.ToString()),

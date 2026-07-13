@@ -66,10 +66,10 @@ const SECURITY_POINTS = [
   'MFA-ready access',
 ];
 
-type Mode = 'login' | 'forgot' | 'reset' | 'mfa';
+type Mode = 'login' | 'forgot' | 'reset' | 'mfa' | 'mfa-enroll';
 
 export function LoginPage() {
-  const { login, verifyMfaChallenge, mfaPending } = useAuth();
+  const { login, verifyMfaChallenge, mfaPending, mfaEnrollmentPending } = useAuth();
   const router       = useRouter();
   const searchParams = useSearchParams();
   const from         = searchParams?.get('from') ?? '/dashboard';
@@ -89,6 +89,8 @@ export function LoginPage() {
   const [newPw,        setNewPw]        = useState('');
   const [confirmPw,    setConfirmPw]    = useState('');
   const [totpCode,     setTotpCode]     = useState('');
+  const [enrollmentUri, setEnrollmentUri] = useState('');
+  const [enrollmentSecret, setEnrollmentSecret] = useState('');
 
   useEffect(() => {
     // Platform-admin impersonation: ?impersonate=<tenant-audience-jwt>
@@ -116,9 +118,9 @@ export function LoginPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault(); setError(''); setLoading(true);
     try {
-      await login(email, password, tenantSlug);
-      // If MFA is required, mfaPending is set in context; switch to MFA mode.
-      if (mfaPending) { setMode('mfa'); return; }
+      const outcome = await login(email, password, tenantSlug);
+      if (outcome === 'mfa') { setMode('mfa'); return; }
+      if (outcome === 'mfa-enroll') { setMode('mfa-enroll'); return; }
       router.replace(from);
     }
     catch { setError('Invalid credentials. Check your email, password, and workspace.'); }
@@ -139,6 +141,35 @@ export function LoginPage() {
   useEffect(() => {
     if (mfaPending && mode !== 'mfa') setMode('mfa');
   }, [mfaPending, mode]);
+
+  useEffect(() => {
+    if (!mfaEnrollmentPending) return;
+    setMode('mfa-enroll');
+    setError('');
+    setInfo('');
+    setEnrollmentUri('');
+    setEnrollmentSecret('');
+    authApi.mfaEnrollmentSetup(mfaEnrollmentPending.enrollmentToken)
+      .then(res => {
+        setEnrollmentUri(res.provisioningUri);
+        const parsed = new URL(res.provisioningUri);
+        setEnrollmentSecret(parsed.searchParams.get('secret') ?? '');
+      })
+      .catch(() => setError('MFA enrollment expired. Please sign in again.'));
+  }, [mfaEnrollmentPending]);
+
+  const handleMfaEnrollment = async (e: React.FormEvent) => {
+    e.preventDefault(); setError(''); setLoading(true);
+    try {
+      if (!mfaEnrollmentPending || !enrollmentSecret) throw new Error('Missing enrollment challenge.');
+      await authApi.mfaEnrollmentVerifySetup(mfaEnrollmentPending.enrollmentToken, enrollmentSecret, totpCode);
+      setInfo('MFA is enabled. Sign in again to continue.');
+      setTotpCode('');
+      setMode('login');
+    }
+    catch { setError('Invalid or expired enrollment code. Please try again.'); }
+    finally { setLoading(false); }
+  };
 
   // Auto-advance the product-preview carousel.
   useEffect(() => {
@@ -543,6 +574,59 @@ export function LoginPage() {
                   {loading
                     ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
                     : 'Verify'}
+                </button>
+              </form>
+            )}
+
+            {mode === 'mfa-enroll' && (
+              <form onSubmit={handleMfaEnrollment} noValidate className="space-y-5">
+                <button type="button" onClick={() => { setMode('login'); setTotpCode(''); }}
+                  className="flex items-center gap-1.5 text-sm font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+                  ← Back to sign in
+                </button>
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sapphire/10 ring-1 ring-sapphire/20">
+                  <Smartphone className="h-5 w-5 text-sapphire dark:text-sky-400" />
+                </div>
+                <div>
+                  <h2 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">Set up two-factor authentication</h2>
+                  <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
+                    Add this account to your authenticator app, then enter the 6-digit code.
+                  </p>
+                </div>
+
+                {enrollmentSecret && (
+                  <FormField label="Setup key">
+                    <input className="auth-input font-mono text-xs" value={enrollmentSecret} readOnly />
+                  </FormField>
+                )}
+                {enrollmentUri && (
+                  <p className="break-all rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-400">
+                    {enrollmentUri}
+                  </p>
+                )}
+
+                <FormField label="Authentication code">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    maxLength={6}
+                    value={totpCode}
+                    onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                    className="auth-input text-center font-mono text-xl tracking-[0.3em]"
+                    placeholder="000000"
+                    autoComplete="one-time-code"
+                    required
+                  />
+                </FormField>
+
+                <AuthFeedback error={error} info={info} />
+
+                <button type="submit" disabled={loading || totpCode.length !== 6 || !enrollmentSecret}
+                  className="auth-btn disabled:cursor-not-allowed disabled:opacity-60">
+                  {loading
+                    ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    : 'Enable MFA'}
                 </button>
               </form>
             )}

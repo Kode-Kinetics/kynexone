@@ -55,25 +55,283 @@ public class PayrollController : ControllerBase
         var q = _db.SalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted);
         if (companyId.HasValue)
             q = q.Where(x => x.CompanyId == companyId || x.CompanyId == null);
-        return Ok(await q.OrderBy(x => x.Name).ToListAsync(cancellationToken));
+        var structures = await q.OrderBy(x => x.Name).ToListAsync(cancellationToken);
+        return Ok(await ProjectSalaryStructuresAsync(tenantId, structures, cancellationToken));
+    }
+
+    [HttpGet("salary-structures/{id:guid}")]
+    public async Task<IActionResult> GetSalaryStructure(Guid id, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var structure = await _db.SalaryStructures.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
+        if (structure is null) return NotFound(new { message = "Salary structure not found." });
+        var dto = (await ProjectSalaryStructuresAsync(tenantId, new[] { structure }, cancellationToken)).Single();
+        return Ok(dto);
     }
 
     [HttpPost("salary-structures")]
     public async Task<IActionResult> CreateSalaryStructure(SalaryStructureRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
+        var validationError = await ValidateSalaryStructureRequestAsync(tenantId, req, cancellationToken);
+        if (validationError is not null) return validationError;
         if (req.CompanyId.HasValue && !await _db.Companies.AnyAsync(c => c.TenantId == tenantId && c.Id == req.CompanyId.Value && c.IsActive && !c.IsDeleted, cancellationToken))
             return BadRequest(new { message = "Company not found or not active." });
-        if (await _db.SalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == req.CompanyId && x.Code == req.Code && !x.IsDeleted, cancellationToken))
+        var code = req.Code.Trim();
+        if (await _db.SalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == req.CompanyId && x.Code == code && !x.IsDeleted, cancellationToken))
             return Conflict(new { message = "Salary structure code already exists." });
         var structureCurrency = !string.IsNullOrWhiteSpace(req.Currency) ? req.Currency : await ResolveCurrencyAsync(tenantId, cancellationToken);
-        var structure = new SalaryStructure { TenantId = tenantId, CompanyId = req.CompanyId, Code = req.Code.Trim(), Name = req.Name.Trim(), Currency = structureCurrency, EffectiveDate = req.EffectiveDate, CreatedBy = GetUserId() };
+        var structure = new SalaryStructure { TenantId = tenantId, CompanyId = req.CompanyId, Code = code, Name = req.Name.Trim(), Currency = structureCurrency.Trim().ToUpperInvariant(), EffectiveDate = req.EffectiveDate, CreatedBy = GetUserId() };
+        ApplySalaryStructureRules(structure, req);
         _db.SalaryStructures.Add(structure);
         foreach (var component in req.Components ?? Array.Empty<SalaryComponentRequest>())
-            _db.SalaryComponents.Add(new SalaryComponent { TenantId = tenantId, SalaryStructureId = structure.Id, Code = component.Code, Name = component.Name, ComponentType = component.ComponentType, CalculationType = component.CalculationType, Amount = component.Amount, Percentage = component.Percentage, IsTaxable = component.IsTaxable });
+            _db.SalaryComponents.Add(BuildSalaryComponent(tenantId, structure.Id, component));
         await PayrollAudit("payroll.salary_structure.created", "SalaryStructure", structure.Id.ToString(), null, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        return Created($"/api/payroll/salary-structures/{structure.Id}", structure);
+        var dto = (await ProjectSalaryStructuresAsync(tenantId, new[] { structure }, cancellationToken)).Single();
+        return Created($"/api/payroll/salary-structures/{structure.Id}", dto);
+    }
+
+    [HttpPut("salary-structures/{id:guid}")]
+    public async Task<IActionResult> UpdateSalaryStructure(Guid id, SalaryStructureRequest req, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var validationError = await ValidateSalaryStructureRequestAsync(tenantId, req, cancellationToken);
+        if (validationError is not null) return validationError;
+
+        var structure = await _db.SalaryStructures
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
+        if (structure is null) return NotFound(new { message = "Salary structure not found." });
+        if (req.CompanyId.HasValue && !await _db.Companies.AnyAsync(c => c.TenantId == tenantId && c.Id == req.CompanyId.Value && c.IsActive && !c.IsDeleted, cancellationToken))
+            return BadRequest(new { message = "Company not found or not active." });
+
+        var code = req.Code.Trim();
+        if (await _db.SalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.Id != id && x.CompanyId == req.CompanyId && x.Code == code && !x.IsDeleted, cancellationToken))
+            return Conflict(new { message = "Salary structure code already exists." });
+
+        var activeAssignments = await _db.EmployeeSalaryStructures
+            .CountAsync(x => x.TenantId == tenantId && x.SalaryStructureId == id && x.IsActive, cancellationToken);
+        if (activeAssignments > 0)
+        {
+            structure.IsActive = false;
+            var versionNumber = structure.VersionNumber + 1;
+            var versionCode = await ResolveVersionCodeAsync(tenantId, req.CompanyId, code, versionNumber, cancellationToken);
+            var version = new SalaryStructure
+            {
+                TenantId = tenantId,
+                CompanyId = req.CompanyId,
+                Code = versionCode,
+                Name = req.Name.Trim(),
+                Currency = (!string.IsNullOrWhiteSpace(req.Currency) ? req.Currency : await ResolveCurrencyAsync(tenantId, cancellationToken)).Trim().ToUpperInvariant(),
+                EffectiveDate = req.EffectiveDate,
+                CreatedBy = GetUserId(),
+                VersionNumber = versionNumber,
+                PreviousVersionId = structure.Id,
+                IsActive = req.IsActive
+            };
+            ApplySalaryStructureRules(version, req);
+            _db.SalaryStructures.Add(version);
+            foreach (var component in req.Components ?? Array.Empty<SalaryComponentRequest>())
+                _db.SalaryComponents.Add(BuildSalaryComponent(tenantId, version.Id, component));
+            await PayrollAudit("payroll.salary_structure.version_created", "SalaryStructure", version.Id.ToString(), new { previousVersionId = structure.Id, version.Code, version.CompanyId }, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            var versionDto = (await ProjectSalaryStructuresAsync(tenantId, new[] { version }, cancellationToken)).Single();
+            return Ok(versionDto);
+        }
+
+        structure.CompanyId = req.CompanyId;
+        structure.Code = code;
+        structure.Name = req.Name.Trim();
+        structure.Currency = (!string.IsNullOrWhiteSpace(req.Currency) ? req.Currency : await ResolveCurrencyAsync(tenantId, cancellationToken)).Trim().ToUpperInvariant();
+        structure.EffectiveDate = req.EffectiveDate;
+        structure.IsActive = req.IsActive;
+        ApplySalaryStructureRules(structure, req);
+
+        var existingComponents = await _db.SalaryComponents
+            .Where(c => c.TenantId == tenantId && c.SalaryStructureId == structure.Id)
+            .ToListAsync(cancellationToken);
+        _db.SalaryComponents.RemoveRange(existingComponents);
+        foreach (var component in req.Components ?? Array.Empty<SalaryComponentRequest>())
+            _db.SalaryComponents.Add(BuildSalaryComponent(tenantId, structure.Id, component));
+
+        await PayrollAudit("payroll.salary_structure.updated", "SalaryStructure", structure.Id.ToString(), new { structure.Code, structure.CompanyId }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        var dto = (await ProjectSalaryStructuresAsync(tenantId, new[] { structure }, cancellationToken)).Single();
+        return Ok(dto);
+    }
+
+    [HttpDelete("salary-structures/{id:guid}")]
+    public async Task<IActionResult> DeleteSalaryStructure(Guid id, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var structure = await _db.SalaryStructures
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
+        if (structure is null) return NotFound(new { message = "Salary structure not found." });
+
+        var activeAssignments = await _db.EmployeeSalaryStructures
+            .CountAsync(x => x.TenantId == tenantId && x.SalaryStructureId == id && x.IsActive, cancellationToken);
+        if (activeAssignments > 0)
+            return BadRequest(new { message = $"Cannot delete salary structure while {activeAssignments} active employee salary assignment(s) use it. Deactivate it or reassign employees first." });
+
+        structure.IsDeleted = true;
+        structure.IsActive = false;
+        await _db.SalaryComponents
+            .Where(c => c.TenantId == tenantId && c.SalaryStructureId == id)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(c => c.IsActive, false), cancellationToken);
+        await PayrollAudit("payroll.salary_structure.deleted", "SalaryStructure", structure.Id.ToString(), new { structure.Code, structure.CompanyId }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
+    private async Task<IReadOnlyList<SalaryStructureDto>> ProjectSalaryStructuresAsync(Guid tenantId, IReadOnlyCollection<SalaryStructure> structures, CancellationToken cancellationToken)
+    {
+        if (structures.Count == 0) return Array.Empty<SalaryStructureDto>();
+        var ids = structures.Select(s => s.Id).ToList();
+        var components = await _db.SalaryComponents.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.SalaryStructureId.HasValue && ids.Contains(c.SalaryStructureId.Value))
+            .OrderBy(c => c.Code)
+            .ToListAsync(cancellationToken);
+        var componentsByStructure = components
+            .GroupBy(c => c.SalaryStructureId!.Value)
+            .ToDictionary(g => g.Key, g => g.Select(SalaryComponentDto.Project).ToList());
+        var assignedCounts = await _db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.IsActive && ids.Contains(s.SalaryStructureId))
+            .GroupBy(s => s.SalaryStructureId)
+            .Select(g => new { SalaryStructureId = g.Key, Count = g.Select(x => x.EmployeeId).Distinct().Count() })
+            .ToDictionaryAsync(x => x.SalaryStructureId, x => x.Count, cancellationToken);
+        var companyIds = structures.Where(s => s.CompanyId.HasValue).Select(s => s.CompanyId!.Value).Distinct().ToList();
+        var companies = companyIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && companyIds.Contains(c.Id))
+                .ToDictionaryAsync(c => c.Id, c => c.TradeName != "" ? c.TradeName : c.LegalNameEn, cancellationToken);
+
+        return structures.Select(s => SalaryStructureDto.Project(
+                s,
+                s.CompanyId.HasValue && companies.TryGetValue(s.CompanyId.Value, out var companyName) ? companyName : null,
+                componentsByStructure.GetValueOrDefault(s.Id) ?? new List<SalaryComponentDto>(),
+                assignedCounts.GetValueOrDefault(s.Id)))
+            .ToList();
+    }
+
+    private async Task<IActionResult?> ValidateSalaryStructureRequestAsync(Guid tenantId, SalaryStructureRequest req, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(req.Code)) return BadRequest(new { message = "Salary structure code is required." });
+        if (string.IsNullOrWhiteSpace(req.Name)) return BadRequest(new { message = "Salary structure name is required." });
+        if (req.EffectiveDate == default) return BadRequest(new { message = "Effective date is required." });
+        if (req.MinGrossSalary < 0 || req.MaxGrossSalary < 0 || req.MinBasicSalary < 0 || req.MaxBasicSalary < 0)
+            return BadRequest(new { message = "Salary structure range values cannot be negative." });
+        if (req.MaxGrossSalary > 0 && req.MinGrossSalary > req.MaxGrossSalary)
+            return BadRequest(new { message = "Minimum gross salary cannot exceed maximum gross salary." });
+        if (req.MaxBasicSalary > 0 && req.MinBasicSalary > req.MaxBasicSalary)
+            return BadRequest(new { message = "Minimum basic salary cannot exceed maximum basic salary." });
+
+        if (req.CompanyId.HasValue && !await _db.Companies.AnyAsync(c => c.TenantId == tenantId && c.Id == req.CompanyId.Value && c.IsActive && !c.IsDeleted, cancellationToken))
+            return BadRequest(new { message = "Company not found or not active." });
+        if (req.EligibleGradeIds?.Count > 0)
+        {
+            var found = await _db.Grades.CountAsync(g => g.TenantId == tenantId && req.EligibleGradeIds.Contains(g.Id) && !g.IsDeleted, cancellationToken);
+            if (found != req.EligibleGradeIds.Distinct().Count()) return BadRequest(new { message = "One or more eligible grades were not found." });
+        }
+        if (req.EligibleDesignationIds?.Count > 0)
+        {
+            var found = await _db.Designations.CountAsync(d => d.TenantId == tenantId && req.EligibleDesignationIds.Contains(d.Id) && !d.IsDeleted, cancellationToken);
+            if (found != req.EligibleDesignationIds.Distinct().Count()) return BadRequest(new { message = "One or more eligible designations were not found." });
+        }
+
+        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var component in req.Components ?? Array.Empty<SalaryComponentRequest>())
+        {
+            if (string.IsNullOrWhiteSpace(component.Code)) return BadRequest(new { message = "Every salary component requires a code." });
+            if (string.IsNullOrWhiteSpace(component.Name)) return BadRequest(new { message = $"Component {component.Code} requires a name." });
+            if (!seenCodes.Add(component.Code.Trim())) return BadRequest(new { message = $"Duplicate component code '{component.Code}'." });
+            if (component.Amount < 0 || component.Percentage < 0) return BadRequest(new { message = $"Component {component.Code} amount and percentage cannot be negative." });
+            if (!string.Equals(component.ComponentType, "Earning", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(component.ComponentType, "Deduction", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(component.ComponentType, "EmployerContribution", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = $"Component {component.Code} type must be Earning, Deduction, or EmployerContribution." });
+            if (!string.Equals(component.CalculationType, "Fixed", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(component.CalculationType, "Percentage", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(component.CalculationType, "Formula", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = $"Component {component.Code} calculation type must be Fixed, Percentage, or Formula." });
+        }
+
+        return null;
+    }
+
+    private static void ApplySalaryStructureRules(SalaryStructure structure, SalaryStructureRequest req)
+    {
+        structure.MinGrossSalary = req.MinGrossSalary;
+        structure.MaxGrossSalary = req.MaxGrossSalary;
+        structure.MinBasicSalary = req.MinBasicSalary;
+        structure.MaxBasicSalary = req.MaxBasicSalary;
+        structure.EligibleGradeIdsJson = JsonSerializer.Serialize((req.EligibleGradeIds ?? Array.Empty<Guid>()).Distinct().ToList());
+        structure.EligibleDesignationIdsJson = JsonSerializer.Serialize((req.EligibleDesignationIds ?? Array.Empty<Guid>()).Distinct().ToList());
+    }
+
+    private async Task<string> ResolveVersionCodeAsync(Guid tenantId, Guid? companyId, string requestedCode, int versionNumber, CancellationToken cancellationToken)
+    {
+        var candidate = requestedCode;
+        var exists = await _db.SalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == companyId && x.Code == candidate && !x.IsDeleted, cancellationToken);
+        if (!exists) return candidate;
+        candidate = $"{requestedCode}-V{versionNumber}";
+        var n = versionNumber;
+        while (await _db.SalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == companyId && x.Code == candidate && !x.IsDeleted, cancellationToken))
+            candidate = $"{requestedCode}-V{++n}";
+        return candidate;
+    }
+
+    private static SalaryComponent BuildSalaryComponent(Guid tenantId, Guid structureId, SalaryComponentRequest component) => new()
+    {
+        TenantId = tenantId,
+        SalaryStructureId = structureId,
+        Code = component.Code.Trim().ToUpperInvariant(),
+        Name = component.Name.Trim(),
+        ComponentType = NormalizeComponentType(component.ComponentType),
+        CalculationType = NormalizeCalculationType(component.CalculationType),
+        Amount = component.Amount,
+        Percentage = component.Percentage,
+        IsTaxable = component.IsTaxable,
+        IsActive = component.IsActive
+    };
+
+    private static string NormalizeComponentType(string value) =>
+        string.Equals(value, "Deduction", StringComparison.OrdinalIgnoreCase) ? "Deduction"
+        : string.Equals(value, "EmployerContribution", StringComparison.OrdinalIgnoreCase) ? "EmployerContribution"
+        : "Earning";
+
+    private static string NormalizeCalculationType(string value) =>
+        string.Equals(value, "Percentage", StringComparison.OrdinalIgnoreCase) ? "Percentage"
+        : string.Equals(value, "Formula", StringComparison.OrdinalIgnoreCase) ? "Formula"
+        : "Fixed";
+
+    private static string? ValidateSalaryStructureEligibility(SalaryStructure structure, Employee employee, EmployeeSalaryStructureRequest req)
+    {
+        var gradeIds = ReadGuidSet(structure.EligibleGradeIdsJson);
+        if (gradeIds.Count > 0 && (!employee.GradeId.HasValue || !gradeIds.Contains(employee.GradeId.Value)))
+            return "Employee grade is not eligible for the selected salary structure.";
+        var designationIds = ReadGuidSet(structure.EligibleDesignationIdsJson);
+        if (designationIds.Count > 0 && (!employee.DesignationId.HasValue || !designationIds.Contains(employee.DesignationId.Value)))
+            return "Employee designation is not eligible for the selected salary structure.";
+        var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.FoodAllowance + req.MobileAllowance + req.OtherAllowance - req.FixedDeduction;
+        if (structure.MinBasicSalary > 0 && req.BasicSalary < structure.MinBasicSalary)
+            return $"Basic salary is below salary structure minimum {structure.MinBasicSalary:N2} {structure.Currency}.";
+        if (structure.MaxBasicSalary > 0 && req.BasicSalary > structure.MaxBasicSalary)
+            return $"Basic salary exceeds salary structure maximum {structure.MaxBasicSalary:N2} {structure.Currency}.";
+        if (structure.MinGrossSalary > 0 && gross < structure.MinGrossSalary)
+            return $"Gross salary is below salary structure minimum {structure.MinGrossSalary:N2} {structure.Currency}.";
+        if (structure.MaxGrossSalary > 0 && gross > structure.MaxGrossSalary)
+            return $"Gross salary exceeds salary structure maximum {structure.MaxGrossSalary:N2} {structure.Currency}.";
+        if (req.EffectiveDate < structure.EffectiveDate)
+            return $"Salary assignment cannot start before salary structure effective date {structure.EffectiveDate:yyyy-MM-dd}.";
+        return null;
+    }
+
+    private static HashSet<Guid> ReadGuidSet(string? json)
+    {
+        try { return (string.IsNullOrWhiteSpace(json) ? [] : JsonSerializer.Deserialize<List<Guid>>(json) ?? []).ToHashSet(); }
+        catch { return []; }
     }
 
     [HttpPost("employee-salary-structures")]
@@ -87,8 +345,11 @@ public class PayrollController : ControllerBase
         if (employee is null) return BadRequest(new { message = "Employee not found." });
         var structure = await _db.SalaryStructures.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.SalaryStructureId && !x.IsDeleted, cancellationToken);
         if (structure is null) return BadRequest(new { message = "Salary structure not found." });
+        if (!structure.IsActive) return BadRequest(new { message = "Salary structure is inactive." });
         if (structure.CompanyId.HasValue && employee.CompanyId.HasValue && structure.CompanyId != employee.CompanyId)
             return BadRequest(new { message = "Salary structure belongs to a different legal entity than the employee." });
+        var eligibilityError = ValidateSalaryStructureEligibility(structure, employee, req);
+        if (eligibilityError is not null) return BadRequest(new { message = eligibilityError });
         if (employee.GradeId.HasValue)
         {
             var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == employee.GradeId && !g.IsDeleted, cancellationToken);
@@ -98,7 +359,11 @@ public class PayrollController : ControllerBase
             if (grade is not null && grade.MaxSalary > 0 && gross > grade.MaxSalary)
                 return BadRequest(new { message = $"Salary package exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}." });
         }
-        await _db.EmployeeSalaryStructures.Where(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.IsActive).ExecuteUpdateAsync(x => x.SetProperty(p => p.IsActive, false), cancellationToken);
+        // Salary assignments are an effective-dated schedule. Replacing one date must
+        // not deactivate the current package when the new package starts in the future.
+        await _db.EmployeeSalaryStructures
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.IsActive && x.EffectiveDate == req.EffectiveDate)
+            .ExecuteUpdateAsync(x => x.SetProperty(p => p.IsActive, false), cancellationToken);
         var assignmentCurrency = !string.IsNullOrWhiteSpace(req.Currency) ? req.Currency : await ResolveCurrencyAsync(tenantId, cancellationToken);
         var assignment = new EmployeeSalaryStructure { TenantId = tenantId, EmployeeId = req.EmployeeId, SalaryStructureId = req.SalaryStructureId, BasicSalary = req.BasicSalary, HousingAllowance = req.HousingAllowance, TransportAllowance = req.TransportAllowance, FoodAllowance = req.FoodAllowance, MobileAllowance = req.MobileAllowance, OtherAllowance = req.OtherAllowance, FixedDeduction = req.FixedDeduction, EffectiveDate = req.EffectiveDate, Currency = assignmentCurrency, CreatedBy = GetUserId() };
         _db.EmployeeSalaryStructures.Add(assignment);
@@ -249,7 +514,7 @@ public class PayrollController : ControllerBase
             });
 
         var salaryAssignments = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.IsActive && employeeIdsForRun.Contains(x.EmployeeId))
+            .Where(x => x.TenantId == tenantId && x.IsActive && x.EffectiveDate <= periodEnd && employeeIdsForRun.Contains(x.EmployeeId))
             .ToListAsync(cancellationToken);
 
         // Load salary structure components (for IsTaxable-based tax deduction)
@@ -273,10 +538,16 @@ public class PayrollController : ControllerBase
 
         // COMPLIANCE: Load active loans and salary advances per employee for EMI deduction
         var activeLoans = await _db.EmployeeLoans.AsNoTracking()
-            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0)
+            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
+                && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd))
             .ToListAsync(cancellationToken);
         var activeAdvances = await _db.SalaryAdvances.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0)
+            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
+                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
+            .ToListAsync(cancellationToken);
+
+        var approvedAdjustments = await _db.PayrollAdjustments.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.Status == "Approved" && employeeIdsForRun.Contains(a.EmployeeId))
             .ToListAsync(cancellationToken);
 
         // BONUS: Load approved bonuses for this pay period — consumed here, blocked from MarkBatchPaid.
@@ -306,6 +577,14 @@ public class PayrollController : ControllerBase
             .Join(_db.PayrollRuns.AsNoTracking().Where(r => r.TenantId == tenantId && r.CompanyId == company.Id && r.Year == run.Year && r.Month < run.Month && r.Status == "Locked"),
                   s => s.RunId, r => r.Id, (s, r) => s)
             .ToListAsync(cancellationToken);
+
+        var openingBalancesByEmployee = await _db.PayrollOpeningBalances.AsNoTracking()
+            .Where(x => x.TenantId == tenantId
+                && x.Year == run.Year
+                && employeeIdsForRun.Contains(x.EmployeeId)
+                && (x.CompanyId == company.Id || x.CompanyId == null))
+            .GroupBy(x => x.EmployeeId)
+            .ToDictionaryAsync(x => x.Key, x => x.ToList(), cancellationToken);
 
         // COMPLIANCE: Load payroll profiles for MolId / RoutingCode (keyed by Employee.Id)
         var payrollProfiles = await _db.EmployeePayrollProfiles.AsNoTracking()
@@ -427,6 +706,9 @@ public class PayrollController : ControllerBase
                 .Sum(b => b.GrossBonusAmount);
             // Net bonus earnings added to employee take-home this period.
             decimal totalBonusNet = empBonuses.Sum(b => b.BonusAmount);
+            var empAdjustments = approvedAdjustments.Where(a => a.EmployeeId == e.Id).ToList();
+            var adjustmentEarnings = empAdjustments.Where(a => a.Amount > 0m).Sum(a => a.Amount);
+            var adjustmentDeductions = Math.Abs(empAdjustments.Where(a => a.Amount < 0m).Sum(a => a.Amount));
 
             // Statutory deduction via country pack — rates from tenant-overridable StatutoryRule rows.
             // GosiCalculationService is retained for parity testing; it is no longer called in the run path.
@@ -449,15 +731,16 @@ public class PayrollController : ControllerBase
             var advEmi     = empAdv.Sum(a => Math.Min(a.InstallmentAmount, a.OutstandingBalance));
             var totalLoanDeduction = Math.Round(loanEmi + advEmi, 2);
 
-            var deductions = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction;
+            var deductions = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction + adjustmentDeductions;
             // C3: net salary cannot be negative (GCC labour law); engine Rule 3 will flag this.
-            var netSalary = Math.Max(0m, gross + overtimePay + totalBonusNet - deductions);
+            var netSalary = Math.Max(0m, gross + overtimePay + totalBonusNet + adjustmentEarnings - deductions);
 
             // COMPLIANCE: YTD — sum all locked slips for this employee earlier in the same year
             var empYtdSlips = ytdSlips.Where(s => s.EmployeeId == e.Id).ToList();
-            var ytdGross    = empYtdSlips.Sum(s => s.GrossSalary);
-            var ytdDeduct   = empYtdSlips.Sum(s => s.Deductions);
-            var ytdNet      = empYtdSlips.Sum(s => s.NetSalary);
+            openingBalancesByEmployee.TryGetValue(e.Id, out var openingBalances);
+            var ytdGross    = empYtdSlips.Sum(s => s.GrossSalary) + SumOpeningBalance(openingBalances, "YTD_GROSS", "GROSS", "EARNINGS");
+            var ytdDeduct   = empYtdSlips.Sum(s => s.Deductions) + SumOpeningBalance(openingBalances, "YTD_DEDUCTIONS", "YTD_DEDUCTION", "DEDUCTIONS", "DEDUCTION");
+            var ytdNet      = empYtdSlips.Sum(s => s.NetSalary) + SumOpeningBalance(openingBalances, "YTD_NET", "NET");
 
             var slip = new PayrollSlip
             {
@@ -470,14 +753,14 @@ public class PayrollController : ControllerBase
                 BasicSalary = basic,
                 HousingAllowance = housing,
                 TransportAllowance = transport,
-                OtherAllowances = otherAllowances + overtimePay + totalBonusNet,
-                GrossSalary = gross + overtimePay + totalBonusNet,
+                OtherAllowances = otherAllowances + overtimePay + totalBonusNet + adjustmentEarnings,
+                GrossSalary = gross + overtimePay + totalBonusNet + adjustmentEarnings,
                 Deductions = deductions,
                 NetSalary = netSalary,
                 EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
                 EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
-                YtdGross = ytdGross + gross + overtimePay + totalBonusNet,
+                YtdGross = ytdGross + gross + overtimePay + totalBonusNet + adjustmentEarnings,
                 YtdDeductions = ytdDeduct + deductions,
                 YtdNet = ytdNet + netSalary,
                 Status = "Draft",
@@ -488,6 +771,8 @@ public class PayrollController : ControllerBase
             // Bonus earning lines (one per bonus in the batch, gross amount for GL expense tracking).
             foreach (var bonus in empBonuses)
                 AddEarning(tenantId, id, e.Id, $"BONUS_{bonus.BonusTypeName.ToUpperInvariant().Replace(' ', '_')}", bonus.BonusTypeName, bonus.GrossBonusAmount, "Bonus");
+            foreach (var adjustment in empAdjustments.Where(a => a.Amount > 0m))
+                AddEarning(tenantId, id, e.Id, $"ADJ_{NormalizeCode(adjustment.AdjustmentType)}", AdjustmentLabel(adjustment), adjustment.Amount, "Adjustment");
             AddEarning(tenantId, id, e.Id, "BASIC", "Basic salary", basic, "Salary");
             if (housing > 0) AddEarning(tenantId, id, e.Id, "HOUSING", "Housing allowance", housing, "Salary");
             if (transport > 0) AddEarning(tenantId, id, e.Id, "TRANSPORT", "Transport allowance", transport, "Salary");
@@ -509,6 +794,8 @@ public class PayrollController : ControllerBase
             if (leaveDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "LEAVE", "Leave deduction", leaveDeduction, "Leave");
             if (loanEmi > 0) AddDeduction(tenantId, company.Id, id, e.Id, "LOAN_EMI", "Loan instalment", loanEmi, "Loan");
             if (advEmi > 0) AddDeduction(tenantId, company.Id, id, e.Id, "ADVANCE_EMI", "Salary advance repayment", advEmi, "Loan");
+            foreach (var adjustment in empAdjustments.Where(a => a.Amount < 0m))
+                AddDeduction(tenantId, company.Id, id, e.Id, $"ADJ_{NormalizeCode(adjustment.AdjustmentType)}", AdjustmentLabel(adjustment), Math.Abs(adjustment.Amount), "Adjustment");
             // Statutory deduction lines from pack — employee contributions reduce net pay.
             // Code/Label come from the pack: "GOSI-ANN-EE" / "GOSI Annuities (Employee)" for KSA,
             // "GPSSA-EE" / "GPSSA (Employee)" for UAE, "GRSIA-EE" / "GRSIA (Employee)" for Qatar.
@@ -534,6 +821,9 @@ public class PayrollController : ControllerBase
         await _db.OvertimePayrollImpacts
             .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+        await _db.PayrollAdjustments
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.Status == "Approved" && employeeIdsForRun.Contains(x.EmployeeId))
+            .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
 
         // COMPLIANCE: Update loan/advance outstanding balances after payroll deduction.
         // Re-load mutable copies for update (AsNoTracking above was read-only).
@@ -578,10 +868,12 @@ public class PayrollController : ControllerBase
             _db.PayrollValidationResults.Add(r);
 
         var activeLoansMutable = await _db.EmployeeLoans
-            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0)
+            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
+                && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd))
             .ToListAsync(cancellationToken);
         var activeAdvMutable = await _db.SalaryAdvances
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0)
+            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
+                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
             .ToListAsync(cancellationToken);
 
         foreach (var loan in activeLoansMutable)
@@ -589,9 +881,12 @@ public class PayrollController : ControllerBase
             var deducted = Math.Min(loan.InstallmentAmount, loan.OutstandingBalance);
             if (deducted <= 0) continue;
             loan.OutstandingBalance -= deducted;
+            loan.TotalRepaid += deducted;
             if (loan.OutstandingBalance <= 0) loan.Status = "Closed";
             // Record the paid installment
-            var inst = await _db.LoanInstallments.FirstOrDefaultAsync(i => i.LoanId == loan.Id && i.Status == "Pending", cancellationToken);
+            var inst = await _db.LoanInstallments
+                .OrderBy(i => i.DueDate)
+                .FirstOrDefaultAsync(i => i.LoanId == loan.Id && i.Status == "Pending" && i.DueDate <= periodEnd, cancellationToken);
             if (inst is not null) { inst.Status = "Paid"; inst.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); inst.PayrollRunId = id; inst.AmountPaid = deducted; }
         }
         foreach (var adv in activeAdvMutable)
@@ -599,7 +894,12 @@ public class PayrollController : ControllerBase
             var deducted = Math.Min(adv.InstallmentAmount, adv.OutstandingBalance);
             if (deducted <= 0) continue;
             adv.OutstandingBalance -= deducted;
+            adv.TotalRepaid += deducted;
             if (adv.OutstandingBalance <= 0) adv.Status = "Closed";
+            var inst = await _db.AdvanceInstallments
+                .OrderBy(i => i.DueDate)
+                .FirstOrDefaultAsync(i => i.AdvanceId == adv.Id && i.Status == "Pending" && i.DueDate <= periodEnd, cancellationToken);
+            if (inst is not null) { inst.Status = "Paid"; inst.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); inst.PayrollRunId = id; inst.AmountPaid = deducted; }
         }
 
         // BONUS: mark consumed bonuses as PaidInPayroll so MarkBatchPaid() cannot double-pay.
@@ -640,12 +940,13 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("runs/{id:guid}/lock")]
+    [Authorize(Roles = "Admin,Finance Controller,Finance Approver")]
     public async Task<IActionResult> Lock(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
         if (run is null) return NotFound();
-        if (run.Status is not ("Processed" or "Approved" or "PendingFinanceReview")) return BadRequest(new { message = "Only processed, pending finance review, or approved runs can be locked." });
+        if (run.Status != "Approved") return BadRequest(new { message = "Only approved payroll runs can be locked." });
 
         // Block-on-error: any unresolved ERROR-severity validation result blocks locking.
         var blockingErrors = await _db.PayrollValidationResults.AsNoTracking()
@@ -695,6 +996,8 @@ public class PayrollController : ControllerBase
 
         run.Status = "Locked";
         run.LockedAtUtc = DateTime.UtcNow;
+        run.ErpPostingStatus = ErpPostingStatuses.ReadyForErp;
+        run.ErpPostingStatusChangedAtUtc = DateTime.UtcNow;
         await _db.PayrollSlips.Where(s => s.RunId == id).ExecuteUpdateAsync(s => s.SetProperty(p => p.Status, "Final"), cancellationToken);
         await _db.Payslips.Where(s => s.PayrollRunId == id && s.TenantId == tenantId).ExecuteUpdateAsync(s => s.SetProperty(p => p.IsPublishedToEss, true).SetProperty(p => p.PublishedAtUtc, DateTime.UtcNow), cancellationToken);
         await PayrollAudit("payroll.run.locked", "PayrollRun", id.ToString(), new { glPosted = !alreadyPosted, period }, cancellationToken);
@@ -774,7 +1077,10 @@ public class PayrollController : ControllerBase
             .ToListAsync(cancellationToken);
         var employeeIdsForValidation = employees.Select(e => e.Id).ToHashSet();
         var slips       = await _db.PayrollSlips.AsNoTracking().Where(s => s.TenantId == tenantId && s.RunId == id && employeeIdsForValidation.Contains(s.EmployeeId)).ToListAsync(cancellationToken);
-        var salaries    = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && employeeIdsForValidation.Contains(x.EmployeeId)).ToListAsync(cancellationToken);
+        var validationAsOf = new DateOnly(run.Year, run.Month, DateTime.DaysInMonth(run.Year, run.Month));
+        var salaries = await _db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive && x.EffectiveDate <= validationAsOf && employeeIdsForValidation.Contains(x.EmployeeId))
+            .ToListAsync(cancellationToken);
         var profiles    = await _db.EmployeePayrollProfiles.AsNoTracking().Where(p => p.TenantId == tenantId && !p.IsDeleted && employeeIdsForValidation.Contains(p.EmployeeId)).ToListAsync(cancellationToken);
         var deductions  = await _db.PayrollDeductions.AsNoTracking().Where(d => d.TenantId == tenantId && d.PayrollRunId == id && employeeIdsForValidation.Contains(d.EmployeeId)).ToListAsync(cancellationToken);
         var earnings    = await _db.PayrollEarnings.AsNoTracking().Where(e => e.TenantId == tenantId && e.PayrollRunId == id && employeeIdsForValidation.Contains(e.EmployeeId)).ToListAsync(cancellationToken);
@@ -1167,8 +1473,14 @@ public class PayrollController : ControllerBase
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (batch is null) return NotFound();
 
-        // Idempotency guard: block silent re-generation of an existing file.
-        if (await _db.WPSFileBatches.AnyAsync(x => x.TenantId == tenantId && x.PaymentBatchId == id, cancellationToken))
+        var existingWpsFiles = await _db.WPSFileBatches
+            .Where(x => x.TenantId == tenantId && x.PaymentBatchId == id)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        // Idempotency guard: block silent re-generation except after a rejected statutory filing.
+        if (existingWpsFiles.Count > 0 && batch.WpsStatus != WpsStatuses.Rejected)
             return Conflict(new
             {
                 error   = "already_generated",
@@ -1276,6 +1588,9 @@ public class PayrollController : ControllerBase
             SifFileName        = exportResult.FileName,
             GeneratedByUserId  = GetUserId(),
             FormatVersion      = exportResult.Format,   // e.g. "mudad-xml", "mohre-sif", "qcb-sif"
+            FilingStatus       = WpsStatuses.Generated,
+            ResubmissionOfWpsFileBatchId = existingWpsFiles.FirstOrDefault()?.Id,
+            ResubmissionNumber = existingWpsFiles.Count,
         };
         _db.WPSFileBatches.Add(wps);
 
@@ -1315,6 +1630,7 @@ public class PayrollController : ControllerBase
 
         batch.Status    = "FileGenerated";
         batch.WpsStatus = WpsStatuses.Generated;
+        batch.WpsStatusChangedAtUtc = DateTime.UtcNow;
 
         await PayrollAudit("payroll.wps.generated", "WPSFileBatch", wps.Id.ToString(), new
         {
@@ -1359,6 +1675,24 @@ public class PayrollController : ControllerBase
 
         var from = batch.WpsStatus;
 
+        var latestFile = await _db.WPSFileBatches
+            .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batchId)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (latestFile is null)
+            return BadRequest(new { error = "wps_file_missing", message = "A generated WPS file is required before statutory filing status can be changed." });
+
+        if (req.Status is WpsStatuses.Submitted && string.IsNullOrWhiteSpace(req.Reference))
+            return BadRequest(new { error = "submission_reference_required", message = "A statutory submission reference is required when marking WPS as Submitted." });
+
+        if (req.Status is WpsStatuses.Accepted && string.IsNullOrWhiteSpace(req.Reference))
+            return BadRequest(new { error = "acknowledgement_reference_required", message = "An acknowledgement reference is required when marking WPS as Accepted." });
+
+        if (req.Status is WpsStatuses.Rejected && string.IsNullOrWhiteSpace(req.Notes))
+            return BadRequest(new { error = "rejection_reason_required", message = "A rejection reason is required when marking WPS as Rejected." });
+
         // Enforce lifecycle: only allowed transitions are accepted.
         if (!WpsTransitions.IsAllowed(from, req.Status))
         {
@@ -1372,10 +1706,77 @@ public class PayrollController : ControllerBase
         }
 
         batch.WpsStatus = req.Status;
+        batch.WpsStatusChangedAtUtc = DateTime.UtcNow;
+        latestFile.FilingStatus = req.Status;
+        if (req.Status is WpsStatuses.Submitted)
+        {
+            batch.WpsSubmissionReference = req.Reference;
+            latestFile.SubmissionReference = req.Reference;
+            latestFile.SubmittedAtUtc = DateTime.UtcNow;
+        }
+        else if (req.Status is WpsStatuses.Accepted)
+        {
+            batch.WpsSubmissionReference = req.Reference;
+            latestFile.SubmissionReference = req.Reference;
+            latestFile.AcknowledgedAtUtc = DateTime.UtcNow;
+        }
+        else if (req.Status is WpsStatuses.Rejected)
+        {
+            batch.WpsRejectionReason = req.Notes;
+            latestFile.RejectionReason = req.Notes;
+            latestFile.RejectedAtUtc = DateTime.UtcNow;
+        }
         await PayrollAudit("payroll.wps.status_changed", "PayrollPaymentBatch", batchId.ToString(),
-            new { from, to = req.Status, notes = req.Notes }, cancellationToken);
+            new { from, to = req.Status, reference = req.Reference, notes = req.Notes }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         return Ok(new { batchId, wpsStatus = batch.WpsStatus });
+    }
+
+    [HttpPost("runs/{id:guid}/erp-posting-status")]
+    public async Task<IActionResult> UpdateErpPostingStatus(Guid id, [FromBody] ErpPostingStatusRequest req, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("payroll.export")) return Forbid();
+        if (!ErpPostingStatuses.All.Contains(req.Status))
+            return BadRequest(new { error = "invalid_status", message = $"Status must be one of: {string.Join(", ", ErpPostingStatuses.All)}." });
+
+        var tenantId = GetTenantId();
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (run is null) return NotFound();
+
+        var glEntries = await _db.FinanceGlEntries
+            .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id)
+            .ToListAsync(cancellationToken);
+        if (glEntries.Count == 0)
+            return BadRequest(new { error = "gl_not_posted", message = "Balanced payroll GL must be persisted before ERP posting status can change." });
+
+        var from = run.ErpPostingStatus;
+        if (!ErpPostingTransitions.IsAllowed(from, req.Status))
+            return BadRequest(new { error = "invalid_transition", message = $"Cannot transition ERP posting status from '{from}' to '{req.Status}'.", allowedTransitions = ErpPostingTransitions.AllowedFrom(from) });
+
+        if (req.Status is ErpPostingStatuses.Exported or ErpPostingStatuses.Posted)
+        {
+            if (string.IsNullOrWhiteSpace(req.Reference))
+                return BadRequest(new { error = "erp_reference_required", message = "ERP document/export reference is required for this status." });
+        }
+        if (req.Status is ErpPostingStatuses.Rejected && string.IsNullOrWhiteSpace(req.Notes))
+            return BadRequest(new { error = "erp_rejection_reason_required", message = "ERP rejection reason is required." });
+
+        run.ErpPostingStatus = req.Status;
+        run.ErpPostingStatusChangedAtUtc = DateTime.UtcNow;
+        run.ErpPostingReference = req.Reference;
+        run.ErpPostingFailureReason = req.Status == ErpPostingStatuses.Rejected ? req.Notes : null;
+        foreach (var entry in glEntries)
+        {
+            entry.ErpPostingStatus = req.Status;
+            entry.ErpStatusChangedAtUtc = DateTime.UtcNow;
+            entry.ErpDocumentNumber = req.Reference;
+            entry.ErpRejectionReason = req.Status == ErpPostingStatuses.Rejected ? req.Notes : null;
+        }
+
+        await PayrollAudit("payroll.erp_posting.status_changed", "PayrollRun", id.ToString(),
+            new { from, to = req.Status, reference = req.Reference, notes = req.Notes }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new { runId = id, erpPostingStatus = run.ErpPostingStatus, reference = run.ErpPostingReference });
     }
 
     /// <summary>
@@ -1651,14 +2052,14 @@ public class PayrollController : ControllerBase
         if (gcc is null || !gcc.EosbEnabled)
             return BadRequest(new { message = "EOSB is not enabled for this tenant. Enable it in GCC Settings first." });
 
+        var calcDate = req.AsOfDate ?? DateTime.UtcNow;
         var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.IsActive)
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.IsActive && x.EffectiveDate <= DateOnly.FromDateTime(calcDate))
             .OrderByDescending(x => x.EffectiveDate)
             .FirstOrDefaultAsync(cancellationToken);
 
         var eligibleSalary = salary?.BasicSalary ?? employee.Salary ?? 0m;
         var joiningDate = employee.JoiningDate;
-        var calcDate = req.AsOfDate ?? DateTime.UtcNow;
         var totalYears = (calcDate - joiningDate).Days / 365.0;
         var minYears = gcc.EosbMinYears > 0 ? gcc.EosbMinYears : 1;
 
@@ -1900,7 +2301,11 @@ public class PayrollController : ControllerBase
 
     // ── Salary Structure Export / Import / Template ───────────────────────────
     private static readonly string[] SalaryStructureCsvHeaders =
-        { "Code", "Name", "Currency", "EffectiveDate" };
+        {
+            "CompanyLegalName", "Code", "Name", "Currency", "EffectiveDate", "IsActive",
+            "ComponentCode", "ComponentName", "ComponentType", "CalculationType",
+            "Amount", "Percentage", "IsTaxable", "ComponentIsActive"
+        };
 
     [HttpGet("structures/export")]
     [HttpGet("salary-structures/export")]
@@ -1910,11 +2315,36 @@ public class PayrollController : ControllerBase
         var structures = await _db.SalaryStructures
             .AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
-            .OrderBy(x => x.Name)
+            .GroupJoin(_db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && !c.IsDeleted),
+                s => s.CompanyId, c => c.Id, (s, companies) => new { s, company = companies.FirstOrDefault() })
+            .OrderBy(x => x.s.Name)
             .ToListAsync(cancellationToken);
-        var rows = structures.Select(s => (IReadOnlyList<object?>)new object?[]
+        var structureIds = structures.Select(x => x.s.Id).ToList();
+        var components = await _db.SalaryComponents
+            .AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.SalaryStructureId.HasValue && structureIds.Contains(c.SalaryStructureId.Value))
+            .OrderBy(c => c.Code)
+            .ToListAsync(cancellationToken);
+        var componentsByStructure = components
+            .GroupBy(c => c.SalaryStructureId!.Value)
+            .ToDictionary(g => g.Key, g => g.ToList());
+        var rows = structures.SelectMany(x =>
         {
-            s.Code, s.Name, s.Currency, s.EffectiveDate.ToString("yyyy-MM-dd")
+            var components = componentsByStructure.GetValueOrDefault(x.s.Id);
+            if (components is null || components.Count == 0)
+                return [(IReadOnlyList<object?>)new object?[]
+                {
+                    x.company?.LegalNameEn ?? string.Empty, x.s.Code, x.s.Name, x.s.Currency,
+                    x.s.EffectiveDate.ToString("yyyy-MM-dd"), x.s.IsActive ? "true" : "false",
+                    string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty
+                }];
+            return components.Select(c => (IReadOnlyList<object?>)new object?[]
+            {
+                x.company?.LegalNameEn ?? string.Empty, x.s.Code, x.s.Name, x.s.Currency,
+                x.s.EffectiveDate.ToString("yyyy-MM-dd"), x.s.IsActive ? "true" : "false",
+                c.Code, c.Name, c.ComponentType, c.CalculationType, c.Amount, c.Percentage,
+                c.IsTaxable ? "true" : "false", c.IsActive ? "true" : "false"
+            });
         });
         var csv = Csv.Build(SalaryStructureCsvHeaders, rows);
         Response.Headers["Content-Disposition"] = "attachment; filename=salary_structures_export.csv";
@@ -1938,26 +2368,83 @@ public class PayrollController : ControllerBase
         int created = 0, skipped = 0;
         var errors = new List<string>();
         var rowNum = 1;
+        var companiesByName = await _db.Companies
+            .AsNoTracking()
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
+            .ToDictionaryAsync(c => c.LegalNameEn.ToUpperInvariant(), cancellationToken);
+        var touchedStructureIds = new HashSet<Guid>();
+        var batchStructures = new Dictionary<(Guid? CompanyId, string Code), SalaryStructure>();
         foreach (var row in rows)
         {
             rowNum++;
             var code = row.GetValueOrDefault("Code", string.Empty).Trim();
             var name = row.GetValueOrDefault("Name", string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name)) { skipped++; continue; }
-            if (await _db.SalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.Code == code && !x.IsDeleted, cancellationToken))
-            { skipped++; errors.Add($"Row {rowNum}: Code '{code}' already exists."); continue; }
+            var companyName = row.GetValueOrDefault("CompanyLegalName", string.Empty).Trim();
+            Guid? companyId = null;
+            if (!string.IsNullOrWhiteSpace(companyName))
+            {
+                if (!companiesByName.TryGetValue(companyName.ToUpperInvariant(), out var company))
+                { skipped++; errors.Add($"Row {rowNum}: CompanyLegalName '{companyName}' not found."); continue; }
+                companyId = company.Id;
+            }
             DateOnly.TryParse(row.GetValueOrDefault("EffectiveDate", string.Empty), out var effectiveDate);
             if (effectiveDate == default) effectiveDate = DateOnly.FromDateTime(DateTime.UtcNow);
-            _db.SalaryStructures.Add(new SalaryStructure
+            var key = (companyId, code.ToUpperInvariant());
+            if (!batchStructures.TryGetValue(key, out var structure))
             {
-                TenantId = tenantId,
-                Code = code,
-                Name = name,
-                Currency = row.GetValueOrDefault("Currency", "USD"),
-                EffectiveDate = effectiveDate,
-                CreatedBy = GetUserId()
-            });
-            created++;
+                structure = await _db.SalaryStructures
+                    .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.CompanyId == companyId && x.Code == code && !x.IsDeleted, cancellationToken);
+                if (structure is not null)
+                    batchStructures[key] = structure;
+            }
+            if (structure is null)
+            {
+                structure = new SalaryStructure
+                {
+                    TenantId = tenantId,
+                    CompanyId = companyId,
+                    Code = code,
+                    CreatedBy = GetUserId()
+                };
+                _db.SalaryStructures.Add(structure);
+                batchStructures[key] = structure;
+                created++;
+            }
+
+            structure.Name = name;
+            structure.Currency = row.GetValueOrDefault("Currency", "USD").Trim();
+            if (string.IsNullOrWhiteSpace(structure.Currency)) structure.Currency = await ResolveCurrencyAsync(tenantId, cancellationToken);
+            structure.EffectiveDate = effectiveDate;
+            structure.IsActive = !row.TryGetValue("IsActive", out var activeRaw) || !string.Equals(activeRaw, "false", StringComparison.OrdinalIgnoreCase);
+
+            if (touchedStructureIds.Add(structure.Id))
+            {
+                var existingComponents = await _db.SalaryComponents
+                    .Where(c => c.TenantId == tenantId && c.SalaryStructureId == structure.Id)
+                    .ToListAsync(cancellationToken);
+                _db.SalaryComponents.RemoveRange(existingComponents);
+            }
+
+            var componentCode = row.GetValueOrDefault("ComponentCode", string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(componentCode))
+            {
+                decimal.TryParse(row.GetValueOrDefault("Amount", "0"), out var amount);
+                decimal.TryParse(row.GetValueOrDefault("Percentage", "0"), out var percentage);
+                _db.SalaryComponents.Add(new SalaryComponent
+                {
+                    TenantId = tenantId,
+                    SalaryStructureId = structure.Id,
+                    Code = componentCode,
+                    Name = row.GetValueOrDefault("ComponentName", componentCode).Trim(),
+                    ComponentType = row.GetValueOrDefault("ComponentType", "Earning").Trim(),
+                    CalculationType = row.GetValueOrDefault("CalculationType", "Fixed").Trim(),
+                    Amount = amount,
+                    Percentage = percentage,
+                    IsTaxable = row.TryGetValue("IsTaxable", out var taxableRaw) && string.Equals(taxableRaw, "true", StringComparison.OrdinalIgnoreCase),
+                    IsActive = !row.TryGetValue("ComponentIsActive", out var componentActiveRaw) || !string.Equals(componentActiveRaw, "false", StringComparison.OrdinalIgnoreCase),
+                });
+            }
         }
         await _db.SaveChangesAsync(cancellationToken);
         return Ok(new { received = rows.Count, created, skipped, errors = errors.Take(20) });
@@ -2160,7 +2647,7 @@ public class PayrollController : ControllerBase
         if (employee is null) return NotFound(new { message = "Employee not found." });
 
         var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.IsActive)
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.IsActive && x.EffectiveDate <= req.LastWorkingDay)
             .OrderByDescending(x => x.EffectiveDate)
             .FirstOrDefaultAsync(cancellationToken);
         var basicSalary    = salary?.BasicSalary ?? employee.Salary ?? 0m;
@@ -2501,7 +2988,7 @@ public class PayrollController : ControllerBase
         var allStructures = await _db.SalaryStructures
             .AsNoTracking()
             .Where(s => s.TenantId == tenantId && !s.IsDeleted)
-            .ToDictionaryAsync(s => s.Code, cancellationToken);
+            .ToListAsync(cancellationToken);
 
         foreach (var row in rows)
         {
@@ -2511,8 +2998,17 @@ public class PayrollController : ControllerBase
             if (string.IsNullOrWhiteSpace(empCode)) { skipped++; continue; }
             if (!allEmployees.TryGetValue(empCode, out var employee))
             { errors.Add($"Row {rowNum}: Employee code '{empCode}' not found."); skipped++; continue; }
-            if (!string.IsNullOrWhiteSpace(structCode) && !allStructures.TryGetValue(structCode, out _))
-            { errors.Add($"Row {rowNum}: Salary structure code '{structCode}' not found."); skipped++; continue; }
+            if (string.IsNullOrWhiteSpace(structCode))
+            { errors.Add($"Row {rowNum}: SalaryStructureCode is required."); skipped++; continue; }
+            var structure = allStructures
+                .Where(s => string.Equals(s.Code, structCode, StringComparison.OrdinalIgnoreCase)
+                            && (s.CompanyId == employee.CompanyId || s.CompanyId == null))
+                .OrderByDescending(s => s.CompanyId == employee.CompanyId)
+                .FirstOrDefault();
+            if (structure is null)
+            { errors.Add($"Row {rowNum}: Salary structure code '{structCode}' not found for employee legal entity."); skipped++; continue; }
+            if (structure.CompanyId.HasValue && employee.CompanyId.HasValue && structure.CompanyId != employee.CompanyId)
+            { errors.Add($"Row {rowNum}: Salary structure belongs to a different legal entity than the employee."); skipped++; continue; }
             if (!decimal.TryParse(row.GetValueOrDefault("BasicSalary", "0"), out var basic) || basic <= 0)
             { errors.Add($"Row {rowNum}: BasicSalary must be a positive number."); skipped++; continue; }
 
@@ -2525,32 +3021,56 @@ public class PayrollController : ControllerBase
             DateOnly.TryParse(row.GetValueOrDefault("EffectiveDate", string.Empty), out var effectiveDate);
             if (effectiveDate == default) effectiveDate = DateOnly.FromDateTime(DateTime.UtcNow);
             var currency = row.GetValueOrDefault("Currency", "USD");
-            var structure = !string.IsNullOrWhiteSpace(structCode) ? allStructures[structCode] : null;
+            var gross = basic + housing + transport + food + mobile + other - deduction;
+            if (employee.GradeId.HasValue)
+            {
+                var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == employee.GradeId && !g.IsDeleted, cancellationToken);
+                if (grade is not null && grade.MinSalary > 0 && gross < grade.MinSalary)
+                { errors.Add($"Row {rowNum}: Salary package is below grade {grade.Code} minimum {grade.MinSalary:N2} {grade.Currency}."); skipped++; continue; }
+                if (grade is not null && grade.MaxSalary > 0 && gross > grade.MaxSalary)
+                { errors.Add($"Row {rowNum}: Salary package exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}."); skipped++; continue; }
+            }
 
-            await _db.EmployeeSalaryStructures
-                .Where(s => s.TenantId == tenantId && s.EmployeeId == employee.Id && s.IsActive)
-                .ExecuteUpdateAsync(s => s.SetProperty(p => p.IsActive, false), cancellationToken);
-
-            _db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+            var existing = await _db.EmployeeSalaryStructures.FirstOrDefaultAsync(s =>
+                s.TenantId == tenantId
+                && s.EmployeeId == employee.Id
+                && s.EffectiveDate == effectiveDate, cancellationToken);
+            var isNew = existing is null;
+            existing ??= new EmployeeSalaryStructure
             {
                 TenantId = tenantId,
                 EmployeeId = employee.Id,
-                SalaryStructureId = structure?.Id ?? Guid.Empty,
-                BasicSalary = basic,
-                HousingAllowance = housing,
-                TransportAllowance = transport,
-                FoodAllowance = food,
-                MobileAllowance = mobile,
-                OtherAllowance = other,
-                FixedDeduction = deduction,
                 EffectiveDate = effectiveDate,
-                Currency = currency,
                 CreatedBy = GetUserId(),
-            });
-            created++;
+            };
+
+            existing.SalaryStructureId = structure.Id;
+            existing.BasicSalary = basic;
+            existing.HousingAllowance = housing;
+            existing.TransportAllowance = transport;
+            existing.FoodAllowance = food;
+            existing.MobileAllowance = mobile;
+            existing.OtherAllowance = other;
+            existing.FixedDeduction = deduction;
+            existing.Currency = currency;
+            existing.IsActive = true;
+
+            await _db.EmployeeSalaryStructures
+                .Where(s => s.TenantId == tenantId && s.EmployeeId == employee.Id && s.IsActive && s.EffectiveDate == effectiveDate && s.Id != existing.Id)
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.IsActive, false), cancellationToken);
+
+            if (isNew)
+            {
+                _db.EmployeeSalaryStructures.Add(existing);
+                created++;
+            }
+            else
+            {
+                updated++;
+            }
         }
 
-        await PayrollAudit("payroll.employee_salary.imported", "EmployeeSalary", "bulk", new { received = rows.Count, created, skipped, errors = errors.Count }, cancellationToken);
+        await PayrollAudit("payroll.employee_salary.imported", "EmployeeSalary", "bulk", new { received = rows.Count, created, updated, skipped, errors = errors.Count }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         return Ok(new { received = rows.Count, created, updated, skipped, errors = errors.Take(20) });
     }
@@ -2852,15 +3372,88 @@ public class PayrollController : ControllerBase
     private string GetUserName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "system";
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+    private static decimal SumOpeningBalance(IEnumerable<PayrollOpeningBalance>? balances, params string[] balanceTypes)
+    {
+        if (balances is null) return 0m;
+        var accepted = balanceTypes.Select(NormalizeCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return balances
+            .Where(x => accepted.Contains(NormalizeCode(x.BalanceType)))
+            .Sum(x => x.Amount);
+    }
+
+    private static string NormalizeCode(string value)
+    {
+        var chars = (value ?? string.Empty).Trim().ToUpperInvariant()
+            .Select(ch => char.IsLetterOrDigit(ch) ? ch : '_')
+            .ToArray();
+        var code = new string(chars).Trim('_');
+        return string.IsNullOrWhiteSpace(code) ? "PAYROLL_ADJUSTMENT" : code;
+    }
+    private static string AdjustmentLabel(PayrollAdjustment adjustment)
+        => string.IsNullOrWhiteSpace(adjustment.Reason)
+            ? $"Payroll adjustment - {adjustment.AdjustmentType}"
+            : $"Payroll adjustment - {adjustment.AdjustmentType}: {adjustment.Reason}";
 }
 
 public record CreatePayrollRunRequest(int Year, int Month, Guid? CompanyId = null);
-public record SalaryStructureRequest(string Code, string Name, string? Currency, DateOnly EffectiveDate, IReadOnlyCollection<SalaryComponentRequest>? Components, Guid? CompanyId = null);
-public record SalaryComponentRequest(string Code, string Name, string ComponentType, string CalculationType, decimal Amount, decimal Percentage, bool IsTaxable);
+public record SalaryStructureRequest(
+    string Code,
+    string Name,
+    string? Currency,
+    DateOnly EffectiveDate,
+    IReadOnlyCollection<SalaryComponentRequest>? Components,
+    Guid? CompanyId = null,
+    bool IsActive = true,
+    decimal MinGrossSalary = 0m,
+    decimal MaxGrossSalary = 0m,
+    decimal MinBasicSalary = 0m,
+    decimal MaxBasicSalary = 0m,
+    IReadOnlyCollection<Guid>? EligibleGradeIds = null,
+    IReadOnlyCollection<Guid>? EligibleDesignationIds = null);
+public record SalaryStructureDto(
+    Guid Id,
+    Guid? CompanyId,
+    string? CompanyName,
+    string Code,
+    string Name,
+    string Currency,
+    DateOnly EffectiveDate,
+    decimal MinGrossSalary,
+    decimal MaxGrossSalary,
+    decimal MinBasicSalary,
+    decimal MaxBasicSalary,
+    IReadOnlyCollection<Guid> EligibleGradeIds,
+    IReadOnlyCollection<Guid> EligibleDesignationIds,
+    int VersionNumber,
+    Guid? PreviousVersionId,
+    bool IsActive,
+    DateTime CreatedAtUtc,
+    int AssignedEmployeeCount,
+    IReadOnlyList<SalaryComponentDto> Components)
+{
+    public static SalaryStructureDto Project(SalaryStructure s, string? companyName, IReadOnlyList<SalaryComponentDto> components, int assignedEmployeeCount) =>
+        new(s.Id, s.CompanyId, companyName, s.Code, s.Name, s.Currency, s.EffectiveDate,
+            s.MinGrossSalary, s.MaxGrossSalary, s.MinBasicSalary, s.MaxBasicSalary,
+            ReadGuidList(s.EligibleGradeIdsJson), ReadGuidList(s.EligibleDesignationIdsJson),
+            s.VersionNumber, s.PreviousVersionId, s.IsActive, s.CreatedAtUtc, assignedEmployeeCount, components);
+
+    private static IReadOnlyCollection<Guid> ReadGuidList(string? json)
+    {
+        try { return string.IsNullOrWhiteSpace(json) ? new List<Guid>() : JsonSerializer.Deserialize<List<Guid>>(json) ?? new List<Guid>(); }
+        catch { return new List<Guid>(); }
+    }
+}
+public record SalaryComponentDto(Guid Id, Guid? SalaryStructureId, string Code, string Name, string ComponentType, string CalculationType, decimal Amount, decimal Percentage, bool IsTaxable, bool IsActive)
+{
+    public static SalaryComponentDto Project(SalaryComponent c) =>
+        new(c.Id, c.SalaryStructureId, c.Code, c.Name, c.ComponentType, c.CalculationType, c.Amount, c.Percentage, c.IsTaxable, c.IsActive);
+}
+public record SalaryComponentRequest(string Code, string Name, string ComponentType, string CalculationType, decimal Amount, decimal Percentage, bool IsTaxable, bool IsActive = true);
 public record EmployeeSalaryStructureRequest(int EmployeeId, Guid SalaryStructureId, decimal BasicSalary, decimal HousingAllowance, decimal TransportAllowance, decimal FoodAllowance, decimal MobileAllowance, decimal OtherAllowance, decimal FixedDeduction, DateOnly EffectiveDate, string? Currency);
 public record PayrollDecisionRequest(string? Notes);
 public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency);
-public record WpsStatusRequest(string Status, string? Notes);
+public record WpsStatusRequest(string Status, string? Notes, string? Reference = null);
+public record ErpPostingStatusRequest(string Status, string? Reference = null, string? Notes = null);
 public record PayrollGroupRequest(string Code, string Name, string? Currency);
 public record ImportSalaryStructuresRequest(string CsvContent);
 public record EosbCalculationRequest(int EmployeeId, DateTime? AsOfDate, string? TerminationReason = null);

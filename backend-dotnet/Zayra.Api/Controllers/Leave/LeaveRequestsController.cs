@@ -182,6 +182,8 @@ public class LeaveRequestsController : ControllerBase
             return Forbid();
 
         var approverId = this.GetUserId() ?? Guid.Empty;
+        if (!await CanDecideResolvedLeaveStepAsync(tenantId.Value, id, approverId, ct))
+            return Forbid();
         var approverName = User.Identity?.Name ?? approverId.ToString();
 
         try
@@ -220,6 +222,8 @@ public class LeaveRequestsController : ControllerBase
             return Forbid();
 
         var approverId = this.GetUserId() ?? Guid.Empty;
+        if (!await CanDecideResolvedLeaveStepAsync(tenantId.Value, id, approverId, ct))
+            return Forbid();
         var approverName = User.Identity?.Name ?? approverId.ToString();
 
         try
@@ -349,7 +353,7 @@ public class LeaveRequestsController : ControllerBase
 
     // ── Export ───────────────────────────────────────────────────────────────
     private static readonly string[] LeaveRequestCsvHeaders =
-        { "EmployeeCode", "EmployeeName", "LeaveType", "StartDate", "EndDate", "Days", "Status", "Reason" };
+        { "EmployeeCode", "EmployeeName", "LeaveTypeCode", "LeaveType", "StartDate", "EndDate", "DayType", "HoursRequested", "IsEmergency", "AttachmentPath", "Days", "Status", "Reason" };
 
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
@@ -360,18 +364,123 @@ public class LeaveRequestsController : ControllerBase
 
         var requests = await _db.LeaveRequests
             .Where(r => r.TenantId == tenantId)
-            .OrderByDescending(r => r.CreatedAtUtc)
+            .Join(_db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted),
+                r => r.EmployeeId, e => e.Id, (r, e) => new { r, e })
+            .GroupJoin(_db.LeaveTypes.Where(t => t.TenantId == tenantId),
+                x => x.r.LeaveTypeId, t => t.Id, (x, types) => new { x.r, x.e, leaveType = types.FirstOrDefault() })
+            .OrderByDescending(x => x.r.CreatedAtUtc)
             .ToListAsync(ct);
 
-        var rows = requests.Select(r => (IReadOnlyList<object?>)new object?[]
+        var rows = requests.Select(x => (IReadOnlyList<object?>)new object?[]
         {
-            r.EmployeeId.ToString(), r.EmployeeName, r.LeaveTypeName,
-            r.StartDate.ToString("yyyy-MM-dd"), r.EndDate.ToString("yyyy-MM-dd"),
-            r.TotalDays, r.Status, r.Reason
+            x.e.EmployeeCode, x.r.EmployeeName, x.leaveType?.Code ?? string.Empty, x.r.LeaveTypeName,
+            x.r.StartDate.ToString("yyyy-MM-dd"), x.r.EndDate.ToString("yyyy-MM-dd"),
+            x.r.DayType, x.r.HoursRequested, x.r.IsEmergency ? "true" : "false", x.r.AttachmentPath,
+            x.r.TotalDays, x.r.Status, x.r.Reason
         });
         var csv = Csv.Build(LeaveRequestCsvHeaders, rows);
         Response.Headers["Content-Disposition"] = "attachment; filename=leave_requests_export.csv";
         return Content(csv, "text/csv");
+    }
+
+    [HttpGet("import-template")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    public IActionResult ImportTemplate()
+    {
+        Response.Headers["Content-Disposition"] = "attachment; filename=leave_requests_import_template.csv";
+        return Content(Csv.Template(LeaveRequestCsvHeaders), "text/csv");
+    }
+
+    [HttpPost("import")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    public async Task<IActionResult> Import([FromBody] ImportLeaveRequestsRequest req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+
+        var rows = Csv.Parse(req.CsvContent ?? string.Empty);
+        var employees = await _db.Employees
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted)
+            .ToDictionaryAsync(e => e.EmployeeCode.ToUpperInvariant(), ct);
+        var leaveTypesByCode = await _db.LeaveTypes
+            .Where(t => t.TenantId == tenantId && t.IsActive)
+            .ToDictionaryAsync(t => t.Code.ToUpperInvariant(), ct);
+        var leaveTypesByName = await _db.LeaveTypes
+            .Where(t => t.TenantId == tenantId && t.IsActive)
+            .ToDictionaryAsync(t => t.NameEn.ToUpperInvariant(), ct);
+
+        int created = 0, skipped = 0;
+        var errors = new List<string>();
+        var rowNum = 1;
+        foreach (var row in rows)
+        {
+            rowNum++;
+            var employeeCode = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
+            var leaveTypeCode = row.GetValueOrDefault("LeaveTypeCode", string.Empty).Trim();
+            var leaveTypeName = row.GetValueOrDefault("LeaveType", string.Empty).Trim();
+
+            if (string.IsNullOrWhiteSpace(employeeCode) || !employees.TryGetValue(employeeCode.ToUpperInvariant(), out var employee))
+            { skipped++; errors.Add($"Row {rowNum}: EmployeeCode '{employeeCode}' not found."); continue; }
+
+            LeaveType? leaveType = null;
+            if (!string.IsNullOrWhiteSpace(leaveTypeCode))
+                leaveTypesByCode.TryGetValue(leaveTypeCode.ToUpperInvariant(), out leaveType);
+            if (leaveType is null && !string.IsNullOrWhiteSpace(leaveTypeName))
+                leaveTypesByName.TryGetValue(leaveTypeName.ToUpperInvariant(), out leaveType);
+            if (leaveType is null)
+            { skipped++; errors.Add($"Row {rowNum}: Leave type '{leaveTypeCode}{leaveTypeName}' not found."); continue; }
+
+            if (!DateOnly.TryParse(row.GetValueOrDefault("StartDate", string.Empty), out var startDate))
+            { skipped++; errors.Add($"Row {rowNum}: StartDate is required and must be yyyy-MM-dd."); continue; }
+            if (!DateOnly.TryParse(row.GetValueOrDefault("EndDate", string.Empty), out var endDate))
+            { skipped++; errors.Add($"Row {rowNum}: EndDate is required and must be yyyy-MM-dd."); continue; }
+            decimal.TryParse(row.GetValueOrDefault("HoursRequested", "0"), out var hours);
+
+            var request = new LeaveRequest
+            {
+                TenantId = tenantId.Value,
+                EmployeeId = employee.Id,
+                EmployeeName = employee.FullName,
+                DepartmentName = employee.Department ?? string.Empty,
+                DesignationTitle = employee.Designation ?? string.Empty,
+                LeaveTypeId = leaveType.Id,
+                LeaveTypeName = leaveType.NameEn,
+                StartDate = startDate,
+                EndDate = endDate,
+                DayType = row.GetValueOrDefault("DayType", "Full").Trim(),
+                HoursRequested = hours,
+                Reason = row.GetValueOrDefault("Reason", string.Empty).Trim(),
+                IsEmergency = row.TryGetValue("IsEmergency", out var emergencyRaw) && string.Equals(emergencyRaw, "true", StringComparison.OrdinalIgnoreCase),
+                AttachmentPath = row.GetValueOrDefault("AttachmentPath", string.Empty).Trim(),
+                PayrollImpact = leaveType.IsPaid ? "Full" : "None"
+            };
+
+            try
+            {
+                await _leaveService.SubmitRequestAsync(tenantId.Value, request, ct);
+                created++;
+            }
+            catch (InvalidOperationException ex)
+            {
+                skipped++;
+                errors.Add($"Row {rowNum}: {ex.Message}");
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { received = rows.Count, created, skipped, errors = errors.Take(30) });
+    }
+
+    private async Task<bool> CanDecideResolvedLeaveStepAsync(Guid tenantId, Guid leaveRequestId, Guid approverId, CancellationToken ct)
+    {
+        if (User.IsInRole("Admin")) return true;
+        var pendingStep = await _db.LeaveApprovals.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == leaveRequestId && a.Decision == "Pending")
+            .OrderBy(a => a.StepNumber)
+            .FirstOrDefaultAsync(ct);
+
+        if (pendingStep?.ApproverId is null) return true;
+        return pendingStep.ApproverId == approverId;
     }
 }
 
@@ -392,3 +501,4 @@ public record RejectLeaveRequestBody(string Reason);
 public record CancelLeaveRequest(string? Reason);
 public record WithdrawLeaveRequest(string? Reason);
 public record DelegateLeaveRequest(int DelegateEmployeeId, string? DelegationType, string? Notes);
+public record ImportLeaveRequestsRequest(string CsvContent);

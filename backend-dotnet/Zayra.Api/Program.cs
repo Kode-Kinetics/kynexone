@@ -37,7 +37,9 @@ using Zayra.Api.Infrastructure.Boot;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Filters;
+using Zayra.Api.Infrastructure.Operations;
 using Zayra.Api.Infrastructure.Qiwa;
+using Zayra.Api.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -87,6 +89,13 @@ builder.WebHost.UseUrls(listenUrl);
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
 builder.Services.Configure<SeedAdminOptions>(builder.Configuration.GetSection("SeedAdmin"));
+builder.Services.Configure<EntityScopeOptions>(builder.Configuration.GetSection("EntityScope"));
+builder.Services.PostConfigure<EntityScopeOptions>(options =>
+{
+    options.StrictMode = EntityScopeOptions.ResolveStrictMode(
+        builder.Environment.IsProduction(),
+        options.StrictMode);
+});
 
 builder.Services.AddControllers(options =>
 {
@@ -185,6 +194,7 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
 builder.Services.AddScoped<IMfaService, Zayra.Api.Infrastructure.Auth.MfaService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IAccessManagementService, AccessManagementService>();
+builder.Services.AddScoped<IEnterpriseIdentityService, EnterpriseIdentityService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<IEmployeeManagementService, EmployeeManagementService>();
 builder.Services.AddScoped<IOrganizationSetupService, OrganizationSetupService>();
@@ -467,6 +477,38 @@ if (app.Environment.IsDevelopment())
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapGet("/health/live", () => Results.Ok(new
+{
+    status = "live",
+    utc = DateTime.UtcNow,
+    service = "zayra-api"
+})).AllowAnonymous();
+
+app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, CancellationToken ct) =>
+{
+    var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct);
+    return evidence.Status == "ready"
+        ? Results.Ok(evidence)
+        : Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
+}).AllowAnonymous();
+
+app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config, CancellationToken ct) =>
+{
+    try
+    {
+        return Results.Ok(await ProductionReadinessEvidence.BuildTelemetryAsync(db, config, ct));
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new
+        {
+            status = "telemetry_unavailable",
+            utc = DateTime.UtcNow,
+            error = ex.Message
+        }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+}).RequireAuthorization();
+
 app.MapGet("/health", async (ZayraDbContext db) =>
 {
     // Use raw ADO.NET to bypass EF Core's retry execution strategy in the health path.
@@ -499,6 +541,7 @@ app.MapGet("/health", async (ZayraDbContext db) =>
 // for local dev convenience (it defaults false in Production).
 var isMigrateMode = args.Contains("--migrate");
 var isPurgeDemoMode = args.Contains("--purge-demo");
+var runMigrationsOnStartup = app.Configuration.GetValue<bool>("Database:RunMigrationsOnStartup");
 
 using (var scope = app.Services.CreateScope())
 {
@@ -515,10 +558,22 @@ using (var scope = app.Services.CreateScope())
         CompanyScopeBootAssertion.ResolveStrictMode(app.Environment.IsProduction()),
         logger);
 
-    // Always run migrations on startup — MigrateAsync is a no-op when schema is current.
-    logger.LogInformation("Running EF Core migrations...");
-    await dbContext.Database.MigrateAsync();
-    logger.LogInformation("EF Core migrations complete.");
+    if (isMigrateMode || runMigrationsOnStartup)
+    {
+        logger.LogInformation("Running EF Core migrations...");
+        await dbContext.Database.MigrateAsync();
+        logger.LogInformation("EF Core migrations complete.");
+    }
+    else
+    {
+        logger.LogInformation("Skipping EF Core migrations on startup. Set Database:RunMigrationsOnStartup=true or run --migrate.");
+    }
+
+    if (isMigrateMode)
+    {
+        logger.LogInformation("--migrate mode complete. Exiting.");
+        return; // exit 0 — Render one-off job succeeds
+    }
 
     // Phase 1B default-company backfill — idempotent (only touches null CompanyId rows),
     // non-fatal, and disabled via CompanyScope:Backfill=false / CompanyScope__Backfill=false.
@@ -614,11 +669,6 @@ using (var scope = app.Services.CreateScope())
             logger), logger);
     }
 
-    if (isMigrateMode)
-    {
-        logger.LogInformation("--migrate mode complete. Exiting.");
-        return; // exit 0 — Render one-off job succeeds
-    }
 }
 
 app.Run();

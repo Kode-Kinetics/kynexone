@@ -56,6 +56,58 @@ public class OnboardingController : ControllerBase
         return Ok(checklist);
     }
 
+    [HttpGet("checklists/{checklistId:guid}/template-tasks")]
+    public async Task<IActionResult> ListTemplateTasks(Guid checklistId, CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        if (!await _db.OnboardingChecklists.AnyAsync(x => x.TenantId == tid && x.Id == checklistId && !x.IsDeleted, ct))
+            return NotFound();
+
+        var items = await _db.OnboardingChecklistTemplateTasks
+            .Where(x => x.TenantId == tid && x.ChecklistId == checklistId && x.IsActive)
+            .OrderBy(x => x.OrderIndex)
+            .ThenBy(x => x.TaskTitle)
+            .ToListAsync(ct);
+        return Ok(items);
+    }
+
+    [HttpPost("checklists/{checklistId:guid}/template-tasks")]
+    [Authorize(Roles = "Admin,HR Manager")]
+    public async Task<IActionResult> UpsertTemplateTask(Guid checklistId, [FromBody] UpsertOnboardingTemplateTaskRequest req, CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        if (!await _db.OnboardingChecklists.AnyAsync(x => x.TenantId == tid && x.Id == checklistId && !x.IsDeleted, ct))
+            return NotFound();
+
+        var title = req.TaskTitle.Trim();
+        if (string.IsNullOrWhiteSpace(title)) return BadRequest("Task title is required.");
+
+        var item = await _db.OnboardingChecklistTemplateTasks.FirstOrDefaultAsync(x =>
+            x.TenantId == tid && x.ChecklistId == checklistId && x.TaskTitle == title, ct);
+        var created = item is null;
+        item ??= new OnboardingChecklistTemplateTask
+        {
+            TenantId = tid,
+            ChecklistId = checklistId,
+            CreatedAtUtc = DateTime.UtcNow,
+        };
+
+        item.TaskTitle = title;
+        item.TaskDescription = req.TaskDescription ?? string.Empty;
+        item.Category = req.Category ?? "General";
+        item.AssignedToName = req.AssignedToName ?? string.Empty;
+        item.AssignedToUserId = req.AssignedToUserId;
+        item.DueOffsetDays = req.DueOffsetDays;
+        item.OrderIndex = req.OrderIndex <= 0 ? await NextTemplateOrderAsync(tid, checklistId, ct) : req.OrderIndex;
+        item.IsMandatory = req.IsMandatory;
+        item.IsActive = req.IsActive ?? true;
+        if (!created) item.UpdatedAtUtc = DateTime.UtcNow;
+
+        if (created) _db.OnboardingChecklistTemplateTasks.Add(item);
+        await _db.SaveChangesAsync(ct);
+        return Ok(item);
+    }
+
     // ── Tasks ──────────────────────────────────────────────────────────────────
 
     // GET /api/recruitment/onboarding/tasks?employeeId=...&applicationId=...&status=...
@@ -93,12 +145,38 @@ public class OnboardingController : ControllerBase
         if (!req.EmployeeId.HasValue && !req.ApplicationId.HasValue)
             return BadRequest("Either employeeId or applicationId is required.");
 
-        // Load template tasks from checklist if provided, else from req.Tasks
         var tasks = new List<OnboardingTask>();
 
         if (req.ChecklistId.HasValue)
         {
-            // Checklist doesn't store template tasks — use req.Tasks with checklistId reference
+            if (!await _db.OnboardingChecklists.AnyAsync(x => x.TenantId == tid && x.Id == req.ChecklistId && !x.IsDeleted && x.IsActive, ct))
+                return BadRequest("Checklist is not active or does not exist.");
+
+            var baseDate = req.StartDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+            var templateTasks = await _db.OnboardingChecklistTemplateTasks
+                .Where(x => x.TenantId == tid && x.ChecklistId == req.ChecklistId.Value && x.IsActive)
+                .OrderBy(x => x.OrderIndex)
+                .ThenBy(x => x.TaskTitle)
+                .ToListAsync(ct);
+
+            foreach (var t in templateTasks)
+            {
+                tasks.Add(new OnboardingTask
+                {
+                    TenantId = tid,
+                    ChecklistId = req.ChecklistId,
+                    EmployeeId = req.EmployeeId,
+                    ApplicationId = req.ApplicationId,
+                    TaskTitle = t.TaskTitle,
+                    TaskDescription = t.TaskDescription,
+                    Category = t.Category,
+                    AssignedToName = t.AssignedToName,
+                    AssignedToUserId = t.AssignedToUserId,
+                    DueDate = baseDate.AddDays(t.DueOffsetDays),
+                    OrderIndex = t.OrderIndex,
+                    IsMandatory = t.IsMandatory,
+                });
+            }
         }
 
         if (req.Tasks != null)
@@ -123,6 +201,9 @@ public class OnboardingController : ControllerBase
                 });
             }
         }
+
+        if (tasks.Count == 0)
+            return BadRequest("No onboarding tasks were found in the selected checklist or request payload.");
 
         _db.OnboardingTasks.AddRange(tasks);
         await _db.SaveChangesAsync(ct);
@@ -215,10 +296,20 @@ public class OnboardingController : ControllerBase
             completionPct = tasks.Count > 0 ? (double)tasks.Count(t => t.Status == "Completed") / tasks.Count * 100 : 0,
         });
     }
+
+    private async Task<int> NextTemplateOrderAsync(Guid tenantId, Guid checklistId, CancellationToken ct)
+    {
+        var orders = await _db.OnboardingChecklistTemplateTasks
+            .Where(x => x.TenantId == tenantId && x.ChecklistId == checklistId)
+            .Select(x => x.OrderIndex)
+            .ToListAsync(ct);
+        return orders.Count == 0 ? 1 : orders.Max() + 1;
+    }
 }
 
 public record CreateChecklistRequest(string Code, string Name, string? Description, string? ApplicableTo, string? DepartmentName);
-public record BulkOnboardingRequest(Guid? ChecklistId, Guid? EmployeeId, Guid? ApplicationId, List<OnboardingTaskItem>? Tasks);
+public record UpsertOnboardingTemplateTaskRequest(string TaskTitle, string? TaskDescription, string? Category, string? AssignedToName, Guid? AssignedToUserId, int DueOffsetDays, int OrderIndex, bool IsMandatory, bool? IsActive);
+public record BulkOnboardingRequest(Guid? ChecklistId, Guid? EmployeeId, Guid? ApplicationId, DateOnly? StartDate, List<OnboardingTaskItem>? Tasks);
 public record OnboardingTaskItem(string TaskTitle, string? TaskDescription, string? Category, string? AssignedToName, Guid? AssignedToUserId, DateOnly? DueDate, bool IsMandatory);
 public record CreateOnboardingTaskRequest(string TaskTitle, string? TaskDescription, string? Category, Guid? ChecklistId, Guid? EmployeeId, Guid? ApplicationId, string? AssignedToName, Guid? AssignedToUserId, DateOnly? DueDate, bool IsMandatory);
 public record UpdateTaskStatusRequest(string Status, string? Notes);

@@ -27,7 +27,7 @@ public sealed class GosiReadinessReportService
             .ToListAsync(ct);
 
         var salaries = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(s => s.TenantId == tenantId)
+            .Where(s => s.TenantId == tenantId && s.IsActive)
             .ToListAsync(ct);
 
         // IgnoreQueryFilters is intentional: platform-wide default rules carry TenantId==Guid.Empty

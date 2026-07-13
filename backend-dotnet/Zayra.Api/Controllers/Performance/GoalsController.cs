@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -14,11 +15,13 @@ public class GoalsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
+    private readonly IHrmHierarchyService _hierarchyService;
 
-    public GoalsController(ZayraDbContext db, IDataScopeService scopeService)
+    public GoalsController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService)
     {
         _db = db;
         _scopeService = scopeService;
+        _hierarchyService = hierarchyService;
     }
 
     [HttpGet]
@@ -76,13 +79,19 @@ public class GoalsController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(req.EmployeeId))
+            return Forbid();
+        var employee = await _db.Employees.AsNoTracking()
+            .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == req.EmployeeId && !e.IsDeleted, ct);
+        if (employee is null) return BadRequest(new { message = "Employee not found." });
 
         var goal = new EmployeeGoal
         {
             TenantId         = tenantId,
             CycleId          = req.CycleId,
             EmployeeId       = req.EmployeeId,
-            EmployeeName     = req.EmployeeName,
+            EmployeeName     = employee.FullName,
             Title            = req.Title,
             Description      = req.Description ?? string.Empty,
             Category         = req.Category,
@@ -114,6 +123,9 @@ public class GoalsController : ControllerBase
         var goal = await _db.EmployeeGoals
             .FirstOrDefaultAsync(g => g.Id == id && g.TenantId == tenantId, ct);
         if (goal is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(goal.EmployeeId))
+            return Forbid();
 
         goal.Title           = req.Title;
         goal.Description     = req.Description ?? string.Empty;
@@ -143,6 +155,9 @@ public class GoalsController : ControllerBase
         var goal = await _db.EmployeeGoals
             .FirstOrDefaultAsync(g => g.Id == id && g.TenantId == tenantId, ct);
         if (goal is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(goal.EmployeeId))
+            return Forbid();
 
         _db.GoalProgressUpdates.Add(new GoalProgressUpdate
         {
@@ -174,6 +189,17 @@ public class GoalsController : ControllerBase
         var goal = await _db.EmployeeGoals
             .FirstOrDefaultAsync(g => g.Id == id && g.TenantId == tenantId, ct);
         if (goal is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(goal.EmployeeId))
+            return Forbid();
+        if (!User.IsInRole("Admin") && !User.IsInRole("HR Manager"))
+        {
+            if (scope.CallerEmployeeId is not int callerEmployeeId)
+                return Forbid();
+            var approvers = await _hierarchyService.ResolveWorkflowApproversAsync(tenantId, goal.EmployeeId, "KPI", ct);
+            if (approvers.Approvers.All(a => a.EmployeeId != callerEmployeeId))
+                return Forbid();
+        }
         goal.ManagerApproved    = true;
         goal.ApprovedByUserId   = userId;
         goal.UpdatedAtUtc       = DateTime.UtcNow;
@@ -188,6 +214,9 @@ public class GoalsController : ControllerBase
         var tenantId = this.GetTenantId()!.Value;
         var goal = await _db.EmployeeGoals.FirstOrDefaultAsync(g => g.Id == id && g.TenantId == tenantId && !g.IsDeleted, ct);
         if (goal is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(goal.EmployeeId))
+            return Forbid();
         if (goal.ManagerApproved) return BadRequest("Cannot delete an approved goal. Set it to Cancelled instead.");
         goal.IsDeleted = true; goal.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);

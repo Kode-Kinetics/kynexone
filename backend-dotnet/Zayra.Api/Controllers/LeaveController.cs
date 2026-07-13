@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
@@ -50,105 +51,26 @@ public class LeaveController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] LegacyCreateLeaveRequest req, CancellationToken cancellationToken)
     {
-        var tenantId = GetTenantId();
-        var employee = await _db.Employees.FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId, cancellationToken);
-        if (employee is null) return BadRequest(new { message = "Employee not found." });
-        if (req.EndDate < req.StartDate) return BadRequest(new { message = "End date must be after start date." });
-
-        var days = (decimal)(req.EndDate.DayNumber - req.StartDate.DayNumber) + 1;
-
-        var leaveType = await _db.LeaveTypes
-            .FirstOrDefaultAsync(t => t.TenantId == tenantId && t.NameEn == req.LeaveType, cancellationToken);
-
-        var balance = leaveType is not null
-            ? await GetOrCreateBalance(tenantId, req.EmployeeId, DateTime.UtcNow.Year, leaveType.Id, leaveType.NameEn, cancellationToken)
-            : null;
-
-        if (balance is not null)
-        {
-            if (balance.Available < days)
-                return BadRequest(new { message = "Insufficient leave balance." });
-            balance.Pending += days;
-            balance.UpdatedAtUtc = DateTime.UtcNow;
-        }
-
-        var leave = new LeaveRequest
-        {
-            TenantId = tenantId,
-            EmployeeId = req.EmployeeId,
-            EmployeeName = employee.FullName,
-            DepartmentName = employee.Department ?? string.Empty,
-            DesignationTitle = employee.Designation ?? string.Empty,
-            LeaveTypeId = leaveType?.Id ?? Guid.Empty,
-            LeaveTypeName = req.LeaveType,
-            StartDate = req.StartDate,
-            EndDate = req.EndDate,
-            TotalDays = days,
-            Reason = req.Reason,
-            Status = "Submitted",
-            SubmittedAtUtc = DateTime.UtcNow
-        };
-        _db.LeaveRequests.Add(leave);
-        await _db.SaveChangesAsync(cancellationToken);
-        return Created($"/api/leave-requests/{leave.Id}", leave);
+        await Task.CompletedTask;
+        return StatusCode(StatusCodes.Status410Gone, new { message = "Legacy leave creation is disabled. Use POST /api/leave/requests so policy eligibility and resolved approvers are enforced." });
     }
 
     [HttpPost("{id:guid}/approve")]
     [Authorize(Roles = "Admin,HR Manager,Manager")]
     public async Task<IActionResult> Approve(Guid id, CancellationToken cancellationToken)
     {
-        var tenantId = GetTenantId();
-        var leave = await _db.LeaveRequests.FirstOrDefaultAsync(l => l.Id == id && l.TenantId == tenantId, cancellationToken);
-        if (leave is null) return NotFound();
-        if (leave.Status != "Submitted" && leave.Status != "Pending")
-            return BadRequest(new { message = "Only pending requests can be approved." });
-
-        if (leave.LeaveTypeId != Guid.Empty)
-        {
-            var balance = await _db.EmployeeLeaveBalances
-                .FirstOrDefaultAsync(b => b.TenantId == tenantId && b.EmployeeId == leave.EmployeeId
-                    && b.LeaveTypeId == leave.LeaveTypeId && b.Year == leave.StartDate.Year, cancellationToken);
-            if (balance is not null)
-            {
-                balance.Pending = Math.Max(0, balance.Pending - leave.TotalDays);
-                balance.Used += leave.TotalDays;
-                balance.UpdatedAtUtc = DateTime.UtcNow;
-            }
-        }
-
-        leave.Status = "Approved";
-        leave.DecidedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken);
-        return Ok(leave);
+        var existsInTenant = await _db.LeaveRequests.AnyAsync(l => l.Id == id && l.TenantId == GetTenantId(), cancellationToken);
+        if (!existsInTenant) return NotFound();
+        return StatusCode(StatusCodes.Status410Gone, new { message = "Legacy leave approval is disabled. Use POST /api/leave/requests/{id}/approve so the resolved pending approver is enforced." });
     }
 
     [HttpPost("{id:guid}/reject")]
     [Authorize(Roles = "Admin,HR Manager,Manager")]
     public async Task<IActionResult> Reject(Guid id, [FromBody] LegacyRejectLeaveRequest req, CancellationToken cancellationToken)
     {
-        var tenantId = GetTenantId();
-        var leave = await _db.LeaveRequests.FirstOrDefaultAsync(l => l.Id == id && l.TenantId == tenantId, cancellationToken);
-        if (leave is null) return NotFound();
-        if (leave.Status != "Submitted" && leave.Status != "Pending")
-            return BadRequest(new { message = "Only pending requests can be rejected." });
-
-        if (leave.LeaveTypeId != Guid.Empty)
-        {
-            var balance = await _db.EmployeeLeaveBalances
-                .FirstOrDefaultAsync(b => b.TenantId == tenantId && b.EmployeeId == leave.EmployeeId
-                    && b.LeaveTypeId == leave.LeaveTypeId && b.Year == leave.StartDate.Year, cancellationToken);
-            if (balance is not null)
-            {
-                balance.Pending = Math.Max(0, balance.Pending - leave.TotalDays);
-                balance.UpdatedAtUtc = DateTime.UtcNow;
-            }
-        }
-
-        leave.Status = "Rejected";
-        leave.RejectionReason = req.Reason ?? string.Empty;
-        leave.DecidedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken);
-        return Ok(leave);
+        var existsInTenant = await _db.LeaveRequests.AnyAsync(l => l.Id == id && l.TenantId == GetTenantId(), cancellationToken);
+        if (!existsInTenant) return NotFound();
+        return StatusCode(StatusCodes.Status410Gone, new { message = "Legacy leave rejection is disabled. Use POST /api/leave/requests/{id}/reject so the resolved pending approver is enforced." });
     }
 
     [HttpGet("balances")]

@@ -414,7 +414,7 @@ public class LeaveService : ILeaveService
             && !await _db.LeavePayrollImpacts.AnyAsync(x => x.TenantId == tenantId && x.LeaveRequestId == requestId, ct))
         {
             var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
-                .Where(s => s.TenantId == tenantId && s.EmployeeId == request.EmployeeId && s.IsActive)
+                .Where(s => s.TenantId == tenantId && s.EmployeeId == request.EmployeeId && s.IsActive && s.EffectiveDate <= request.StartDate)
                 .OrderByDescending(s => s.EffectiveDate)
                 .FirstOrDefaultAsync(ct);
             // basic ÷ 30 per unpaid day — standard GCC day-rate convention, matches payroll's

@@ -45,7 +45,7 @@ public class PayrollModuleTests
 
     // ── Controller factory ───────────────────────────────────────────────────
 
-    private static PayrollController MakeCtrl(ZayraDbContext db, Guid tenantId, string[]? permissions = null)
+    private static PayrollController MakeCtrl(ZayraDbContext db, Guid tenantId, Zayra.Api.Application.CountryPack.ICountryPackResolver? packResolver = null, string[]? permissions = null)
     {
         var claims = new List<Claim>
         {
@@ -63,7 +63,7 @@ public class PayrollModuleTests
             new _UnrestrictedScope(),
             new _HttpAccessor(httpCtx),
             new _NullNotifications(),
-            new _NullPackResolver(),
+            packResolver ?? new _NullPackResolver(),
             new StubRuleReader(),
             new _NullLetterService(),
             new NullDocumentStorage(),
@@ -86,11 +86,8 @@ public class PayrollModuleTests
 
         var content = Assert.IsType<ContentResult>(result);
         content.ContentType.Should().Be("text/csv");
-        // Must contain all four expected column headers
-        content.Content.Should().Contain("Code");
-        content.Content.Should().Contain("Name");
-        content.Content.Should().Contain("Currency");
-        content.Content.Should().Contain("EffectiveDate");
+        foreach (var col in new[] { "CompanyLegalName", "Code", "Name", "Currency", "EffectiveDate", "IsActive", "ComponentCode", "ComponentName", "ComponentType", "CalculationType", "Amount", "Percentage", "IsTaxable", "ComponentIsActive" })
+            content.Content.Should().Contain(col, because: $"column {col} must appear in template");
     }
 
     [Fact]
@@ -109,6 +106,262 @@ public class PayrollModuleTests
         {
             content.Content.Should().Contain(col, because: $"column {col} must appear in template");
         }
+    }
+
+    [Fact]
+    public async Task AssignEmployeeSalary_FutureEffectiveChange_PreservesCurrentAssignment()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        var tenantId = Guid.NewGuid();
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "ES-001", FullName = "Effective Schedule",
+            Status = "Active", JoiningDate = new DateTime(2025, 1, 1)
+        };
+        var structure = new SalaryStructure
+        {
+            TenantId = tenantId, Code = "STD", Name = "Standard", Currency = "SAR",
+            EffectiveDate = new DateOnly(2025, 1, 1)
+        };
+        db.Employees.Add(employee);
+        db.SalaryStructures.Add(structure);
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, SalaryStructureId = structure.Id,
+            BasicSalary = 10_000m, Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true
+        });
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tenantId).AssignEmployeeSalary(
+            new EmployeeSalaryStructureRequest(employee.Id, structure.Id, 12_000m, 0m, 0m, 0m, 0m, 0m, 0m, new DateOnly(2099, 1, 1), "SAR"),
+            CancellationToken.None);
+
+        result.Should().BeOfType<CreatedResult>();
+        var assignments = await db.EmployeeSalaryStructures
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id)
+            .OrderBy(x => x.EffectiveDate)
+            .ToListAsync();
+        assignments.Should().HaveCount(2);
+        assignments.Should().OnlyContain(x => x.IsActive);
+        assignments[0].BasicSalary.Should().Be(10_000m);
+        assignments[1].BasicSalary.Should().Be(12_000m);
+    }
+
+    [Fact]
+    public async Task Process_UsesLatestSalaryAssignmentEffectiveForRunPeriod()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Effective Payroll Co", CountryCode = "ARE",
+            Jurisdiction = "UAE-mainland", DefaultCurrency = "AED", IsActive = true,
+            RegistrationNumber = "EPC-001"
+        };
+        var structure = new SalaryStructure
+        {
+            TenantId = tenantId, CompanyId = company.Id, Code = "STD", Name = "Standard",
+            Currency = "AED", EffectiveDate = new DateOnly(2025, 1, 1)
+        };
+        var employee = new Employee
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeCode = "EFF-001",
+            FullName = "Effective Dated Employee", Nationality = "Indian",
+            Status = "Active", JoiningDate = new DateTime(2025, 1, 1)
+        };
+        db.Companies.Add(company);
+        db.SalaryStructures.Add(structure);
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.AddRange(
+            new EmployeeSalaryStructure
+            {
+                TenantId = tenantId, EmployeeId = employee.Id, SalaryStructureId = structure.Id,
+                BasicSalary = 10_000m, Currency = "AED", EffectiveDate = new DateOnly(2026, 1, 1), IsActive = true
+            },
+            new EmployeeSalaryStructure
+            {
+                TenantId = tenantId, EmployeeId = employee.Id, SalaryStructureId = structure.Id,
+                BasicSalary = 20_000m, Currency = "AED", EffectiveDate = new DateOnly(2026, 2, 1), IsActive = true
+            });
+        var run = new PayrollRun { TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 1 };
+        db.PayrollRuns.Add(run);
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tenantId, new _ModuleZeroPackResolver()).Process(run.Id, CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>();
+        var slip = await db.PayrollSlips.SingleAsync(s => s.RunId == run.Id);
+        slip.BasicSalary.Should().Be(10_000m);
+        slip.GrossSalary.Should().Be(10_000m);
+    }
+
+    [Fact]
+    public async Task Process_IncludesImportedOpeningBalancesInYtdTotals()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Opening Balance Co", CountryCode = "ARE",
+            Jurisdiction = "UAE-mainland", DefaultCurrency = "AED", IsActive = true,
+            RegistrationNumber = "OBC-001"
+        };
+        var structure = new SalaryStructure
+        {
+            TenantId = tenantId, CompanyId = company.Id, Code = "STD", Name = "Standard",
+            Currency = "AED", EffectiveDate = new DateOnly(2025, 1, 1)
+        };
+        var employee = new Employee
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeCode = "OB-001",
+            FullName = "Opening Balance Employee", Nationality = "Indian",
+            Status = "Active", JoiningDate = new DateTime(2025, 1, 1)
+        };
+        db.Companies.Add(company);
+        db.SalaryStructures.Add(structure);
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, SalaryStructureId = structure.Id,
+            BasicSalary = 10_000m, Currency = "AED", EffectiveDate = new DateOnly(2026, 1, 1), IsActive = true
+        });
+        db.PayrollOpeningBalances.AddRange(
+            new PayrollOpeningBalance { TenantId = tenantId, CompanyId = company.Id, EmployeeId = employee.Id, EmployeeCode = employee.EmployeeCode, Year = 2026, BalanceType = "YTD_GROSS", ComponentCode = "BASIC", Amount = 50_000m, Currency = "AED" },
+            new PayrollOpeningBalance { TenantId = tenantId, CompanyId = company.Id, EmployeeId = employee.Id, EmployeeCode = employee.EmployeeCode, Year = 2026, BalanceType = "YTD_DEDUCTIONS", ComponentCode = "GOSI", Amount = 5_000m, Currency = "AED" },
+            new PayrollOpeningBalance { TenantId = tenantId, CompanyId = company.Id, EmployeeId = employee.Id, EmployeeCode = employee.EmployeeCode, Year = 2026, BalanceType = "YTD_NET", ComponentCode = "NET", Amount = 45_000m, Currency = "AED" });
+        var run = new PayrollRun { TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 1 };
+        db.PayrollRuns.Add(run);
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tenantId, new _ModuleZeroPackResolver()).Process(run.Id, CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>();
+        var slip = await db.PayrollSlips.SingleAsync(s => s.RunId == run.Id);
+        slip.YtdGross.Should().Be(60_000m);
+        slip.YtdDeductions.Should().Be(5_000m);
+        slip.YtdNet.Should().Be(55_000m);
+    }
+
+    [Fact]
+    public async Task Process_DoesNotDeductLoansOrAdvancesBeforeRepaymentStartDate()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Benefits Timing Co", CountryCode = "ARE",
+            Jurisdiction = "UAE-mainland", DefaultCurrency = "AED", IsActive = true,
+            RegistrationNumber = "BTC-001"
+        };
+        var structure = new SalaryStructure { TenantId = tenantId, CompanyId = company.Id, Code = "STD", Name = "Standard", Currency = "AED" };
+        var employee = new Employee
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeCode = "BEN-001",
+            FullName = "Benefits Timing", Nationality = "Indian",
+            Status = "Active", JoiningDate = new DateTime(2025, 1, 1)
+        };
+        db.Companies.Add(company);
+        db.SalaryStructures.Add(structure);
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, SalaryStructureId = structure.Id,
+            BasicSalary = 8_000m, Currency = "AED", EffectiveDate = new DateOnly(2026, 1, 1), IsActive = true
+        });
+        var loan = new EmployeeLoan
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeIntId = employee.Id,
+            EmployeeName = employee.FullName, LoanNumber = "LN-001", Status = "Active",
+            InstallmentAmount = 500m, OutstandingBalance = 1_500m, RepaymentStartDate = new DateOnly(2026, 2, 1)
+        };
+        var advance = new SalaryAdvance
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeIntId = employee.Id,
+            EmployeeName = employee.FullName, AdvanceNumber = "ADV-001", Status = "Active",
+            InstallmentAmount = 300m, OutstandingBalance = 900m, RepaymentStartDate = new DateOnly(2026, 2, 1)
+        };
+        db.EmployeeLoans.Add(loan);
+        db.SalaryAdvances.Add(advance);
+        var run = new PayrollRun { TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 1 };
+        db.PayrollRuns.Add(run);
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tenantId, new _ModuleZeroPackResolver()).Process(run.Id, CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>();
+        var slip = await db.PayrollSlips.SingleAsync(s => s.RunId == run.Id);
+        slip.LoanDeductions.Should().Be(0m);
+        (await db.PayrollDeductions.CountAsync(d => d.PayrollRunId == run.Id && (d.ComponentCode == "LOAN_EMI" || d.ComponentCode == "ADVANCE_EMI"))).Should().Be(0);
+        (await db.EmployeeLoans.SingleAsync(x => x.Id == loan.Id)).OutstandingBalance.Should().Be(1_500m);
+        (await db.SalaryAdvances.SingleAsync(x => x.Id == advance.Id)).OutstandingBalance.Should().Be(900m);
+    }
+
+    [Fact]
+    public async Task Process_AppliesApprovedPayrollAdjustmentsAsVariablePayAndDeductions()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Variable Pay Co", CountryCode = "ARE",
+            Jurisdiction = "UAE-mainland", DefaultCurrency = "AED", IsActive = true,
+            RegistrationNumber = "VPC-001"
+        };
+        var structure = new SalaryStructure { TenantId = tenantId, CompanyId = company.Id, Code = "STD", Name = "Standard", Currency = "AED" };
+        var employee = new Employee
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeCode = "VAR-001",
+            FullName = "Variable Pay", Nationality = "Indian",
+            Status = "Active", JoiningDate = new DateTime(2025, 1, 1)
+        };
+        db.Companies.Add(company);
+        db.SalaryStructures.Add(structure);
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, SalaryStructureId = structure.Id,
+            BasicSalary = 5_000m, Currency = "AED", EffectiveDate = new DateOnly(2026, 1, 1), IsActive = true
+        });
+        var run = new PayrollRun { TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 1 };
+        db.PayrollRuns.Add(run);
+        await db.SaveChangesAsync();
+        db.PayrollAdjustments.AddRange(
+            new PayrollAdjustment
+            {
+                TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = employee.Id,
+                AdjustmentType = "Retro Earning", Amount = 250m, Reason = "Backdated allowance", Status = "Approved"
+            },
+            new PayrollAdjustment
+            {
+                TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = employee.Id,
+                AdjustmentType = "Recovery", Amount = -100m, Reason = "Overpayment recovery", Status = "Approved"
+            });
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tenantId, new _ModuleZeroPackResolver()).Process(run.Id, CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>();
+        var slip = await db.PayrollSlips.SingleAsync(s => s.RunId == run.Id);
+        slip.GrossSalary.Should().Be(5_250m);
+        slip.Deductions.Should().Be(100m);
+        slip.NetSalary.Should().Be(5_150m);
+        (await db.PayrollEarnings.AnyAsync(e => e.PayrollRunId == run.Id && e.Source == "Adjustment" && e.Amount == 250m)).Should().BeTrue();
+        (await db.PayrollDeductions.AnyAsync(d => d.PayrollRunId == run.Id && d.Source == "Adjustment" && d.Amount == 100m)).Should().BeTrue();
+        (await db.PayrollAdjustments.Where(a => a.PayrollRunId == run.Id).Select(a => a.Status).Distinct().SingleAsync()).Should().Be("Processed");
     }
 
     // ── Section 2: Salary structure export — both route aliases ──────────────
@@ -356,13 +609,18 @@ public class PayrollModuleTests
             TenantId = tenantId, EmployeeCode = "E001", FullName = "Alice",
             Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1)
         };
+        db.SalaryStructures.Add(new SalaryStructure
+        {
+            TenantId = tenantId, Code = "STR-BASIC", Name = "Basic",
+            Currency = "AED", EffectiveDate = new DateOnly(2025, 1, 1)
+        });
         db.Employees.Add(emp);
         await db.SaveChangesAsync();
 
         var ctrl = MakeCtrl(db, tenantId);
         var csv = "EmployeeCode,SalaryStructureCode,BasicSalary,HousingAllowance,TransportAllowance," +
                   "FoodAllowance,MobileAllowance,OtherAllowance,FixedDeduction,Currency,EffectiveDate\n" +
-                  "E001,,-500,0,0,0,0,0,0,AED,2025-01-01\n";
+                  "E001,STR-BASIC,-500,0,0,0,0,0,0,AED,2025-01-01\n";
 
         var result = await ctrl.ImportEmployeeSalaries(
             new ImportSalaryStructuresRequest(csv), CancellationToken.None);
@@ -374,6 +632,33 @@ public class PayrollModuleTests
         var errors = (IEnumerable<object>)body.GetType().GetProperty("errors")!.GetValue(body)!;
         errors.Should().NotBeEmpty();
         errors.First().ToString().Should().Contain("BasicSalary");
+    }
+
+    [Fact]
+    public async Task EmployeeSalaryImport_MissingStructureCode_ReturnsErrorAndDoesNotPersistGuidEmpty()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        db.Employees.Add(new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "E001", FullName = "Alice",
+            Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1)
+        });
+        await db.SaveChangesAsync();
+
+        var ctrl = MakeCtrl(db, tenantId);
+        var csv = "EmployeeCode,SalaryStructureCode,BasicSalary,HousingAllowance,TransportAllowance," +
+                  "FoodAllowance,MobileAllowance,OtherAllowance,FixedDeduction,Currency,EffectiveDate\n" +
+                  "E001,,5000,0,0,0,0,0,0,AED,2025-01-01\n";
+
+        var result = await ctrl.ImportEmployeeSalaries(
+            new ImportSalaryStructuresRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var body = ok.Value!;
+        ((int)body.GetType().GetProperty("created")!.GetValue(body)!).Should().Be(0);
+        ((int)body.GetType().GetProperty("skipped")!.GetValue(body)!).Should().Be(1);
+        (await db.EmployeeSalaryStructures.AnyAsync(s => s.SalaryStructureId == Guid.Empty)).Should().BeFalse();
     }
 
     [Fact]
@@ -452,6 +737,285 @@ public class PayrollModuleTests
         savedAssignment.Should().NotBeNull();
         savedAssignment!.BasicSalary.Should().Be(7500);
         savedAssignment.HousingAllowance.Should().Be(2000);
+        savedAssignment.SalaryStructureId.Should().Be(structure.Id);
+    }
+
+    [Fact]
+    public async Task EmployeeSalaryImport_ReimportSameEffectiveDate_UpdatesExistingRecord()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+
+        var tenantId = Guid.NewGuid();
+        var structure = new SalaryStructure
+        {
+            TenantId = tenantId, Code = "STR-BASIC", Name = "Basic",
+            Currency = "AED", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true
+        };
+        var emp = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "E001", FullName = "Alice",
+            Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1)
+        };
+        db.SalaryStructures.Add(structure);
+        db.Employees.Add(emp);
+        await db.SaveChangesAsync();
+        var ctrl = MakeCtrl(db, tenantId);
+        var csv1 = "EmployeeCode,SalaryStructureCode,BasicSalary,HousingAllowance,TransportAllowance," +
+                   "FoodAllowance,MobileAllowance,OtherAllowance,FixedDeduction,Currency,EffectiveDate\n" +
+                   "E001,STR-BASIC,7500,2000,500,300,200,0,0,AED,2025-01-01\n";
+        var csv2 = "EmployeeCode,SalaryStructureCode,BasicSalary,HousingAllowance,TransportAllowance," +
+                   "FoodAllowance,MobileAllowance,OtherAllowance,FixedDeduction,Currency,EffectiveDate\n" +
+                   "E001,STR-BASIC,8000,2200,500,300,200,0,0,AED,2025-01-01\n";
+
+        await ctrl.ImportEmployeeSalaries(new ImportSalaryStructuresRequest(csv1), CancellationToken.None);
+        var result = await ctrl.ImportEmployeeSalaries(new ImportSalaryStructuresRequest(csv2), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var body = ok.Value!;
+        ((int)body.GetType().GetProperty("created")!.GetValue(body)!).Should().Be(0);
+        ((int)body.GetType().GetProperty("updated")!.GetValue(body)!).Should().Be(1);
+
+        var assignments = await db.EmployeeSalaryStructures
+            .Where(s => s.TenantId == tenantId && s.EmployeeId == emp.Id && s.EffectiveDate == new DateOnly(2025, 1, 1))
+            .ToListAsync();
+        assignments.Should().ContainSingle();
+        assignments.Single().BasicSalary.Should().Be(8000);
+        assignments.Single().HousingAllowance.Should().Be(2200);
+        assignments.Single().IsActive.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SalaryStructureImport_WithCompanyAndComponents_PersistsFullStructureContract()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId,
+            LegalNameEn = "Acme Arabia LLC",
+            CountryCode = "SA",
+            RegistrationNumber = "REG-001",
+            DefaultCurrency = "SAR"
+        };
+        db.Companies.Add(company);
+        await db.SaveChangesAsync();
+
+        var ctrl = MakeCtrl(db, tenantId);
+        var csv = "CompanyLegalName,Code,Name,Currency,EffectiveDate,IsActive,ComponentCode,ComponentName,ComponentType,CalculationType,Amount,Percentage,IsTaxable,ComponentIsActive\n" +
+                  "Acme Arabia LLC,EXEC,Executive Structure,SAR,2026-01-01,true,BASIC,Basic Salary,Earning,Fixed,15000,0,true,true\n" +
+                  "Acme Arabia LLC,EXEC,Executive Structure,SAR,2026-01-01,true,HOUSING,Housing Allowance,Earning,Percentage,0,25,false,true\n";
+
+        var result = await ctrl.ImportStructures(new ImportSalaryStructuresRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var body = ok.Value!;
+        ((int)body.GetType().GetProperty("created")!.GetValue(body)!).Should().Be(1);
+
+        var structure = await db.SalaryStructures.SingleAsync(s => s.TenantId == tenantId && s.Code == "EXEC");
+        structure.CompanyId.Should().Be(company.Id);
+        structure.Currency.Should().Be("SAR");
+        structure.EffectiveDate.Should().Be(new DateOnly(2026, 1, 1));
+
+        var components = await db.SalaryComponents.Where(c => c.TenantId == tenantId && c.SalaryStructureId == structure.Id).ToListAsync();
+        components.Should().HaveCount(2);
+        components.Should().Contain(c => c.Code == "BASIC" && c.Amount == 15000m && c.IsTaxable);
+        components.Should().Contain(c => c.Code == "HOUSING" && c.Percentage == 25m && !c.IsTaxable);
+    }
+
+    [Fact]
+    public async Task SalaryStructureCrud_Update_ReplacesComponentsAndReturnsUsage()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId,
+            LegalNameEn = "Acme Payroll LLC",
+            TradeName = "Acme Payroll",
+            CountryCode = "AE",
+            RegistrationNumber = "REG-002",
+            DefaultCurrency = "AED"
+        };
+        db.Companies.Add(company);
+        await db.SaveChangesAsync();
+
+        var ctrl = MakeCtrl(db, tenantId);
+        var create = await ctrl.CreateSalaryStructure(new SalaryStructureRequest(
+            "GCC-STD", "GCC Standard", "AED", new DateOnly(2026, 1, 1),
+            new[]
+            {
+                new SalaryComponentRequest("BASIC", "Basic Salary", "Earning", "Fixed", 0m, 0m, true),
+                new SalaryComponentRequest("HRA", "Housing", "Earning", "Percentage", 0m, 25m, false),
+            },
+            company.Id), CancellationToken.None);
+
+        var created = Assert.IsType<CreatedResult>(create);
+        var createdDto = Assert.IsType<SalaryStructureDto>(created.Value);
+        createdDto.CompanyId.Should().Be(company.Id);
+        createdDto.Components.Should().HaveCount(2);
+
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId,
+            EmployeeId = 10,
+            SalaryStructureId = createdDto.Id,
+            BasicSalary = 10_000m,
+            EffectiveDate = new DateOnly(2026, 1, 1),
+            Currency = "AED",
+            IsActive = true
+        });
+        await db.SaveChangesAsync();
+
+        var update = await ctrl.UpdateSalaryStructure(createdDto.Id, new SalaryStructureRequest(
+            "GCC-EXEC", "GCC Executive", "SAR", new DateOnly(2026, 2, 1),
+            new[] { new SalaryComponentRequest("BASIC", "Basic Salary", "Earning", "Fixed", 12_000m, 0m, true) },
+            company.Id,
+            true), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(update);
+        var updated = Assert.IsType<SalaryStructureDto>(ok.Value);
+        updated.Code.Should().StartWith("GCC-EXEC");
+        updated.Currency.Should().Be("SAR");
+        updated.AssignedEmployeeCount.Should().Be(0);
+        updated.PreviousVersionId.Should().Be(createdDto.Id);
+        updated.Components.Should().ContainSingle(c => c.Code == "BASIC" && c.Amount == 12_000m);
+
+        var storedComponents = await db.SalaryComponents.Where(c => c.TenantId == tenantId && c.SalaryStructureId == updated.Id).ToListAsync();
+        storedComponents.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task SalaryStructureDelete_GuardsAssignedStructureAndSoftDeletesUnused()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+
+        var tenantId = Guid.NewGuid();
+        var assigned = new SalaryStructure
+        {
+            TenantId = tenantId,
+            Code = "ASSIGNED",
+            Name = "Assigned",
+            Currency = "AED",
+            EffectiveDate = new DateOnly(2026, 1, 1),
+            IsActive = true
+        };
+        var unused = new SalaryStructure
+        {
+            TenantId = tenantId,
+            Code = "UNUSED",
+            Name = "Unused",
+            Currency = "AED",
+            EffectiveDate = new DateOnly(2026, 1, 1),
+            IsActive = true
+        };
+        db.SalaryStructures.AddRange(assigned, unused);
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId,
+            EmployeeId = 20,
+            SalaryStructureId = assigned.Id,
+            BasicSalary = 8_000m,
+            EffectiveDate = new DateOnly(2026, 1, 1),
+            Currency = "AED",
+            IsActive = true
+        });
+        await db.SaveChangesAsync();
+
+        var ctrl = MakeCtrl(db, tenantId);
+        var assignedResult = await ctrl.DeleteSalaryStructure(assigned.Id, CancellationToken.None);
+        Assert.IsType<BadRequestObjectResult>(assignedResult);
+
+        var unusedResult = await ctrl.DeleteSalaryStructure(unused.Id, CancellationToken.None);
+        Assert.IsType<NoContentResult>(unusedResult);
+        (await db.SalaryStructures.IgnoreQueryFilters().SingleAsync(s => s.Id == unused.Id)).IsDeleted.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AssignEmployeeSalary_EnforcesStructureGrossRange()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+
+        var tenantId = Guid.NewGuid();
+        var structure = new SalaryStructure
+        {
+            TenantId = tenantId,
+            Code = "RANGE",
+            Name = "Range",
+            Currency = "AED",
+            EffectiveDate = new DateOnly(2026, 1, 1),
+            IsActive = true,
+            MinGrossSalary = 10_000m,
+            MaxGrossSalary = 20_000m
+        };
+        var employee = new Employee
+        {
+            TenantId = tenantId,
+            EmployeeCode = "E-RANGE",
+            FullName = "Range Employee",
+            Status = "Active",
+            JoiningDate = DateTime.UtcNow.AddYears(-1)
+        };
+        db.SalaryStructures.Add(structure);
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+
+        var ctrl = MakeCtrl(db, tenantId);
+        var result = await ctrl.AssignEmployeeSalary(new EmployeeSalaryStructureRequest(
+            employee.Id, structure.Id, 8_000m, 0m, 0m, 0m, 0m, 0m, 0m,
+            new DateOnly(2026, 1, 1), "AED"), CancellationToken.None);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        (await db.EmployeeSalaryStructures.AnyAsync()).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SalaryStructureUpdate_WhenAssigned_CreatesNewVersionInsteadOfOverwriting()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var structure = new SalaryStructure
+        {
+            TenantId = tenantId,
+            Code = "STD",
+            Name = "Standard",
+            Currency = "AED",
+            EffectiveDate = new DateOnly(2026, 1, 1),
+            IsActive = true,
+            VersionNumber = 1
+        };
+        db.SalaryStructures.Add(structure);
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId,
+            EmployeeId = 1,
+            SalaryStructureId = structure.Id,
+            BasicSalary = 10_000m,
+            EffectiveDate = new DateOnly(2026, 1, 1),
+            Currency = "AED",
+            IsActive = true
+        });
+        await db.SaveChangesAsync();
+
+        var ctrl = MakeCtrl(db, tenantId);
+        var result = await ctrl.UpdateSalaryStructure(structure.Id, new SalaryStructureRequest(
+            "STD", "Standard Updated", "AED", new DateOnly(2026, 2, 1),
+            Array.Empty<SalaryComponentRequest>(),
+            IsActive: true,
+            MinGrossSalary: 12_000m), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var dto = Assert.IsType<SalaryStructureDto>(ok.Value);
+        dto.Id.Should().NotBe(structure.Id);
+        dto.PreviousVersionId.Should().Be(structure.Id);
+        dto.VersionNumber.Should().Be(2);
+        dto.Code.Should().StartWith("STD-V");
+        (await db.SalaryStructures.FindAsync(structure.Id))!.IsActive.Should().BeFalse();
     }
 
     // ── Section 10: Export writes audit log ───────────────────────────────────
@@ -469,6 +1033,88 @@ public class PayrollModuleTests
         var auditLog = await db.PayrollAuditLogs.FirstOrDefaultAsync(
             l => l.TenantId == tenantId && l.Action == "payroll.employee_salary.exported");
         auditLog.Should().NotBeNull("export must always produce an audit log");
+    }
+
+    [Fact]
+    public async Task WpsStatus_SubmittedRequiresReference_AndAcceptedPersistsAcknowledgement()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var batch = new PayrollPaymentBatch
+        {
+            TenantId = tenantId,
+            PayrollRunId = Guid.NewGuid(),
+            BatchNumber = "PAY-STAT-001",
+            WpsStatus = WpsStatuses.Generated
+        };
+        var file = new WPSFileBatch
+        {
+            TenantId = tenantId,
+            PaymentBatchId = batch.Id,
+            SifFileName = "wps.sif",
+            FilingStatus = WpsStatuses.Generated,
+            FileHash = "hash"
+        };
+        db.PayrollPaymentBatches.Add(batch);
+        db.WPSFileBatches.Add(file);
+        await db.SaveChangesAsync();
+
+        var ctrl = MakeCtrl(db, tenantId, permissions: new[] { "payroll.export" });
+
+        var missingReference = await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Submitted, null), CancellationToken.None);
+        missingReference.Should().BeOfType<BadRequestObjectResult>();
+
+        (await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Submitted, null, "SUB-123"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        (await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-456"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+
+        var savedBatch = await db.PayrollPaymentBatches.FindAsync(batch.Id);
+        var savedFile = await db.WPSFileBatches.FindAsync(file.Id);
+        savedBatch!.WpsStatus.Should().Be(WpsStatuses.Accepted);
+        savedBatch.WpsSubmissionReference.Should().Be("ACK-456");
+        savedFile!.FilingStatus.Should().Be(WpsStatuses.Accepted);
+        savedFile.AcknowledgedAtUtc.Should().NotBeNull();
+        savedFile.SubmissionReference.Should().Be("ACK-456");
+    }
+
+    [Fact]
+    public async Task ErpPostingStatus_RequiresGlAndPersistsRunAndGlReferences()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var runWithoutGl = new PayrollRun { TenantId = tenantId, Year = 2026, Month = 7, Status = "Locked", ErpPostingStatus = ErpPostingStatuses.ReadyForErp };
+        var runWithGl = new PayrollRun { TenantId = tenantId, Year = 2026, Month = 8, Status = "Locked", ErpPostingStatus = ErpPostingStatuses.ReadyForErp };
+        db.PayrollRuns.AddRange(runWithoutGl, runWithGl);
+        db.FinanceGlEntries.Add(new FinanceGlEntry
+        {
+            TenantId = tenantId,
+            SourceModule = "Payroll",
+            SourceEntityId = runWithGl.Id,
+            SourceEntityRef = "2026-08",
+            EventType = "PayrollLock",
+            DebitAccount = "5001 - Salary Expense",
+            Amount = 100m,
+            Period = "2026-08",
+            EntryDate = new DateOnly(2026, 8, 31),
+            ErpPostingStatus = ErpPostingStatuses.ReadyForErp
+        });
+        await db.SaveChangesAsync();
+
+        var ctrl = MakeCtrl(db, tenantId, permissions: new[] { "payroll.export" });
+
+        var noGl = await ctrl.UpdateErpPostingStatus(runWithoutGl.Id, new ErpPostingStatusRequest(ErpPostingStatuses.Posted, "ERP-1"), CancellationToken.None);
+        noGl.Should().BeOfType<BadRequestObjectResult>();
+
+        var posted = await ctrl.UpdateErpPostingStatus(runWithGl.Id, new ErpPostingStatusRequest(ErpPostingStatuses.Posted, "ERP-2026-08"), CancellationToken.None);
+        posted.Should().BeOfType<OkObjectResult>();
+
+        var savedRun = await db.PayrollRuns.FindAsync(runWithGl.Id);
+        var savedGl = await db.FinanceGlEntries.SingleAsync(x => x.SourceEntityId == runWithGl.Id);
+        savedRun!.ErpPostingStatus.Should().Be(ErpPostingStatuses.Posted);
+        savedRun.ErpPostingReference.Should().Be("ERP-2026-08");
+        savedGl.ErpPostingStatus.Should().Be(ErpPostingStatuses.Posted);
+        savedGl.ErpDocumentNumber.Should().Be("ERP-2026-08");
     }
 
     // ── Section 11: AI Insight Engine — anomaly generation ───────────────────
@@ -666,6 +1312,31 @@ file sealed class _NullPackResolver : Zayra.Api.Application.CountryPack.ICountry
         => new Zayra.Api.Infrastructure.CountryPack.DefaultCountryPackDescriptor();
 }
 
+file sealed class _ModuleZeroPackResolver : Zayra.Api.Application.CountryPack.ICountryPackResolver
+{
+    public Zayra.Api.Application.CountryPack.IStatutoryDeductionCalculator ResolveDeductionCalculator(string cc, string j)
+        => new _ModuleZeroDeductionCalculator();
+    public Zayra.Api.Application.CountryPack.IEndOfServiceCalculator ResolveEndOfServiceCalculator(string cc, string j)
+        => new Zayra.Api.Infrastructure.CountryPack.DefaultEndOfServiceCalculator();
+    public Zayra.Api.Application.CountryPack.IWageProtectionExporter ResolveWageProtectionExporter(string cc, string j)
+        => new Zayra.Api.Infrastructure.CountryPack.DefaultWageProtectionExporter();
+    public Zayra.Api.Application.CountryPack.INationalizationTracker ResolveNationalizationTracker(string cc, string j)
+        => new Zayra.Api.Infrastructure.CountryPack.DefaultNationalizationTracker();
+    public Zayra.Api.Application.CountryPack.ILocalizationProfile ResolveLocalizationProfile(string cc, string j)
+        => new Zayra.Api.Infrastructure.CountryPack.DefaultLocalizationProfile();
+    public Zayra.Api.Application.CountryPack.ICountryPackDescriptor ResolveDescriptor(string cc, string j)
+        => new Zayra.Api.Infrastructure.CountryPack.DefaultCountryPackDescriptor();
+}
+
+file sealed class _ModuleZeroDeductionCalculator : Zayra.Api.Application.CountryPack.IStatutoryDeductionCalculator
+{
+    public Task<Zayra.Api.Application.CountryPack.StatutoryDeductionResult> CalculateAsync(
+        Zayra.Api.Application.CountryPack.StatutoryDeductionInput input,
+        CancellationToken ct = default)
+        => Task.FromResult(new Zayra.Api.Application.CountryPack.StatutoryDeductionResult(
+            0m, 0m, Array.Empty<Zayra.Api.Application.CountryPack.StatutoryDeductionLine>()));
+}
+
 // Minimal IServiceScopeFactory that hands a fixed ZayraDbContext to any scope.
 // The engine calls CreateAsyncScope() twice (outer query + per-tenant), both get same DB.
 file sealed class _TestScopeFactory : IServiceScopeFactory
@@ -701,4 +1372,3 @@ file sealed class _NullLetterService : Zayra.Api.Infrastructure.Documents.Letter
     public Task<byte[]> GenerateExperienceLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.LetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateOfferLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.OfferLetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
 }
-

@@ -20,7 +20,11 @@ public class CompaniesController : ControllerBase
     private readonly ZayraDbContext _db;
 
     private static readonly string[] CsvHeaders =
-        { "LegalNameEn", "LegalNameAr", "TradeName", "CountryCode", "RegistrationNumber", "TaxNumber", "DefaultCurrency", "IsActive" };
+        {
+            "LegalNameEn", "LegalNameAr", "TradeName", "CountryCode", "Jurisdiction",
+            "RegistrationNumber", "TaxNumber", "WpsEmployerId", "GosiEmployerId",
+            "QiwaEstablishmentId", "DefaultCurrency", "IsActive"
+        };
 
     public CompaniesController(IOrganizationSetupService organization, ZayraDbContext db)
     {
@@ -201,7 +205,8 @@ public class CompaniesController : ControllerBase
         var rows = companies.Select(c => (IReadOnlyList<object?>)new object?[]
         {
             c.LegalNameEn, c.LegalNameAr, c.TradeName, c.CountryCode,
-            c.RegistrationNumber, c.TaxNumber, c.DefaultCurrency,
+            c.Jurisdiction, c.RegistrationNumber, c.TaxNumber,
+            c.WpsEmployerId, c.GosiEmployerId, c.QiwaEstablishmentId, c.DefaultCurrency,
             c.IsActive ? "true" : "false"
         });
         return File(Encoding.UTF8.GetBytes(Csv.Build(CsvHeaders, rows)), "text/csv", $"companies_{DateTime.UtcNow:yyyyMMdd}.csv");
@@ -215,8 +220,8 @@ public class CompaniesController : ControllerBase
     {
         var sb = new StringBuilder();
         sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("IntelliFlow Systems LLC,انتيلي فلو,IntelliFlow,AE,1234567,TN123456,AED,true\n");
-        sb.Append("Evostel Trading LLC,إيفوستيل للتجارة,Evostel,KW,7654321,,KWD,true\n");
+        sb.Append("IntelliFlow Systems LLC,انتيلي فلو,IntelliFlow,AE,UAE-mainland,1234567,TN123456,WPS-AE-001,GOSI-AE-001,QIWA-AE-001,AED,true\n");
+        sb.Append("Evostel Trading LLC,إيفوستيل للتجارة,Evostel,KW,KW-mainland,7654321,,WPS-KW-001,,,KWD,true\n");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "companies_import_template.csv");
     }
 
@@ -298,13 +303,22 @@ public class CompaniesController : ControllerBase
             bool isActive = !row.TryGetValue("IsActive", out var av) || !string.Equals(av, "false", StringComparison.OrdinalIgnoreCase);
             var currency = row.GetValueOrDefault("DefaultCurrency", "USD").Trim();
             if (string.IsNullOrWhiteSpace(currency)) currency = "USD";
+            var jurisdiction = row.GetValueOrDefault("Jurisdiction", string.Empty).Trim();
+            var wpsEmployerId = row.GetValueOrDefault("WpsEmployerId", string.Empty).Trim();
+            var gosiEmployerId = row.GetValueOrDefault("GosiEmployerId", string.Empty).Trim();
+            var qiwaEstablishmentId = row.GetValueOrDefault("QiwaEstablishmentId", string.Empty).Trim();
 
             if (existingByName.TryGetValue(name.ToUpperInvariant(), out var existing))
             {
                 existing.LegalNameAr = row.GetValueOrDefault("LegalNameAr", existing.LegalNameAr).Trim();
                 existing.TradeName = row.GetValueOrDefault("TradeName", existing.TradeName).Trim();
-                existing.CountryCode = country; existing.RegistrationNumber = regNo;
+                existing.CountryCode = country;
+                existing.Jurisdiction = jurisdiction;
+                existing.RegistrationNumber = regNo;
                 existing.TaxNumber = row.GetValueOrDefault("TaxNumber", existing.TaxNumber).Trim();
+                existing.WpsEmployerId = wpsEmployerId;
+                existing.GosiEmployerId = gosiEmployerId;
+                existing.QiwaEstablishmentId = qiwaEstablishmentId;
                 existing.DefaultCurrency = currency; existing.IsActive = isActive;
                 existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
             }
@@ -315,8 +329,13 @@ public class CompaniesController : ControllerBase
                     TenantId = tenantId, LegalNameEn = name,
                     LegalNameAr = row.GetValueOrDefault("LegalNameAr", string.Empty).Trim(),
                     TradeName = row.GetValueOrDefault("TradeName", string.Empty).Trim(),
-                    CountryCode = country, RegistrationNumber = regNo,
+                    CountryCode = country,
+                    Jurisdiction = jurisdiction,
+                    RegistrationNumber = regNo,
                     TaxNumber = row.GetValueOrDefault("TaxNumber", string.Empty).Trim(),
+                    WpsEmployerId = wpsEmployerId,
+                    GosiEmployerId = gosiEmployerId,
+                    QiwaEstablishmentId = qiwaEstablishmentId,
                     DefaultCurrency = currency, IsActive = isActive,
                 }); created++;
             }

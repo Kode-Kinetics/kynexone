@@ -368,5 +368,9 @@ public class FinanceGlEntry : ITenantOwned
     public Guid? PostedBy { get; set; }
     public bool IsReversed { get; set; }
     public Guid? ReversalOfEntryId { get; set; }
+    public string ErpPostingStatus { get; set; } = ErpPostingStatuses.NotReady;
+    public string? ErpDocumentNumber { get; set; }
+    public DateTime? ErpStatusChangedAtUtc { get; set; }
+    public string? ErpRejectionReason { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

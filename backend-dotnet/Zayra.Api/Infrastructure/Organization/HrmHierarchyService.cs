@@ -105,12 +105,7 @@ public class HrmHierarchyService : IHrmHierarchyService
                 throw new InvalidOperationException("An employee cannot be their own manager.");
 
             await ValidateNoCircularManagerAsync(tenantId, employeeId, managerEmployeeId.Value, ct);
-
-            // Ensure manager belongs to same tenant
-            var managerExists = await _db.Employees
-                .AnyAsync(e => e.TenantId == tenantId && e.Id == managerEmployeeId.Value && !e.IsDeleted, ct);
-            if (!managerExists)
-                throw new InvalidOperationException($"Manager employee {managerEmployeeId.Value} not found in this tenant.");
+            await EnsureSameCompanyEmployeesAsync(tenantId, employeeId, managerEmployeeId.Value, ct);
         }
 
         var previousManagerId = employee.ManagerEmployeeId;
@@ -163,6 +158,7 @@ public class HrmHierarchyService : IHrmHierarchyService
 
         if (req.RelationshipType == "SolidLine")
             await ValidateNoCircularManagerAsync(tenantId, employeeId, req.ManagerEmployeeId, ct);
+        await EnsureSameCompanyEmployeesAsync(tenantId, employeeId, req.ManagerEmployeeId, ct);
 
         var line = new ReportingLine
         {
@@ -193,10 +189,10 @@ public class HrmHierarchyService : IHrmHierarchyService
     }
 
     public async Task<bool> RemoveReportingLineAsync(
-        Guid tenantId, Guid reportingLineId, RequestContext context, CancellationToken ct)
+        Guid tenantId, int employeeId, Guid reportingLineId, RequestContext context, CancellationToken ct)
     {
         var line = await _db.ReportingLines
-            .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == reportingLineId, ct);
+            .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == reportingLineId && r.EmployeeId == employeeId && r.IsActive, ct);
         if (line is null) return false;
         line.IsActive = false;
         line.EffectiveTo = DateTime.UtcNow;
@@ -205,6 +201,105 @@ public class HrmHierarchyService : IHrmHierarchyService
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("employee.reporting_line_removed", nameof(ReportingLine), reportingLineId.ToString(), context, null, ct);
         return true;
+    }
+
+    public async Task<HierarchyResolverDto> ResolveHierarchyAsync(Guid tenantId, int employeeId, int maxDepth, CancellationToken ct)
+    {
+        maxDepth = Math.Clamp(maxDepth, 1, 20);
+        var employees = await _db.Employees
+            .AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted)
+            .Select(e => new
+            {
+                e.Id,
+                e.EmployeeCode,
+                e.FullName,
+                e.Designation,
+                e.Department,
+                e.CompanyId,
+                e.ManagerEmployeeId,
+                e.Status
+            })
+            .ToDictionaryAsync(e => e.Id, ct);
+
+        if (!employees.TryGetValue(employeeId, out var employee))
+            throw new InvalidOperationException($"Employee {employeeId} not found.");
+
+        var chain = new List<HierarchyPersonDto>();
+        var visited = new HashSet<int> { employeeId };
+        var current = employee.ManagerEmployeeId;
+        var level = 1;
+        while (current.HasValue && level <= maxDepth)
+        {
+            if (!visited.Add(current.Value))
+                throw new InvalidOperationException("Circular reporting chain detected.");
+            if (!employees.TryGetValue(current.Value, out var manager))
+                break;
+
+            chain.Add(ToPerson(manager.Id, manager.EmployeeCode, manager.FullName, manager.Designation, manager.Department, manager.CompanyId, level));
+            current = manager.ManagerEmployeeId;
+            level++;
+        }
+
+        var departmentHead = await ResolveDepartmentHeadAsync(tenantId, employee.Department, employee.CompanyId, employeeId, ct)
+            ?? chain.FirstOrDefault();
+        var companyHead = chain.LastOrDefault(p => p.CompanyId == employee.CompanyId)
+            ?? await ResolveTopCompanyEmployeeAsync(tenantId, employee.CompanyId, employeeId, ct);
+
+        return new HierarchyResolverDto(
+            employeeId,
+            chain,
+            chain.ElementAtOrDefault(0),
+            chain.ElementAtOrDefault(1),
+            departmentHead,
+            companyHead);
+    }
+
+    public async Task<WorkflowApproverResolutionDto> ResolveWorkflowApproversAsync(Guid tenantId, int employeeId, string workflowType, CancellationToken ct)
+    {
+        var hierarchy = await ResolveHierarchyAsync(tenantId, employeeId, 20, ct);
+        var type = (workflowType ?? string.Empty).Trim().ToUpperInvariant();
+        var approvers = new List<HierarchyPersonDto>();
+        var missing = new List<string>();
+
+        void Add(string role, HierarchyPersonDto? person)
+        {
+            if (person is null) missing.Add(role);
+            else if (approvers.All(x => x.EmployeeId != person.EmployeeId)) approvers.Add(person);
+        }
+
+        switch (type)
+        {
+            case "LEAVE":
+            case "ATTENDANCE":
+            case "OVERTIME":
+            case "OT":
+                Add("DirectManager", hierarchy.DirectManager);
+                Add("DepartmentHead", hierarchy.DepartmentHead);
+                break;
+            case "APPRAISAL":
+            case "PERFORMANCE":
+            case "KPI":
+                Add("DirectManager", hierarchy.DirectManager);
+                Add("SecondLevelManager", hierarchy.SecondLevelManager);
+                break;
+            case "SALARY":
+            case "COMPENSATION":
+            case "PAYROLL":
+            case "PAYROLL_EXCEPTION":
+                Add("DirectManager", hierarchy.DirectManager);
+                Add("DepartmentHead", hierarchy.DepartmentHead);
+                Add("CompanyHead", hierarchy.CompanyHead);
+                break;
+            case "TRANSFER":
+            case "HR_REQUEST":
+            default:
+                Add("DirectManager", hierarchy.DirectManager);
+                Add("DepartmentHead", hierarchy.DepartmentHead);
+                break;
+        }
+
+        return new WorkflowApproverResolutionDto(string.IsNullOrWhiteSpace(workflowType) ? type : workflowType, employeeId, approvers, missing);
     }
 
     public async Task<int> ValidateNoCircularManagerAsync(
@@ -234,5 +329,65 @@ public class HrmHierarchyService : IHrmHierarchyService
             if (depth > 50) break; // safety cap
         }
         return depth;
+    }
+
+    private async Task<HierarchyPersonDto?> ResolveDepartmentHeadAsync(Guid tenantId, string? departmentName, Guid? companyId, int employeeId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(departmentName)) return null;
+
+        var headId = await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.IsActive && d.ManagerEmployeeId != null
+                && d.NameEn == departmentName)
+            .Where(d => d.BranchId != null)
+            .Join(_db.Branches.AsNoTracking().Where(b => b.TenantId == tenantId),
+                d => d.BranchId!.Value,
+                b => b.Id,
+                (d, b) => new { d.ManagerEmployeeId, b.CompanyId })
+            .Where(x => companyId == null || x.CompanyId == companyId)
+            .Select(x => x.ManagerEmployeeId)
+            .FirstOrDefaultAsync(ct);
+
+        if (headId is null || headId.Value == employeeId) return null;
+        return await ResolvePersonAsync(tenantId, headId.Value, 0, ct);
+    }
+
+    private async Task<HierarchyPersonDto?> ResolveTopCompanyEmployeeAsync(Guid tenantId, Guid? companyId, int employeeId, CancellationToken ct)
+    {
+        if (companyId is null) return null;
+        var top = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId == companyId && e.Id != employeeId
+                && e.ManagerEmployeeId == null && e.Status == EmployeeStatuses.Active)
+            .OrderBy(e => e.Id)
+            .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.Designation, e.Department, e.CompanyId })
+            .FirstOrDefaultAsync(ct);
+        return top is null ? null : ToPerson(top.Id, top.EmployeeCode, top.FullName, top.Designation, top.Department, top.CompanyId, 0);
+    }
+
+    private async Task<HierarchyPersonDto?> ResolvePersonAsync(Guid tenantId, int employeeId, int level, CancellationToken ct)
+    {
+        var person = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.Id == employeeId)
+            .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.Designation, e.Department, e.CompanyId })
+            .FirstOrDefaultAsync(ct);
+        return person is null ? null : ToPerson(person.Id, person.EmployeeCode, person.FullName, person.Designation, person.Department, person.CompanyId, level);
+    }
+
+    private static HierarchyPersonDto ToPerson(int id, string code, string name, string? designation, string? department, Guid? companyId, int level)
+        => new(id, code, name, designation ?? string.Empty, department ?? string.Empty, companyId, level);
+
+    private async Task EnsureSameCompanyEmployeesAsync(Guid tenantId, int employeeId, int managerEmployeeId, CancellationToken ct)
+    {
+        var people = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && (e.Id == employeeId || e.Id == managerEmployeeId))
+            .Select(e => new { e.Id, e.CompanyId, e.Status })
+            .ToListAsync(ct);
+
+        var employee = people.FirstOrDefault(e => e.Id == employeeId)
+            ?? throw new InvalidOperationException($"Employee {employeeId} not found.");
+        var manager = people.FirstOrDefault(e => e.Id == managerEmployeeId)
+            ?? throw new InvalidOperationException($"Manager employee {managerEmployeeId} not found in this tenant.");
+
+        if (employee.CompanyId.HasValue && manager.CompanyId.HasValue && employee.CompanyId != manager.CompanyId)
+            throw new InvalidOperationException("Cross-company reporting relationships are not allowed. Use an audited transfer or matrix-assignment flow.");
     }
 }

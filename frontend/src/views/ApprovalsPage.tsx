@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Clock3, ShieldCheck, UserCheck } from 'lucide-react';
 import { approvalsApi } from '../api/approvals';
 import type { ApprovalRequest } from '../api/approvals';
 import { Modal } from '../components/Modal';
@@ -16,13 +16,14 @@ const statusTone = (s: string): { label: string; tone: 'amber' | 'emerald' | 'ro
   }
 };
 
-const fmtDate = (s: string) => new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+const fmtDateTime = (s?: string | null) => s ? new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '-';
 
 export function ApprovalsPage() {
   const [requests, setRequests] = useState<ApprovalRequest[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState('Pending');
+  const [queueFilter, setQueueFilter] = useState<'mine' | 'team' | 'overdue' | ''>('mine');
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
   const [comments, setComments] = useState('');
@@ -31,15 +32,15 @@ export function ApprovalsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await approvalsApi.list({ status: statusFilter || undefined, page, pageSize: 25 });
+      const res = await approvalsApi.list({ status: statusFilter || undefined, queue: queueFilter || undefined, page, pageSize: 25 });
       setRequests(res.items);
       setTotal(res.total);
     } catch { /**/ }
     finally { setLoading(false); }
-  }, [statusFilter, page]);
+  }, [statusFilter, queueFilter, page]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { setPage(1); }, [statusFilter]);
+  useEffect(() => { setPage(1); }, [statusFilter, queueFilter]);
 
   const handleDecide = async (decision: 'Approve' | 'Reject') => {
     if (!selected) return;
@@ -62,10 +63,30 @@ export function ApprovalsPage() {
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Approval Center</h1>
-        <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">Review and action pending approvals</p>
+        <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">Accountable queues by owner, team, SLA, and overdue risk</p>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {([
+          ['mine', 'My Queue'],
+          ['team', 'Team Queue'],
+          ['overdue', 'Overdue'],
+          ['', 'All'],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key || 'all-queues'}
+            type="button"
+            onClick={() => setQueueFilter(key)}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold transition ${queueFilter === key ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white/20'}`}
+          >
+            {key === 'mine' && <UserCheck className="h-3.5 w-3.5" />}
+            {key === 'overdue' && <AlertTriangle className="h-3.5 w-3.5" />}
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
         {(['Pending', 'Approved', 'Rejected', ''] as const).map((s) => (
           <button
             key={s}
@@ -84,7 +105,7 @@ export function ApprovalsPage() {
           <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {['Title', 'Entity', 'Step', 'Requested', 'Status', ''].map((h) => (
+                {['Title', 'Owner', 'SLA', 'Step', 'Status', ''].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
                 ))}
               </tr>
@@ -101,12 +122,22 @@ export function ApprovalsPage() {
               )}
               {!loading && requests.map((r) => (
                 <tr key={r.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                  <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{r.title}</td>
                   <td className="px-4 py-3">
-                    <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-600 dark:text-violet-400">{r.entityName}</span>
+                    <p className="font-medium text-slate-900 dark:text-white">{r.title}</p>
+                    <p className="mt-1 text-xs text-slate-400">{r.entityName} · {r.priority}</p>
                   </td>
-                  <td className="px-4 py-3 text-slate-500 dark:text-slate-400">Step {r.currentStepOrder}</td>
-                  <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{fmtDate(r.createdAtUtc)}</td>
+                  <td className="px-4 py-3">
+                    <p className="text-sm font-medium text-slate-700 dark:text-slate-200">{r.currentApproverName || r.currentQueue || '-'}</p>
+                    <p className="text-xs text-slate-400">{r.currentApproverRole || r.currentApproverType || '-'}</p>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${r.isOverdue ? 'bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`}>
+                      {r.isOverdue ? <AlertTriangle className="h-3 w-3" /> : <Clock3 className="h-3 w-3" />}
+                      {r.isOverdue ? 'Overdue' : `${r.slaHours}h SLA`}
+                    </span>
+                    <p className="mt-1 text-xs text-slate-400">Due {fmtDateTime(r.dueAtUtc)}</p>
+                  </td>
+                  <td className="px-4 py-3 text-slate-500 dark:text-slate-400">Step {r.currentStepOrder}<br /><span className="text-xs">{r.ageHours}h old</span></td>
                   <td className="px-4 py-3"><StatusChip {...statusTone(r.status)} /></td>
                   <td className="px-4 py-3">
                     {r.status === 'Pending' && (
@@ -147,6 +178,9 @@ export function ApprovalsPage() {
               <p className="text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">Request</p>
               <p className="mt-1 text-sm font-medium text-slate-900 dark:text-white">{selected.title}</p>
               <p className="text-xs text-slate-400 dark:text-slate-500">{selected.entityName} · {selected.entityId}</p>
+              <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                Owner: <strong>{selected.currentApproverName || selected.currentQueue || '-'}</strong> · Due {fmtDateTime(selected.dueAtUtc)}
+              </p>
             </div>
             {selected.decisions.length > 0 && (
               <div>

@@ -12,6 +12,10 @@ public class User : ITenantOwned
     public string PhoneNumber { get; set; } = string.Empty;
     public string PreferredLanguage { get; set; } = "en";
     public string Timezone { get; set; } = "UTC";
+    public string ExternalId { get; set; } = string.Empty;
+    public string IdentityProvider { get; set; } = "Local";
+    public string ProvisioningSource { get; set; } = "Local";
+    public DateTime? LastProvisionedAtUtc { get; set; }
     // Status: Active | Invited | Suspended | Locked | Deactivated | PendingPasswordSetup | PasswordResetRequired
     public string Status { get; set; } = "Active";
     // AccessMode for direct (non-employee) users — employee-linked users use EmployeeUserAccount.AccessMode

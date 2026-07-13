@@ -25,7 +25,10 @@ public class PlanningController : ControllerBase
     [HttpGet("establishment")]
     public async Task<IActionResult> Establishment(CancellationToken ct)
     {
+        if (!HasAnyPermission("organization.read", "organization.write", "reports.read")) return Forbid();
         var tenantId = this.GetTenantId()!.Value;
+
+        var scope = this.GetEntityScope();
 
         var depts = await _db.Departments.AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.IsActive)
@@ -41,6 +44,8 @@ public class PlanningController : ControllerBase
             .Where(e => e.TenantId == tenantId && (e.Status == "Active" || e.Status == "Offboarded"))
             .Select(e => new { e.DepartmentId, e.Department, e.Salary })
             .ToListAsync(ct);
+        if (!scope.IsGroupLevel)
+            emps = emps.Where(e => e.DepartmentId == null || depts.Any(d => d.Id == e.DepartmentId)).ToList();
         var reqs = await _db.ManpowerRequisitions.AsNoTracking()
             .Where(r => r.TenantId == tenantId && OpenReqStatuses.Contains(r.Status))
             .Select(r => new { r.DepartmentId, r.DepartmentName, r.HeadCount })
@@ -64,10 +69,36 @@ public class PlanningController : ControllerBase
         return Ok(rows);
     }
 
+    [HttpGet("workforce-summary")]
+    public async Task<IActionResult> WorkforceSummary(CancellationToken ct)
+    {
+        if (!HasAnyPermission("organization.read", "organization.write", "reports.read")) return Forbid();
+        var establishment = await BuildEstablishmentRows(ct);
+        var totalApproved = establishment.Sum(x => x.ApprovedHeadcount);
+        var totalCurrent = establishment.Sum(x => x.CurrentHeadcount);
+        var totalOpenReq = establishment.Sum(x => x.OpenRequisitionHeadcount);
+        var totalBudget = establishment.Sum(x => x.MonthlyBudgetAmount);
+        var totalSpend = establishment.Sum(x => x.CurrentMonthlySpend);
+        return Ok(new
+        {
+            totalApprovedHeadcount = totalApproved,
+            totalCurrentHeadcount = totalCurrent,
+            totalOpenRequisitionHeadcount = totalOpenReq,
+            totalVacancy = establishment.Sum(x => Math.Max(0, x.Gap)),
+            totalProjectedHeadcount = totalCurrent + totalOpenReq,
+            monthlyBudgetAmount = totalBudget,
+            currentMonthlySpend = totalSpend,
+            budgetVariance = totalBudget - totalSpend,
+            overBudgetDepartments = establishment.Count(x => x.MonthlyBudgetAmount > 0 && x.CurrentMonthlySpend > x.MonthlyBudgetAmount),
+            generatedAt = DateTime.UtcNow
+        });
+    }
+
     [HttpPatch("departments/{id:guid}/establishment")]
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> SetEstablishment(Guid id, [FromBody] EstablishmentUpdate body, CancellationToken ct)
     {
+        if (!HasPermission("organization.write")) return Forbid();
         var tenantId = this.GetTenantId()!.Value;
         var dept = await _db.Departments.FirstOrDefaultAsync(d => d.Id == id && d.TenantId == tenantId, ct);
         if (dept is null) return NotFound(new { message = "Department not found." });
@@ -84,7 +115,10 @@ public class PlanningController : ControllerBase
     [HttpGet("headcount-check")]
     public async Task<IActionResult> HeadcountCheck([FromQuery] Guid? departmentId, [FromQuery] string? departmentName, [FromQuery] int headCount, CancellationToken ct)
     {
+        if (!HasAnyPermission("organization.read", "organization.write", "recruitment.write")) return Forbid();
         var tenantId = this.GetTenantId()!.Value;
+        if (headCount <= 0)
+            return BadRequest(new { message = "Requested headcount must be greater than zero." });
         var dept = await _db.Departments.AsNoTracking().FirstOrDefaultAsync(d =>
             d.TenantId == tenantId && !d.IsDeleted &&
             (departmentId != null ? d.Id == departmentId : d.NameEn == departmentName), ct);
@@ -110,6 +144,46 @@ public class PlanningController : ControllerBase
                 : $"Over budget: {projected} would exceed the approved {approved} (filled {current} + pipeline {openReq} + requested {headCount}).";
         return Ok(new HeadcountCheckResult(true, dept.ApprovedHeadcount, current, openReq, headCount, projected, within, msg));
     }
+
+    private async Task<List<EstablishmentRow>> BuildEstablishmentRows(CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId()!.Value;
+        var depts = await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.IsActive)
+            .OrderBy(d => d.NameEn).ToListAsync(ct);
+        var costCenters = await _db.CostCenters.AsNoTracking()
+            .Where(c => c.TenantId == tenantId)
+            .ToDictionaryAsync(c => c.Id, c => c.Name, ct);
+        var emps = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && (e.Status == "Active" || e.Status == "Offboarded"))
+            .Select(e => new { e.DepartmentId, e.Department, e.Salary })
+            .ToListAsync(ct);
+        var reqs = await _db.ManpowerRequisitions.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && OpenReqStatuses.Contains(r.Status))
+            .Select(r => new { r.DepartmentId, r.DepartmentName, r.HeadCount })
+            .ToListAsync(ct);
+
+        return depts.Select(d =>
+        {
+            bool Match(Guid? did, string? dname) => did == d.Id || (did == null && dname == d.NameEn);
+            var deptEmps = emps.Where(e => Match(e.DepartmentId, e.Department)).ToList();
+            var current = deptEmps.Count;
+            var spend = deptEmps.Sum(e => e.Salary ?? 0m);
+            var openReq = reqs.Where(r => Match(r.DepartmentId, r.DepartmentName)).Sum(r => r.HeadCount);
+            return new EstablishmentRow(
+                d.Id, d.NameEn,
+                d.CostCenterId,
+                d.CostCenterId is { } cc && costCenters.TryGetValue(cc, out var cn) ? cn : "",
+                d.ApprovedHeadcount, current,
+                d.ApprovedHeadcount > 0 ? d.ApprovedHeadcount - current : 0,
+                openReq, d.MonthlyBudgetAmount, spend);
+        }).ToList();
+    }
+
+    private bool HasPermission(string permission) =>
+        User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    private bool HasAnyPermission(params string[] permissions) => permissions.Any(HasPermission);
 }
 
 public record EstablishmentRow(
