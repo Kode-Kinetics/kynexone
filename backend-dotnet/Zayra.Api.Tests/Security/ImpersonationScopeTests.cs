@@ -60,13 +60,11 @@ public class ImpersonationScopeTests : PlatformTestBase
         visible.Should().NotContain("EMP-B", "impersonated Company A admin must not read Company B data");
     }
 
-    // ── C2 (Phase 2 parity semantics): a grant-less user's impersonation mirrors
-    //     their own login — an EXPLICIT v2 group claim (the documented tenant
-    //     default), never scope inherited from claim ABSENCE. Claim absence itself
-    //     still fails closed — see the stripped-claims test below. ────────────────
+    // ── C2: a grant-less user's impersonation mirrors their own login: explicit
+    //     default-deny, never group scope inherited from claim absence. ───────────
 
     [Fact]
-    public async Task Impersonate_UserWithNoEntityGrants_MirrorsOwnLogin_ExplicitGroupClaim()
+    public async Task Impersonate_UserWithNoEntityGrants_MirrorsOwnLogin_DefaultDeny()
     {
         var (dbName, tenantId, companyA, companyB, _) = await SeedTenantWithTwoCompanies();
 
@@ -77,12 +75,12 @@ public class ImpersonationScopeTests : PlatformTestBase
         var jwt = await ImpersonateAndParse(controller, tenantId, user.Id);
 
         // The scope is an explicit issuance decision (claim v2), not a parser fallback.
-        jwt.Claims.Should().Contain(c => c.Type == EntityScopeContext.V2ClaimType && c.Value.Contains("\"group\""));
+        jwt.Claims.Should().Contain(c => c.Type == EntityScopeContext.V2ClaimType && c.Value.Contains("\"none\""));
         jwt.Claims.Should().Contain(c => c.Type == EntityScopeContext.StrictScopeClaim && c.Value == "true");
 
         var scope = EntityScopeContext.FromClaims(ToPrincipal(jwt));
-        scope.IsGroupLevel.Should().BeTrue("parity: the user's own login is tenant-wide by documented default");
-        (await QueryEmployeeCodesAs(dbName, jwt)).Should().Contain(new[] { "EMP-A", "EMP-B" });
+        scope.IsGroupLevel.Should().BeFalse("grant-less users must not become tenant-wide users");
+        (await QueryEmployeeCodesAs(dbName, jwt)).Should().BeEmpty();
     }
 
     [Fact]

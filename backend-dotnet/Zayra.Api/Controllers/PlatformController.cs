@@ -1209,7 +1209,8 @@ public class PlatformController : ControllerBase
             AccessMode = "FullPortal",
             Status = "Active",
             IsActive = true,
-            IsEmailConfirmed = true
+            IsEmailConfirmed = true,
+            IsGroupScope = true
         };
         admin.UserRoles.Add(new UserRole { User = admin, Role = adminRole });
         _db.Users.Add(admin);
@@ -1326,7 +1327,8 @@ public class PlatformController : ControllerBase
             AccessMode = "FullPortal",
             Status = "Active",
             IsActive = true,
-            IsEmailConfirmed = true
+            IsEmailConfirmed = true,
+            IsGroupScope = true
         };
         user.UserRoles.Add(new UserRole { User = user, Role = adminRole });
         _db.Users.Add(user);
@@ -1407,6 +1409,7 @@ public class PlatformController : ControllerBase
             user.LockoutEnd = null;
             user.FailedLoginCount = 0;
             user.MustChangePassword = req.MustChangePassword ?? false;
+            if (role.NormalizedName == "ADMIN") user.IsGroupScope = true;
             user.UpdatedAtUtc = DateTime.UtcNow;
             _db.UserRoles.RemoveRange(user.UserRoles);
             _db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
@@ -1424,6 +1427,7 @@ public class PlatformController : ControllerBase
                 Status = "Active",
                 IsActive = true,
                 IsEmailConfirmed = true,
+                IsGroupScope = role.NormalizedName == "ADMIN",
                 MustChangePassword = req.MustChangePassword ?? false
             };
             user.UserRoles.Add(new UserRole { User = user, Role = role });
@@ -3286,7 +3290,8 @@ public class PlatformController : ControllerBase
             AccessMode = "FullPortal",
             Status = "Active",
             IsActive = true,
-            IsEmailConfirmed = true
+            IsEmailConfirmed = true,
+            IsGroupScope = true
         };
         admin.UserRoles.Add(new UserRole { User = admin, Role = adminRole });
         _db.Users.Add(admin);

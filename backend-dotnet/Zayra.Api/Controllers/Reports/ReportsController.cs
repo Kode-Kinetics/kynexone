@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -12,7 +13,12 @@ namespace Zayra.Api.Controllers.Reports;
 public class ReportsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
-    public ReportsController(ZayraDbContext db) => _db = db;
+    private readonly IDataScopeService _scopeService;
+    public ReportsController(ZayraDbContext db, IDataScopeService scopeService)
+    {
+        _db = db;
+        _scopeService = scopeService;
+    }
 
     private Guid GetTenantId() =>
         Guid.TryParse(User.FindFirst("tenant_id")?.Value, out var id) ? id : Guid.Empty;
@@ -67,37 +73,39 @@ public class ReportsController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        var scope = await _scopeService.ResolveAsync(User, tid, ct);
+        var employeeIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds;
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         object? data = req.ReportKey switch
         {
-            "hr.headcount" => await RunHrHeadcount(tid, req, ct),
-            "hr.new-joiners" => await RunNewJoiners(tid, req, ct),
-            "hr.exits" => await RunExits(tid, req, ct),
-            "hr.probation" => await RunProbation(tid, ct),
-            "hr.status" => await RunEmployeeStatus(tid, req, ct),
-            "hr.nationality-mix" => await RunNationalityMix(tid, ct),
-            "attendance.daily" => await RunDailyAttendance(tid, req, ct),
-            "attendance.monthly" => await RunMonthlyAttendance(tid, req, ct),
-            "attendance.late-arrivals" => await RunLateArrivals(tid, req, ct),
-            "attendance.absences" => await RunAbsences(tid, req, ct),
-            "leave.balance" => await RunLeaveBalance(tid, req, ct),
-            "leave.usage" => await RunLeaveUsage(tid, req, ct),
-            "leave.pending" => await RunPendingLeave(tid, ct),
-            "overtime.requests" => await RunOvertimeRequests(tid, req, ct),
-            "overtime.approved" => await RunApprovedOvertime(tid, req, ct),
-            "payroll.register" => await RunPayrollRegister(tid, req, ct),
-            "payroll.summary" => await RunPayrollSummary(tid, req, ct),
+            "hr.headcount" => await RunHrHeadcount(tid, req, employeeIds, ct),
+            "hr.new-joiners" => await RunNewJoiners(tid, req, employeeIds, ct),
+            "hr.exits" => await RunExits(tid, req, employeeIds, ct),
+            "hr.probation" => await RunProbation(tid, employeeIds, ct),
+            "hr.status" => await RunEmployeeStatus(tid, req, employeeIds, ct),
+            "hr.nationality-mix" => await RunNationalityMix(tid, employeeIds, ct),
+            "attendance.daily" => await RunDailyAttendance(tid, req, employeeIds, ct),
+            "attendance.monthly" => await RunMonthlyAttendance(tid, req, employeeIds, ct),
+            "attendance.late-arrivals" => await RunLateArrivals(tid, req, employeeIds, ct),
+            "attendance.absences" => await RunAbsences(tid, req, employeeIds, ct),
+            "leave.balance" => await RunLeaveBalance(tid, req, employeeIds, ct),
+            "leave.usage" => await RunLeaveUsage(tid, req, employeeIds, ct),
+            "leave.pending" => await RunPendingLeave(tid, employeeIds, ct),
+            "overtime.requests" => await RunOvertimeRequests(tid, req, employeeIds, ct),
+            "overtime.approved" => await RunApprovedOvertime(tid, req, employeeIds, ct),
+            "payroll.register" => await RunPayrollRegister(tid, req, employeeIds, ct),
+            "payroll.summary" => await RunPayrollSummary(tid, req, employeeIds, ct),
             "recruitment.pipeline" => await RunRecruitmentPipeline(tid, ct),
-            "compliance.visa-expiry" => await RunVisaExpiry(tid, req, ct),
-            "compliance.passport-expiry" => await RunPassportExpiry(tid, req, ct),
-            "compliance.contract-expiry" => await RunContractExpiry(tid, req, ct),
-            "finance.loan-balance" => await RunLoanBalance(tid, ct),
-            "finance.advance-report" => await RunAdvanceReport(tid, ct),
+            "compliance.visa-expiry" => await RunVisaExpiry(tid, req, employeeIds, ct),
+            "compliance.passport-expiry" => await RunPassportExpiry(tid, req, employeeIds, ct),
+            "compliance.contract-expiry" => await RunContractExpiry(tid, req, employeeIds, ct),
+            "finance.loan-balance" => await RunLoanBalance(tid, employeeIds, ct),
+            "finance.advance-report" => await RunAdvanceReport(tid, employeeIds, ct),
             "finance.bonus-payout" => await RunBonusPayout(tid, req, ct),
-            "attendance.corrections" => await RunAttendanceCorrections(tid, req, ct),
-            "compliance.document-compliance" => await RunDocumentCompliance(tid, req, ct),
-            "qiwa.readiness" => await RunQiwaReadiness(tid, req, ct),
+            "attendance.corrections" => await RunAttendanceCorrections(tid, req, employeeIds, ct),
+            "compliance.document-compliance" => await RunDocumentCompliance(tid, req, employeeIds, ct),
+            "qiwa.readiness" => await RunQiwaReadiness(tid, req, employeeIds, ct),
             _ => null,
         };
 
@@ -122,60 +130,68 @@ public class ReportsController : ControllerBase
 
     // ── HR Reports ────────────────────────────────────────────────────────────
 
-    private async Task<object> RunHrHeadcount(Guid tid, RunReportRequest req, CancellationToken ct)
+    private IQueryable<Employee> EmployeeReportQuery(Guid tid, IReadOnlyCollection<int>? employeeIds)
     {
-        var q = _db.Employees.Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active");
+        var q = _db.Employees.Where(x => x.TenantId == tid && !x.IsDeleted);
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.Id));
+        return q;
+    }
+
+    private async Task<object> RunHrHeadcount(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
+    {
+        var q = EmployeeReportQuery(tid, employeeIds).Where(x => x.Status == "Active");
         if (!string.IsNullOrEmpty(req.Filters?.Department)) q = q.Where(x => x.Department == req.Filters.Department);
         return await q.GroupBy(x => x.Department)
             .Select(g => new { Department = g.Key, Count = g.Count() })
             .OrderByDescending(x => x.Count).ToListAsync(ct);
     }
 
-    private async Task<object> RunNewJoiners(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunNewJoiners(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var from = req.Filters?.DateFrom ?? DateTime.UtcNow.AddMonths(-1);
         var to = req.Filters?.DateTo ?? DateTime.UtcNow;
-        return await _db.Employees.Where(x => x.TenantId == tid && !x.IsDeleted
-                && x.JoiningDate >= from && x.JoiningDate <= to)
+        return await EmployeeReportQuery(tid, employeeIds).Where(x =>
+                x.JoiningDate >= from && x.JoiningDate <= to)
             .OrderBy(x => x.JoiningDate)
             .Select(x => new { x.EmployeeCode, x.FullName, x.Department, x.Designation, x.JoiningDate, x.Status })
             .ToListAsync(ct);
     }
 
-    private async Task<object> RunExits(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunExits(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var from = req.Filters?.DateFrom ?? DateTime.UtcNow.AddMonths(-1);
         var to = req.Filters?.DateTo ?? DateTime.UtcNow;
-        return await _db.Employees.Where(x => x.TenantId == tid && !x.IsDeleted
-                && (x.Status == "Resigned" || x.Status == "Terminated")
+        return await EmployeeReportQuery(tid, employeeIds).Where(x =>
+                (x.Status == "Resigned" || x.Status == "Terminated")
                 && x.ContractEndDate.HasValue
                 && x.ContractEndDate.Value >= DateOnly.FromDateTime(from) && x.ContractEndDate.Value <= DateOnly.FromDateTime(to))
             .Select(x => new { x.EmployeeCode, x.FullName, x.Department, ExitDate = x.ContractEndDate, x.Status })
             .OrderBy(x => x.ExitDate).ToListAsync(ct);
     }
 
-    private async Task<object> RunProbation(Guid tid, CancellationToken ct)
+    private async Task<object> RunProbation(Guid tid, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
-        return await _db.Employees.Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Probation")
+        return await EmployeeReportQuery(tid, employeeIds).Where(x => x.Status == "Probation")
             .Select(x => new { x.EmployeeCode, x.FullName, x.Department, x.JoiningDate, x.ProbationEndDate })
             .OrderBy(x => x.ProbationEndDate).ToListAsync(ct);
     }
 
-    private async Task<object> RunEmployeeStatus(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunEmployeeStatus(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
-        var q = _db.Employees.Where(x => x.TenantId == tid && !x.IsDeleted);
+        var q = EmployeeReportQuery(tid, employeeIds);
         if (!string.IsNullOrEmpty(req.Filters?.Status)) q = q.Where(x => x.Status == req.Filters.Status);
         return await q.GroupBy(x => x.Status)
             .Select(g => new { Status = g.Key, Count = g.Count() }).ToListAsync(ct);
     }
 
-    private async Task<object> RunNationalityMix(Guid tid, CancellationToken ct)
+    private async Task<object> RunNationalityMix(Guid tid, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
-        var byNationality = await _db.Employees.Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active")
+        var baseQuery = EmployeeReportQuery(tid, employeeIds).Where(x => x.Status == "Active");
+        var byNationality = await baseQuery
             .GroupBy(x => x.Nationality)
             .Select(g => new { Nationality = g.Key, Count = g.Count() })
             .OrderByDescending(x => x.Count).ToListAsync(ct);
-        var byGender = await _db.Employees.Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active")
+        var byGender = await baseQuery
             .GroupBy(x => x.Gender)
             .Select(g => new { Gender = g.Key, Count = g.Count() }).ToListAsync(ct);
         return new { byNationality, byGender };
@@ -183,17 +199,19 @@ public class ReportsController : ControllerBase
 
     // ── Attendance Reports ────────────────────────────────────────────────────
 
-    private async Task<object> RunDailyAttendance(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunDailyAttendance(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var date = req.Filters?.DateFrom ?? DateTime.UtcNow.Date;
         var dateOnly = DateOnly.FromDateTime(date);
-        return await _db.AttendanceDailyRecords
-            .Where(x => x.TenantId == tid && x.WorkDate == dateOnly)
+        var q = _db.AttendanceDailyRecords
+            .Where(x => x.TenantId == tid && x.WorkDate == dateOnly);
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        return await q
             .Select(x => new { x.EmployeeId, x.EmployeeName, CheckIn = x.FirstInUtc, CheckOut = x.LastOutUtc, x.Status, WorkHours = x.TotalWorkedMinutes / 60.0, x.LateMinutes })
             .OrderBy(x => x.EmployeeName).ToListAsync(ct);
     }
 
-    private async Task<object> RunMonthlyAttendance(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunMonthlyAttendance(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         // Resolve date range: honour DateFrom/DateTo if supplied; default to current calendar month.
         DateOnly from, to;
@@ -217,6 +235,7 @@ public class ReportsController : ControllerBase
         }
 
         var q = _db.AttendanceDailyRecords.Where(x => x.TenantId == tid && x.WorkDate >= from && x.WorkDate <= to);
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
         if (!string.IsNullOrEmpty(req.Filters?.Department)) q = q.Where(x => x.Department == req.Filters.Department);
 
         return await q
@@ -237,31 +256,36 @@ public class ReportsController : ControllerBase
             .ToListAsync(ct);
     }
 
-    private async Task<object> RunLateArrivals(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunLateArrivals(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var from = DateOnly.FromDateTime(req.Filters?.DateFrom ?? DateTime.UtcNow.AddDays(-30));
         var to = DateOnly.FromDateTime(req.Filters?.DateTo ?? DateTime.UtcNow);
-        return await _db.AttendanceDailyRecords
-            .Where(x => x.TenantId == tid && x.WorkDate >= from && x.WorkDate <= to && x.LateMinutes > 0)
+        var q = _db.AttendanceDailyRecords
+            .Where(x => x.TenantId == tid && x.WorkDate >= from && x.WorkDate <= to && x.LateMinutes > 0);
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        return await q
             .Select(x => new { x.EmployeeId, x.EmployeeName, x.WorkDate, CheckIn = x.FirstInUtc, x.LateMinutes })
             .OrderByDescending(x => x.LateMinutes).ToListAsync(ct);
     }
 
-    private async Task<object> RunAbsences(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunAbsences(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var from = DateOnly.FromDateTime(req.Filters?.DateFrom ?? DateTime.UtcNow.AddDays(-30));
         var to = DateOnly.FromDateTime(req.Filters?.DateTo ?? DateTime.UtcNow);
-        return await _db.AttendanceDailyRecords
-            .Where(x => x.TenantId == tid && x.WorkDate >= from && x.WorkDate <= to && x.Status == "Absent")
+        var q = _db.AttendanceDailyRecords
+            .Where(x => x.TenantId == tid && x.WorkDate >= from && x.WorkDate <= to && x.Status == "Absent");
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        return await q
             .Select(x => new { x.EmployeeId, x.EmployeeName, x.WorkDate, x.Status })
             .OrderBy(x => x.WorkDate).ThenBy(x => x.EmployeeName).ToListAsync(ct);
     }
 
     // ── Leave Reports ─────────────────────────────────────────────────────────
 
-    private async Task<object> RunLeaveBalance(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunLeaveBalance(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var q = _db.EmployeeLeaveBalances.Where(x => x.TenantId == tid);
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
         if (!string.IsNullOrEmpty(req.Filters?.Department))
         {
             var empIds = await _db.Employees.Where(e => e.TenantId == tid && e.Department == req.Filters.Department && !e.IsDeleted)
@@ -272,42 +296,50 @@ public class ReportsController : ControllerBase
             .OrderBy(x => x.EmployeeName).ToListAsync(ct);
     }
 
-    private async Task<object> RunLeaveUsage(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunLeaveUsage(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var from = req.Filters?.DateFrom ?? DateTime.UtcNow.AddMonths(-3);
         var to = req.Filters?.DateTo ?? DateTime.UtcNow;
-        return await _db.LeaveRequests
+        var q = _db.LeaveRequests
             .Where(x => x.TenantId == tid && x.Status == "Approved"
-                && x.StartDate >= DateOnly.FromDateTime(from) && x.StartDate <= DateOnly.FromDateTime(to))
+                && x.StartDate >= DateOnly.FromDateTime(from) && x.StartDate <= DateOnly.FromDateTime(to));
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        return await q
             .Select(x => new { x.EmployeeId, x.EmployeeName, x.LeaveTypeName, x.StartDate, x.EndDate, x.TotalDays })
             .OrderBy(x => x.StartDate).ToListAsync(ct);
     }
 
-    private async Task<object> RunPendingLeave(Guid tid, CancellationToken ct)
+    private async Task<object> RunPendingLeave(Guid tid, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
-        return await _db.LeaveRequests.Where(x => x.TenantId == tid && (x.Status == "Submitted" || x.Status == "Pending"))
+        var q = _db.LeaveRequests.Where(x => x.TenantId == tid && (x.Status == "Submitted" || x.Status == "Pending"));
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        return await q
             .Select(x => new { x.EmployeeId, x.EmployeeName, x.LeaveTypeName, x.StartDate, x.EndDate, x.TotalDays, x.Status, x.CreatedAtUtc })
             .OrderBy(x => x.CreatedAtUtc).ToListAsync(ct);
     }
 
     // ── Overtime Reports ──────────────────────────────────────────────────────
 
-    private async Task<object> RunOvertimeRequests(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunOvertimeRequests(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var from = DateOnly.FromDateTime(req.Filters?.DateFrom ?? DateTime.UtcNow.AddMonths(-1));
         var to = DateOnly.FromDateTime(req.Filters?.DateTo ?? DateTime.UtcNow);
-        return await _db.OvertimeRequests
-            .Where(x => x.TenantId == tid && x.WorkDate >= from && x.WorkDate <= to)
+        var q = _db.OvertimeRequests
+            .Where(x => x.TenantId == tid && x.WorkDate >= from && x.WorkDate <= to);
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        return await q
             .Select(x => new { x.EmployeeId, x.EmployeeName, OvertimeDate = x.WorkDate, RequestedHours = x.RequestedMinutes / 60.0, x.Status })
             .OrderBy(x => x.OvertimeDate).ToListAsync(ct);
     }
 
-    private async Task<object> RunApprovedOvertime(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunApprovedOvertime(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var from = DateOnly.FromDateTime(req.Filters?.DateFrom ?? DateTime.UtcNow.AddMonths(-1));
         var to = DateOnly.FromDateTime(req.Filters?.DateTo ?? DateTime.UtcNow);
-        return await _db.OvertimeRequests
-            .Where(x => x.TenantId == tid && x.Status == "Approved" && x.WorkDate >= from && x.WorkDate <= to)
+        var q = _db.OvertimeRequests
+            .Where(x => x.TenantId == tid && x.Status == "Approved" && x.WorkDate >= from && x.WorkDate <= to);
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        return await q
             .GroupBy(x => x.EmployeeName)
             .Select(g => new { Employee = g.Key, TotalHours = g.Sum(x => x.RequestedMinutes) / 60.0, Count = g.Count() })
             .OrderByDescending(x => x.TotalHours).ToListAsync(ct);
@@ -315,26 +347,30 @@ public class ReportsController : ControllerBase
 
     // ── Payroll Reports ───────────────────────────────────────────────────────
 
-    private async Task<object> RunPayrollRegister(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunPayrollRegister(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var run = await _db.PayrollRuns
             .Where(x => x.TenantId == tid)
             .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
             .FirstOrDefaultAsync(ct);
         if (run == null) return new List<object>();
-        return await _db.PayrollSlips.Where(x => x.TenantId == tid && x.RunId == run.Id)
+        var q = _db.PayrollSlips.Where(x => x.TenantId == tid && x.RunId == run.Id);
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        return await q
             .Select(x => new { x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary, x.GrossSalary, x.Deductions, x.NetSalary, x.Status })
             .OrderBy(x => x.Department).ThenBy(x => x.EmployeeName).ToListAsync(ct);
     }
 
-    private async Task<object> RunPayrollSummary(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunPayrollSummary(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var run = await _db.PayrollRuns
             .Where(x => x.TenantId == tid)
             .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
             .FirstOrDefaultAsync(ct);
         if (run == null) return new List<object>();
-        return await _db.PayrollSlips.Where(x => x.TenantId == tid && x.RunId == run.Id)
+        var q = _db.PayrollSlips.Where(x => x.TenantId == tid && x.RunId == run.Id);
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        return await q
             .GroupBy(x => x.Department)
             .Select(g => new { Department = g.Key, Headcount = g.Count(), TotalGross = g.Sum(x => x.GrossSalary), TotalNet = g.Sum(x => x.NetSalary), TotalDeductions = g.Sum(x => x.Deductions) })
             .OrderBy(x => x.Department).ToListAsync(ct);
@@ -352,8 +388,9 @@ public class ReportsController : ControllerBase
 
     // ── Compliance Reports ────────────────────────────────────────────────────
 
-    private async Task<object> RunVisaExpiry(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunVisaExpiry(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
+        if (employeeIds is not null) return Array.Empty<object>();
         var days = req.Filters?.DaysAhead ?? 90;
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(days));
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -363,8 +400,9 @@ public class ReportsController : ControllerBase
             .OrderBy(x => x.ExpiryDate).ToListAsync(ct);
     }
 
-    private async Task<object> RunPassportExpiry(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunPassportExpiry(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
+        if (employeeIds is not null) return Array.Empty<object>();
         var days = req.Filters?.DaysAhead ?? 90;
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(days));
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -374,8 +412,9 @@ public class ReportsController : ControllerBase
             .OrderBy(x => x.ExpiryDate).ToListAsync(ct);
     }
 
-    private async Task<object> RunContractExpiry(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunContractExpiry(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
+        if (employeeIds is not null) return Array.Empty<object>();
         var days = req.Filters?.DaysAhead ?? 90;
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(days));
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -388,18 +427,22 @@ public class ReportsController : ControllerBase
 
     // ── Finance Reports ───────────────────────────────────────────────────────
 
-    private async Task<object> RunLoanBalance(Guid tid, CancellationToken ct)
+    private async Task<object> RunLoanBalance(Guid tid, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
-        return await _db.EmployeeLoans
-            .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active")
+        var q = _db.EmployeeLoans
+            .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active");
+        if (employeeIds is not null) q = q.Where(x => x.EmployeeIntId.HasValue && employeeIds.Contains(x.EmployeeIntId.Value));
+        return await q
             .Select(x => new { x.EmployeeName, x.LoanNumber, x.LoanTypeName, x.ApprovedAmount, x.TotalRepaid, x.OutstandingBalance, x.RepaymentStartDate })
             .OrderByDescending(x => x.OutstandingBalance).ToListAsync(ct);
     }
 
-    private async Task<object> RunAdvanceReport(Guid tid, CancellationToken ct)
+    private async Task<object> RunAdvanceReport(Guid tid, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
-        return await _db.SalaryAdvances
-            .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active")
+        var q = _db.SalaryAdvances
+            .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active");
+        if (employeeIds is not null) q = q.Where(x => x.EmployeeIntId.HasValue && employeeIds.Contains(x.EmployeeIntId.Value));
+        return await q
             .Select(x => new { x.EmployeeName, x.AdvanceNumber, x.ApprovedAmount, x.TotalRepaid, x.OutstandingBalance, x.RepaymentStartDate })
             .OrderByDescending(x => x.OutstandingBalance).ToListAsync(ct);
     }
@@ -414,12 +457,13 @@ public class ReportsController : ControllerBase
 
     // ── Attendance Corrections / Exceptions Report ────────────────────────────
 
-    private async Task<object> RunAttendanceCorrections(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunAttendanceCorrections(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var from = DateOnly.FromDateTime(req.Filters?.DateFrom ?? DateTime.UtcNow.AddMonths(-1));
         var to = DateOnly.FromDateTime(req.Filters?.DateTo ?? DateTime.UtcNow);
         var q = _db.AttendanceRegularizationRequests.Where(x => x.TenantId == tid
             && x.WorkDate >= from && x.WorkDate <= to);
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
         if (!string.IsNullOrEmpty(req.Filters?.Status)) q = q.Where(x => x.Status == req.Filters.Status);
 
         var rows = await q.OrderByDescending(x => x.CreatedAtUtc)
@@ -457,10 +501,11 @@ public class ReportsController : ControllerBase
 
     private static readonly string[] _qiwaRequiredDocs = ["Iqama", "Work Permit", "National ID", "Passport"];
 
-    private async Task<object> RunDocumentCompliance(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunDocumentCompliance(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var q = _db.EmployeeDocuments.Where(x => x.TenantId == tid && !x.IsDeleted);
+        if (employeeIds is not null) q = q.Where(x => x.EmployeeId.HasValue && employeeIds.Contains(x.EmployeeId.Value));
         if (!string.IsNullOrEmpty(req.Filters?.Status)) q = q.Where(x => x.ApprovalStatus == req.Filters.Status);
 
         // Join employee for department/location filtering
@@ -513,9 +558,9 @@ public class ReportsController : ControllerBase
 
     // ── Qiwa Readiness Report ─────────────────────────────────────────────────
 
-    private async Task<object> RunQiwaReadiness(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunQiwaReadiness(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
-        var empQ = _db.Employees.Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active");
+        var empQ = EmployeeReportQuery(tid, employeeIds).Where(x => x.Status == "Active");
         if (!string.IsNullOrEmpty(req.Filters?.Department)) empQ = empQ.Where(x => x.Department == req.Filters.Department);
         if (!string.IsNullOrEmpty(req.Filters?.Location)) empQ = empQ.Where(x => x.Branch == req.Filters.Location);
 

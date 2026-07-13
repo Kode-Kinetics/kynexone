@@ -70,7 +70,14 @@ public class DataScopeService : IDataScopeService
         bool hasEmpWrite = permissions.Contains("employees.write");
         bool hasEmpRead = permissions.Contains("employees.read");
         bool hasMgrRead = permissions.Contains("manager.read");
-        if (hasEmpWrite || (hasEmpRead && !hasMgrRead))
+        bool hasOrgRole =
+            caller.IsInRole("Admin")
+            || caller.IsInRole("HR Director")
+            || caller.IsInRole("HR Manager")
+            || caller.IsInRole("HR Officer")
+            || caller.IsInRole("Payroll Officer")
+            || caller.IsInRole("Auditor");
+        if (hasOrgRole || hasEmpWrite || (hasEmpRead && !hasMgrRead))
             return new DataScope { Level = DataScopeLevel.Organization };
 
         // 2. Resolve caller's employee ID

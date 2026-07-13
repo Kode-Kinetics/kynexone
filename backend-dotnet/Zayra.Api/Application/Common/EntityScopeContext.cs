@@ -176,10 +176,8 @@ public static class EntityScopeClaims
     ///     SNAPSHOT of companies active at issuance, frozen into the token).
     ///  3. Grants exist but resolve to nothing → none (deny — misconfigured grants must
     ///     never widen).
-    ///  4. No grants at all → group. This is the documented tenant-default: tenant users
-    ///     are tenant-wide until per-user company scoping is assigned. It is an EXPLICIT
-    ///     issuance-time decision (auditable, revocable per user), not a parser fallback —
-    ///     which is what makes the StrictMode flip safe.
+    ///  4. No grants at all → none. Enterprise HR access is default-deny unless the
+    ///     user is explicitly group-scoped or has legal-entity grants.
     /// </summary>
     public static EntityScopeDescriptor Resolve(
         bool userIsGroupScope,
@@ -187,7 +185,7 @@ public static class EntityScopeClaims
         IReadOnlyCollection<Guid> activeCompanyIdsAtIssuance)
     {
         if (userIsGroupScope) return EntityScopeDescriptor.Group;
-        if (activeGrants.Count == 0) return EntityScopeDescriptor.Group; // tenant default (rule 4)
+        if (activeGrants.Count == 0) return EntityScopeDescriptor.None; // default-deny (rule 4)
 
         // Dynamic group grants, plus legacy null-company Selected rows that pre-date the
         // grant-mode migration (behavior-preserving: null company always meant group).

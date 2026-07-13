@@ -286,28 +286,46 @@ public class AttendanceController : ControllerBase
     }
 
     [HttpGet("reports/daily")]
-    public Task<IReadOnlyCollection<AttendanceDailyDto>> ReportDaily([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct) =>
-        _attendance.ReportDailyAsync(RequireTenant(), from, to, ct);
+    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportDaily([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
+    {
+        var rows = await _attendance.ReportDailyAsync(RequireTenant(), from, to, ct);
+        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+    }
 
     [HttpGet("reports/monthly")]
-    public Task<IReadOnlyCollection<AttendanceMonthlyDto>> ReportMonthly([FromQuery] int year, [FromQuery] int month, CancellationToken ct) =>
-        _attendance.ReportMonthlyAsync(RequireTenant(), year, month, ct);
+    public async Task<IReadOnlyCollection<AttendanceMonthlyDto>> ReportMonthly([FromQuery] int year, [FromQuery] int month, CancellationToken ct)
+    {
+        var rows = await _attendance.ReportMonthlyAsync(RequireTenant(), year, month, ct);
+        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+    }
 
     [HttpGet("reports/late")]
-    public Task<IReadOnlyCollection<AttendanceDailyDto>> ReportLate([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct) =>
-        _attendance.ReportByStatusAsync(RequireTenant(), from, to, "Late", ct);
+    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportLate([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
+    {
+        var rows = await _attendance.ReportByStatusAsync(RequireTenant(), from, to, "Late", ct);
+        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+    }
 
     [HttpGet("reports/absence")]
-    public Task<IReadOnlyCollection<AttendanceDailyDto>> ReportAbsence([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct) =>
-        _attendance.ReportByStatusAsync(RequireTenant(), from, to, "Absent", ct);
+    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportAbsence([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
+    {
+        var rows = await _attendance.ReportByStatusAsync(RequireTenant(), from, to, "Absent", ct);
+        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+    }
 
     [HttpGet("reports/missing-punch")]
-    public Task<IReadOnlyCollection<AttendanceDailyDto>> ReportMissingPunch([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct) =>
-        _attendance.ReportMissingPunchAsync(RequireTenant(), from, to, ct);
+    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportMissingPunch([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
+    {
+        var rows = await _attendance.ReportMissingPunchAsync(RequireTenant(), from, to, ct);
+        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+    }
 
     [HttpGet("reports/payroll-summary")]
-    public Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> ReportPayroll([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct) =>
-        _attendance.PayrollSummaryAsync(RequireTenant(), from, to, ct);
+    public async Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> ReportPayroll([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
+    {
+        var rows = await _attendance.PayrollSummaryAsync(RequireTenant(), from, to, ct);
+        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+    }
 
     [HttpGet("reports/device-sync")]
     public Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> ReportDeviceSync(CancellationToken ct) =>
@@ -322,6 +340,13 @@ public class AttendanceController : ControllerBase
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id")!);
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
+
+    private async Task<IReadOnlyCollection<T>> FilterAttendanceReportRows<T>(IReadOnlyCollection<T> rows, Func<T, int> employeeIdSelector, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        if (scope.IsUnrestricted) return rows;
+        return rows.Where(row => scope.AllowedEmployeeIds!.Contains(employeeIdSelector(row))).ToList();
+    }
 
     private Task<int?> GetRegularizationEmployeeId(Guid tenantId, Guid id, CancellationToken ct) =>
         _db.AttendanceRegularizationRequests

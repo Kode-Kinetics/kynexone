@@ -49,6 +49,7 @@ public class AccessManagementService : IAccessManagementService
         if (exists) throw new InvalidOperationException("A user with this email already exists in this tenant.");
 
         var roles = await LoadRoles(tenantId, request.Roles, cancellationToken);
+        var isAdminUser = roles.Any(r => r.NormalizedName == "ADMIN");
         var user = new User
         {
             TenantId = tenantId,
@@ -58,6 +59,7 @@ public class AccessManagementService : IAccessManagementService
             FullName = request.FullName.Trim(),
             PasswordHash = _passwordHasher.Hash(request.Password),
             AccessMode = AccessModes.FullPortal,
+            IsGroupScope = isAdminUser,
             IsActive = true,
             IsEmailConfirmed = true
         };
@@ -80,6 +82,7 @@ public class AccessManagementService : IAccessManagementService
         var user = await _db.Users
             .Include(x => x.UserRoles)
             .Include(x => x.EmployeeUserAccounts)
+            .Include(x => x.EntityAccesses)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.NormalizedEmail == normalizedEmail, cancellationToken);
         if (user is null)
         {
@@ -122,6 +125,25 @@ public class AccessManagementService : IAccessManagementService
         link.InvitationTokenHash = string.IsNullOrEmpty(invitationToken) ? string.Empty : _tokenService.HashToken(invitationToken);
         link.UpdatedAtUtc = DateTime.UtcNow;
         link.UpdatedBy = context.UserId;
+
+        if (employee.CompanyId.HasValue && !user.EntityAccesses.Any(x =>
+                x.TenantId == tenantId
+                && x.IsActive
+                && x.CompanyId == employee.CompanyId.Value
+                && x.GrantMode == EntityGrantModes.SelectedCompanies))
+        {
+            user.EntityAccesses.Add(new UserEntityAccess
+            {
+                TenantId = tenantId,
+                User = user,
+                CompanyId = employee.CompanyId.Value,
+                GrantMode = EntityGrantModes.SelectedCompanies,
+                Role = string.Join(",", roles.Select(r => r.Name)),
+                CreatedBy = context.UserId,
+                GrantedBy = context.UserId,
+                GrantedAt = DateTime.UtcNow
+            });
+        }
 
         employee.UserAccountId = accessMode == AccessModes.NoLogin ? null : user.Id;
         await _db.SaveChangesAsync(cancellationToken);

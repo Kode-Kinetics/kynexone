@@ -52,7 +52,8 @@ public class AuthSeeder : IAuthSeeder
                 AccessMode = "FullPortal",
                 Status = "Active",
                 IsActive = true,
-                IsEmailConfirmed = true
+                IsEmailConfirmed = true,
+                IsGroupScope = true
             };
             admin.UserRoles.Add(new UserRole { User = admin, Role = adminRole });
             _db.Users.Add(admin);
@@ -61,6 +62,7 @@ public class AuthSeeder : IAuthSeeder
         {
             admin.UserRoles.Add(new UserRole { UserId = admin.Id, RoleId = adminRole.Id });
         }
+        if (!admin.IsGroupScope) admin.IsGroupScope = true;
 
         await _db.SaveChangesAsync(cancellationToken);
 

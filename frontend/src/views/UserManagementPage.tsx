@@ -8,17 +8,21 @@ import {
   RefreshCw, Plus, Search, ChevronLeft, ChevronRight, Eye,
   UserCheck, UserX, Unlock, RotateCcw, ClipboardList, UserCog,
   CheckSquare, MinusSquare, Square, Edit2, Power, PowerOff, Table2, Trash2,
+  Building2,
 } from 'lucide-react';
 import {
   usersApi, rolesApi, delegationsApi, authoritiesApi, securitySettingsApi,
   identityAuditApi, grantorsApi, permissionGrantApi,
+  entityGrantsApi,
 } from '../api/identity';
+import { companiesApi } from '../api/organization';
 import client from '../api/client';
 import type {
   UserListItem, RoleItem, PermissionItem, ApprovalDelegation,
   ApprovalAuthority, SecuritySetting, AuditLogItem, PermissionGrantorRecord,
-  UserAccess, PermissionMatrix,
+  UserAccess, PermissionMatrix, EntityGrant,
 } from '../api/identity';
+import type { CompanyDto } from '../api/organization';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -429,9 +433,14 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
 }) {
   const [access, setAccess] = useState<UserAccess | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<'info' | 'roles' | 'access-mode' | 'overrides'>('info');
+  const [tab, setTab] = useState<'info' | 'roles' | 'company-access' | 'access-mode' | 'overrides'>('info');
   const [selectedRoles, setSelectedRoles] = useState<string[]>(user.roles);
   const [accessMode, setAccessMode] = useState(user.accessMode);
+  const [companyGrants, setCompanyGrants] = useState<EntityGrant[]>([]);
+  const [companies, setCompanies] = useState<CompanyDto[]>([]);
+  const [grantMode, setGrantMode] = useState('SelectedCompanies');
+  const [grantCompanyId, setGrantCompanyId] = useState('');
+  const [grantRole, setGrantRole] = useState('HR');
   const [permSearch, setPermSearch] = useState('');
   const [pendingOverrides, setPendingOverrides] = useState<Record<string, { effect: 'Allow' | 'Deny' | 'Remove'; reason: string }>>({});
   const [overrideReason, setOverrideReason] = useState('');
@@ -443,6 +452,16 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
     usersApi.getAccess(user.id).then(a => { setAccess(a); }).catch(() => {}).finally(() => setLoading(false));
   }, [user.id]);
   useEffect(() => { reload(); }, [reload]);
+  const reloadCompanyAccess = useCallback(async () => {
+    const [grants, companyPage] = await Promise.all([
+      entityGrantsApi.list(user.id),
+      companiesApi.list(1, 200),
+    ]);
+    setCompanyGrants(grants);
+    setCompanies(companyPage.items);
+    if (!grantCompanyId && companyPage.items.length > 0) setGrantCompanyId(companyPage.items[0].id);
+  }, [grantCompanyId, user.id]);
+  useEffect(() => { reloadCompanyAccess().catch(() => {}); }, [reloadCompanyAccess]);
 
   const saveRoles = async () => {
     setSaving(true); setSaveErr(''); setSaveOk('');
@@ -457,6 +476,51 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
     catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
       setSaveErr(msg ?? 'Failed to update access mode.');
+    }
+    setSaving(false);
+  };
+
+  const addCompanyGrant = async () => {
+    setSaving(true); setSaveErr(''); setSaveOk('');
+    try {
+      await entityGrantsApi.create({
+        userId: user.id,
+        companyId: grantMode === 'SelectedCompanies' ? grantCompanyId : undefined,
+        role: grantRole || 'HR',
+        grantMode,
+      });
+      await reloadCompanyAccess();
+      setSaveOk('Company access updated. The user must sign in again for token scope changes.');
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setSaveErr(msg ?? 'Failed to update company access.');
+    }
+    setSaving(false);
+  };
+
+  const removeCompanyGrant = async (id: string) => {
+    setSaving(true); setSaveErr(''); setSaveOk('');
+    try {
+      await entityGrantsApi.remove(id);
+      await reloadCompanyAccess();
+      setSaveOk('Company access removed. The user must sign in again for token scope changes.');
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setSaveErr(msg ?? 'Failed to remove company access.');
+    }
+    setSaving(false);
+  };
+
+  const setGroupScope = async (enabled: boolean) => {
+    setSaving(true); setSaveErr(''); setSaveOk('');
+    try {
+      await entityGrantsApi.setGroupScope(user.id, enabled);
+      setSaveOk(enabled
+        ? 'Group-wide scope granted. The user must sign in again for token scope changes.'
+        : 'Group-wide scope revoked. The user must sign in again for token scope changes.');
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setSaveErr(msg ?? 'Failed to update group scope.');
     }
     setSaving(false);
   };
@@ -504,9 +568,12 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
   const subTabs = [
     { id: 'info' as const, label: 'Info' },
     { id: 'roles' as const, label: 'Roles' },
+    { id: 'company-access' as const, label: 'Company Access' },
     { id: 'access-mode' as const, label: 'Access Mode' },
     { id: 'overrides' as const, label: `Overrides${Object.keys(pendingOverrides).length ? ` (${Object.keys(pendingOverrides).length})` : ''}` },
   ];
+
+  const companyName = (id?: string) => companies.find(c => c.id === id)?.legalNameEn ?? id ?? 'All companies';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -574,6 +641,76 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
                         </div>
                       </label>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {tab === 'company-access' && (
+                <div className="space-y-4">
+                  <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                    Company access controls legal-entity visibility. Role permissions decide what the user can do; this decides where they can do it.
+                  </div>
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-slate-500">Current grants</p>
+                    {companyGrants.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500 dark:border-slate-700">
+                        No explicit company grants.
+                      </div>
+                    ) : companyGrants.map(g => (
+                      <div key={g.id} className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Building2 className="h-4 w-4 text-violet-500 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                              {g.grantMode === 'SelectedCompanies' ? companyName(g.companyId) : g.grantMode === 'AllCurrentCompanies' ? 'All current companies' : 'All current and future companies'}
+                            </p>
+                            <p className="text-xs text-slate-500">{g.role || 'Company access'} · {fmtDate(g.createdAtUtc)}</p>
+                          </div>
+                        </div>
+                        <button type="button" onClick={() => removeCompanyGrant(g.id)} disabled={saving}
+                          className="rounded p-1 text-red-500 hover:bg-red-50 disabled:opacity-50">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                    <FormField label="Grant mode">
+                      <select className={inp()} value={grantMode} onChange={e => setGrantMode(e.target.value)}>
+                        <option value="SelectedCompanies">Selected company</option>
+                        <option value="AllCurrentCompanies">All current companies</option>
+                        <option value="AllCurrentAndFutureCompanies">All current and future companies</option>
+                      </select>
+                    </FormField>
+                    {grantMode === 'SelectedCompanies' && (
+                      <FormField label="Company">
+                        <select className={inp()} value={grantCompanyId} onChange={e => setGrantCompanyId(e.target.value)}>
+                          {companies.map(c => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}
+                        </select>
+                      </FormField>
+                    )}
+                    <FormField label="Grant role label">
+                      <input className={inp()} value={grantRole} onChange={e => setGrantRole(e.target.value)} placeholder="HR, Payroll, Auditor" />
+                    </FormField>
+                    {grantMode === 'AllCurrentAndFutureCompanies' && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                        This is dynamic group-wide access and will include future companies.
+                      </div>
+                    )}
+                    <button type="button" onClick={addCompanyGrant} disabled={saving || (grantMode === 'SelectedCompanies' && !grantCompanyId)}
+                      className="w-fit rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
+                      Add Grant
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => setGroupScope(true)} disabled={saving}
+                      className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                      Grant Group Scope
+                    </button>
+                    <button type="button" onClick={() => setGroupScope(false)} disabled={saving}
+                      className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                      Revoke Group Scope
+                    </button>
                   </div>
                 </div>
               )}

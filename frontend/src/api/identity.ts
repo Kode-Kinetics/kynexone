@@ -84,6 +84,15 @@ export interface PermissionGrantorRecord {
   createdAtUtc: string;
 }
 
+export interface EntityGrant {
+  id: string;
+  userId: string;
+  companyId?: string;
+  role: string;
+  createdAtUtc: string;
+  grantMode: 'SelectedCompanies' | 'AllCurrentCompanies' | 'AllCurrentAndFutureCompanies';
+}
+
 export interface ApprovalDelegation {
   id: string;
   fromEmployeeId: number;
@@ -246,6 +255,20 @@ export const grantorsApi = {
 export const permissionGrantApi = {
   grant: (userId: string, body: { permissionKey: string; effect: string; reason?: string; expiresAtUtc?: string }) =>
     client.post<UserAccess>(`/api/access/users/${userId}/grant-permission`, body).then(r => r.data),
+};
+
+export const entityGrantsApi = {
+  list: (userId?: string) =>
+    client.get<EntityGrant[]>('/api/access/entity-grants', { params: userId ? { userId } : undefined }).then(r => r.data),
+
+  create: (body: { userId: string; companyId?: string; role: string; grantMode?: string }) =>
+    client.post<EntityGrant>('/api/access/entity-grants', body).then(r => r.data),
+
+  remove: (id: string) =>
+    client.delete(`/api/access/entity-grants/${id}`),
+
+  setGroupScope: (userId: string, isGroupScope: boolean) =>
+    client.patch(`/api/access/users/${userId}/group-scope`, { isGroupScope }),
 };
 
 export const delegationsApi = {

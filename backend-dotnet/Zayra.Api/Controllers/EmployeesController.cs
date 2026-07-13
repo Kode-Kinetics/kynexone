@@ -107,7 +107,10 @@ public class EmployeesController : ControllerBase
     {
         var tenantId = RequireTenant();
         var entityScope = this.GetEntityScope();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var exportQuery = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted);
+        if (!scope.IsUnrestricted)
+            exportQuery = exportQuery.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
         if (!entityScope.IsGroupLevel)
         {
             var accessibleIds = entityScope.AccessibleCompanyIds;
@@ -941,6 +944,17 @@ public class EmployeesController : ControllerBase
             if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(document.EmployeeId.Value))
                 return Forbid();
         }
+        else if (document.DraftId.HasValue)
+        {
+            var actorId = GetUserId();
+            var draft = await _db.EmployeeDrafts.AsNoTracking()
+                .Where(x => x.Id == document.DraftId.Value && x.TenantId == tenantId)
+                .Select(x => new { x.CreatedByUserId })
+                .FirstOrDefaultAsync(cancellationToken);
+            if (draft is null) return NotFound();
+            if (!this.GetEntityScope().IsGroupLevel && draft.CreatedByUserId != actorId)
+                return Forbid();
+        }
 
         var path = _documents.ResolvePath(document.StorageUrl);
         if (!System.IO.File.Exists(path)) return NotFound(new { message = "Stored document file was not found." });
@@ -1080,6 +1094,8 @@ public class EmployeesController : ControllerBase
         var tenantId = RequireTenant();
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
         var sensitive = request.Changes.Keys.Where(SensitiveFields.Contains).ToList();
         if (sensitive.Count > 0)
         {
@@ -1574,15 +1590,47 @@ public class EmployeesController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(employee.WorkEmail) || employee.TenantId is null) return null;
         var normalized = AuthService.Normalize(employee.WorkEmail);
-        var exists = await _db.Users.FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.NormalizedEmail == normalized, cancellationToken);
-        if (exists is not null && exists.IsActive) return exists.Id;
-        if (exists is not null && !exists.IsActive) { exists.IsActive = true; exists.FullName = employee.FullName; await _db.SaveChangesAsync(cancellationToken); return exists.Id; }
+        var exists = await _db.Users.Include(x => x.EntityAccesses).FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.NormalizedEmail == normalized, cancellationToken);
+        if (exists is not null)
+        {
+            if (!exists.IsActive)
+            {
+                exists.IsActive = true;
+                exists.FullName = employee.FullName;
+            }
+            EnsureEmployeeCompanyGrant(exists, employee);
+            await _db.SaveChangesAsync(cancellationToken);
+            return exists.Id;
+        }
         var role = await _db.Roles.FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.NormalizedName == "EMPLOYEE", cancellationToken);
         var user = new User { TenantId = employee.TenantId.Value, Email = employee.WorkEmail.Trim().ToLowerInvariant(), NormalizedEmail = normalized, FullName = employee.FullName, PasswordHash = _passwordHasher.Hash("ChangeMe123!"), IsActive = true, IsEmailConfirmed = false };
         _db.Users.Add(user);
         if (role is not null) user.UserRoles.Add(new UserRole { User = user, Role = role });
+        EnsureEmployeeCompanyGrant(user, employee);
         await _db.SaveChangesAsync(cancellationToken);
         return user.Id;
+    }
+
+    private void EnsureEmployeeCompanyGrant(User user, Employee employee)
+    {
+        if (employee.TenantId is null || !employee.CompanyId.HasValue) return;
+        if (user.EntityAccesses.Any(x =>
+                x.TenantId == employee.TenantId.Value
+                && x.IsActive
+                && x.CompanyId == employee.CompanyId.Value
+                && x.GrantMode == EntityGrantModes.SelectedCompanies))
+            return;
+        user.EntityAccesses.Add(new UserEntityAccess
+        {
+            TenantId = employee.TenantId.Value,
+            User = user,
+            CompanyId = employee.CompanyId.Value,
+            GrantMode = EntityGrantModes.SelectedCompanies,
+            Role = "Employee",
+            CreatedBy = GetUserId(),
+            GrantedBy = GetUserId(),
+            GrantedAt = DateTime.UtcNow
+        });
     }
 
     private void ApplyChanges(Employee employee, Dictionary<string, JsonElement> changes)

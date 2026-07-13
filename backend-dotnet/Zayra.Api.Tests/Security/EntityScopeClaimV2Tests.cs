@@ -76,12 +76,11 @@ public class EntityScopeClaimV2Tests
     }
 
     [Fact]
-    public void Resolve_NoGrants_IsTheExplicitTenantDefault_Group()
+    public void Resolve_NoGrants_DefaultsToNone()
     {
         EntityScopeClaims.Resolve(false, Array.Empty<EntityAccessGrant>(), Array.Empty<Guid>())
-            .Mode.Should().Be(EntityScopeModes.Group,
-                "grant-less tenant users are tenant-wide by documented default — as an explicit " +
-                "issuance decision, not a parser fallback");
+            .Mode.Should().Be(EntityScopeModes.None,
+                "enterprise HR access must be explicit: group scope or selected company grants");
     }
 
     // ── Emission + round-trip parsing (spec 2) ──────────────────────────────────
