@@ -129,11 +129,12 @@ public class AccessManagementService : IAccessManagementService
         return new EmployeeLoginInvitationDto(user.Id, employee.Id, user.Email, accessMode, link.Status, invitationToken, link.InvitationExpiresAtUtc);
     }
 
-    public async Task<AuthUserDto> AssignRolesAsync(Guid tenantId, Guid userId, AssignRolesRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task<AuthUserDto> AssignRolesAsync(Guid tenantId, Guid userId, AssignRolesRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
         var user = await _db.Users
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+            .ApplyEntityScope(_db, tenantId, entityScope)
             .FirstOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
         var roles = await LoadRoles(tenantId, request.Roles, cancellationToken);
@@ -147,15 +148,15 @@ public class AccessManagementService : IAccessManagementService
         return ToUserDto(user, user.Tenant!, roles);
     }
 
-    public async Task<UserAccessDto?> GetUserAccessAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
+    public async Task<UserAccessDto?> GetUserAccessAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken)
     {
-        var user = await LoadAccessUser(tenantId, userId, cancellationToken);
+        var user = await LoadAccessUser(tenantId, userId, entityScope, cancellationToken);
         return user is null ? null : ToAccessDto(user);
     }
 
-    public async Task<UserAccessDto?> SetAccessModeAsync(Guid tenantId, Guid userId, AccessModeRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task<UserAccessDto?> SetAccessModeAsync(Guid tenantId, Guid userId, AccessModeRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await LoadAccessUser(tenantId, userId, cancellationToken);
+        var user = await LoadAccessUser(tenantId, userId, entityScope, cancellationToken);
         if (user is null) return null;
         var accessMode = NormalizeAccessMode(request.AccessMode);
         var link = user.EmployeeUserAccounts.Where(x => !x.IsDeleted).OrderByDescending(x => x.IsPrimary).FirstOrDefault();
@@ -175,9 +176,9 @@ public class AccessManagementService : IAccessManagementService
         return ToAccessDto(user);
     }
 
-    public async Task<UserAccessDto?> SetPermissionOverrideAsync(Guid tenantId, Guid userId, PermissionOverrideRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task<UserAccessDto?> SetPermissionOverrideAsync(Guid tenantId, Guid userId, PermissionOverrideRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await LoadAccessUser(tenantId, userId, cancellationToken);
+        var user = await LoadAccessUser(tenantId, userId, entityScope, cancellationToken);
         if (user is null) return null;
         var permissionExists = await _db.Permissions.AnyAsync(x => x.Key == request.PermissionKey, cancellationToken);
         if (!permissionExists) throw new InvalidOperationException("Permission does not exist.");
@@ -196,7 +197,7 @@ public class AccessManagementService : IAccessManagementService
         ov.UpdatedBy = context.UserId;
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.permission_override", "UserPermissionOverride", ov.Id.ToString(), context, $"{{\"userId\":\"{userId}\",\"permission\":\"{request.PermissionKey}\",\"effect\":\"{effect}\"}}", cancellationToken);
-        return await GetUserAccessAsync(tenantId, userId, cancellationToken);
+        return await GetUserAccessAsync(tenantId, userId, entityScope, cancellationToken);
     }
 
     public async Task<IReadOnlyCollection<EmployeeTeamMemberDto>> GetTeamAsync(Guid tenantId, int managerEmployeeId, CancellationToken cancellationToken)
@@ -299,12 +300,13 @@ public class AccessManagementService : IAccessManagementService
         return authorities.Select(ToAuthorityDto).ToList();
     }
 
-    public async Task<PagedResult<UserListDto>> ListUsersAsync(Guid tenantId, UserListQuery query, CancellationToken cancellationToken)
+    public async Task<PagedResult<UserListDto>> ListUsersAsync(Guid tenantId, UserListQuery query, EntityScopeContext entityScope, CancellationToken cancellationToken)
     {
         var q = _db.Users
             .Include(x => x.UserRoles).ThenInclude(x => x.Role)
             .Include(x => x.EmployeeUserAccounts)
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
+            .ApplyEntityScope(_db, tenantId, entityScope)
             .AsNoTracking();
 
         if (!string.IsNullOrWhiteSpace(query.Search))
@@ -326,21 +328,23 @@ public class AccessManagementService : IAccessManagementService
         return new PagedResult<UserListDto>(items.Select(ToUserListDto).ToList(), total, query.Page, query.PageSize);
     }
 
-    public async Task<UserListDto?> GetUserAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
+    public async Task<UserListDto?> GetUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken)
     {
         var user = await _db.Users
             .Include(x => x.UserRoles).ThenInclude(x => x.Role)
             .Include(x => x.EmployeeUserAccounts)
+            .ApplyEntityScope(_db, tenantId, entityScope)
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken);
         return user is null ? null : ToUserListDto(user);
     }
 
-    public async Task<UserListDto?> UpdateUserAsync(Guid tenantId, Guid userId, UpdateUserRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task<UserListDto?> UpdateUserAsync(Guid tenantId, Guid userId, UpdateUserRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
         var user = await _db.Users
             .Include(x => x.UserRoles).ThenInclude(x => x.Role)
             .Include(x => x.EmployeeUserAccounts)
+            .ApplyEntityScope(_db, tenantId, entityScope)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken);
         if (user is null) return null;
         if (!string.IsNullOrWhiteSpace(request.FullName)) user.FullName = request.FullName.Trim();
@@ -353,9 +357,9 @@ public class AccessManagementService : IAccessManagementService
         return ToUserListDto(user);
     }
 
-    public async Task ActivateUserAsync(Guid tenantId, Guid userId, RequestContext context, CancellationToken cancellationToken)
+    public async Task ActivateUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
+        var user = await _db.Users.ApplyEntityScope(_db, tenantId, entityScope).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
         user.IsActive = true;
         user.IsLocked = false;
@@ -367,9 +371,9 @@ public class AccessManagementService : IAccessManagementService
         await _auditService.WriteAsync("access.user_activated", "User", user.Id.ToString(), context, null, cancellationToken);
     }
 
-    public async Task SuspendUserAsync(Guid tenantId, Guid userId, string reason, RequestContext context, CancellationToken cancellationToken)
+    public async Task SuspendUserAsync(Guid tenantId, Guid userId, string reason, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
+        var user = await _db.Users.ApplyEntityScope(_db, tenantId, entityScope).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
         user.IsActive = false;
         user.Status = "Suspended";
@@ -379,9 +383,9 @@ public class AccessManagementService : IAccessManagementService
         await _auditService.WriteAsync("access.user_suspended", "User", user.Id.ToString(), context, $"{{\"reason\":\"{reason}\"}}", cancellationToken);
     }
 
-    public async Task LockUserAsync(Guid tenantId, Guid userId, string reason, RequestContext context, CancellationToken cancellationToken)
+    public async Task LockUserAsync(Guid tenantId, Guid userId, string reason, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
+        var user = await _db.Users.ApplyEntityScope(_db, tenantId, entityScope).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
         user.IsLocked = true;
         user.LockoutEnd = DateTime.UtcNow.AddDays(1);
@@ -392,9 +396,9 @@ public class AccessManagementService : IAccessManagementService
         await _auditService.WriteAsync("access.user_locked", "User", user.Id.ToString(), context, $"{{\"reason\":\"{reason}\"}}", cancellationToken);
     }
 
-    public async Task UnlockUserAsync(Guid tenantId, Guid userId, RequestContext context, CancellationToken cancellationToken)
+    public async Task UnlockUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
+        var user = await _db.Users.ApplyEntityScope(_db, tenantId, entityScope).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
         user.IsLocked = false;
         user.LockoutEnd = null;
@@ -405,10 +409,11 @@ public class AccessManagementService : IAccessManagementService
         await _auditService.WriteAsync("access.user_unlocked", "User", user.Id.ToString(), context, null, cancellationToken);
     }
 
-    public async Task AdminResetPasswordAsync(Guid tenantId, Guid userId, AdminResetPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task AdminResetPasswordAsync(Guid tenantId, Guid userId, AdminResetPasswordRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
         var user = await _db.Users
             .Include(x => x.EmployeeUserAccounts)
+            .ApplyEntityScope(_db, tenantId, entityScope)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
         user.PasswordHash = _passwordHasher.Hash(request.NewPassword);
@@ -428,9 +433,9 @@ public class AccessManagementService : IAccessManagementService
         await _auditService.WriteAsync("access.admin_password_reset", "User", user.Id.ToString(), context, null, cancellationToken);
     }
 
-    public async Task<bool> DeleteUserAsync(Guid tenantId, Guid userId, RequestContext context, CancellationToken cancellationToken)
+    public async Task<bool> DeleteUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken);
+        var user = await _db.Users.ApplyEntityScope(_db, tenantId, entityScope).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken);
         if (user is null) return false;
         if (user.Id == context.UserId)
             throw new InvalidOperationException("You cannot delete your own account.");
@@ -580,7 +585,7 @@ public class AccessManagementService : IAccessManagementService
         return true;
     }
 
-    public async Task<UserAccessDto?> GrantPermissionAsync(Guid tenantId, Guid targetUserId, GrantPermissionRequest request, Guid? callerUserId, bool isAdmin, CancellationToken cancellationToken)
+    public async Task<UserAccessDto?> GrantPermissionAsync(Guid tenantId, Guid targetUserId, GrantPermissionRequest request, EntityScopeContext entityScope, Guid? callerUserId, bool isAdmin, CancellationToken cancellationToken)
     {
         if (!isAdmin)
         {
@@ -593,7 +598,7 @@ public class AccessManagementService : IAccessManagementService
                 throw new InvalidOperationException("You are not authorised to grant or revoke this permission.");
         }
 
-        var user = await LoadAccessUser(tenantId, targetUserId, cancellationToken);
+        var user = await LoadAccessUser(tenantId, targetUserId, entityScope, cancellationToken);
         if (user is null) return null;
 
         if (request.Effect.Equals("Remove", StringComparison.OrdinalIgnoreCase))
@@ -624,7 +629,7 @@ public class AccessManagementService : IAccessManagementService
 
         await _auditService.WriteAsync("access.permission_granted", "UserPermissionOverride", targetUserId.ToString(), new RequestContext(null, null, callerUserId, tenantId),
             $"{{\"permission\":\"{request.PermissionKey}\",\"effect\":\"{request.Effect}\"}}", cancellationToken);
-        return await GetUserAccessAsync(tenantId, targetUserId, cancellationToken);
+        return await GetUserAccessAsync(tenantId, targetUserId, entityScope, cancellationToken);
     }
 
     private static bool PermissionMatchesScope(string permissionKey, string scope)
@@ -658,12 +663,13 @@ public class AccessManagementService : IAccessManagementService
         return roles;
     }
 
-    private async Task<User?> LoadAccessUser(Guid tenantId, Guid userId, CancellationToken cancellationToken) =>
+    private async Task<User?> LoadAccessUser(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken) =>
         await _db.Users
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
             .Include(x => x.EmployeeUserAccounts)
             .Include(x => x.PermissionOverrides)
+            .ApplyEntityScope(_db, tenantId, entityScope)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId, cancellationToken);
 
     private static IReadOnlyCollection<string> DefaultRoles(string accessMode) => accessMode switch
@@ -881,9 +887,9 @@ public class AccessManagementService : IAccessManagementService
 
     // ── Effective permissions ─────────────────────────────────────────────────
 
-    public async Task<EffectivePermissionsDto?> GetEffectivePermissionsAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
+    public async Task<EffectivePermissionsDto?> GetEffectivePermissionsAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken)
     {
-        var user = await LoadAccessUser(tenantId, userId, cancellationToken);
+        var user = await LoadAccessUser(tenantId, userId, entityScope, cancellationToken);
         if (user is null) return null;
         var roles = user.UserRoles.Select(x => x.Role?.Name).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct().OrderBy(x => x).ToList();
         var byRole = user.UserRoles.SelectMany(x => x.Role?.RolePermissions ?? Array.Empty<RolePermission>()).Select(x => x.Permission?.Key).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList();
@@ -896,13 +902,38 @@ public class AccessManagementService : IAccessManagementService
 
     // ── Permission override delete ─────────────────────────────────────────────
 
-    public async Task<bool> DeletePermissionOverrideAsync(Guid tenantId, Guid userId, Guid overrideId, RequestContext context, CancellationToken cancellationToken)
+    public async Task<bool> DeletePermissionOverrideAsync(Guid tenantId, Guid userId, Guid overrideId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
+        if (!await _db.Users.ApplyEntityScope(_db, tenantId, entityScope).AnyAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken))
+            return false;
         var ov = await _db.UserPermissionOverrides.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.UserId == userId && x.Id == overrideId, cancellationToken);
         if (ov is null) return false;
         _db.UserPermissionOverrides.Remove(ov);
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.permission_override_deleted", "UserPermissionOverride", overrideId.ToString(), context, null, cancellationToken);
         return true;
+    }
+}
+
+internal static class AccessManagementScopeExtensions
+{
+    public static IQueryable<User> ApplyEntityScope(this IQueryable<User> query, ZayraDbContext db, Guid tenantId, EntityScopeContext scope)
+    {
+        if (scope.IsGroupLevel) return query;
+        var companyIds = scope.AccessibleCompanyIds.ToList();
+        if (companyIds.Count == 0) return query.Where(_ => false);
+
+        return query.Where(u =>
+            u.EmployeeUserAccounts.Any(link => !link.IsDeleted
+                && db.Employees.Any(e => e.TenantId == tenantId
+                    && !e.IsDeleted
+                    && e.Id == link.EmployeeId
+                    && e.CompanyId.HasValue
+                    && companyIds.Contains(e.CompanyId.Value)))
+            || u.EntityAccesses.Any(grant => grant.TenantId == tenantId
+                && grant.IsActive
+                && grant.GrantMode == EntityGrantModes.SelectedCompanies
+                && grant.CompanyId.HasValue
+                && companyIds.Contains(grant.CompanyId.Value)));
     }
 }

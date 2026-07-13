@@ -38,6 +38,8 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            var gate = RequireGroupEntityScope();
+            if (gate is not null) return gate;
             var role = await _accessManagement.CreateRoleAsync(tenantId.Value, request, GetContext(), cancellationToken);
             return CreatedAtAction(nameof(Roles), role);
         }
@@ -51,6 +53,8 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            var gate = RequireGroupEntityScope();
+            if (gate is not null) return gate;
             var role = await _accessManagement.UpdateRoleAsync(tenantId.Value, roleId, request, GetContext(), cancellationToken);
             return role is null ? NotFound() : Ok(role);
         }
@@ -62,6 +66,8 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var gate = RequireGroupEntityScope();
+        if (gate is not null) return gate;
         return await _accessManagement.ActivateRoleAsync(tenantId.Value, roleId, GetContext(), cancellationToken) ? NoContent() : NotFound();
     }
 
@@ -72,6 +78,8 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            var gate = RequireGroupEntityScope();
+            if (gate is not null) return gate;
             return await _accessManagement.DeactivateRoleAsync(tenantId.Value, roleId, GetContext(), cancellationToken) ? NoContent() : NotFound();
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -82,6 +90,8 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var gate = RequireGroupEntityScope();
+        if (gate is not null) return gate;
         var role = await _accessManagement.SetRolePermissionsAsync(tenantId.Value, roleId, request, GetContext(), cancellationToken);
         return role is null ? NotFound() : Ok(role);
     }
@@ -91,6 +101,8 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var gate = RequireGroupEntityScope();
+        if (gate is not null) return gate;
         return Ok(await _accessManagement.GetPermissionMatrixAsync(tenantId.Value, cancellationToken));
     }
 
@@ -99,6 +111,8 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var gate = RequireGroupEntityScope();
+        if (gate is not null) return gate;
         await _accessManagement.SavePermissionMatrixAsync(tenantId.Value, request, GetContext(), cancellationToken);
         return NoContent();
     }
@@ -108,7 +122,7 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
-        var result = await _accessManagement.GetEffectivePermissionsAsync(tenantId.Value, userId, cancellationToken);
+        var result = await _accessManagement.GetEffectivePermissionsAsync(tenantId.Value, userId, this.GetEntityScope(), cancellationToken);
         return result is null ? NotFound() : Ok(result);
     }
 
@@ -117,7 +131,7 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await _accessManagement.DeletePermissionOverrideAsync(tenantId.Value, userId, overrideId, GetContext(), cancellationToken) ? NoContent() : NotFound();
+        return await _accessManagement.DeletePermissionOverrideAsync(tenantId.Value, userId, overrideId, this.GetEntityScope(), GetContext(), cancellationToken) ? NoContent() : NotFound();
     }
 
     [HttpGet("permissions")]
@@ -131,7 +145,7 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
-        var result = await _accessManagement.ListUsersAsync(tenantId.Value, new UserListQuery(search, status, role, page, Math.Clamp(pageSize, 1, 100)), cancellationToken);
+        var result = await _accessManagement.ListUsersAsync(tenantId.Value, new UserListQuery(search, status, role, page, Math.Clamp(pageSize, 1, 100)), this.GetEntityScope(), cancellationToken);
         return Ok(result);
     }
 
@@ -140,7 +154,7 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
-        var user = await _accessManagement.GetUserAsync(tenantId.Value, userId, cancellationToken);
+        var user = await _accessManagement.GetUserAsync(tenantId.Value, userId, this.GetEntityScope(), cancellationToken);
         return user is null ? NotFound() : Ok(user);
     }
 
@@ -183,7 +197,7 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            var user = await _accessManagement.UpdateUserAsync(tenantId.Value, userId, request, GetContext(), cancellationToken);
+            var user = await _accessManagement.UpdateUserAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken);
             return user is null ? NotFound() : Ok(user);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -196,7 +210,7 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            await _accessManagement.ActivateUserAsync(tenantId.Value, userId, GetContext(), cancellationToken);
+            await _accessManagement.ActivateUserAsync(tenantId.Value, userId, this.GetEntityScope(), GetContext(), cancellationToken);
             return NoContent();
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -209,7 +223,7 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            await _accessManagement.SuspendUserAsync(tenantId.Value, userId, body?.Reason ?? string.Empty, GetContext(), cancellationToken);
+            await _accessManagement.SuspendUserAsync(tenantId.Value, userId, body?.Reason ?? string.Empty, this.GetEntityScope(), GetContext(), cancellationToken);
             return NoContent();
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -222,7 +236,7 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            await _accessManagement.LockUserAsync(tenantId.Value, userId, body?.Reason ?? string.Empty, GetContext(), cancellationToken);
+            await _accessManagement.LockUserAsync(tenantId.Value, userId, body?.Reason ?? string.Empty, this.GetEntityScope(), GetContext(), cancellationToken);
             return NoContent();
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -235,7 +249,7 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            await _accessManagement.UnlockUserAsync(tenantId.Value, userId, GetContext(), cancellationToken);
+            await _accessManagement.UnlockUserAsync(tenantId.Value, userId, this.GetEntityScope(), GetContext(), cancellationToken);
             return NoContent();
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -248,7 +262,7 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            await _accessManagement.AdminResetPasswordAsync(tenantId.Value, userId, request, GetContext(), cancellationToken);
+            await _accessManagement.AdminResetPasswordAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken);
             return NoContent();
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -261,7 +275,7 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            return await _accessManagement.DeleteUserAsync(tenantId.Value, userId, GetContext(), cancellationToken) ? NoContent() : NotFound();
+            return await _accessManagement.DeleteUserAsync(tenantId.Value, userId, this.GetEntityScope(), GetContext(), cancellationToken) ? NoContent() : NotFound();
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
@@ -273,7 +287,7 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            return Ok(await _accessManagement.AssignRolesAsync(tenantId.Value, userId, request, GetContext(), cancellationToken));
+            return Ok(await _accessManagement.AssignRolesAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
@@ -315,7 +329,7 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
-        var access = await _accessManagement.GetUserAccessAsync(tenantId.Value, userId, cancellationToken);
+        var access = await _accessManagement.GetUserAccessAsync(tenantId.Value, userId, this.GetEntityScope(), cancellationToken);
         return access is null ? NotFound() : Ok(access);
     }
 
@@ -326,7 +340,7 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            var access = await _accessManagement.SetAccessModeAsync(tenantId.Value, userId, request, GetContext(), cancellationToken);
+            var access = await _accessManagement.SetAccessModeAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken);
             return access is null ? NotFound() : Ok(access);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -339,7 +353,7 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            var access = await _accessManagement.SetPermissionOverrideAsync(tenantId.Value, userId, request, GetContext(), cancellationToken);
+            var access = await _accessManagement.SetPermissionOverrideAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken);
             return access is null ? NotFound() : Ok(access);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -461,7 +475,7 @@ public class AccessController : ControllerBase
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
             var isAdmin = User.IsInRole("Admin");
-            var access = await _accessManagement.GrantPermissionAsync(tenantId.Value, userId, request, GetUserId(), isAdmin, cancellationToken);
+            var access = await _accessManagement.GrantPermissionAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetUserId(), isAdmin, cancellationToken);
             return access is null ? NotFound() : Ok(access);
         }
         catch (UnauthorizedAccessException) { return Forbid(); }
@@ -473,6 +487,8 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var gate = RequireGroupEntityScope();
+        if (gate is not null) return gate;
         return Ok(await _accessManagement.GetSecuritySettingsAsync(tenantId.Value, cancellationToken));
     }
 
@@ -481,6 +497,8 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var gate = RequireGroupEntityScope();
+        if (gate is not null) return gate;
         return Ok(await _accessManagement.UpdateSecuritySettingsAsync(tenantId.Value, request, GetContext(), cancellationToken));
     }
 
@@ -501,6 +519,11 @@ public class AccessController : ControllerBase
         return Guid.TryParse(value, out var id) ? id : null;
     }
 
+    private ActionResult? RequireGroupEntityScope()
+    {
+        return this.GetEntityScope().IsGroupLevel ? null : Forbid();
+    }
+
     // ── Entity Access (Legal Entity Grants) ──────────────────────────────────────
 
     [HttpGet("entity-grants")]
@@ -508,8 +531,17 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var scope = this.GetEntityScope();
         var query = _db.UserEntityAccesses.AsNoTracking()
             .Where(e => e.TenantId == tenantId && e.IsActive);
+        if (!scope.IsGroupLevel)
+        {
+            var accessible = scope.AccessibleCompanyIds.ToList();
+            query = query.Where(e =>
+                e.GrantMode == EntityGrantModes.SelectedCompanies
+                && e.CompanyId.HasValue
+                && accessible.Contains(e.CompanyId.Value));
+        }
         if (userId.HasValue) query = query.Where(e => e.UserId == userId.Value);
         var results = await query
             .OrderBy(e => e.UserId).ThenBy(e => e.CompanyId)
@@ -524,6 +556,7 @@ public class AccessController : ControllerBase
         var tenantId = GetTenantId();
         var actorId = GetUserId();
         if (tenantId is null || actorId is null) return Unauthorized();
+        var scope = this.GetEntityScope();
 
         // Validate target user belongs to this tenant
         if (!await _db.Users.AnyAsync(u => u.Id == request.UserId && u.TenantId == tenantId && !u.IsDeleted, cancellationToken))
@@ -537,6 +570,18 @@ public class AccessController : ControllerBase
             return BadRequest(new { message = "SelectedCompanies grants require a CompanyId." });
         if (grantMode != EntityGrantModes.SelectedCompanies && request.CompanyId.HasValue)
             return BadRequest(new { message = "All-company grant modes must not specify a CompanyId." });
+
+        if (request.UserId == actorId)
+            return Forbid();
+        if (!scope.IsGroupLevel)
+        {
+            if (grantMode != EntityGrantModes.SelectedCompanies)
+                return Forbid();
+            if (!request.CompanyId.HasValue || !scope.CanAccessCompany(request.CompanyId))
+                return Forbid();
+            var target = await _accessManagement.GetUserAsync(tenantId.Value, request.UserId, scope, cancellationToken);
+            if (target is null) return NotFound();
+        }
 
         // Validate company if specified
         if (request.CompanyId.HasValue && !await _db.Companies.AnyAsync(c => c.Id == request.CompanyId.Value && c.TenantId == tenantId && !c.IsDeleted, cancellationToken))
@@ -568,6 +613,8 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var gate = RequireGroupEntityScope();
+        if (gate is not null) return gate;
         var grant = await _db.UserEntityAccesses.FirstOrDefaultAsync(e => e.Id == id && e.TenantId == tenantId, cancellationToken);
         if (grant is null) return NotFound();
         grant.IsActive = false;
@@ -584,6 +631,9 @@ public class AccessController : ControllerBase
         var tenantId = GetTenantId();
         var actorId = GetUserId();
         if (tenantId is null || actorId is null) return Unauthorized();
+        var gate = RequireGroupEntityScope();
+        if (gate is not null) return gate;
+        if (userId == actorId) return Forbid();
 
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == tenantId && !u.IsDeleted, cancellationToken);
         if (user is null) return NotFound();
@@ -605,6 +655,8 @@ public class AccessController : ControllerBase
         });
 
         await _db.SaveChangesAsync(cancellationToken);
+        await _db.RefreshTokens.Where(x => x.UserId == userId && x.RevokedAtUtc == null)
+            .ExecuteUpdateAsync(x => x.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), cancellationToken);
         return NoContent();
     }
 }
