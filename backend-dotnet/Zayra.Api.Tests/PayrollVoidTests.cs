@@ -203,6 +203,36 @@ public class PayrollVoidTests
         await using var db  = _fx.CreateDb();
         var tenantId        = await PostgresFixture.SeedMinimalTenant(db);
         var company         = await SeedKsaCompany(db, tenantId);
+        var emp = new Employee
+        {
+            TenantId = tenantId,
+            CompanyId = company.Id,
+            EmployeeCode = $"VD-R-{Guid.NewGuid():N}",
+            FullName = "Replacement Run Employee",
+            Nationality = "Saudi",
+            Status = "Active",
+            JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.Employees.Add(emp);
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId,
+            EmployeeId = emp.Id,
+            SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 10_000m,
+            HousingAllowance = 2_000m,
+            EffectiveDate = new DateOnly(2024, 1, 1),
+            IsActive = true,
+        });
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
+        {
+            TenantId = tenantId,
+            EmployeeId = emp.Id,
+            Iban = "SA4420000001234567891234",
+            MolId = "MOL-VD-REPL",
+            SalaryCurrency = "SAR",
+        });
 
         // Run A: wrong run for 2026-06 (simulates a 0-GOSI stale run)
         var runA = new PayrollRun

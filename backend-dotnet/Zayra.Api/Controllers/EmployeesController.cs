@@ -89,7 +89,8 @@ public class EmployeesController : ControllerBase
     // ── Configurable export / import / shareable template ────────────────────────
     private static readonly string[] EmployeeCsvHeaders =
         {
-            "EmployeeCode", "FullName", "ArabicName", "WorkEmail", "Phone", "Gender", "Nationality",
+            "EmployeeCode", "CompanyLegalName", "BranchCode", "CostCenterCode", "WorkLocation",
+            "FullName", "ArabicName", "WorkEmail", "Phone", "Gender", "Nationality",
             "Department", "DepartmentCode", "Designation", "JobTitle", "EmploymentType", "ContractType",
             "Grade", "Status", "JoiningDate",
             // Hierarchy columns — resolved in Pass 2
@@ -134,7 +135,8 @@ public class EmployeesController : ControllerBase
             var structureCode = salary is not null && structures.TryGetValue(salary.SalaryStructureId, out var structure) ? structure.Code : string.Empty;
             return (IReadOnlyList<object?>)new object?[]
         {
-            e.EmployeeCode, e.FullName, e.ArabicName, e.WorkEmail, e.Phone, e.Gender, e.Nationality,
+            e.EmployeeCode, string.Empty, string.Empty, e.CostCenter, e.WorkLocation,
+            e.FullName, e.ArabicName, e.WorkEmail, e.Phone, e.Gender, e.Nationality,
             e.Department, string.Empty, e.Designation, e.JobTitle, e.EmploymentType, e.ContractType,
             e.Grade, e.Status, e.JoiningDate.ToString("yyyy-MM-dd"),
             string.Empty, string.Empty,
@@ -191,8 +193,26 @@ public class EmployeesController : ControllerBase
                 });
         }
 
-        var company = await _db.Companies.FirstOrDefaultAsync(c => c.TenantId == tenantId, ct);
-        var branch = await _db.Branches.FirstOrDefaultAsync(b => b.TenantId == tenantId, ct);
+        var companiesByName = await _db.Companies
+            .AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .ToDictionaryAsync(c => c.LegalNameEn.ToUpperInvariant(), ct);
+        var defaultCompany = companiesByName.Values.OrderBy(c => c.CreatedAtUtc).FirstOrDefault();
+        var branchesByCode = (await _db.Branches
+            .AsNoTracking()
+            .Where(b => b.TenantId == tenantId && b.IsActive && !b.IsDeleted)
+            .ToListAsync(ct))
+            .GroupBy(b => (b.CompanyId, Code: b.Code.ToUpperInvariant()))
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).First());
+        var branchesByCompany = branchesByCode.Values
+            .GroupBy(b => b.CompanyId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).ToList());
+        var costCentersByCode = (await _db.CostCenters
+            .AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .ToListAsync(ct))
+            .GroupBy(c => (c.CompanyId, Code: c.Code.ToUpperInvariant()))
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).First());
 
         // Pre-load department and designation lookups for FK resolution
         var deptByCode = await _db.Departments
@@ -236,6 +256,42 @@ public class EmployeesController : ControllerBase
             DateTime.TryParse(row.GetValueOrDefault("JoiningDate", string.Empty), out var jdRaw);
             var jd = DateTime.SpecifyKind(jdRaw == default ? DateTime.UtcNow : jdRaw, DateTimeKind.Utc);
             var statusVal = row.GetValueOrDefault("Status", string.Empty).Trim();
+            var companyNameRaw = row.GetValueOrDefault("CompanyLegalName", string.Empty).Trim();
+            var branchCodeRaw = row.GetValueOrDefault("BranchCode", string.Empty).Trim().ToUpperInvariant();
+            var costCenterCodeRaw = row.GetValueOrDefault("CostCenterCode", string.Empty).Trim().ToUpperInvariant();
+            var resolvedCompany = !string.IsNullOrWhiteSpace(companyNameRaw)
+                ? companiesByName.GetValueOrDefault(companyNameRaw.ToUpperInvariant())
+                : defaultCompany;
+            if (!string.IsNullOrWhiteSpace(companyNameRaw) && resolvedCompany is null)
+            {
+                skipped++;
+                errors.Add($"Row {rowNum}: CompanyLegalName '{companyNameRaw}' not found.");
+                continue;
+            }
+            var resolvedBranch = resolvedCompany is not null
+                ? !string.IsNullOrWhiteSpace(branchCodeRaw)
+                    ? branchesByCode.GetValueOrDefault((resolvedCompany.Id, branchCodeRaw))
+                    : branchesByCompany.GetValueOrDefault(resolvedCompany.Id)?.FirstOrDefault()
+                : null;
+            if (!string.IsNullOrWhiteSpace(branchCodeRaw) && resolvedBranch is null)
+            {
+                skipped++;
+                errors.Add(resolvedCompany is null
+                    ? $"Row {rowNum}: BranchCode '{branchCodeRaw}' supplied but no active company could be resolved."
+                    : $"Row {rowNum}: BranchCode '{branchCodeRaw}' not found for company '{resolvedCompany.LegalNameEn}'.");
+                continue;
+            }
+            var resolvedCostCenter = resolvedCompany is not null && !string.IsNullOrWhiteSpace(costCenterCodeRaw)
+                ? costCentersByCode.GetValueOrDefault((resolvedCompany.Id, costCenterCodeRaw))
+                : null;
+            if (!string.IsNullOrWhiteSpace(costCenterCodeRaw) && resolvedCostCenter is null)
+            {
+                skipped++;
+                errors.Add(resolvedCompany is null
+                    ? $"Row {rowNum}: CostCenterCode '{costCenterCodeRaw}' supplied but no active company could be resolved."
+                    : $"Row {rowNum}: CostCenterCode '{costCenterCodeRaw}' not found for company '{resolvedCompany.LegalNameEn}'.");
+                continue;
+            }
             var deptNameRaw = row.GetValueOrDefault("Department", string.Empty).Trim();
             var deptCodeRaw = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim().ToUpperInvariant();
 
@@ -280,8 +336,9 @@ public class EmployeesController : ControllerBase
             var employee = new Employee
             {
                 TenantId = tenantId,
-                CompanyId = company?.Id,
-                BranchId = branch?.Id,
+                CompanyId = resolvedCompany?.Id,
+                BranchId = resolvedBranch?.Id,
+                CostCenterId = resolvedCostCenter?.Id,
                 EmployeeCode = finalCode,
                 FullName = name,
                 EnglishName = name,
@@ -301,6 +358,9 @@ public class EmployeesController : ControllerBase
                 ContractType = row.GetValueOrDefault("ContractType", string.Empty),
                 Status = string.IsNullOrWhiteSpace(statusVal) ? "Active" : statusVal,
                 JoiningDate = jd == default ? DateTime.UtcNow : jd,
+                Branch = resolvedBranch?.NameEn ?? string.Empty,
+                CostCenter = resolvedCostCenter?.Code ?? string.Empty,
+                WorkLocation = row.GetValueOrDefault("WorkLocation", string.Empty).Trim(),
             };
             _db.Employees.Add(employee);
             batchCodes[finalCode] = employee;
@@ -322,7 +382,10 @@ public class EmployeesController : ControllerBase
             var paymentMethodRaw = rowData.GetValueOrDefault("PaymentMethod", string.Empty).Trim();
             var structureCodeRaw = rowData.GetValueOrDefault("SalaryStructureCode", string.Empty).Trim();
             var currencyRaw = rowData.GetValueOrDefault("Currency", string.Empty).Trim();
-            var currency = string.IsNullOrWhiteSpace(currencyRaw) ? await _db.ResolveTenantCurrencyAsync(tenantId, ct) : currencyRaw.ToUpperInvariant();
+            var tenantCurrency = await _db.ResolveTenantCurrencyAsync(tenantId, ct);
+            var currency = string.IsNullOrWhiteSpace(currencyRaw)
+                ? defaultCompany is null && string.Equals(tenantCurrency, "USD", StringComparison.OrdinalIgnoreCase) ? "SAR" : tenantCurrency
+                : currencyRaw.ToUpperInvariant();
             _ = decimal.TryParse(rowData.GetValueOrDefault("BasicSalary", string.Empty), out var basicSalary);
             _ = decimal.TryParse(rowData.GetValueOrDefault("HousingAllowance", string.Empty), out var housing);
             _ = decimal.TryParse(rowData.GetValueOrDefault("TransportAllowance", string.Empty), out var transport);
@@ -474,7 +537,9 @@ public class EmployeesController : ControllerBase
             : requestedCode.Trim();
 
         var existing = await _db.SalaryStructures
-            .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.Code == code && !s.IsDeleted, ct);
+            .Where(s => s.TenantId == tenantId && s.Code == code && !s.IsDeleted && (s.CompanyId == companyId || s.CompanyId == null))
+            .OrderByDescending(s => s.CompanyId == companyId)
+            .FirstOrDefaultAsync(ct);
         if (existing is not null) return existing;
 
         var structure = new SalaryStructure

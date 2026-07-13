@@ -19,7 +19,7 @@ public class OrganizationStructureImportController : ControllerBase
     private static readonly string[] CompaniesHeaders = { "LegalNameEn", "TradeName", "CountryCode", "Jurisdiction", "RegistrationNumber", "TaxNumber", "DefaultCurrency", "IsActive" };
     private static readonly string[] BranchesHeaders = { "CompanyLegalName", "Code", "NameEn", "CountryCode", "City", "IsHeadOffice", "IsActive" };
     private static readonly string[] CostCentersHeaders = { "CompanyLegalName", "Code", "Name", "IsActive" };
-    private static readonly string[] DepartmentsHeaders = { "BranchCode", "Code", "NameEn", "ParentDepartmentCode", "CostCenterCode", "ApprovedHeadcount", "MonthlyBudgetAmount", "IsActive" };
+    private static readonly string[] DepartmentsHeaders = { "CompanyLegalName", "BranchCode", "Code", "NameEn", "ParentDepartmentCode", "CostCenterCode", "ApprovedHeadcount", "MonthlyBudgetAmount", "IsActive" };
     private static readonly string[] GradesHeaders = { "Code", "Name", "Band", "Level", "MinSalary", "MidSalary", "MaxSalary", "Currency", "IsActive" };
     private static readonly string[] GradePayHeaders = { "GradeCode", "ComponentCode", "ComponentName", "ComponentType", "CalculationType", "Amount", "Percentage", "Frequency", "IsTaxable", "IsActive" };
     private static readonly string[] DesignationsHeaders = { "Code", "TitleEn", "DepartmentCode", "GradeCode", "JobLevel", "IsManagerRole", "LevelRank", "IsActive" };
@@ -41,7 +41,7 @@ public class OrganizationStructureImportController : ControllerBase
         Section("companies", CompaniesHeaders, "Zayra Demo LLC,Zayra,SA,SA-default,CR-001,TAX-001,SAR,true");
         Section("branches", BranchesHeaders, "Zayra Demo LLC,HQ,Head Office,SA,Riyadh,true,true");
         Section("costCenters", CostCentersHeaders, "Zayra Demo LLC,CC-HR,Human Resources,true");
-        Section("departments", DepartmentsHeaders, "HQ,HR,Human Resources,,CC-HR,10,120000,true");
+        Section("departments", DepartmentsHeaders, "Zayra Demo LLC,HQ,HR,Human Resources,,CC-HR,10,120000,true");
         Section("grades", GradesHeaders, "G3,Grade 3,Professional,3,10000,13500,17000,SAR,true");
         Section("gradePayComponents", GradePayHeaders, "G3,BASIC,Basic Salary,Earning,Fixed,8100,0,Monthly,false,true");
         Section("designations", DesignationsHeaders, "HR_OFF,HR Officer,HR,G3,Staff,false,5,true");
@@ -196,8 +196,15 @@ public class OrganizationStructureImportController : ControllerBase
                 Bump("departments");
             }
             department.NameEn = Val(row, "NameEn");
-            department.BranchId = string.IsNullOrWhiteSpace(Val(row, "BranchCode")) ? null : branches[Val(row, "BranchCode").ToUpperInvariant()].Id;
-            department.CostCenterId = string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")) ? null : costCenters[Val(row, "CostCenterCode").ToUpperInvariant()].Id;
+            var departmentCompany = string.IsNullOrWhiteSpace(Val(row, "CompanyLegalName")) ? null : companies[Val(row, "CompanyLegalName").ToUpperInvariant()];
+            var departmentBranch = string.IsNullOrWhiteSpace(Val(row, "BranchCode")) ? null : branches[Val(row, "BranchCode").ToUpperInvariant()];
+            var departmentCostCenter = string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")) ? null : costCenters[Val(row, "CostCenterCode").ToUpperInvariant()];
+            if (departmentCompany is not null && departmentBranch is not null && departmentBranch.CompanyId != departmentCompany.Id)
+                throw new InvalidOperationException($"Department '{code}' branch does not belong to '{departmentCompany.LegalNameEn}'.");
+            if (departmentCompany is not null && departmentCostCenter is not null && departmentCostCenter.CompanyId != departmentCompany.Id)
+                throw new InvalidOperationException($"Department '{code}' cost center does not belong to '{departmentCompany.LegalNameEn}'.");
+            department.BranchId = departmentBranch?.Id;
+            department.CostCenterId = departmentCostCenter?.Id;
             department.ApprovedHeadcount = Int(row, "ApprovedHeadcount");
             department.MonthlyBudgetAmount = Dec(row, "MonthlyBudgetAmount");
             department.IsActive = Bool(row, "IsActive", true);
@@ -283,7 +290,8 @@ public class OrganizationStructureImportController : ControllerBase
         AddGradeSanityRows(parsed.Grades, rows);
         Merge(gradeCodes, parsed.Grades.Select(x => Val(x, "Code")));
         AddRows("departments", parsed.Departments, "Code", "NameEn", required: ["Code", "NameEn"], known: departmentCodes, rows,
-            refs: [("BranchCode", branchCodes, "Branch"), ("CostCenterCode", costCenterCodes, "Cost center"), ("ParentDepartmentCode", departmentCodes, "Parent department")]);
+            refs: [("CompanyLegalName", companyNames, "Company"), ("BranchCode", branchCodes, "Branch"), ("CostCenterCode", costCenterCodes, "Cost center"), ("ParentDepartmentCode", departmentCodes, "Parent department")]);
+        AddDepartmentCompanyConsistencyRows(parsed.Departments, parsed.Branches, parsed.CostCenters, rows);
         Merge(departmentCodes, parsed.Departments.Select(x => Val(x, "Code")));
         AddRows("gradePayComponents", parsed.GradePayComponents, "ComponentCode", "ComponentName", required: ["GradeCode", "ComponentCode", "ComponentName"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
             refs: [("GradeCode", gradeCodes, "Grade")]);
@@ -392,6 +400,39 @@ public class OrganizationStructureImportController : ControllerBase
         {
             rows.Add(new ImportRowResult(0, $"gradePayComponents:{gradeCode}", "Component percentage total", ImportRowStatus.Warning, [],
                 [$"PercentOfBasic components total {total:0.##}% for grade {gradeCode}; confirm this is intentional"]));
+        }
+    }
+
+    private static void AddDepartmentCompanyConsistencyRows(
+        IReadOnlyList<Dictionary<string, string>> departments,
+        IReadOnlyList<Dictionary<string, string>> branches,
+        IReadOnlyList<Dictionary<string, string>> costCenters,
+        List<ImportRowResult> rows)
+    {
+        var branchCompany = branches
+            .Where(x => !string.IsNullOrWhiteSpace(Val(x, "Code")))
+            .GroupBy(x => Val(x, "Code"), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Select(x => Val(x, "CompanyLegalName")).Distinct(StringComparer.OrdinalIgnoreCase).ToList(), StringComparer.OrdinalIgnoreCase);
+        var costCenterCompany = costCenters
+            .Where(x => !string.IsNullOrWhiteSpace(Val(x, "Code")))
+            .GroupBy(x => Val(x, "Code"), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Select(x => Val(x, "CompanyLegalName")).Distinct(StringComparer.OrdinalIgnoreCase).ToList(), StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < departments.Count; i++)
+        {
+            var row = departments[i];
+            var company = Val(row, "CompanyLegalName");
+            if (string.IsNullOrWhiteSpace(company)) continue;
+            var code = Val(row, "Code");
+            var errors = new List<string>();
+            var branchCode = Val(row, "BranchCode");
+            if (!string.IsNullOrWhiteSpace(branchCode) && branchCompany.TryGetValue(branchCode, out var branchCompanies) && branchCompanies.Count > 0 && !branchCompanies.Contains(company, StringComparer.OrdinalIgnoreCase))
+                errors.Add($"BranchCode '{branchCode}' belongs to {string.Join("/", branchCompanies)}, not '{company}'");
+            var costCenterCode = Val(row, "CostCenterCode");
+            if (!string.IsNullOrWhiteSpace(costCenterCode) && costCenterCompany.TryGetValue(costCenterCode, out var ccCompanies) && ccCompanies.Count > 0 && !ccCompanies.Contains(company, StringComparer.OrdinalIgnoreCase))
+                errors.Add($"CostCenterCode '{costCenterCode}' belongs to {string.Join("/", ccCompanies)}, not '{company}'");
+            if (errors.Count > 0)
+                rows.Add(new ImportRowResult(i + 2, $"departments:{code}", Val(row, "NameEn"), ImportRowStatus.Error, errors, []));
         }
     }
 

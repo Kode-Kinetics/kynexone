@@ -62,10 +62,12 @@ public class PayrollController : ControllerBase
     public async Task<IActionResult> CreateSalaryStructure(SalaryStructureRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
-        if (await _db.SalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.Code == req.Code && !x.IsDeleted, cancellationToken))
+        if (req.CompanyId.HasValue && !await _db.Companies.AnyAsync(c => c.TenantId == tenantId && c.Id == req.CompanyId.Value && c.IsActive && !c.IsDeleted, cancellationToken))
+            return BadRequest(new { message = "Company not found or not active." });
+        if (await _db.SalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == req.CompanyId && x.Code == req.Code && !x.IsDeleted, cancellationToken))
             return Conflict(new { message = "Salary structure code already exists." });
         var structureCurrency = !string.IsNullOrWhiteSpace(req.Currency) ? req.Currency : await ResolveCurrencyAsync(tenantId, cancellationToken);
-        var structure = new SalaryStructure { TenantId = tenantId, Code = req.Code.Trim(), Name = req.Name.Trim(), Currency = structureCurrency, EffectiveDate = req.EffectiveDate, CreatedBy = GetUserId() };
+        var structure = new SalaryStructure { TenantId = tenantId, CompanyId = req.CompanyId, Code = req.Code.Trim(), Name = req.Name.Trim(), Currency = structureCurrency, EffectiveDate = req.EffectiveDate, CreatedBy = GetUserId() };
         _db.SalaryStructures.Add(structure);
         foreach (var component in req.Components ?? Array.Empty<SalaryComponentRequest>())
             _db.SalaryComponents.Add(new SalaryComponent { TenantId = tenantId, SalaryStructureId = structure.Id, Code = component.Code, Name = component.Name, ComponentType = component.ComponentType, CalculationType = component.CalculationType, Amount = component.Amount, Percentage = component.Percentage, IsTaxable = component.IsTaxable });
@@ -81,8 +83,21 @@ public class PayrollController : ControllerBase
         // M3: reject zero/negative basic salary at assignment time
         if (req.BasicSalary <= 0)
             return BadRequest(new { message = "Basic salary must be greater than zero." });
-        if (!await _db.Employees.AnyAsync(x => x.TenantId == tenantId && x.Id == req.EmployeeId && !x.IsDeleted, cancellationToken)) return BadRequest(new { message = "Employee not found." });
-        if (!await _db.SalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.Id == req.SalaryStructureId && !x.IsDeleted, cancellationToken)) return BadRequest(new { message = "Salary structure not found." });
+        var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.EmployeeId && !x.IsDeleted, cancellationToken);
+        if (employee is null) return BadRequest(new { message = "Employee not found." });
+        var structure = await _db.SalaryStructures.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.SalaryStructureId && !x.IsDeleted, cancellationToken);
+        if (structure is null) return BadRequest(new { message = "Salary structure not found." });
+        if (structure.CompanyId.HasValue && employee.CompanyId.HasValue && structure.CompanyId != employee.CompanyId)
+            return BadRequest(new { message = "Salary structure belongs to a different legal entity than the employee." });
+        if (employee.GradeId.HasValue)
+        {
+            var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == employee.GradeId && !g.IsDeleted, cancellationToken);
+            var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.FoodAllowance + req.MobileAllowance + req.OtherAllowance - req.FixedDeduction;
+            if (grade is not null && grade.MinSalary > 0 && gross < grade.MinSalary)
+                return BadRequest(new { message = $"Salary package is below grade {grade.Code} minimum {grade.MinSalary:N2} {grade.Currency}." });
+            if (grade is not null && grade.MaxSalary > 0 && gross > grade.MaxSalary)
+                return BadRequest(new { message = $"Salary package exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}." });
+        }
         await _db.EmployeeSalaryStructures.Where(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.IsActive).ExecuteUpdateAsync(x => x.SetProperty(p => p.IsActive, false), cancellationToken);
         var assignmentCurrency = !string.IsNullOrWhiteSpace(req.Currency) ? req.Currency : await ResolveCurrencyAsync(tenantId, cancellationToken);
         var assignment = new EmployeeSalaryStructure { TenantId = tenantId, EmployeeId = req.EmployeeId, SalaryStructureId = req.SalaryStructureId, BasicSalary = req.BasicSalary, HousingAllowance = req.HousingAllowance, TransportAllowance = req.TransportAllowance, FoodAllowance = req.FoodAllowance, MobileAllowance = req.MobileAllowance, OtherAllowance = req.OtherAllowance, FixedDeduction = req.FixedDeduction, EffectiveDate = req.EffectiveDate, Currency = assignmentCurrency, CreatedBy = GetUserId() };
@@ -115,21 +130,30 @@ public class PayrollController : ControllerBase
         var currentYear = DateTime.UtcNow.Year;
         if (req.Year < 2000 || req.Year > currentYear + 1)
             return BadRequest(new { message = $"Year must be between 2000 and {currentYear + 1}." });
-        if (req.CompanyId.HasValue && !await _db.Companies.AnyAsync(c => c.TenantId == tenantId && c.Id == req.CompanyId.Value && c.IsActive, cancellationToken))
+        var activeCompanies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+        var runCompany = req.CompanyId.HasValue
+            ? activeCompanies.FirstOrDefault(c => c.Id == req.CompanyId.Value)
+            : activeCompanies.Count == 1 ? activeCompanies[0] : null;
+        if (req.CompanyId.HasValue && runCompany is null)
             return BadRequest(new { message = "Company not found or not active." });
-        // Guard at the period level — one run per (tenant, year, month) regardless of company_id.
-        // A null company_id falls back to the first active company during Process(), so a
-        // null-company run and an explicit-company run for the same period would double-pay.
+        if (runCompany is null)
+            return BadRequest(new { message = "Select a legal entity before creating payroll. Multi-entity tenants cannot create tenant-wide payroll runs." });
+
+        // One run per legal entity per period. Multi-entity tenants must process each company
+        // separately so statutory country packs, employees, impacts, GL and WPS remain scoped.
         var existing = await _db.PayrollRuns
-            .Where(r => r.TenantId == tenantId && r.Year == req.Year && r.Month == req.Month)
+            .Where(r => r.TenantId == tenantId && r.Year == req.Year && r.Month == req.Month && r.CompanyId == runCompany.Id)
             .FirstOrDefaultAsync(cancellationToken);
         if (existing is not null)
-            return Conflict(new { message = $"A payroll run for {req.Year}/{req.Month:D2} already exists.", runId = existing.Id });
+            return Conflict(new { message = $"A payroll run for {runCompany.LegalNameEn} {req.Year}/{req.Month:D2} already exists.", runId = existing.Id });
 
         var run = new PayrollRun
         {
             TenantId = tenantId,
-            CompanyId = req.CompanyId,
+            CompanyId = runCompany.Id,
             Year = req.Year,
             Month = req.Month,
             CreatedByUserId = GetUserId(),
@@ -145,9 +169,9 @@ public class PayrollController : ControllerBase
         var tenantId = GetTenantId();
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
         if (run is null) return NotFound();
-        // C2: approved runs cannot be silently overwritten
-        if (run.Status is "Locked" or "Approved")
-            return BadRequest(new { message = $"A run in '{run.Status}' status cannot be reprocessed. To reprocess, the approval must be revoked first." });
+        // Processing mutates attendance/leave impacts and loan/advance balances, so completed states must use a correction workflow.
+        if (run.Status is "Processed" or "PendingFinanceReview" or "Locked" or "Approved" or "Paid")
+            return BadRequest(new { message = $"A run in '{run.Status}' status cannot be reprocessed. Void/delete and recreate the run, or use the correction workflow." });
 
         var periodStart = new DateOnly(run.Year, run.Month, 1);
         var periodEnd = periodStart.AddMonths(1).AddDays(-1);
@@ -160,26 +184,17 @@ public class PayrollController : ControllerBase
         _db.PayrollDeductions.RemoveRange(_db.PayrollDeductions.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
         _db.PayrollValidationResults.RemoveRange(_db.PayrollValidationResults.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
 
-        var employees = await _db.Employees.Where(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted).ToListAsync(cancellationToken);
-        var salaryAssignments = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive).ToListAsync(cancellationToken);
-
-        // Load salary structure components (for IsTaxable-based tax deduction)
-        var structureIds = salaryAssignments.Select(x => x.SalaryStructureId).Distinct().ToList();
-        var salaryComponents = await _db.SalaryComponents.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.SalaryStructureId.HasValue && structureIds.Contains(x.SalaryStructureId!.Value))
-            .ToListAsync(cancellationToken);
-
         // Resolve company → country pack for statutory deduction.
-        // CompanyId on the run determines which CountryCode + Jurisdiction drives GOSI/GPSSA/GRSIA.
-        // If the run has no CompanyId (created without selecting one from the UI), fall back to the
-        // tenant's first active company so the correct pack (KSA/UAE/Qatar) is still applied.
+        var activeCompaniesForTenant = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+        var legacySingleCompanyScope = activeCompaniesForTenant.Count == 1;
         var company = run.CompanyId.HasValue
-            ? await _db.Companies.AsNoTracking()
-                .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId.Value, cancellationToken)
-            : await _db.Companies.AsNoTracking()
-                .Where(c => c.TenantId == tenantId && c.IsActive)
-                .OrderBy(c => c.CreatedAtUtc)
-                .FirstOrDefaultAsync(cancellationToken);
+            ? activeCompaniesForTenant.FirstOrDefault(c => c.Id == run.CompanyId.Value)
+            : legacySingleCompanyScope ? activeCompaniesForTenant[0] : null;
+        var hasAnyCompanyScopedEmployees = await _db.Employees.AsNoTracking()
+            .AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId.HasValue, cancellationToken);
 
         // P0 FAIL-LOUD GUARD — abort before any payslips are written.
         // A payroll run must never proceed when the statutory pack cannot be resolved;
@@ -217,21 +232,51 @@ public class PayrollController : ControllerBase
                 companyId    = company.Id,
             });
 
+        var hasEmployeesForRunCompany = await _db.Employees.AsNoTracking()
+            .AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId == company.Id, cancellationToken);
+        var allowLegacyUnscopedEmployees = legacySingleCompanyScope || !hasAnyCompanyScopedEmployees || !hasEmployeesForRunCompany;
+
+        var employees = await _db.Employees
+            .Where(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted && (e.CompanyId == company.Id || (allowLegacyUnscopedEmployees && e.CompanyId == null)))
+            .ToListAsync(cancellationToken);
+        var employeeIdsForRun = employees.Select(e => e.Id).ToHashSet();
+        if (employeeIdsForRun.Count == 0)
+            return UnprocessableEntity(new
+            {
+                error = "no_company_employees",
+                message = $"No active employees are linked to legal entity '{company.LegalNameEn}'. Payroll run aborted.",
+                companyId = company.Id,
+            });
+
+        var salaryAssignments = await _db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive && employeeIdsForRun.Contains(x.EmployeeId))
+            .ToListAsync(cancellationToken);
+
+        // Load salary structure components (for IsTaxable-based tax deduction)
+        var structureIds = salaryAssignments.Select(x => x.SalaryStructureId).Distinct().ToList();
+        var salaryComponents = await _db.SalaryComponents.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.SalaryStructureId.HasValue && structureIds.Contains(x.SalaryStructureId!.Value))
+            .ToListAsync(cancellationToken);
+
         // Income tax rate from System Settings (0 if not configured — GCC has no personal income tax by default)
         var taxRateSetting = await _db.SystemSettings.AsNoTracking()
             .Where(x => x.Category == "Payroll" && x.SettingKey == "IncomeTaxRate")
             .Select(x => x.SettingValue)
             .FirstOrDefaultAsync(cancellationToken);
         decimal.TryParse(taxRateSetting, out var incomeTaxRate); // 0 if unset
-        var attendanceImpacts = await _db.AttendancePayrollImpacts.AsNoTracking().Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed").ToListAsync(cancellationToken);
-        var leaveImpacts = await _db.LeavePayrollImpacts.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed").ToListAsync(cancellationToken);
+        var attendanceImpacts = await _db.AttendancePayrollImpacts.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId))
+            .ToListAsync(cancellationToken);
+        var leaveImpacts = await _db.LeavePayrollImpacts.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId))
+            .ToListAsync(cancellationToken);
 
         // COMPLIANCE: Load active loans and salary advances per employee for EMI deduction
         var activeLoans = await _db.EmployeeLoans.AsNoTracking()
-            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && l.OutstandingBalance > 0)
+            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0)
             .ToListAsync(cancellationToken);
         var activeAdvances = await _db.SalaryAdvances.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && a.OutstandingBalance > 0)
+            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0)
             .ToListAsync(cancellationToken);
 
         // BONUS: Load approved bonuses for this pay period — consumed here, blocked from MarkBatchPaid.
@@ -241,7 +286,8 @@ public class PayrollController : ControllerBase
                 && x.Status == "Approved"
                 && x.PaymentPeriod == periodStr
                 && x.PayrollRunId == null
-                && x.EmployeeIntId != null)
+                && x.EmployeeIntId != null
+                && employeeIdsForRun.Contains(x.EmployeeIntId.Value))
             .ToListAsync(cancellationToken);
         var bonusTypeIds = pendingBonuses.Select(b => b.BonusTypeId).Distinct().ToList();
         var bonusTypeMap = bonusTypeIds.Count > 0
@@ -257,22 +303,22 @@ public class PayrollController : ControllerBase
         // COMPLIANCE: YTD — sum of all locked runs in the same year (before this month)
         var ytdSlips = await _db.PayrollSlips.AsNoTracking()
             .Where(s => s.TenantId == tenantId)
-            .Join(_db.PayrollRuns.AsNoTracking().Where(r => r.TenantId == tenantId && r.Year == run.Year && r.Month < run.Month && r.Status == "Locked"),
+            .Join(_db.PayrollRuns.AsNoTracking().Where(r => r.TenantId == tenantId && r.CompanyId == company.Id && r.Year == run.Year && r.Month < run.Month && r.Status == "Locked"),
                   s => s.RunId, r => r.Id, (s, r) => s)
             .ToListAsync(cancellationToken);
 
         // COMPLIANCE: Load payroll profiles for MolId / RoutingCode (keyed by Employee.Id)
         var payrollProfiles = await _db.EmployeePayrollProfiles.AsNoTracking()
-            .Where(p => p.TenantId == tenantId && !p.IsDeleted)
+            .Where(p => p.TenantId == tenantId && !p.IsDeleted && employeeIdsForRun.Contains(p.EmployeeId))
             .ToDictionaryAsync(p => p.EmployeeId, cancellationToken);
 
         // C4: filter overtime impacts to the current pay period only (via WorkDate on the originating request)
         var periodOvertimeRequestIds = await _db.OvertimeRequests.AsNoTracking()
-            .Where(r => r.TenantId == tenantId && r.WorkDate >= periodStart && r.WorkDate <= periodEnd)
+            .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployees && r.CompanyId == null)) && r.WorkDate >= periodStart && r.WorkDate <= periodEnd)
             .Select(r => r.Id)
             .ToListAsync(cancellationToken);
         var overtimeImpacts = await _db.OvertimePayrollImpacts.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.Status != "Processed" && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
+            .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
             .ToListAsync(cancellationToken);
 
         // L1: use policy-configured monthly hours as divisor; fall back to 240
@@ -307,7 +353,7 @@ public class PayrollController : ControllerBase
         // ── Attendance: employees who had daily records processed in this period ──
         // Used in Rule 10 (WARN_NO_ATTENDANCE) to detect employees skipped by attendance system.
         var attendanceProcessedEmpIds = (await _db.AttendanceDailyRecords.AsNoTracking()
-            .Where(r => r.TenantId == tenantId && r.WorkDate >= periodStart && r.WorkDate <= periodEnd)
+            .Where(r => r.TenantId == tenantId && r.WorkDate >= periodStart && r.WorkDate <= periodEnd && employeeIdsForRun.Contains(r.EmployeeId))
             .Select(r => r.EmployeeId)
             .Distinct()
             .ToListAsync(cancellationToken)).ToHashSet();
@@ -437,6 +483,7 @@ public class PayrollController : ControllerBase
                 Status = "Draft",
             };
             slips.Add(slip);
+            slip.CompanyId = company.Id;
             _db.PayrollRunEmployees.Add(new PayrollRunEmployee { TenantId = tenantId, PayrollRunId = id, EmployeeId = e.Id, GrossEarnings = slip.GrossSalary, TotalDeductions = deductions, NetPay = slip.NetSalary });
             // Bonus earning lines (one per bonus in the batch, gross amount for GL expense tracking).
             foreach (var bonus in empBonuses)
@@ -452,25 +499,25 @@ public class PayrollController : ControllerBase
                     $"Overtime ({otHours:N2} h × {Math.Round(hourlyRate, 2):N2}/h × {otMultiplier:N2})",
                     overtimePay, "Overtime");
             }
-            if (fixedDeduction > 0) AddDeduction(tenantId, id, e.Id, "FIXED_DEDUCTION", "Fixed deduction", fixedDeduction, "Salary");
-            if (taxDeduction > 0) AddDeduction(tenantId, id, e.Id, "INCOME_TAX", $"Income tax ({incomeTaxRate}%)", taxDeduction, "Tax");
-            if (attendanceDeduction > 0) AddDeduction(tenantId, id, e.Id, "ATTENDANCE", "Late/early attendance deduction", attendanceDeduction, "Attendance");
+            if (fixedDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "FIXED_DEDUCTION", "Fixed deduction", fixedDeduction, "Salary");
+            if (taxDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "INCOME_TAX", $"Income tax ({incomeTaxRate}%)", taxDeduction, "Tax");
+            if (attendanceDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "ATTENDANCE", "Late/early attendance deduction", attendanceDeduction, "Attendance");
             if (lopDeduction > 0)
-                AddDeduction(tenantId, id, e.Id, "LOP_DEDUCTION",
+                AddDeduction(tenantId, company.Id, id, e.Id, "LOP_DEDUCTION",
                     $"Loss of Pay ({lopDays:N2} d × {Math.Round(lopDayRate, 2):N2}/d)",
                     lopDeduction, "Attendance");
-            if (leaveDeduction > 0) AddDeduction(tenantId, id, e.Id, "LEAVE", "Leave deduction", leaveDeduction, "Leave");
-            if (loanEmi > 0) AddDeduction(tenantId, id, e.Id, "LOAN_EMI", "Loan instalment", loanEmi, "Loan");
-            if (advEmi > 0) AddDeduction(tenantId, id, e.Id, "ADVANCE_EMI", "Salary advance repayment", advEmi, "Loan");
+            if (leaveDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "LEAVE", "Leave deduction", leaveDeduction, "Leave");
+            if (loanEmi > 0) AddDeduction(tenantId, company.Id, id, e.Id, "LOAN_EMI", "Loan instalment", loanEmi, "Loan");
+            if (advEmi > 0) AddDeduction(tenantId, company.Id, id, e.Id, "ADVANCE_EMI", "Salary advance repayment", advEmi, "Loan");
             // Statutory deduction lines from pack — employee contributions reduce net pay.
             // Code/Label come from the pack: "GOSI-ANN-EE" / "GOSI Annuities (Employee)" for KSA,
             // "GPSSA-EE" / "GPSSA (Employee)" for UAE, "GRSIA-EE" / "GRSIA (Employee)" for Qatar.
             // Employer lines already carry ER-suffixed codes (e.g. "GOSI-ANN-ER", "GOSI-OH-ER") —
             // the GL router keys on .EndsWith("-ER") to route them to Social Insurance Employer Payable.
             foreach (var line in statutoryResult.Lines.Where(l => l.EmployeeAmount > 0))
-                AddDeduction(tenantId, id, e.Id, line.Code, line.Label, line.EmployeeAmount, "Statutory");
+                AddDeduction(tenantId, company.Id, id, e.Id, line.Code, line.Label, line.EmployeeAmount, "Statutory");
             foreach (var line in statutoryResult.Lines.Where(l => l.EmployerAmount > 0))
-                AddDeduction(tenantId, id, e.Id, line.Code, line.Label, line.EmployerAmount, "Statutory", isEmployerContribution: true);
+                AddDeduction(tenantId, company.Id, id, e.Id, line.Code, line.Label, line.EmployerAmount, "Statutory", isEmployerContribution: true);
         }
 
         _db.PayrollSlips.AddRange(slips);
@@ -482,10 +529,10 @@ public class PayrollController : ControllerBase
         run.TotalDeductions = slips.Sum(s => s.Deductions);
         run.TotalNetSalary = slips.Sum(s => s.NetSalary);
         run.TotalEmployerStatutoryCost = slips.Sum(s => s.EmployerStatutoryTotal);
-        await _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed").ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
-        await _db.LeavePayrollImpacts.Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed").ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+        await _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId)).ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
+        await _db.LeavePayrollImpacts.Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId)).ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
         await _db.OvertimePayrollImpacts
-            .Where(x => x.TenantId == tenantId && x.Status != "Processed" && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
+            .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
 
         // COMPLIANCE: Update loan/advance outstanding balances after payroll deduction.
@@ -531,10 +578,10 @@ public class PayrollController : ControllerBase
             _db.PayrollValidationResults.Add(r);
 
         var activeLoansMutable = await _db.EmployeeLoans
-            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && l.OutstandingBalance > 0)
+            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0)
             .ToListAsync(cancellationToken);
         var activeAdvMutable = await _db.SalaryAdvances
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && a.OutstandingBalance > 0)
+            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0)
             .ToListAsync(cancellationToken);
 
         foreach (var loan in activeLoansMutable)
@@ -707,28 +754,43 @@ public class PayrollController : ControllerBase
             return BadRequest(new { message = "Run must be Processed before it can be validated." });
 
         // Load all data needed by the engine and re-run from scratch.
-        var slips       = await _db.PayrollSlips.AsNoTracking().Where(s => s.TenantId == tenantId && s.RunId == id).ToListAsync(cancellationToken);
-        var employees   = await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted).ToListAsync(cancellationToken);
-        var salaries    = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive).ToListAsync(cancellationToken);
-        var profiles    = await _db.EmployeePayrollProfiles.AsNoTracking().Where(p => p.TenantId == tenantId && !p.IsDeleted).ToListAsync(cancellationToken);
-        var deductions  = await _db.PayrollDeductions.AsNoTracking().Where(d => d.TenantId == tenantId && d.PayrollRunId == id).ToListAsync(cancellationToken);
-        var earnings    = await _db.PayrollEarnings.AsNoTracking().Where(e => e.TenantId == tenantId && e.PayrollRunId == id).ToListAsync(cancellationToken);
-        var company     = run.CompanyId.HasValue
-            ? await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId.Value, cancellationToken)
-            : await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.IsActive).OrderBy(c => c.CreatedAtUtc).FirstOrDefaultAsync(cancellationToken);
+        var activeCompaniesForValidation = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+        var legacySingleCompanyValidationScope = activeCompaniesForValidation.Count == 1;
+        var company = run.CompanyId.HasValue
+            ? activeCompaniesForValidation.FirstOrDefault(c => c.Id == run.CompanyId.Value)
+            : legacySingleCompanyValidationScope ? activeCompaniesForValidation[0] : null;
+        if (company is null)
+            return UnprocessableEntity(new { error = "company_not_resolved", message = "Payroll validation requires a legal entity on the run." });
+        var hasAnyCompanyScopedEmployeesForValidation = await _db.Employees.AsNoTracking()
+            .AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId.HasValue, cancellationToken);
+        var hasEmployeesForValidationCompany = await _db.Employees.AsNoTracking()
+            .AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId == company.Id, cancellationToken);
+        var allowLegacyUnscopedEmployeesForValidation = legacySingleCompanyValidationScope || !hasAnyCompanyScopedEmployeesForValidation || !hasEmployeesForValidationCompany;
+        var employees = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted && (e.CompanyId == company.Id || (allowLegacyUnscopedEmployeesForValidation && e.CompanyId == null)))
+            .ToListAsync(cancellationToken);
+        var employeeIdsForValidation = employees.Select(e => e.Id).ToHashSet();
+        var slips       = await _db.PayrollSlips.AsNoTracking().Where(s => s.TenantId == tenantId && s.RunId == id && employeeIdsForValidation.Contains(s.EmployeeId)).ToListAsync(cancellationToken);
+        var salaries    = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && employeeIdsForValidation.Contains(x.EmployeeId)).ToListAsync(cancellationToken);
+        var profiles    = await _db.EmployeePayrollProfiles.AsNoTracking().Where(p => p.TenantId == tenantId && !p.IsDeleted && employeeIdsForValidation.Contains(p.EmployeeId)).ToListAsync(cancellationToken);
+        var deductions  = await _db.PayrollDeductions.AsNoTracking().Where(d => d.TenantId == tenantId && d.PayrollRunId == id && employeeIdsForValidation.Contains(d.EmployeeId)).ToListAsync(cancellationToken);
+        var earnings    = await _db.PayrollEarnings.AsNoTracking().Where(e => e.TenantId == tenantId && e.PayrollRunId == id && employeeIdsForValidation.Contains(e.EmployeeId)).ToListAsync(cancellationToken);
 
         // Load OT/attendance data so Rules 10+11 fire correctly on /validate too.
         var valPeriodStart = new DateOnly(run.Year, run.Month, 1);
         var valPeriodEnd   = valPeriodStart.AddMonths(1).AddDays(-1);
         var valOtRequestIds = await _db.OvertimeRequests.AsNoTracking()
-            .Where(r => r.TenantId == tenantId && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd)
+            .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployeesForValidation && r.CompanyId == null)) && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd)
             .Select(r => r.Id)
             .ToListAsync(cancellationToken);
         var valOtImpacts = await _db.OvertimePayrollImpacts.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && valOtRequestIds.Contains(x.OvertimeRequestId))
+            .Where(x => x.TenantId == tenantId && employeeIdsForValidation.Contains(x.EmployeeId) && valOtRequestIds.Contains(x.OvertimeRequestId))
             .ToListAsync(cancellationToken);
         var valAttendanceEmpIds = (await _db.AttendanceDailyRecords.AsNoTracking()
-            .Where(r => r.TenantId == tenantId && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd)
+            .Where(r => r.TenantId == tenantId && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd && employeeIdsForValidation.Contains(r.EmployeeId))
             .Select(r => r.EmployeeId)
             .Distinct()
             .ToListAsync(cancellationToken)).ToHashSet();
@@ -1698,8 +1760,8 @@ public class PayrollController : ControllerBase
     private void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source) =>
         _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source });
 
-    private void AddDeduction(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source, bool isEmployerContribution = false) =>
-        _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, IsEmployerContribution = isEmployerContribution });
+    private void AddDeduction(Guid tenantId, Guid companyId, Guid runId, int employeeId, string code, string name, decimal amount, string source, bool isEmployerContribution = false) =>
+        _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, CompanyId = companyId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, IsEmployerContribution = isEmployerContribution });
 
     // Builds the double-entry GL lines for a payroll run.
     // Uses Source-based routing so new pack codes (GOSI-ANN-EE, GPSSA-EE, etc.) map correctly
@@ -2793,7 +2855,7 @@ public class PayrollController : ControllerBase
 }
 
 public record CreatePayrollRunRequest(int Year, int Month, Guid? CompanyId = null);
-public record SalaryStructureRequest(string Code, string Name, string? Currency, DateOnly EffectiveDate, IReadOnlyCollection<SalaryComponentRequest>? Components);
+public record SalaryStructureRequest(string Code, string Name, string? Currency, DateOnly EffectiveDate, IReadOnlyCollection<SalaryComponentRequest>? Components, Guid? CompanyId = null);
 public record SalaryComponentRequest(string Code, string Name, string ComponentType, string CalculationType, decimal Amount, decimal Percentage, bool IsTaxable);
 public record EmployeeSalaryStructureRequest(int EmployeeId, Guid SalaryStructureId, decimal BasicSalary, decimal HousingAllowance, decimal TransportAllowance, decimal FoodAllowance, decimal MobileAllowance, decimal OtherAllowance, decimal FixedDeduction, DateOnly EffectiveDate, string? Currency);
 public record PayrollDecisionRequest(string? Notes);

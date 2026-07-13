@@ -7,7 +7,7 @@ public class EmployeeIdRule : ITenantOwned, ICompanyScoped
     public Guid TenantId { get; set; }
     public Guid? CompanyId { get; set; }
     public string Name { get; set; } = "Default employee ID rule";
-    public string CompanyPrefix { get; set; } = "ZAY";
+    public string CompanyPrefix { get; set; } = "EMP";
     public bool UseCountryPrefix { get; set; } = true;
     public bool UseBranchPrefix { get; set; }
     public bool UseDepartmentPrefix { get; set; } = true;

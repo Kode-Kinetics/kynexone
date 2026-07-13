@@ -45,18 +45,32 @@ public class LeaveService : ILeaveService
         var activePolicies = await _db.LeavePolicies
             .Where(p => p.TenantId == tenantId && p.Status == "Active" && p.AccrualMethod == "Monthly")
             .ToListAsync(ct);
+        var eligibilityRows = await _db.LeavePolicyEligibilities
+            .Where(e => e.TenantId == tenantId && e.IsActive)
+            .ToListAsync(ct);
 
         var currentYear = DateTime.UtcNow.Year;
         var employees = await _db.Employees
             .Where(e => e.TenantId == tenantId && e.Status == "Active")
-            .Select(e => new { e.Id, e.FullName })
+            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender })
             .ToListAsync(ct);
+        var companyCountries = await _db.Companies
+            .AsNoTracking()
+            .Where(c => c.TenantId == tenantId)
+            .Select(c => new { c.Id, c.CountryCode })
+            .ToDictionaryAsync(c => c.Id, c => c.CountryCode, ct);
 
         foreach (var policy in activePolicies)
         {
             var monthlyAccrual = Math.Round(policy.AnnualEntitlementDays / 12, 4);
             foreach (var emp in employees)
             {
+                var employeeCountryCode = emp.CompanyId.HasValue && companyCountries.TryGetValue(emp.CompanyId.Value, out var companyCountry)
+                    ? companyCountry
+                    : string.Empty;
+                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender))
+                    continue;
+
                 var balance = await GetOrCreateBalanceAsync(tenantId, emp.Id, policy.LeaveTypeId, currentYear, ct);
                 balance.EmployeeName = emp.FullName;
                 balance.Accrued += monthlyAccrual;
@@ -65,6 +79,7 @@ public class LeaveService : ILeaveService
                 var txn = new LeaveBalanceTransaction
                 {
                     TenantId = tenantId,
+                    CompanyId = emp.CompanyId,
                     EmployeeId = emp.Id,
                     LeaveTypeId = policy.LeaveTypeId,
                     Year = currentYear,
@@ -117,8 +132,24 @@ public class LeaveService : ILeaveService
 
         if (!policy.PublicHolidaysIncluded)
         {
+            var calendars = _db.PublicHolidayCalendars
+                .Where(c => c.TenantId == tenantId && c.IsActive && c.CalendarYear == start.Year);
+            if (end.Year != start.Year)
+            {
+                calendars = _db.PublicHolidayCalendars
+                    .Where(c => c.TenantId == tenantId && c.IsActive && c.CalendarYear >= start.Year && c.CalendarYear <= end.Year);
+            }
+            if (!string.IsNullOrWhiteSpace(policy.CountryCode))
+                calendars = calendars.Where(c => c.CountryCode == policy.CountryCode);
+            if (policy.CompanyId.HasValue)
+                calendars = calendars.Where(c => c.CompanyId == policy.CompanyId || c.CompanyId == null);
+            if (policy.BranchId.HasValue)
+                calendars = calendars.Where(c => c.BranchId == policy.BranchId || c.BranchId == null);
+
             var publicHolidayCount = await _db.PublicHolidays
                 .Where(h => h.TenantId == tenantId && h.Date >= start && h.Date <= end && !h.IsOptional)
+                .Join(calendars, h => h.CalendarId, c => c.Id, (h, _) => h.Id)
+                .Distinct()
                 .CountAsync(ct);
             workingDays -= publicHolidayCount;
         }
@@ -198,6 +229,10 @@ public class LeaveService : ILeaveService
         var txn = new LeaveBalanceTransaction
         {
             TenantId = tenantId,
+            CompanyId = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && e.Id == employeeId && !e.IsDeleted)
+                .Select(e => e.CompanyId)
+                .FirstOrDefaultAsync(ct),
             EmployeeId = employeeId,
             LeaveTypeId = leaveTypeId,
             Year = year,
@@ -225,6 +260,10 @@ public class LeaveService : ILeaveService
         var txn = new LeaveBalanceTransaction
         {
             TenantId = tenantId,
+            CompanyId = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && e.Id == employeeId && !e.IsDeleted)
+                .Select(e => e.CompanyId)
+                .FirstOrDefaultAsync(ct),
             EmployeeId = employeeId,
             LeaveTypeId = leaveTypeId,
             Year = year,
@@ -258,6 +297,23 @@ public class LeaveService : ILeaveService
         var leaveType = await _db.LeaveTypes.FirstOrDefaultAsync(t => t.Id == request.LeaveTypeId && t.TenantId == tenantId, ct);
         if (leaveType is null)
             throw new InvalidOperationException("Invalid leave type.");
+
+        var employee = await _db.Employees.AsNoTracking()
+            .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == request.EmployeeId && !e.IsDeleted, ct)
+            ?? throw new InvalidOperationException("Employee not found.");
+
+        var effectivePolicy = await ResolveLeavePolicyAsync(tenantId, employee, request.LeaveTypeId, request.PolicyId, ct);
+        request.PolicyId = effectivePolicy?.Id;
+        request.CompanyId = employee.CompanyId;
+        request.EmployeeName = string.IsNullOrWhiteSpace(request.EmployeeName) ? employee.FullName : request.EmployeeName;
+        request.DepartmentName = string.IsNullOrWhiteSpace(request.DepartmentName) ? employee.Department : request.DepartmentName;
+        request.DesignationTitle = string.IsNullOrWhiteSpace(request.DesignationTitle) ? employee.Designation : request.DesignationTitle;
+        if (effectivePolicy is not null)
+        {
+            request.PayrollImpact = effectivePolicy.PayrollImpact;
+            workingDays = await CalculateWorkingDaysAsync(tenantId, request.StartDate, request.EndDate, effectivePolicy.Id, ct);
+            request.TotalDays = workingDays;
+        }
 
         if (leaveType.RequiresAttachment && string.IsNullOrWhiteSpace(request.AttachmentPath))
             throw new InvalidOperationException("An attachment is required for this leave type.");
@@ -434,6 +490,7 @@ public class LeaveService : ILeaveService
             var txn = new LeaveBalanceTransaction
             {
                 TenantId = tenantId,
+                CompanyId = request.CompanyId,
                 EmployeeId = request.EmployeeId,
                 LeaveTypeId = request.LeaveTypeId,
                 Year = request.StartDate.Year,
@@ -496,6 +553,7 @@ public class LeaveService : ILeaveService
             var txn = new LeaveBalanceTransaction
             {
                 TenantId = tenantId,
+                CompanyId = request.CompanyId,
                 EmployeeId = request.EmployeeId,
                 LeaveTypeId = request.LeaveTypeId,
                 Year = request.StartDate.Year,
@@ -620,4 +678,93 @@ public class LeaveService : ILeaveService
             .Where(e => e.TenantId == tenantId && e.Id == employeeId)
             .Select(e => e.UserAccountId)
             .FirstOrDefaultAsync(ct);
+
+    private async Task<LeavePolicy?> ResolveLeavePolicyAsync(Guid tenantId, Employee employee, Guid leaveTypeId, Guid? requestedPolicyId, CancellationToken ct)
+    {
+        var policies = await _db.LeavePolicies
+            .Where(p => p.TenantId == tenantId && p.LeaveTypeId == leaveTypeId && p.Status == "Active")
+            .ToListAsync(ct);
+        var eligibilityRows = await _db.LeavePolicyEligibilities
+            .Where(e => e.TenantId == tenantId && e.IsActive)
+            .ToListAsync(ct);
+        var countryCode = employee.CompanyId.HasValue
+            ? await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.Id == employee.CompanyId.Value)
+                .Select(c => c.CountryCode)
+                .FirstOrDefaultAsync(ct)
+            : string.Empty;
+
+        if (requestedPolicyId.HasValue)
+        {
+            var requested = policies.FirstOrDefault(p => p.Id == requestedPolicyId.Value);
+            if (requested is null)
+                throw new InvalidOperationException("Selected leave policy is not active for this leave type.");
+            if (!IsPolicyEligible(requested, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender))
+                throw new InvalidOperationException("Selected leave policy is not eligible for the employee's country, legal entity, branch, department, grade, employment type, or contract type.");
+            return requested;
+        }
+
+        return policies
+            .Where(p => IsPolicyEligible(p, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender))
+            .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, employee.DepartmentId, employee.GradeId))
+            .ThenByDescending(p => p.UpdatedAtUtc)
+            .FirstOrDefault();
+    }
+
+    private static bool IsPolicyEligible(
+        LeavePolicy policy,
+        IReadOnlyCollection<LeavePolicyEligibility> rows,
+        string? countryCode,
+        Guid? companyId,
+        Guid? branchId,
+        Guid? departmentId,
+        Guid? gradeId,
+        string? departmentName,
+        string? grade,
+        string? employmentType,
+        string? contractType,
+        string? gender)
+    {
+        if (!string.IsNullOrWhiteSpace(policy.CountryCode) && !string.Equals(policy.CountryCode, countryCode, StringComparison.OrdinalIgnoreCase)) return false;
+        if (policy.CompanyId.HasValue && policy.CompanyId != companyId) return false;
+        if (policy.BranchId.HasValue && policy.BranchId != branchId) return false;
+        if (!string.IsNullOrWhiteSpace(policy.DepartmentName) && !string.Equals(policy.DepartmentName, departmentName, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.IsNullOrWhiteSpace(policy.Grade) && !string.Equals(policy.Grade, grade, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.IsNullOrWhiteSpace(policy.EmploymentType) && !string.Equals(policy.EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.IsNullOrWhiteSpace(policy.ContractType) && !string.Equals(policy.ContractType, contractType, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.IsNullOrWhiteSpace(policy.Gender) && !string.Equals(policy.Gender, gender, StringComparison.OrdinalIgnoreCase)) return false;
+
+        var scopedRows = rows.Where(r => r.LeavePolicyId == policy.Id).ToList();
+        if (scopedRows.Count == 0) return true;
+        return scopedRows.Any(r =>
+            (string.IsNullOrWhiteSpace(r.CountryCode) || string.Equals(r.CountryCode, countryCode, StringComparison.OrdinalIgnoreCase)) &&
+            (!r.CompanyId.HasValue || r.CompanyId == companyId) &&
+            (!r.BranchId.HasValue || r.BranchId == branchId) &&
+            (!r.DepartmentId.HasValue || r.DepartmentId == departmentId) &&
+            (!r.GradeId.HasValue || r.GradeId == gradeId) &&
+            (string.IsNullOrWhiteSpace(r.EmploymentType) || string.Equals(r.EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(r.ContractType) || string.Equals(r.ContractType, contractType, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static int PolicySpecificity(LeavePolicy policy, IReadOnlyCollection<LeavePolicyEligibility> rows, Guid? departmentId, Guid? gradeId)
+    {
+        var score = 0;
+        if (policy.CompanyId.HasValue) score += 8;
+        if (policy.BranchId.HasValue) score += 6;
+        if (!string.IsNullOrWhiteSpace(policy.DepartmentName)) score += 4;
+        if (!string.IsNullOrWhiteSpace(policy.Grade)) score += 3;
+        if (!string.IsNullOrWhiteSpace(policy.EmploymentType)) score += 2;
+        if (!string.IsNullOrWhiteSpace(policy.ContractType)) score += 2;
+        var rowScore = rows.Where(r => r.LeavePolicyId == policy.Id)
+            .Select(r =>
+                (r.CompanyId.HasValue ? 8 : 0) +
+                (r.BranchId.HasValue ? 6 : 0) +
+                (r.DepartmentId.HasValue && r.DepartmentId == departmentId ? 5 : 0) +
+                (r.GradeId.HasValue && r.GradeId == gradeId ? 4 : 0) +
+                (!string.IsNullOrWhiteSpace(r.EmploymentType) ? 2 : 0) +
+                (!string.IsNullOrWhiteSpace(r.ContractType) ? 2 : 0))
+            .DefaultIfEmpty(0)
+            .Max();
+        return score + rowScore;
+    }
 }

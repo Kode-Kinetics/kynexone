@@ -506,18 +506,22 @@ public class AttendanceService : IAttendanceService
     public async Task<int> ProcessAsync(Guid tenantId, ProcessAttendanceRequest request, RequestContext context, CancellationToken ct)
     {
         var employees = await _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted && (request.EmployeeId == null || x.Id == request.EmployeeId)).ToListAsync(ct);
-        var policy = await _db.AttendancePolicies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive, ct);
-        if (policy is null)
+        var policies = await _db.AttendancePolicies
+            .Where(x => x.TenantId == tenantId && x.IsActive)
+            .ToListAsync(ct);
+        if (policies.Count == 0)
         {
-            policy = DefaultPolicy(tenantId);
+            var policy = DefaultPolicy(tenantId);
             _db.AttendancePolicies.Add(policy);
             await _db.SaveChangesAsync(ct);
+            policies.Add(policy);
         }
         var processed = 0;
         for (var date = request.FromDate; date <= request.ToDate; date = date.AddDays(1))
         {
             foreach (var employee in employees)
             {
+                var policy = ResolveAttendancePolicy(employee, policies);
                 await ProcessEmployeeDay(tenantId, employee, date, policy, context, ct);
                 processed++;
             }
@@ -559,6 +563,11 @@ public class AttendanceService : IAttendanceService
 
     public async Task<AttendanceRegularizationRequest> CreateRegularizationAsync(Guid tenantId, RegularizationRequestDto request, RequestContext context, CancellationToken ct)
     {
+        var employee = await _db.Employees.AsNoTracking()
+            .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == request.EmployeeId && !e.IsDeleted, ct);
+        if (employee is null)
+            throw new InvalidOperationException("Employee not found.");
+
         var hasPending = await _db.AttendanceRegularizationRequests
             .AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId
                 && x.WorkDate == request.WorkDate && x.Status == "Submitted", ct);
@@ -568,6 +577,7 @@ public class AttendanceService : IAttendanceService
         var reg = new AttendanceRegularizationRequest
         {
             TenantId = tenantId,
+            CompanyId = employee.CompanyId,
             EmployeeId = request.EmployeeId,
             WorkDate = request.WorkDate,
             RequestType = Clean(request.RequestType, "Missed punch"),
@@ -819,6 +829,10 @@ public class AttendanceService : IAttendanceService
             record = new AttendanceRecord { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate };
             _db.AttendanceRecords.Add(record);
         }
+        record.CompanyId ??= await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.Id == daily.EmployeeId && !e.IsDeleted)
+            .Select(e => e.CompanyId)
+            .FirstOrDefaultAsync(ct);
         record.TimeIn = daily.FirstInUtc is null ? null : TimeOnly.FromDateTime(daily.FirstInUtc.Value);
         record.TimeOut = daily.LastOutUtc is null ? null : TimeOnly.FromDateTime(daily.LastOutUtc.Value);
         record.OvertimeHours = Math.Round(daily.OvertimeMinutes / 60m, 2);
@@ -855,6 +869,20 @@ public class AttendanceService : IAttendanceService
         await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId && x.PeriodStart <= date && x.PeriodEnd >= date && x.Status == "Locked", ct);
 
     private static AttendancePolicy DefaultPolicy(Guid tenantId) => new() { TenantId = tenantId, Code = "DEFAULT", Name = "Default attendance policy" };
+
+    private static AttendancePolicy ResolveAttendancePolicy(Employee employee, IReadOnlyCollection<AttendancePolicy> policies) =>
+        policies
+            .Where(p =>
+                (!p.BranchId.HasValue || p.BranchId == employee.BranchId) &&
+                (!p.DepartmentId.HasValue || p.DepartmentId == employee.DepartmentId) &&
+                (!p.GradeId.HasValue || p.GradeId == employee.GradeId))
+            .OrderByDescending(p =>
+                (p.BranchId.HasValue ? 4 : 0) +
+                (p.DepartmentId.HasValue ? 3 : 0) +
+                (p.GradeId.HasValue ? 2 : 0))
+            .ThenBy(p => p.Code)
+            .FirstOrDefault()
+        ?? policies.OrderBy(p => p.Code).First();
 
     private static void ApplyDevice(AttendanceDevice device, AttendanceDeviceRequest request)
     {

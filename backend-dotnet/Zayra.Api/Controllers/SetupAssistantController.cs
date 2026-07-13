@@ -283,7 +283,7 @@ public class SetupAssistantController : ControllerBase
         if (d.EmployeeIdRule is not null)
         {
             var companyId = company?.Id;
-            var rule = await _db.EmployeeIdRules.FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted && (x.CompanyId == companyId || x.CompanyId == null), ct);
+            var rule = await _db.EmployeeIdRules.FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.CompanyId == companyId, ct);
             if (rule is null)
             {
                 rule = new EmployeeIdRule { TenantId = tenantId, CompanyId = company?.Id, CreatedBy = GetUserId() };
