@@ -256,6 +256,8 @@ export function EmployeesPage() {
   const [usage, setUsage] = useState<EmployeeUsageData | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<EmployeeCreateRequest>(emptyEmployee());
+  const [formOriginal, setFormOriginal] = useState<EmployeeCreateRequest>(emptyEmployee());
+  const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<EmployeeDetail | null>(null);
@@ -446,6 +448,8 @@ export function EmployeesPage() {
       next.complianceRecords = complianceRecordsForCountry(defaultCompany.countryCode);
     }
     setForm(next);
+    setFormOriginal(next);
+    setFormError('');
     setFormOpen(true);
   };
 
@@ -489,16 +493,17 @@ export function EmployeesPage() {
 
   const saveEmployee = async () => {
     setError('');
+    setFormError('');
     if (!form.englishName.trim() || !form.gender) {
-      setError('English full name and gender are required.');
+      setFormError('English full name and gender are required.');
       return;
     }
     if (selectedDesignation?.gradeId && form.gradeId && selectedDesignation.gradeId !== form.gradeId) {
-      setError('Selected designation is restricted to a different grade.');
+      setFormError('Selected designation is restricted to a different grade.');
       return;
     }
     if (selectedGrade && salaryTotal > 0 && ((selectedGrade.minSalary > 0 && salaryTotal < selectedGrade.minSalary) || (selectedGrade.maxSalary > 0 && salaryTotal > selectedGrade.maxSalary))) {
-      setError(`Salary package must be within ${selectedGrade.currency} ${selectedGrade.minSalary.toLocaleString()} - ${selectedGrade.maxSalary.toLocaleString()} for ${selectedGrade.code}.`);
+      setFormError(`Salary package must be within ${selectedGrade.currency} ${selectedGrade.minSalary.toLocaleString()} - ${selectedGrade.maxSalary.toLocaleString()} for ${selectedGrade.code}.`);
       return;
     }
     setSaving(true);
@@ -506,21 +511,22 @@ export function EmployeesPage() {
       const created = await employeesApi.create(cleanPayload(form));
       setFormOpen(false);
       setForm(emptyEmployee());
+      setFormOriginal(emptyEmployee());
       await load();
       await openDetail(created.id);
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number; data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.status;
       const data = (e as { response?: { data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.data;
       if (status === 402) {
-        setError('Your subscription is inactive or expired. Please contact support.');
+        setFormError('Your subscription is inactive or expired. Please contact support.');
       } else if (status === 422 && data?.error === 'employee_limit_reached') {
-        setError(data.message ?? `Employee limit reached (${data.current}/${data.limit}). Please upgrade your subscription.`);
+        setFormError(data.message ?? `Employee limit reached (${data.current}/${data.limit}). Please upgrade your subscription.`);
       } else {
         // Surface the server's actual validation details instead of a generic banner.
         const errors = (data as { errors?: Record<string, string[]> })?.errors;
         const detail = data?.message
           ?? (errors ? Object.entries(errors).map(([field, msgs]) => `${field}: ${msgs.join(' ')}`).join(' · ') : '');
-        setError(detail ? `Employee could not be saved — ${detail}` : 'Employee could not be saved. Check validation errors and try again.');
+        setFormError(detail ? `Employee could not be saved — ${detail}` : 'Employee could not be saved. Check validation errors and try again.');
       }
     } finally {
       setSaving(false);
@@ -543,6 +549,18 @@ export function EmployeesPage() {
   };
 
   const editChangedKeys = Object.keys(editForm).filter((k) => editForm[k] !== editOriginal[k]);
+  const formChanged = JSON.stringify(form) !== JSON.stringify(formOriginal);
+
+  const closeEditModal = () => {
+    if (editChangedKeys.length > 0 && !confirm('Discard unsaved employee changes?')) return;
+    setEditOpen(false);
+  };
+
+  const closeCreateModal = () => {
+    if (formChanged && !confirm('Discard this employee draft?')) return;
+    setFormOpen(false);
+    setFormError('');
+  };
 
   const saveEdit = async () => {
     if (!selectedId || editChangedKeys.length === 0) return;
@@ -930,30 +948,31 @@ export function EmployeesPage() {
         </aside>
       </div>
 
-      <Modal isOpen={editOpen} title={`Edit Employee — ${selectedEmployee?.fullName ?? ''}`} size="lg" onClose={() => setEditOpen(false)} footer={
+      <Modal isOpen={editOpen} title={`Edit Employee — ${selectedEmployee?.fullName ?? ''}`} size="xl" onClose={closeEditModal} footer={
         <>
           <button type="button" onClick={() => setEditForm({ ...editOriginal })} disabled={editChangedKeys.length === 0} className="btn-secondary disabled:opacity-40">
             Revert changes
           </button>
-          <button type="button" onClick={() => setEditOpen(false)} className="btn-secondary">Cancel</button>
+          <button type="button" onClick={closeEditModal} className="btn-secondary">Cancel</button>
           <button type="button" onClick={saveEdit} disabled={editSaving || editChangedKeys.length === 0} className="btn-primary disabled:opacity-60">
             {editSaving ? 'Saving...' : editChangedKeys.length > 0 ? `Save ${editChangedKeys.length} change${editChangedKeys.length === 1 ? '' : 's'}` : 'No changes'}
           </button>
         </>
       }>
-        <div className="space-y-5">
+        <div className="space-y-3">
           {editNotice && (
-            <p className={`rounded-lg px-3 py-2.5 text-sm ${editNotice.startsWith('Submitted') ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' : 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400'}`}>{editNotice}</p>
+            <p className={`rounded-xl px-3 py-2.5 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] ${editNotice.startsWith('Submitted') ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20' : 'bg-red-50 text-red-600 ring-1 ring-red-100 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/20'}`}>{editNotice}</p>
           )}
-          {[...new Set(editFields.map((f) => f.section))].map((section) => (
-            <fieldset key={section} className="space-y-3">
-              <legend className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
+          <div className="grid gap-3 xl:grid-cols-2">
+            {[...new Set(editFields.map((f) => f.section))].map((section) => (
+            <fieldset key={section} className="rounded-2xl border border-white/80 bg-white/72 p-3 shadow-[8px_8px_22px_rgba(148,163,184,0.18),-8px_-8px_22px_rgba(255,255,255,0.85),inset_0_1px_0_rgba(255,255,255,0.95)] ring-1 ring-slate-900/[0.03] dark:border-white/10 dark:bg-white/[0.045] dark:shadow-[8px_8px_24px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.06)]">
+              <legend className="mb-2 flex items-center gap-1.5 px-1 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
                 {section}
                 {editFields.some((f) => f.section === section && f.sensitive) && (
                   <InfoTip text="Fields marked 'approval' are sensitive (payroll/identity). Saving them submits a change request that an authorised approver must sign off before it takes effect." />
                 )}
               </legend>
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-2.5 sm:grid-cols-2 2xl:grid-cols-3">
                 {editFields.filter((f) => f.section === section).map((f) => (
                   <label key={f.key} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                     <span className="flex items-center gap-1.5">
@@ -973,17 +992,22 @@ export function EmployeesPage() {
                 ))}
               </div>
             </fieldset>
-          ))}
+            ))}
+          </div>
         </div>
       </Modal>
 
-      <Modal isOpen={formOpen} title="Add Employee" size="lg" onClose={() => setFormOpen(false)} footer={
+      <Modal isOpen={formOpen} title="Add Employee" size="xl" onClose={closeCreateModal} footer={
         <>
-          <button type="button" onClick={() => setFormOpen(false)} className="btn-secondary">Cancel</button>
+          <button type="button" onClick={closeCreateModal} className="btn-secondary">Cancel</button>
           <button type="button" onClick={saveEmployee} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving...' : 'Create Employee'}</button>
         </>
       }>
-        <div className="grid gap-5 lg:grid-cols-2">
+        <div className="space-y-3">
+          {formError && (
+            <p className="rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-600 ring-1 ring-red-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/20">{formError}</p>
+          )}
+          <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           <Section title="Master Profile">
             <Input label="Employee code" value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -1077,6 +1101,7 @@ export function EmployeesPage() {
               </div>
             ))}
           </Section>
+          </div>
         </div>
       </Modal>
     </div>
@@ -1137,13 +1162,18 @@ function EmptyRow({ label }: { label: string }) {
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return <fieldset className="space-y-3"><legend className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-400">{title}</legend>{children}</fieldset>;
+  return (
+    <fieldset className="rounded-2xl border border-white/80 bg-white/72 p-3 shadow-[8px_8px_22px_rgba(148,163,184,0.18),-8px_-8px_22px_rgba(255,255,255,0.85),inset_0_1px_0_rgba(255,255,255,0.95)] ring-1 ring-slate-900/[0.03] dark:border-white/10 dark:bg-white/[0.045] dark:shadow-[8px_8px_24px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.06)]">
+      <legend className="mb-2 px-1 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</legend>
+      <div className="grid gap-2.5 sm:grid-cols-2">{children}</div>
+    </fieldset>
+  );
 }
 
 function Input({ label, value, onChange, required, type = 'text', placeholder, rtl, info, infoKey }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; info?: string; infoKey?: string }) {
   return (
-    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-      <span>{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}</span>
+    <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
+      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}</span>
       <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className="input mt-1.5 w-full" />
     </label>
   );
@@ -1151,8 +1181,8 @@ function Input({ label, value, onChange, required, type = 'text', placeholder, r
 
 function Select({ label, value, onChange, options, required, info, infoKey }: { label: string; value: string; onChange: (value: string) => void; options: string[]; required?: boolean; info?: string; infoKey?: string }) {
   return (
-    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-      <span>{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}</span>
+    <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
+      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
         <option value="">Select</option>
         {options.map((option) => <option key={option} value={option}>{option}</option>)}
