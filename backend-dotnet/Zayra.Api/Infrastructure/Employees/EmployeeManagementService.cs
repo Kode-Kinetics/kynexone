@@ -91,6 +91,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         _db.Employees.Add(employee);
         await _db.SaveChangesAsync(cancellationToken);
+        await EnsurePrimaryReportingLineAsync(employee, context, cancellationToken);
         await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
 
         await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
@@ -413,7 +414,11 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.CostCenterId = request.CostCenterId;
         employee.PositionId = request.PositionId;
         employee.Branch = request.BranchId is null ? employee.Branch : await _db.Branches.Where(x => x.TenantId == tenantId && x.Id == request.BranchId).Select(x => x.NameEn).FirstOrDefaultAsync(cancellationToken) ?? employee.Branch;
-        employee.Department = request.DepartmentId is null ? employee.Department : await _db.Departments.Where(x => x.TenantId == tenantId && x.Id == request.DepartmentId).Select(x => x.NameEn).FirstOrDefaultAsync(cancellationToken) ?? employee.Department;
+        var department = request.DepartmentId is null ? null : await _db.Departments
+            .Where(x => x.TenantId == tenantId && x.Id == request.DepartmentId && x.IsActive && !x.IsDeleted)
+            .Select(x => new { x.NameEn, x.ManagerEmployeeId })
+            .FirstOrDefaultAsync(cancellationToken);
+        employee.Department = request.DepartmentId is null ? employee.Department : department?.NameEn ?? employee.Department;
         if (request.DesignationId is not null)
         {
             var designation = await _db.Designations
@@ -429,7 +434,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.Grade = request.GradeId is null ? employee.Grade : await _db.Grades.Where(x => x.TenantId == tenantId && x.Id == request.GradeId).Select(x => x.Code).FirstOrDefaultAsync(cancellationToken) ?? employee.Grade;
         employee.CostCenter = request.CostCenterId is null ? employee.CostCenter : await _db.CostCenters.Where(x => x.TenantId == tenantId && x.Id == request.CostCenterId).Select(x => x.Code).FirstOrDefaultAsync(cancellationToken) ?? employee.CostCenter;
         employee.JobTitle = Clean(request.JobTitle);
-        employee.ManagerEmployeeId = request.ReportingManagerEmployeeId;
+        employee.ManagerEmployeeId = request.ReportingManagerEmployeeId
+            ?? await ResolveDepartmentManagerAsync(tenantId, department?.ManagerEmployeeId, cancellationToken)
+            ?? (request.DepartmentId is null ? employee.ManagerEmployeeId : null);
         employee.SecondLevelManagerEmployeeId = request.SecondLevelManagerEmployeeId;
         employee.EmploymentType = Clean(request.EmploymentType);
         employee.ContractType = Clean(request.ContractType);
@@ -778,4 +785,47 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     private static DateTime? UtcDate(DateTime? value)
         => value.HasValue ? DateTime.SpecifyKind(value.Value.Date, DateTimeKind.Utc) : null;
+
+    private async Task<int?> ResolveDepartmentManagerAsync(Guid tenantId, int? managerEmployeeId, CancellationToken cancellationToken)
+    {
+        if (!managerEmployeeId.HasValue) return null;
+        return await _db.Employees.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Id == managerEmployeeId.Value && !x.IsDeleted)
+            .Select(x => (int?)x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private async Task EnsurePrimaryReportingLineAsync(Employee employee, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (!employee.ManagerEmployeeId.HasValue || employee.ManagerEmployeeId.Value == employee.Id || employee.TenantId is null) return;
+
+        var manager = await _db.Employees.AsNoTracking()
+            .Where(x => x.TenantId == employee.TenantId && x.Id == employee.ManagerEmployeeId.Value && !x.IsDeleted)
+            .Select(x => new { x.Id, x.CompanyId })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (manager is null) return;
+        if (employee.CompanyId.HasValue && manager.CompanyId.HasValue && employee.CompanyId != manager.CompanyId) return;
+
+        var exists = await _db.ReportingLines.AnyAsync(x =>
+            x.TenantId == employee.TenantId &&
+            x.EmployeeId == employee.Id &&
+            x.ManagerEmployeeId == manager.Id &&
+            x.RelationshipType == "SolidLine" &&
+            x.IsPrimary &&
+            x.IsActive, cancellationToken);
+        if (exists) return;
+
+        _db.ReportingLines.Add(new ReportingLine
+        {
+            TenantId = employee.TenantId.Value,
+            EmployeeId = employee.Id,
+            ManagerEmployeeId = manager.Id,
+            RelationshipType = "SolidLine",
+            EffectiveFrom = DateTime.UtcNow,
+            IsPrimary = true,
+            IsActive = true,
+            CreatedBy = context.UserId
+        });
+        await _db.SaveChangesAsync(cancellationToken);
+    }
 }

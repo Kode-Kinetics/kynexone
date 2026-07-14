@@ -152,6 +152,94 @@ public class EmployeeModuleTests
         stored.JoiningDate.Should().Be(new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Utc));
     }
 
+    [Fact]
+    public async Task CreateEmployee_WithDepartmentHead_AutoAssignsLineManagerAndReportingLine()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var manager = new Employee
+        {
+            TenantId = tenantId,
+            EmployeeCode = "MGR-001",
+            FullName = "Department Head",
+            EnglishName = "Department Head",
+            Gender = "Female",
+            Department = "Operations",
+            Status = "Active",
+            JoiningDate = DateTime.SpecifyKind(new DateTime(2025, 1, 1), DateTimeKind.Utc)
+        };
+        db.Employees.Add(manager);
+        await db.SaveChangesAsync();
+        var department = new Department
+        {
+            TenantId = tenantId,
+            Code = "OPS",
+            NameEn = "Operations",
+            ManagerEmployeeId = manager.Id,
+            IsActive = true
+        };
+        db.Departments.Add(department);
+        await db.SaveChangesAsync();
+
+        var controller = CreateController(db, tenantId);
+        var request = new EmployeeCreateRequest(
+            EmployeeCode: "EMP-DEPT-MGR",
+            ManualEmployeeCode: true,
+            EnglishName: "Department Joiner",
+            ArabicName: null,
+            PreferredName: null,
+            Gender: "Male",
+            DateOfBirth: null,
+            Nationality: "Pakistani",
+            MaritalStatus: null,
+            PersonalEmail: null,
+            WorkEmail: null,
+            MobileNumber: null,
+            ProfilePhotoUrl: null,
+            CompanyId: null,
+            BranchId: null,
+            DepartmentId: department.Id,
+            DesignationId: null,
+            GradeId: null,
+            CostCenterId: null,
+            JobTitle: null,
+            ReportingManagerEmployeeId: null,
+            SecondLevelManagerEmployeeId: null,
+            EmploymentType: "Full-Time",
+            ContractType: "Unlimited",
+            JoiningDate: new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Unspecified),
+            ConfirmationDate: null,
+            ProbationStartDate: null,
+            ProbationEndDate: null,
+            NoticePeriodDays: null,
+            WorkLocation: null,
+            PayrollGroup: null,
+            ShiftPolicyCode: null,
+            LeavePolicyCode: null,
+            AttendancePolicyCode: null,
+            PayrollProfile: null,
+            SalaryBreakdown: null,
+            ComplianceRecords: null);
+
+        var result = await controller.CreateEmployee(request, new Zayra.Api.Infrastructure.Employees.EmployeeManagementService(
+            db,
+            new AuditService(db),
+            new FakeDocumentStorage(),
+            new NotificationService(db, new FakeEmailService(), NullLogger<NotificationService>.Instance)),
+            CancellationToken.None);
+
+        var created = Assert.IsType<EmployeeDetailDto>(Assert.IsType<CreatedAtActionResult>(result.Result).Value);
+        created.Department.Should().Be("Operations");
+        created.ManagerEmployeeId.Should().Be(manager.Id);
+        (await db.ReportingLines.AnyAsync(x =>
+            x.TenantId == tenantId &&
+            x.EmployeeId == created.Id &&
+            x.ManagerEmployeeId == manager.Id &&
+            x.RelationshipType == "SolidLine" &&
+            x.IsPrimary &&
+            x.IsActive)).Should().BeTrue();
+    }
+
     private static ZayraDbContext CreateDb()
     {
         var options = new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;

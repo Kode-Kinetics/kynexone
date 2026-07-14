@@ -283,6 +283,7 @@ export function EmployeesPage() {
   const [grades, setGrades] = useState<GradeDto[]>([]);
   const [gradePayScale, setGradePayScale] = useState<GradePayScaleComponentDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
+  const [managerCandidates, setManagerCandidates] = useState<EmployeeListItem[]>([]);
 
   const pageSize = 25;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -308,13 +309,14 @@ export function EmployeesPage() {
   }, [page, search, status]);
 
   const loadLookups = useCallback(async () => {
-    const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes] = await Promise.all([
+    const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes, managerRes] = await Promise.all([
       companiesApi.list(1, 100),
       branchesApi.list(undefined, 1, 100),
       departmentsApi.list(undefined, 1, 100),
       designationsApi.list(undefined, 1, 100),
       gradesApi.list(1, 100),
       costCentersApi.list(undefined, 1, 100),
+      employeesApi.list({ status: 'Active', page: 1, pageSize: 100 }),
     ]);
     setCompanies(companyRes.items);
     setBranches(branchRes.items);
@@ -322,6 +324,7 @@ export function EmployeesPage() {
     setDesignations(desigRes.items);
     setGrades(gradeRes.items);
     setCostCenters(costRes.items);
+    setManagerCandidates(managerRes.items);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -373,6 +376,14 @@ export function EmployeesPage() {
   const selectedDesignation = useMemo(
     () => designations.find((item) => item.id === form.designationId),
     [designations, form.designationId],
+  );
+  const selectedDepartment = useMemo(
+    () => departments.find((item) => item.id === form.departmentId),
+    [departments, form.departmentId],
+  );
+  const selectedLineManager = useMemo(
+    () => managerCandidates.find((item) => item.id === form.reportingManagerEmployeeId),
+    [managerCandidates, form.reportingManagerEmployeeId],
   );
   const selectedGrade = useMemo(
     () => grades.find((item) => item.id === form.gradeId),
@@ -455,6 +466,16 @@ export function EmployeesPage() {
 
   const setField = (key: keyof EmployeeCreateRequest, value: string | boolean | number | undefined) =>
     setForm((current) => ({ ...current, [key]: value }));
+
+  const setDepartment = (value: string) =>
+    setForm((current) => {
+      const department = departments.find((item) => item.id === value);
+      return {
+        ...current,
+        departmentId: value,
+        reportingManagerEmployeeId: department?.managerEmployeeId,
+      };
+    });
 
   const setDesignation = (value: string) =>
     setForm((current) => {
@@ -1048,7 +1069,28 @@ export function EmployeesPage() {
               textKey="legalNameEn"
             />
             <Lookup label="Branch" value={form.branchId ?? ''} onChange={(v) => setField('branchId', v)} items={branches} textKey="nameEn" />
-            <Lookup label="Department" value={form.departmentId ?? ''} onChange={(v) => setField('departmentId', v)} items={departments} textKey="nameEn" />
+            <Lookup label="Department" value={form.departmentId ?? ''} onChange={setDepartment} items={departments} textKey="nameEn" />
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+              <span className="flex items-center gap-1.5">
+                Line manager
+                <InfoTip text="Auto-selected from the Department master manager. HR can override when the hierarchy requires an exception." fieldKey="employees.line_manager" />
+              </span>
+              <select
+                value={form.reportingManagerEmployeeId ? String(form.reportingManagerEmployeeId) : ''}
+                onChange={(e) => setField('reportingManagerEmployeeId', e.target.value ? Number(e.target.value) : undefined)}
+                className="select mt-1.5 w-full"
+              >
+                <option value="">Select</option>
+                {managerCandidates.map((manager) => (
+                  <option key={manager.id} value={manager.id}>{manager.fullName} ({manager.employeeCode})</option>
+                ))}
+              </select>
+              {selectedDepartment?.managerEmployeeId && form.reportingManagerEmployeeId === selectedDepartment.managerEmployeeId && (
+                <span className="mt-1 block text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                  Auto-selected from {selectedDepartment.nameEn}{selectedLineManager ? `: ${selectedLineManager.fullName}` : ''}
+                </span>
+              )}
+            </label>
             <Lookup label="Designation" value={form.designationId ?? ''} onChange={setDesignation} items={designations} textKey="titleEn" />
             <Lookup label="Grade" value={form.gradeId ?? ''} onChange={setGrade} items={eligibleGrades} textKey="name" />
             {selectedGrade && (
