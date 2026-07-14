@@ -89,6 +89,69 @@ public class EmployeeModuleTests
         (await db.EmployeeChangeRequests.SingleAsync(x => x.EmployeeId == employee.Id)).Status.Should().Be("ApprovedApplied");
     }
 
+    [Fact]
+    public async Task CreateEmployee_WithBrowserDate_CreatesDraftWithUtcJoiningDate()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var controller = CreateController(db, tenantId);
+
+        var browserDate = new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Unspecified);
+        var request = new EmployeeCreateRequest(
+            EmployeeCode: "EMP-CREATE-001",
+            ManualEmployeeCode: true,
+            EnglishName: "Create Flow Test",
+            ArabicName: null,
+            PreferredName: null,
+            Gender: "Male",
+            DateOfBirth: null,
+            Nationality: "Pakistani",
+            MaritalStatus: null,
+            PersonalEmail: null,
+            WorkEmail: null,
+            MobileNumber: null,
+            ProfilePhotoUrl: null,
+            CompanyId: null,
+            BranchId: null,
+            DepartmentId: null,
+            DesignationId: null,
+            GradeId: null,
+            CostCenterId: null,
+            JobTitle: null,
+            ReportingManagerEmployeeId: null,
+            SecondLevelManagerEmployeeId: null,
+            EmploymentType: "Full-Time",
+            ContractType: "Unlimited",
+            JoiningDate: browserDate,
+            ConfirmationDate: null,
+            ProbationStartDate: null,
+            ProbationEndDate: null,
+            NoticePeriodDays: null,
+            WorkLocation: null,
+            PayrollGroup: null,
+            ShiftPolicyCode: null,
+            LeavePolicyCode: null,
+            AttendancePolicyCode: null,
+            PayrollProfile: null,
+            SalaryBreakdown: null,
+            ComplianceRecords: null);
+
+        var result = await controller.CreateEmployee(request, new Zayra.Api.Infrastructure.Employees.EmployeeManagementService(
+            db,
+            new AuditService(db),
+            new FakeDocumentStorage(),
+            new NotificationService(db, new FakeEmailService(), NullLogger<NotificationService>.Instance)),
+            CancellationToken.None);
+
+        var created = Assert.IsType<EmployeeDetailDto>(Assert.IsType<CreatedAtActionResult>(result.Result).Value);
+        created.Status.Should().Be("Draft");
+        created.EmployeeCode.Should().Be("EMP-CREATE-001");
+
+        var stored = await db.Employees.SingleAsync(x => x.TenantId == tenantId && x.EmployeeCode == "EMP-CREATE-001");
+        stored.JoiningDate.Kind.Should().Be(DateTimeKind.Utc);
+        stored.JoiningDate.Should().Be(new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Utc));
+    }
+
     private static ZayraDbContext CreateDb()
     {
         var options = new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
@@ -355,7 +418,17 @@ public class EmployeeModuleTests
 
     private static EmployeesController CreateController(ZayraDbContext db, Guid tenantId, Guid? userId = null)
     {
-        var controller = new EmployeesController(db, new Pbkdf2PasswordHasher(), new AuditService(db), new FakeDocumentStorage(), new NotificationService(db, new FakeEmailService(), NullLogger<NotificationService>.Instance), new FakeHijriDateService(), new Zayra.Api.Infrastructure.Common.DataScopeService(db), new FakeLetterService());
+        var audit = new AuditService(db);
+        var controller = new EmployeesController(
+            db,
+            new Pbkdf2PasswordHasher(),
+            audit,
+            new FakeDocumentStorage(),
+            new NotificationService(db, new FakeEmailService(), NullLogger<NotificationService>.Instance),
+            new FakeHijriDateService(),
+            new Zayra.Api.Infrastructure.Common.DataScopeService(db),
+            new FakeLetterService(),
+            new ApprovalWorkflowService(db, audit));
         var effectiveUserId = userId ?? Guid.NewGuid();
         var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
         {

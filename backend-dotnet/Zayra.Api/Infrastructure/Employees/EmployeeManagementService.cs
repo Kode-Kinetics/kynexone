@@ -433,7 +433,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.SecondLevelManagerEmployeeId = request.SecondLevelManagerEmployeeId;
         employee.EmploymentType = Clean(request.EmploymentType);
         employee.ContractType = Clean(request.ContractType);
-        employee.JoiningDate = request.JoiningDate ?? (employee.JoiningDate == default ? DateTime.UtcNow.Date : employee.JoiningDate);
+        employee.JoiningDate = UtcDate(request.JoiningDate)
+            ?? (employee.JoiningDate == default ? DateTime.UtcNow.Date : DateTime.SpecifyKind(employee.JoiningDate.Date, DateTimeKind.Utc));
         employee.ConfirmationDate = request.ConfirmationDate;
         employee.ProbationStartDate = request.ProbationStartDate;
         employee.ProbationEndDate = request.ProbationEndDate;
@@ -774,4 +775,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     }
 
     private static string Clean(string? value) => value?.Trim() ?? string.Empty;
+
+    private static DateTime? UtcDate(DateTime? value)
+        => value.HasValue ? DateTime.SpecifyKind(value.Value.Date, DateTimeKind.Utc) : null;
 }

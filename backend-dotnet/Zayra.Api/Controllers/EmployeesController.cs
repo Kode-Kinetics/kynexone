@@ -45,7 +45,7 @@ public class EmployeesController : ControllerBase
     private readonly ILetterService _letters;
     private readonly IApprovalWorkflowService _approvalWorkflow;
 
-    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService approvalWorkflow)
+    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -55,7 +55,7 @@ public class EmployeesController : ControllerBase
         _hijri = hijri;
         _scopeService = scopeService;
         _letters = letters;
-        _approvalWorkflow = approvalWorkflow;
+        _approvalWorkflow = approvalWorkflow ?? new Zayra.Api.Infrastructure.Approvals.ApprovalWorkflowService(db, audit);
     }
 
     [HttpGet]
