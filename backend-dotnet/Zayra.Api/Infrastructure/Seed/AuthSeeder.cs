@@ -100,6 +100,35 @@ public class AuthSeeder : IAuthSeeder
                   ON CONFLICT DO NOTHING;", cancellationToken);
         }
         catch (Exception ex) { Console.WriteLine($"[Seed] Admin permission backfill skipped: {ex.Message}"); }
+
+        // Historical tenant admins created before entity-scope rollout can have the Admin
+        // role but neither group scope nor company grants. That resolves to entity_scope=none
+        // and blocks normal tenant-owner actions such as creating employees once companies
+        // exist. Keep explicit company-scoped HR untouched: only true Admin-role users with
+        // no active grants are elevated to tenant/group scope.
+        try
+        {
+            await _db.Database.ExecuteSqlRawAsync(
+                @"UPDATE users u
+                  SET is_group_scope = TRUE,
+                      updated_at_utc = NOW()
+                  WHERE COALESCE(u.is_group_scope, FALSE) = FALSE
+                    AND COALESCE(u.is_deleted, FALSE) = FALSE
+                    AND EXISTS (
+                        SELECT 1
+                        FROM user_roles ur
+                        JOIN roles r ON r.id = ur.role_id
+                        WHERE ur.user_id = u.id
+                          AND r.tenant_id = u.tenant_id
+                          AND r.normalized_name = 'ADMIN')
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM user_entity_accesses uea
+                        WHERE uea.user_id = u.id
+                          AND uea.tenant_id = u.tenant_id
+                          AND COALESCE(uea.is_active, TRUE) = TRUE);", cancellationToken);
+        }
+        catch (Exception ex) { Console.WriteLine($"[Seed] Admin entity-scope backfill skipped: {ex.Message}"); }
     }
 
     public async Task<Role> EnsureTenantRolesAsync(Guid tenantId, CancellationToken cancellationToken = default)

@@ -183,6 +183,66 @@ public class PostgresDateTimeIntegrationTests : IClassFixture<PostgresFixture>
         Assert.Equal("SAR", profile4.SalaryCurrency);
     }
 
+    [Fact]
+    public async Task Postgres_CreateEmployee_BrowserDate_CreatesDraftEmployee()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var ctrl = CreateController(db, tenantId);
+
+        var result = await ctrl.CreateEmployee(
+            new EmployeeCreateRequest(
+                EmployeeCode: $"EMP-PG-CREATE-{Guid.NewGuid():N}"[..18],
+                ManualEmployeeCode: true,
+                EnglishName: "Postgres Create Flow",
+                ArabicName: null,
+                PreferredName: null,
+                Gender: "Male",
+                DateOfBirth: null,
+                Nationality: "Pakistani",
+                MaritalStatus: null,
+                PersonalEmail: null,
+                WorkEmail: null,
+                MobileNumber: null,
+                ProfilePhotoUrl: null,
+                CompanyId: null,
+                BranchId: null,
+                DepartmentId: null,
+                DesignationId: null,
+                GradeId: null,
+                CostCenterId: null,
+                JobTitle: null,
+                ReportingManagerEmployeeId: null,
+                SecondLevelManagerEmployeeId: null,
+                EmploymentType: "Full-Time",
+                ContractType: "Unlimited",
+                JoiningDate: new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Unspecified),
+                ConfirmationDate: null,
+                ProbationStartDate: null,
+                ProbationEndDate: null,
+                NoticePeriodDays: null,
+                WorkLocation: null,
+                PayrollGroup: null,
+                ShiftPolicyCode: null,
+                LeavePolicyCode: null,
+                AttendancePolicyCode: null,
+                PayrollProfile: null,
+                SalaryBreakdown: null,
+                ComplianceRecords: null),
+            new Zayra.Api.Infrastructure.Employees.EmployeeManagementService(
+                db,
+                new AuditService(db),
+                new PgFakeDocumentStorage(),
+                new NotificationService(db, new PgFakeEmailService(), NullLogger<NotificationService>.Instance)),
+            CancellationToken.None);
+
+        var created = Assert.IsType<EmployeeDetailDto>(Assert.IsType<CreatedAtActionResult>(result.Result).Value);
+        Assert.Equal("Draft", created.Status);
+
+        var stored = await db.Employees.SingleAsync(x => x.TenantId == tenantId && x.Id == created.Id);
+        Assert.Equal(DateTimeKind.Utc, stored.JoiningDate.Kind);
+    }
+
     private static EmployeesController CreateController(ZayraDbContext db, Guid tenantId)
     {
         var ctrl = new EmployeesController(

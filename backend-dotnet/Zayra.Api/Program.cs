@@ -411,7 +411,7 @@ var app = builder.Build();
 // Global exception handler — must be the outermost middleware.
 // Converts unhandled exceptions into structured JSON so clients always get a typed error body
 // instead of an empty 500. InvalidOperationException (the service-layer sentinel for bad state)
-// maps to 400; everything else is 500 with a traceId for support correlation.
+// maps to 400; authorization failures map to 403; everything else is 500 with a traceId.
 app.UseExceptionHandler(errApp => errApp.Run(async ctx =>
 {
     var feature = ctx.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
@@ -420,15 +420,20 @@ app.UseExceptionHandler(errApp => errApp.Run(async ctx =>
     var traceId = ctx.TraceIdentifier;
     log.LogError(ex, "Unhandled exception. TraceId={TraceId} Path={Path}", traceId, ctx.Request.Path);
 
+    var (statusCode, code, message) = ex switch
+    {
+        UnauthorizedAccessException unauthorized => (StatusCodes.Status403Forbidden, "forbidden", unauthorized.Message),
+        InvalidOperationException invalid => (StatusCodes.Status400BadRequest, "bad_request", invalid.Message),
+        _ => (StatusCodes.Status500InternalServerError, "internal_error", "An unexpected error occurred. Quote your traceId when contacting support.")
+    };
+
     ctx.Response.ContentType = "application/json";
-    ctx.Response.StatusCode = ex is InvalidOperationException ? 400 : 500;
+    ctx.Response.StatusCode = statusCode;
     await ctx.Response.WriteAsJsonAsync(new
     {
         traceId,
-        code = ex is InvalidOperationException ? "bad_request" : "internal_error",
-        message = ex is InvalidOperationException
-            ? ex.Message
-            : "An unexpected error occurred. Quote your traceId when contacting support.",
+        code,
+        message,
     });
 }));
 
