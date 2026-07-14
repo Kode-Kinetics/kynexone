@@ -45,11 +45,6 @@ public class EmployeesController : ControllerBase
     private readonly ILetterService _letters;
     private readonly IApprovalWorkflowService _approvalWorkflow;
 
-    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters)
-        : this(db, passwordHasher, audit, documents, notifications, hijri, scopeService, letters, new Zayra.Api.Infrastructure.Approvals.ApprovalWorkflowService(db, audit))
-    {
-    }
-
     public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService approvalWorkflow)
     {
         _db = db;
