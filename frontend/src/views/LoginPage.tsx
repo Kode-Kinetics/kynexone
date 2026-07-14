@@ -123,7 +123,24 @@ export function LoginPage() {
       if (outcome === 'mfa-enroll') { setMode('mfa-enroll'); return; }
       router.replace(from);
     }
-    catch { setError('Invalid credentials. Check your email, password, and workspace.'); }
+    // Only a 401 actually means the credentials were wrong. Reporting a server
+    // outage or an unreachable API as "invalid credentials" sends everyone hunting
+    // for a password problem while the real fault (e.g. a 500 from a schema that
+    // lagged behind a deploy) stays invisible.
+    catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 401)      setError('Invalid credentials. Check your email, password, and workspace.');
+      else if (status === 400) setError(err.response?.data?.message ?? 'Please check the details you entered.');
+      else if (status === 429) setError('Too many attempts. Please wait a moment and try again.');
+      else if (!err?.response)  setError('Cannot reach the server. Check your connection and try again.');
+      else {
+        const traceId = err.response?.data?.traceId;
+        setError(
+          `Sign-in is temporarily unavailable (server error ${status}). This is not a problem with your password.`
+          + (traceId ? ` Reference: ${traceId}` : ''),
+        );
+      }
+    }
     finally { setLoading(false); }
   };
 

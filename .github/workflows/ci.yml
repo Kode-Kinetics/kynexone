@@ -12,6 +12,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── Schema drift gate ─────────────────────────────────────────────────────────
+  # Twice now, entity properties were added without a matching EF migration. The
+  # build passed, the deploy succeeded, and production then threw 42703 ("column
+  # does not exist") on the first query touching the new column — taking down
+  # /api/auth/login for every user. This job fails the PR instead.
+  migration-drift:
+    name: Migration Drift (schema gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install EF Core tools
+        run: dotnet tool restore
+
+      - name: Fail if the EF model has changes with no migration
+        run: |
+          # Exits non-zero when the entity model no longer matches the last migration
+          # snapshot — i.e. someone changed an entity and forgot `dotnet ef migrations add`.
+          dotnet ef migrations has-pending-model-changes \
+            --project backend-dotnet/Zayra.Api \
+            || {
+              echo "::error::EF model has changes with no corresponding migration."
+              echo "::error::Run: dotnet ef migrations add <Name> --project backend-dotnet/Zayra.Api"
+              exit 1
+            }
+
   # ── Backend: build + security regression gate ──────────────────────────────────
   backend-tests:
     name: Backend Tests (security gate)

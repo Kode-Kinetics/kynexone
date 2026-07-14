@@ -533,12 +533,16 @@ app.MapGet("/health", async (ZayraDbContext db) =>
 // minimal-API duplicates here caused AmbiguousMatchException on /api/employees/reports/*.
 
 // ── Migration mode ────────────────────────────────────────────────────────────
-// In Production the web process NEVER runs migrations on startup to avoid crashing
-// the web service when TiDB or network is unavailable.
-// Migrations run via a one-off command:
-//   dotnet Zayra.Api.dll --migrate
-// or via Render pre-deploy job. Set Database__RunMigrationsOnStartup=true ONLY
-// for local dev convenience (it defaults false in Production).
+// Migrations do NOT run on startup unless explicitly enabled. That default is
+// deliberate: docker-compose points the backend at shared Neon, so an auto-migrating
+// boot would let a local `compose up` push unreviewed migrations into a shared
+// database. Render enables the flag so a deploy always migrates before serving.
+//
+// Opting out is not permission to run against a stale schema, though: the assertion
+// below refuses to boot when migrations are pending. Previously the app logged
+// "Skipping migrations", started happily, and then threw 42703 on the first query
+// touching a column the database did not have — /api/auth/login returned 500 for
+// every user, which the UI rendered as "invalid credentials".
 var isMigrateMode = args.Contains("--migrate");
 var isPurgeDemoMode = args.Contains("--purge-demo");
 var runMigrationsOnStartup = app.Configuration.GetValue<bool>("Database:RunMigrationsOnStartup");
@@ -566,7 +570,25 @@ using (var scope = app.Services.CreateScope())
     }
     else
     {
-        logger.LogInformation("Skipping EF Core migrations on startup. Set Database:RunMigrationsOnStartup=true or run --migrate.");
+        // Migrations were skipped deliberately. Verify the schema is already at the
+        // level this build expects — booting against a stale schema is never valid,
+        // because every query touching a missing column throws 42703 at runtime.
+        var pending = (await dbContext.Database.GetPendingMigrationsAsync()).ToList();
+        if (pending.Count > 0)
+        {
+            var summary = string.Join(", ", pending);
+            logger.LogCritical(
+                "Refusing to start: {Count} migration(s) have not been applied to this database ({Pending}). "
+                + "The deployed code expects schema this database does not have, so requests would fail at runtime. "
+                + "Apply them with `dotnet Zayra.Api.dll --migrate` or set Database:RunMigrationsOnStartup=true.",
+                pending.Count, summary);
+
+            throw new InvalidOperationException(
+                $"Database schema is behind the deployed code: {pending.Count} pending migration(s): {summary}. "
+                + "Apply migrations before serving traffic.");
+        }
+
+        logger.LogInformation("Skipping EF Core migrations on startup; schema is up to date.");
     }
 
     if (isMigrateMode)

@@ -65,12 +65,16 @@ services:
       - key: SeedAdmin__SeedDemoData
         value: "false"
 
-      # Web service never runs migrations on startup in Production.
-      # Migrations are applied via a Render one-off job:
-      #   dotnet Zayra.Api.dll --migrate
-      # Set to "true" ONLY for local development convenience.
+      # Migrations run on deploy so the schema can never lag behind the code.
+      #
+      # This was "false", which meant Render shipped new code while the database kept
+      # the old schema. The app booted fine and then threw 42703 ("column does not
+      # exist") on the first query that touched a new column — /api/auth/login returned
+      # 500 for every user, and the UI rendered that as "invalid credentials".
+      # Setting this to "false" again requires migrating out-of-band first; the app now
+      # refuses to boot with pending migrations rather than serving a broken schema.
       - key: Database__RunMigrationsOnStartup
-        value: "false"
+        value: "true"
 
       # CORS — add your real Vercel/frontend URL here (comma-separated for multiple).
       # appsettings.json already whitelists https://kynexone.vercel.app.
