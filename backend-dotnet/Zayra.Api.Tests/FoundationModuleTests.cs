@@ -1,6 +1,10 @@
+using System.Security.Claims;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Audit;
@@ -95,6 +99,103 @@ public class FoundationModuleTests
     }
 
     [Fact]
+    public async Task LegacyApprovalWorkflowRequests_BlocksManagerTenantWideQueueByDefault()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var managerUserId = Guid.NewGuid();
+        db.ApprovalRequests.AddRange(
+            new ApprovalRequest
+            {
+                TenantId = tenantId,
+                WorkflowId = Guid.NewGuid(),
+                EntityName = "EmployeeChangeRequest",
+                EntityId = "owned",
+                Title = "Owned request",
+                Status = "Pending",
+                CurrentApproverUserId = managerUserId,
+                CurrentApproverType = "Manager",
+                CurrentApproverRole = "Manager"
+            },
+            new ApprovalRequest
+            {
+                TenantId = tenantId,
+                WorkflowId = Guid.NewGuid(),
+                EntityName = "EmployeeChangeRequest",
+                EntityId = "other",
+                Title = "Other request",
+                Status = "Pending",
+                CurrentApproverRole = "HR Manager",
+                CurrentApproverType = "Role"
+            });
+        await db.SaveChangesAsync();
+        var controller = CreateApprovalWorkflowsController(db, tenantId, managerUserId, "Manager");
+
+        var response = await controller.Requests("Pending", null, null, 1, 25, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(response.Result);
+    }
+
+    [Fact]
+    public async Task LegacyApprovalWorkflowRequests_AllowsManagerExplicitMineQueue()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var managerUserId = Guid.NewGuid();
+        db.ApprovalRequests.AddRange(
+            new ApprovalRequest
+            {
+                TenantId = tenantId,
+                WorkflowId = Guid.NewGuid(),
+                EntityName = "EmployeeChangeRequest",
+                EntityId = "owned",
+                Title = "Owned request",
+                Status = "Pending",
+                CurrentApproverUserId = managerUserId,
+                CurrentApproverType = "Manager",
+                CurrentApproverRole = "Manager"
+            },
+            new ApprovalRequest
+            {
+                TenantId = tenantId,
+                WorkflowId = Guid.NewGuid(),
+                EntityName = "EmployeeChangeRequest",
+                EntityId = "other",
+                Title = "Other request",
+                Status = "Pending",
+                CurrentApproverRole = "HR Manager",
+                CurrentApproverType = "Role"
+            });
+        await db.SaveChangesAsync();
+        var controller = CreateApprovalWorkflowsController(db, tenantId, managerUserId, "Manager");
+
+        var response = await controller.Requests("Pending", null, "mine", 1, 25, CancellationToken.None);
+
+        var result = Assert.IsType<OkObjectResult>(response.Result);
+        var page = Assert.IsType<Zayra.Api.Application.Common.PagedResult<ApprovalRequestDto>>(result.Value);
+        Assert.Single(page.Items);
+        Assert.Equal("owned", page.Items.Single().EntityId);
+    }
+
+    [Fact]
+    public async Task LegacyApprovalWorkflowRequests_AllowsAdminTenantWideQueue()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        db.ApprovalRequests.AddRange(
+            new ApprovalRequest { TenantId = tenantId, WorkflowId = Guid.NewGuid(), EntityName = "Any", EntityId = "one", Title = "One", Status = "Pending" },
+            new ApprovalRequest { TenantId = tenantId, WorkflowId = Guid.NewGuid(), EntityName = "Any", EntityId = "two", Title = "Two", Status = "Pending" });
+        await db.SaveChangesAsync();
+        var controller = CreateApprovalWorkflowsController(db, tenantId, Guid.NewGuid(), "Admin");
+
+        var response = await controller.Requests("Pending", null, null, 1, 25, CancellationToken.None);
+
+        var result = Assert.IsType<OkObjectResult>(response.Result);
+        var page = Assert.IsType<Zayra.Api.Application.Common.PagedResult<ApprovalRequestDto>>(result.Value);
+        Assert.Equal(2, page.Total);
+    }
+
+    [Fact]
     public async Task OrganizationMasterData_IsTenantScoped()
     {
         await using var db = CreateDb();
@@ -115,5 +216,18 @@ public class FoundationModuleTests
     {
         var options = new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
         return new ZayraDbContext(options);
+    }
+
+    private static ApprovalWorkflowsController CreateApprovalWorkflowsController(ZayraDbContext db, Guid tenantId, Guid userId, string role)
+    {
+        var controller = new ApprovalWorkflowsController(new ApprovalWorkflowService(db, new AuditService(db)));
+        var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", tenantId.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+            new Claim(ClaimTypes.Role, role)
+        }, "Test"));
+        controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } };
+        return controller;
     }
 }

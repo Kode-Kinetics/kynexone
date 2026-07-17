@@ -53,8 +53,16 @@ public class ApprovalWorkflowsController : ControllerBase
 
     [HttpGet("requests")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
-    public async Task<ActionResult<PagedResult<ApprovalRequestDto>>> Requests([FromQuery] string? status, [FromQuery] string? entityName, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
-        => Ok(await _approvals.GetRequestsAsync(RequireTenant(), status, entityName, page, pageSize, cancellationToken));
+    public async Task<ActionResult<PagedResult<ApprovalRequestDto>>> Requests([FromQuery] string? status, [FromQuery] string? entityName, [FromQuery] string? queue, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queue) && !CanListTenantWideApprovalRequests())
+            return Forbid();
+
+        var tenantId = RequireTenant();
+        return string.IsNullOrWhiteSpace(queue)
+            ? Ok(await _approvals.GetRequestsAsync(tenantId, status, entityName, page, pageSize, cancellationToken))
+            : Ok(await _approvals.GetRequestsAsync(tenantId, status, entityName, queue, page, pageSize, Context(), cancellationToken));
+    }
 
     [HttpPost("requests")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager")]
@@ -80,6 +88,9 @@ public class ApprovalWorkflowsController : ControllerBase
     }
 
     private Guid RequireTenant() => this.GetTenantId() ?? throw new UnauthorizedAccessException("Tenant claim missing.");
+    private bool CanListTenantWideApprovalRequests() =>
+        User.IsInRole("Admin") || User.IsInRole("HR Manager");
+
     private RequestContext Context() => new(
         HttpContext.Connection.RemoteIpAddress?.ToString(),
         Request.Headers.UserAgent.ToString(),

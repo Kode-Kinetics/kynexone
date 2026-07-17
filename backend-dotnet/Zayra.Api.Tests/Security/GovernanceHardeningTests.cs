@@ -180,6 +180,54 @@ public class GovernanceHardeningTests
         audit.Metadata.Should().Contain("CancelledApprovalRequests");
     }
 
+    [Fact]
+    public async Task DeleteEmployee_ReroutesPendingApprovalsAssignedToDeletedApprover()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAsync(db);
+        var approverUserId = Guid.NewGuid();
+        var approver = SeedEmployee(db, tenantId);
+        approver.UserAccountId = approverUserId;
+        var subject = SeedEmployee(db, tenantId);
+        subject.EmployeeCode = "EMP-GOV-002";
+        var approval = new ApprovalRequest
+        {
+            TenantId = tenantId,
+            WorkflowId = Guid.NewGuid(),
+            EntityName = "LeaveRequest",
+            EntityId = Guid.NewGuid().ToString(),
+            Title = "Annual leave",
+            Status = "Pending",
+            RequestedForEmployeeId = subject.Id,
+            CurrentApproverEmployeeId = approver.Id,
+            CurrentApproverUserId = approverUserId,
+            CurrentApproverName = approver.FullName,
+            CurrentApproverType = "SpecificEmployee",
+            CurrentApproverRole = "Manager",
+            CurrentQueue = $"SpecificEmployee:{approver.FullName}"
+        };
+        db.ApprovalRequests.Add(approval);
+        await db.SaveChangesAsync();
+        var controller = CreateController(db, tenantId, "Admin", Guid.NewGuid());
+
+        var result = await controller.Delete(approver.Id, CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(result);
+        var rerouted = await db.ApprovalRequests.FindAsync(approval.Id);
+        rerouted!.Status.Should().Be("Pending");
+        rerouted.CurrentApproverEmployeeId.Should().BeNull();
+        rerouted.CurrentApproverUserId.Should().BeNull();
+        rerouted.CurrentApproverType.Should().Be("Role");
+        rerouted.CurrentApproverRole.Should().Be("HR Manager");
+        rerouted.CurrentQueue.Should().Be("Role:HR Manager");
+        rerouted.EscalatedToRole.Should().Be("HR Manager");
+        rerouted.EscalatedAtUtc.Should().NotBeNull();
+        rerouted.CompletedAtUtc.Should().BeNull();
+        var audit = await db.AuditLogs.SingleAsync(x => x.EntityName == "Employee" && x.EntityId == approver.Id.ToString());
+        audit.Metadata.Should().Contain("ReroutedApprovalRequests");
+        audit.Metadata.Should().Contain("HR Manager role queue");
+    }
+
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())

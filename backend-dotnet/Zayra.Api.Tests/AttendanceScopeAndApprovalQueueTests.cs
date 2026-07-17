@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
@@ -154,6 +155,59 @@ public class AttendanceScopeAndApprovalQueueTests
         Assert.Equal("Team correction", result.Items.Single().Title);
     }
 
+    [Fact]
+    public async Task LegacyWorkflowRequests_ForbidsScopedRoleWithoutQueue()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var controller = CreateApprovalWorkflowsController(db, tenantId, Guid.NewGuid(), "Auditor");
+
+        var result = await controller.Requests(null, null, null, 1, 25, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(result.Result);
+    }
+
+    [Fact]
+    public async Task LegacyWorkflowRequests_UsesExplicitMineQueueForScopedRole()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var managerUserId = Guid.NewGuid();
+        await AddEmployee(db, tenantId, "MGR", userId: managerUserId);
+        db.ApprovalRequests.AddRange(
+            new ApprovalRequest
+            {
+                TenantId = tenantId,
+                WorkflowId = Guid.NewGuid(),
+                EntityName = "AttendanceRegularizationRequest",
+                EntityId = Guid.NewGuid().ToString(),
+                Title = "Manager queue item",
+                Status = "Pending",
+                CurrentApproverType = "Role",
+                CurrentApproverRole = "Manager"
+            },
+            new ApprovalRequest
+            {
+                TenantId = tenantId,
+                WorkflowId = Guid.NewGuid(),
+                EntityName = "AttendanceRegularizationRequest",
+                EntityId = Guid.NewGuid().ToString(),
+                Title = "HR queue item",
+                Status = "Pending",
+                CurrentApproverType = "Role",
+                CurrentApproverRole = "HR Manager"
+            });
+        await db.SaveChangesAsync();
+        var controller = CreateApprovalWorkflowsController(db, tenantId, managerUserId, "Manager");
+
+        var result = await controller.Requests(null, null, "mine", 1, 25, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var page = Assert.IsType<PagedResult<ApprovalRequestDto>>(ok.Value);
+        Assert.Equal(1, page.Total);
+        Assert.Equal("Manager queue item", page.Items.Single().Title);
+    }
+
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
@@ -198,6 +252,30 @@ public class AttendanceScopeAndApprovalQueueTests
                     new Claim("sub", userId.ToString()),
                     new Claim(ClaimTypes.Role, "HR Manager")
                 }, "Test"))
+            }
+        };
+        controller.ControllerContext.HttpContext.Connection.RemoteIpAddress = IPAddress.Loopback;
+        controller.ControllerContext.HttpContext.Request.Headers.UserAgent = "test";
+        return controller;
+    }
+
+    private static ApprovalWorkflowsController CreateApprovalWorkflowsController(ZayraDbContext db, Guid tenantId, Guid userId, string role)
+    {
+        var service = new ApprovalWorkflowService(db, new NullAuditService());
+        var controller = new ApprovalWorkflowsController(service)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim("tenant_id", tenantId.ToString()),
+                        new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+                        new Claim("sub", userId.ToString()),
+                        new Claim(ClaimTypes.Role, role)
+                    }, "Test"))
+                }
             }
         };
         controller.ControllerContext.HttpContext.Connection.RemoteIpAddress = IPAddress.Loopback;

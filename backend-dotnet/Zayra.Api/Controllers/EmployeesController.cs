@@ -1470,12 +1470,39 @@ public class EmployeesController : ControllerBase
             approval.CompletedAtUtc = deletedAt;
         }
 
+        var approverUserId = employee.UserAccountId;
+        var cancelledApprovalIds = pendingApprovals.Select(x => x.Id).ToHashSet();
+        var assignedApprovals = await _db.ApprovalRequests
+            .Where(x => x.TenantId == tenantId
+                && x.Status == "Pending"
+                && !cancelledApprovalIds.Contains(x.Id)
+                && (x.CurrentApproverEmployeeId == id
+                    || (approverUserId != null && x.CurrentApproverUserId == approverUserId)))
+            .ToListAsync(cancellationToken);
+        foreach (var approval in assignedApprovals)
+        {
+            // Preserve unrelated approval accountability by routing orphaned approver work
+            // to the same HR Manager role queue used by approval routing fallbacks.
+            approval.CurrentApproverEmployeeId = null;
+            approval.CurrentApproverUserId = null;
+            approval.CurrentApproverName = string.Empty;
+            approval.CurrentApproverType = "Role";
+            approval.CurrentApproverRole = "HR Manager";
+            approval.CurrentQueue = "Role:HR Manager";
+            approval.EscalatedAtUtc = deletedAt;
+            approval.EscalatedToRole = "HR Manager";
+            approval.LastRoutedAtUtc = deletedAt;
+            approval.DueAtUtc = deletedAt.AddHours(Math.Clamp(approval.SlaHours, 1, 720));
+        }
+
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employees.deleted", "Employee", id.ToString(), context, JsonSerializer.Serialize(new
         {
             employee.PrivacyStatus,
             employee.RetentionUntilUtc,
-            CancelledApprovalRequests = pendingApprovals.Count
+            CancelledApprovalRequests = pendingApprovals.Count,
+            ReroutedApprovalRequests = assignedApprovals.Count,
+            ApproverDeletionFallback = "Pending approvals assigned to the deleted approver are rerouted to the HR Manager role queue; approvals for the deleted employee are cancelled."
         }), cancellationToken);
         return NoContent();
     }
