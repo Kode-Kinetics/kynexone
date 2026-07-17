@@ -184,58 +184,24 @@ public class DepartmentsController : ControllerBase
             .Where(e => e.TenantId == tenantId && !e.IsDeleted)
             .ToDictionaryAsync(e => e.EmployeeCode.ToUpperInvariant(), e => e.Id, ct);
 
-        var rowResults = new List<ImportRowResult>();
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var importRows = ValidateRows(rows, existingByCode, costCentersByCode, empByCode);
         int wouldCreate = 0, wouldUpdate = 0, wouldSkip = 0;
 
-        for (int i = 0; i < rows.Count; i++)
+        foreach (var row in importRows)
         {
-            var row = rows[i];
-            var rowNum = i + 2;
-            var code = row.GetValueOrDefault("Code", string.Empty).Trim();
-            var nameEn = row.GetValueOrDefault("NameEn", string.Empty).Trim();
-            var errors = new List<string>();
-            var warnings = new List<string>();
-
-            if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
-            else if (code.Length > 20) errors.Add("Code must be at most 20 characters");
-            if (string.IsNullOrWhiteSpace(nameEn)) errors.Add("NameEn is required");
-            else if (nameEn.Length > 100) errors.Add("NameEn must be at most 100 characters");
-
-            if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code))
-                errors.Add($"Duplicate Code '{code}' within this batch");
-
-            var parentCode = row.GetValueOrDefault("ParentDepartmentCode", string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(parentCode) && !existingByCode.ContainsKey(parentCode.ToUpperInvariant()))
-                warnings.Add($"ParentDepartmentCode '{parentCode}' not found — will be ignored");
-
-            var mgrCode = row.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(mgrCode) && !empByCode.ContainsKey(mgrCode.ToUpperInvariant()))
-                warnings.Add($"ManagerEmployeeCode '{mgrCode}' not found — will be ignored");
-
-            var ccCode = row.GetValueOrDefault("CostCenterCode", string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(ccCode) && !costCentersByCode.ContainsKey(ccCode.ToUpperInvariant()))
-                warnings.Add($"CostCenterCode '{ccCode}' not found — will be ignored");
-
-            ImportRowStatus status;
-            if (errors.Count > 0)
+            if (row.Errors.Count > 0)
             {
-                status = ImportRowStatus.Error;
                 wouldSkip++;
             }
             else
             {
-                bool exists = !string.IsNullOrWhiteSpace(code) && existingByCode.ContainsKey(code.ToUpperInvariant());
-                status = warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok;
+                bool exists = existingByCode.ContainsKey(NormalizeCode(row.Code));
                 if (exists) wouldUpdate++;
                 else wouldCreate++;
-                if (!string.IsNullOrWhiteSpace(code)) seenCodes.Add(code);
             }
-
-            rowResults.Add(new ImportRowResult(rowNum, code, nameEn, status, errors, warnings));
         }
 
-        return new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, rowResults);
+        return new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, ToRowResults(importRows));
     }
 
     private async Task<ImportCommitResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
@@ -256,104 +222,194 @@ public class DepartmentsController : ControllerBase
             .Where(e => e.TenantId == tenantId && !e.IsDeleted)
             .ToDictionaryAsync(e => e.EmployeeCode.ToUpperInvariant(), e => e.Id, ct);
 
-        var rowResults = new List<ImportRowResult>();
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var importRows = ValidateRows(rows, existingByCode, costCentersByCode, empByCode);
+        var finalByCode = new Dictionary<string, Department>(existingByCode, StringComparer.OrdinalIgnoreCase);
         int created = 0, updated = 0, skipped = 0;
 
-        for (int i = 0; i < rows.Count; i++)
+        foreach (var row in importRows)
         {
-            var row = rows[i];
-            var rowNum = i + 2;
-            var code = row.GetValueOrDefault("Code", string.Empty).Trim();
-            var nameEn = row.GetValueOrDefault("NameEn", string.Empty).Trim();
-            var errors = new List<string>();
-            var warnings = new List<string>();
-
-            if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
-            else if (code.Length > 20) errors.Add("Code must be at most 20 characters");
-            if (string.IsNullOrWhiteSpace(nameEn)) errors.Add("NameEn is required");
-            else if (nameEn.Length > 100) errors.Add("NameEn must be at most 100 characters");
-
-            if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code))
-                errors.Add($"Duplicate Code '{code}' within this batch");
-
-            if (errors.Count > 0)
+            if (row.Errors.Count > 0)
             {
                 skipped++;
-                rowResults.Add(new ImportRowResult(rowNum, code, nameEn, ImportRowStatus.Error, errors, warnings));
                 continue;
             }
 
-            var parentCode = row.GetValueOrDefault("ParentDepartmentCode", string.Empty).Trim();
-            Guid? parentDeptId = null;
-            if (!string.IsNullOrWhiteSpace(parentCode))
+            if (existingByCode.TryGetValue(NormalizeCode(row.Code), out var existing))
             {
-                if (existingByCode.TryGetValue(parentCode.ToUpperInvariant(), out var parentDept))
-                    parentDeptId = parentDept.Id;
-                else
-                    warnings.Add($"ParentDepartmentCode '{parentCode}' not found — ignored");
-            }
-
-            var mgrCode = row.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim();
-            int? mgrId = null;
-            if (!string.IsNullOrWhiteSpace(mgrCode))
-            {
-                if (empByCode.TryGetValue(mgrCode.ToUpperInvariant(), out var empId))
-                    mgrId = empId;
-                else
-                    warnings.Add($"ManagerEmployeeCode '{mgrCode}' not found — ignored");
-            }
-
-            var ccCode = row.GetValueOrDefault("CostCenterCode", string.Empty).Trim();
-            Guid? ccId = null;
-            if (!string.IsNullOrWhiteSpace(ccCode))
-            {
-                if (costCentersByCode.TryGetValue(ccCode.ToUpperInvariant(), out var ccGuid))
-                    ccId = ccGuid;
-                else
-                    warnings.Add($"CostCenterCode '{ccCode}' not found — ignored");
-            }
-
-            bool isActive = !row.TryGetValue("IsActive", out var activeVal) || !string.Equals(activeVal, "false", StringComparison.OrdinalIgnoreCase);
-
-            seenCodes.Add(code);
-            if (existingByCode.TryGetValue(code.ToUpperInvariant(), out var existing))
-            {
-                existing.NameEn = nameEn;
-                existing.NameAr = row.GetValueOrDefault("NameAr", string.Empty).Trim();
-                existing.ParentDepartmentId = parentDeptId;
-                existing.ManagerEmployeeId = mgrId;
-                existing.CostCenterId = ccId;
-                existing.IsActive = isActive;
+                ApplyRow(existing, row, costCentersByCode, empByCode);
                 existing.UpdatedAtUtc = DateTime.UtcNow;
                 updated++;
-                rowResults.Add(new ImportRowResult(rowNum, code, nameEn, warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok, errors, warnings));
+                finalByCode[NormalizeCode(row.Code)] = existing;
             }
             else
             {
                 var dept = new Department
                 {
                     TenantId = tenantId,
-                    Code = code,
-                    NameEn = nameEn,
-                    NameAr = row.GetValueOrDefault("NameAr", string.Empty).Trim(),
-                    ParentDepartmentId = parentDeptId,
-                    ManagerEmployeeId = mgrId,
-                    CostCenterId = ccId,
-                    IsActive = isActive
+                    Code = row.Code
                 };
+                ApplyRow(dept, row, costCentersByCode, empByCode);
                 _db.Departments.Add(dept);
                 created++;
-                rowResults.Add(new ImportRowResult(rowNum, code, nameEn, warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok, errors, warnings));
+                finalByCode[NormalizeCode(row.Code)] = dept;
             }
+        }
+
+        foreach (var row in importRows.Where(r => r.Errors.Count == 0))
+        {
+            var department = finalByCode[NormalizeCode(row.Code)];
+            department.ParentDepartmentId = string.IsNullOrWhiteSpace(row.ParentCode)
+                ? null
+                : finalByCode[NormalizeCode(row.ParentCode)].Id;
         }
 
         await _db.SaveChangesAsync(ct);
 
-        return new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>());
+        return new ImportCommitResult(rows.Count, created, updated, skipped, ToRowResults(importRows), Array.Empty<string>());
     }
 
+    private static List<DeptImportRow> ValidateRows(
+        IReadOnlyList<Dictionary<string, string>> rows,
+        IReadOnlyDictionary<string, Department> existingByCode,
+        IReadOnlyDictionary<string, Guid> costCentersByCode,
+        IReadOnlyDictionary<string, int> empByCode)
+    {
+        var importRows = new List<DeptImportRow>();
+        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            var importRow = new DeptImportRow(
+                RowNumber: i + 2,
+                Code: row.GetValueOrDefault("Code", string.Empty).Trim(),
+                NameEn: row.GetValueOrDefault("NameEn", string.Empty).Trim(),
+                NameAr: row.GetValueOrDefault("NameAr", string.Empty).Trim(),
+                ParentCode: row.GetValueOrDefault("ParentDepartmentCode", string.Empty).Trim(),
+                ManagerCode: row.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim(),
+                CostCenterCode: row.GetValueOrDefault("CostCenterCode", string.Empty).Trim(),
+                IsActive: !row.TryGetValue("IsActive", out var activeVal) || !string.Equals(activeVal.Trim(), "false", StringComparison.OrdinalIgnoreCase));
+
+            if (string.IsNullOrWhiteSpace(importRow.Code)) importRow.Errors.Add("Code is required");
+            else if (importRow.Code.Length > 20) importRow.Errors.Add("Code must be at most 20 characters");
+            if (string.IsNullOrWhiteSpace(importRow.NameEn)) importRow.Errors.Add("NameEn is required");
+            else if (importRow.NameEn.Length > 100) importRow.Errors.Add("NameEn must be at most 100 characters");
+
+            if (!string.IsNullOrWhiteSpace(importRow.Code) && !seenCodes.Add(importRow.Code))
+                importRow.Errors.Add($"Duplicate Code '{importRow.Code}' within this batch");
+
+            importRows.Add(importRow);
+        }
+
+        var importedByCode = importRows
+            .Where(r => !string.IsNullOrWhiteSpace(r.Code))
+            .GroupBy(r => r.Code, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() == 1)
+            .ToDictionary(g => NormalizeCode(g.Key), g => g.Single(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var row in importRows)
+        {
+            if (!string.IsNullOrWhiteSpace(row.ParentCode)
+                && !existingByCode.ContainsKey(NormalizeCode(row.ParentCode))
+                && !importedByCode.ContainsKey(NormalizeCode(row.ParentCode)))
+                row.Errors.Add($"ParentDepartmentCode '{row.ParentCode}' not found");
+
+            if (!string.IsNullOrWhiteSpace(row.ManagerCode) && !empByCode.ContainsKey(NormalizeCode(row.ManagerCode)))
+                row.Errors.Add($"ManagerEmployeeCode '{row.ManagerCode}' not found");
+
+            if (!string.IsNullOrWhiteSpace(row.CostCenterCode) && !costCentersByCode.ContainsKey(NormalizeCode(row.CostCenterCode)))
+                row.Errors.Add($"CostCenterCode '{row.CostCenterCode}' not found");
+        }
+
+        AddCycleErrors(importRows, existingByCode);
+
+        foreach (var row in importRows.Where(r => r.Errors.Count == 0 && !string.IsNullOrWhiteSpace(r.ParentCode)))
+        {
+            if (importedByCode.TryGetValue(NormalizeCode(row.ParentCode), out var parentRow) && parentRow.Errors.Count > 0)
+                row.Errors.Add($"ParentDepartmentCode '{row.ParentCode}' refers to a row that cannot be imported");
+        }
+
+        return importRows;
+    }
+
+    private static void AddCycleErrors(List<DeptImportRow> importRows, IReadOnlyDictionary<string, Department> existingByCode)
+    {
+        var codeById = existingByCode.Values.ToDictionary(d => d.Id, d => d.Code);
+        var parentByCode = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var department in existingByCode.Values)
+        {
+            if (department.ParentDepartmentId.HasValue && codeById.TryGetValue(department.ParentDepartmentId.Value, out var parentCode))
+                parentByCode[NormalizeCode(department.Code)] = parentCode;
+        }
+
+        foreach (var row in importRows.Where(r => r.Errors.Count == 0 && !string.IsNullOrWhiteSpace(r.Code)))
+        {
+            var code = NormalizeCode(row.Code);
+            if (string.IsNullOrWhiteSpace(row.ParentCode))
+                parentByCode.Remove(code);
+            else
+                parentByCode[code] = row.ParentCode;
+        }
+
+        foreach (var row in importRows.Where(r => r.Errors.Count == 0 && !string.IsNullOrWhiteSpace(r.Code)))
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var cursor = row.Code;
+
+            while (!string.IsNullOrWhiteSpace(cursor) && parentByCode.TryGetValue(NormalizeCode(cursor), out var parentCode))
+            {
+                if (!seen.Add(NormalizeCode(cursor)))
+                {
+                    row.Errors.Add($"ParentDepartmentCode creates a cycle at '{cursor}'");
+                    break;
+                }
+
+                cursor = parentCode;
+            }
+        }
+    }
+
+    private static void ApplyRow(
+        Department department,
+        DeptImportRow row,
+        IReadOnlyDictionary<string, Guid> costCentersByCode,
+        IReadOnlyDictionary<string, int> empByCode)
+    {
+        department.Code = row.Code;
+        department.NameEn = row.NameEn;
+        department.NameAr = row.NameAr;
+        department.ManagerEmployeeId = string.IsNullOrWhiteSpace(row.ManagerCode) ? null : empByCode[NormalizeCode(row.ManagerCode)];
+        department.CostCenterId = string.IsNullOrWhiteSpace(row.CostCenterCode) ? null : costCentersByCode[NormalizeCode(row.CostCenterCode)];
+        department.IsActive = row.IsActive;
+    }
+
+    private static IReadOnlyList<ImportRowResult> ToRowResults(IEnumerable<DeptImportRow> rows) =>
+        rows.Select(row => new ImportRowResult(
+            row.RowNumber,
+            row.Code,
+            row.NameEn,
+            row.Errors.Count > 0 ? ImportRowStatus.Error : row.Warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok,
+            row.Errors,
+            row.Warnings)).ToList();
+
+    private static string NormalizeCode(string code) => code.Trim().ToUpperInvariant();
+
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
+
+    private sealed record DeptImportRow(
+        int RowNumber,
+        string Code,
+        string NameEn,
+        string NameAr,
+        string ParentCode,
+        string ManagerCode,
+        string CostCenterCode,
+        bool IsActive)
+    {
+        public List<string> Errors { get; } = new();
+        public List<string> Warnings { get; } = new();
+    }
 }
 
 public record DeptImportRequest(string Csv);

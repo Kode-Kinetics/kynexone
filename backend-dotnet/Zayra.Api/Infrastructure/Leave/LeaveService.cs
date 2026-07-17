@@ -384,22 +384,66 @@ public class LeaveService : ILeaveService
             throw new InvalidOperationException("An employee cannot approve their own leave request.");
 
         var previousStatus = request.Status;
+        var resolvedPolicy = await _policyService.ResolveAsync(tenantId, request.EmployeeId, "Leave", ct);
+        var pendingApproval = await _db.LeaveApprovals
+            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == requestId && a.Decision == "Pending")
+            .OrderBy(a => a.StepNumber)
+            .FirstOrDefaultAsync(ct);
+
+        if (pendingApproval is not null)
+        {
+            pendingApproval.ApproverId = approverId;
+            pendingApproval.ApproverName = approverName;
+            pendingApproval.Decision = "Approved";
+            pendingApproval.Notes = notes ?? string.Empty;
+            pendingApproval.ActedAtUtc = DateTime.UtcNow;
+        }
+        else
+        {
+            _db.LeaveApprovals.Add(new LeaveApproval
+            {
+                TenantId = tenantId,
+                LeaveRequestId = requestId,
+                StepNumber = 1,
+                ApproverRole = "Approver",
+                ApproverId = approverId,
+                ApproverName = approverName,
+                Decision = "Approved",
+                Notes = notes ?? string.Empty,
+                ActedAtUtc = DateTime.UtcNow
+            });
+        }
+
+        var currentStepNumber = pendingApproval?.StepNumber ?? 1;
+        var nextStep = resolvedPolicy?.Steps
+            .Where(s => s.StepOrder > currentStepNumber)
+            .OrderBy(s => s.StepOrder)
+            .FirstOrDefault();
+
+        if (nextStep is not null)
+        {
+            request.Status = StatusForPendingStep(nextStep);
+            _db.LeaveApprovals.Add(new LeaveApproval
+            {
+                TenantId = tenantId,
+                LeaveRequestId = requestId,
+                StepNumber = nextStep.StepOrder,
+                ApproverRole = nextStep.ApproverType,
+                ApproverId = nextStep.ApproverEmployeeId.HasValue
+                    ? await ResolveUserIdAsync(tenantId, nextStep.ApproverEmployeeId.Value, ct)
+                    : null,
+                ApproverName = nextStep.ApproverEmployeeName ?? string.Empty,
+                Decision = "Pending",
+            });
+
+            await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "ApprovalStepApproved",
+                previousStatus, request.Status, notes ?? string.Empty, approverName, ct);
+            await _db.SaveChangesAsync(ct);
+            return request;
+        }
+
         request.Status = "Approved";
         request.DecidedAtUtc = DateTime.UtcNow;
-
-        var approval = new LeaveApproval
-        {
-            TenantId = tenantId,
-            LeaveRequestId = requestId,
-            StepNumber = 1,
-            ApproverRole = "Approver",
-            ApproverId = approverId,
-            ApproverName = approverName,
-            Decision = "Approved",
-            Notes = notes ?? string.Empty,
-            ActedAtUtc = DateTime.UtcNow
-        };
-        _db.LeaveApprovals.Add(approval);
 
         await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, request.TotalDays,
             request.StartDate.Year, "Used", request.Id.ToString(), approverName, ct);
@@ -678,6 +722,12 @@ public class LeaveService : ILeaveService
             .Where(e => e.TenantId == tenantId && e.Id == employeeId)
             .Select(e => e.UserAccountId)
             .FirstOrDefaultAsync(ct);
+
+    private static string StatusForPendingStep(ResolvedApprovalStep step)
+        => string.Equals(step.ApproverType, "HR", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(step.ApproverType, "HRBusinessPartner", StringComparison.OrdinalIgnoreCase)
+            ? "PendingHRApproval"
+            : "PendingManagerApproval";
 
     private async Task<LeavePolicy?> ResolveLeavePolicyAsync(Guid tenantId, Employee employee, Guid leaveTypeId, Guid? requestedPolicyId, CancellationToken ct)
     {

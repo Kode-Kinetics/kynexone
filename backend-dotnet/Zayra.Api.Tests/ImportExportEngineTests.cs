@@ -237,6 +237,92 @@ public class ImportExportEngineTests
         Assert.Equal("Updated Name", dept.NameEn);
     }
 
+    [Fact]
+    public async Task DepartmentImport_Commit_ResolvesParentCreatedEarlierInSameCsv()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var ctrl = MakeDeptController(db, tenantId);
+
+        var csv = BuildDeptCsv(
+            "DEPT-P,Parent,الأصل,,,,true",
+            "DEPT-C,Child,الفرع,DEPT-P,,,true");
+
+        var result = await ctrl.Import(new DeptImportRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var commit = Assert.IsType<ImportCommitResult>(ok.Value);
+        Assert.Equal(2, commit.Created);
+        Assert.All(commit.Rows, row => Assert.Equal(ImportRowStatus.Ok, row.Status));
+
+        var parent = await db.Departments.SingleAsync(d => d.TenantId == tenantId && d.Code == "DEPT-P");
+        var child = await db.Departments.SingleAsync(d => d.TenantId == tenantId && d.Code == "DEPT-C");
+        Assert.Equal(parent.Id, child.ParentDepartmentId);
+    }
+
+    [Fact]
+    public async Task DepartmentPreview_SuppliedMissingHierarchyReferences_ReturnsErrors()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var ctrl = MakeDeptController(db, tenantId);
+
+        var csv = BuildDeptCsv("DEPT-BAD,Bad References,سيئ,MISSING-PARENT,MISSING-MANAGER,MISSING-CC,true");
+        var result = await ctrl.ImportPreview(new DeptImportRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var preview = Assert.IsType<ImportPreviewResult>(ok.Value);
+        Assert.Equal(1, preview.WouldSkip);
+        var row = Assert.Single(preview.Rows);
+        Assert.Equal(ImportRowStatus.Error, row.Status);
+        Assert.Contains(row.Errors, e => e.Contains("ParentDepartmentCode 'MISSING-PARENT' not found"));
+        Assert.Contains(row.Errors, e => e.Contains("ManagerEmployeeCode 'MISSING-MANAGER' not found"));
+        Assert.Contains(row.Errors, e => e.Contains("CostCenterCode 'MISSING-CC' not found"));
+    }
+
+    [Fact]
+    public async Task DepartmentImport_SuppliedMissingHierarchyReferences_DoesNotCreateDepartment()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var ctrl = MakeDeptController(db, tenantId);
+
+        var csv = BuildDeptCsv("DEPT-BAD,Bad References,سيئ,MISSING-PARENT,MISSING-MANAGER,MISSING-CC,true");
+        var result = await ctrl.Import(new DeptImportRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var commit = Assert.IsType<ImportCommitResult>(ok.Value);
+        Assert.Equal(0, commit.Created);
+        Assert.Equal(1, commit.Skipped);
+        Assert.Equal(ImportRowStatus.Error, Assert.Single(commit.Rows).Status);
+        Assert.False(await db.Departments.AnyAsync(d => d.TenantId == tenantId && d.Code == "DEPT-BAD"));
+    }
+
+    [Fact]
+    public async Task DepartmentImport_ParentDepartmentCycle_ReturnsRowErrorsAndSkipsCycle()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var ctrl = MakeDeptController(db, tenantId);
+
+        var csv = BuildDeptCsv(
+            "DEPT-A,Alpha,ألفا,DEPT-B,,,true",
+            "DEPT-B,Beta,بيتا,DEPT-A,,,true");
+
+        var result = await ctrl.Import(new DeptImportRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var commit = Assert.IsType<ImportCommitResult>(ok.Value);
+        Assert.Equal(0, commit.Created);
+        Assert.Equal(2, commit.Skipped);
+        Assert.All(commit.Rows, row =>
+        {
+            Assert.Equal(ImportRowStatus.Error, row.Status);
+            Assert.Contains(row.Errors, e => e.Contains("ParentDepartmentCode creates a cycle"));
+        });
+        Assert.False(await db.Departments.AnyAsync(d => d.TenantId == tenantId && (d.Code == "DEPT-A" || d.Code == "DEPT-B")));
+    }
+
     // ── Test 5: Department export — returns correct CSV headers ───────────────
 
     [Fact]

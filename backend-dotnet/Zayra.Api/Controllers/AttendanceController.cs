@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Globalization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -122,6 +123,11 @@ public class AttendanceController : ControllerBase
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (operational punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<AttendanceRawEvent>> PushEvent(AttendanceRawEventRequest request, CancellationToken ct)
     {
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        var employeeId = await ResolveAttendanceEmployeeIdAsync(RequireTenant(), request.EmployeeId, request.EmployeeCode, ct);
+        if (employeeId is not null && !scope.CanAccessEmployee(employeeId.Value))
+            return Forbid();
+
         try
         {
             var raw = await _attendance.PushEventAsync(RequireTenant(), request, Context(), ct);
@@ -133,8 +139,14 @@ public class AttendanceController : ControllerBase
     [HttpPost("events/import")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: FileName, Source, Status, TotalRows, ImportedRows, FailedRows, CreatedAtUtc. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public Task<AttendanceImportBatch> Import(ImportAttendanceRequest request, CancellationToken ct) =>
-        _attendance.ImportCsvAsync(RequireTenant(), request, Context(), ct);
+    public async Task<ActionResult<AttendanceImportBatch>> Import(ImportAttendanceRequest request, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        if (!scope.IsUnrestricted && await HasOutOfScopeImportRowAsync(RequireTenant(), request, scope, ct))
+            return Forbid();
+
+        return await _attendance.ImportCsvAsync(RequireTenant(), request, Context(), ct);
+    }
 
     [HttpGet("events/raw")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (operational punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
@@ -353,6 +365,45 @@ public class AttendanceController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         if (scope.IsUnrestricted) return rows;
         return rows.Where(row => scope.AllowedEmployeeIds!.Contains(employeeIdSelector(row))).ToList();
+    }
+
+    private async Task<bool> HasOutOfScopeImportRowAsync(Guid tenantId, ImportAttendanceRequest request, DataScope scope, CancellationToken ct)
+    {
+        var rows = request.CsvContent.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var rowNumber = 0;
+        foreach (var row in rows)
+        {
+            rowNumber++;
+            if (rowNumber == 1 && row.Contains("employee", StringComparison.OrdinalIgnoreCase)) continue;
+            var cells = row.Split(',').Select(x => x.Trim()).ToArray();
+            if (cells.Length < 3 || !DateTime.TryParse(cells[1], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _))
+                continue;
+            var employeeId = await ResolveAttendanceEmployeeIdAsync(tenantId, null, cells[0], ct);
+            if (employeeId is not null && !scope.CanAccessEmployee(employeeId.Value))
+                return true;
+        }
+        return false;
+    }
+
+    private Task<int?> ResolveAttendanceEmployeeIdAsync(Guid tenantId, int? employeeId, string? employeeCode, CancellationToken ct)
+    {
+        if (employeeId is not null)
+        {
+            return _db.Employees
+                .Where(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted)
+                .Select(x => (int?)x.Id)
+                .FirstOrDefaultAsync(ct);
+        }
+
+        if (!string.IsNullOrWhiteSpace(employeeCode))
+        {
+            return _db.Employees
+                .Where(x => x.TenantId == tenantId && x.EmployeeCode == employeeCode && !x.IsDeleted)
+                .Select(x => (int?)x.Id)
+                .FirstOrDefaultAsync(ct);
+        }
+
+        return Task.FromResult<int?>(null);
     }
 
     private Task<int?> GetRegularizationEmployeeId(Guid tenantId, Guid id, CancellationToken ct) =>

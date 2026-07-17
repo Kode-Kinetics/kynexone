@@ -86,7 +86,10 @@ public class PayrollModuleTests
 
         var content = Assert.IsType<ContentResult>(result);
         content.ContentType.Should().Be("text/csv");
-        foreach (var col in new[] { "CompanyLegalName", "Code", "Name", "Currency", "EffectiveDate", "IsActive", "ComponentCode", "ComponentName", "ComponentType", "CalculationType", "Amount", "Percentage", "IsTaxable", "ComponentIsActive" })
+        foreach (var col in new[] { "CompanyLegalName", "Code", "Name", "Currency", "EffectiveDate", "IsActive",
+            "MinGrossSalary", "MaxGrossSalary", "MinBasicSalary", "MaxBasicSalary",
+            "EligibleGradeIds", "EligibleDesignationIds",
+            "ComponentCode", "ComponentName", "ComponentType", "CalculationType", "Amount", "Percentage", "IsTaxable", "ComponentIsActive" })
             content.Content.Should().Contain(col, because: $"column {col} must appear in template");
     }
 
@@ -787,6 +790,63 @@ public class PayrollModuleTests
     }
 
     [Fact]
+    public async Task EmployeeSalaryImport_EnforcesStructureAssignmentGuards()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+
+        var tenantId = Guid.NewGuid();
+        var companyA = new Company { TenantId = tenantId, LegalNameEn = "Company A", CountryCode = "AE", RegistrationNumber = "A" };
+        var companyB = new Company { TenantId = tenantId, LegalNameEn = "Company B", CountryCode = "AE", RegistrationNumber = "B" };
+        var eligibleGrade = new Grade { TenantId = tenantId, Code = "G1", Name = "G1" };
+        var blockedGrade = new Grade { TenantId = tenantId, Code = "G2", Name = "G2" };
+        var employee = new Employee
+        {
+            TenantId = tenantId,
+            CompanyId = companyA.Id,
+            GradeId = blockedGrade.Id,
+            EmployeeCode = "E001",
+            FullName = "Alice",
+            Status = "Active",
+            JoiningDate = DateTime.UtcNow.AddYears(-1)
+        };
+        db.Companies.AddRange(companyA, companyB);
+        db.Grades.AddRange(eligibleGrade, blockedGrade);
+        db.Employees.Add(employee);
+        db.SalaryStructures.AddRange(
+            new SalaryStructure { TenantId = tenantId, CompanyId = companyA.Id, Code = "INACTIVE", Name = "Inactive", Currency = "AED", EffectiveDate = new DateOnly(2026, 1, 1), IsActive = false },
+            new SalaryStructure { TenantId = tenantId, CompanyId = companyB.Id, Code = "OTHERCO", Name = "Other Company", Currency = "AED", EffectiveDate = new DateOnly(2026, 1, 1), IsActive = true },
+            new SalaryStructure { TenantId = tenantId, CompanyId = companyA.Id, Code = "FUTURE", Name = "Future", Currency = "AED", EffectiveDate = new DateOnly(2026, 6, 1), IsActive = true },
+            new SalaryStructure { TenantId = tenantId, CompanyId = companyA.Id, Code = "RANGE", Name = "Range", Currency = "AED", EffectiveDate = new DateOnly(2026, 1, 1), IsActive = true, MinGrossSalary = 10_000m },
+            new SalaryStructure { TenantId = tenantId, CompanyId = companyA.Id, Code = "GRADE", Name = "Grade", Currency = "AED", EffectiveDate = new DateOnly(2026, 1, 1), IsActive = true, EligibleGradeIdsJson = System.Text.Json.JsonSerializer.Serialize(new[] { eligibleGrade.Id }) });
+        await db.SaveChangesAsync();
+
+        var ctrl = MakeCtrl(db, tenantId);
+        var csv = "EmployeeCode,SalaryStructureCode,BasicSalary,HousingAllowance,TransportAllowance," +
+                  "FoodAllowance,MobileAllowance,OtherAllowance,FixedDeduction,Currency,EffectiveDate\n" +
+                  "E001,INACTIVE,12000,0,0,0,0,0,0,AED,2026-01-01\n" +
+                  "E001,OTHERCO,12000,0,0,0,0,0,0,AED,2026-01-01\n" +
+                  "E001,FUTURE,12000,0,0,0,0,0,0,AED,2026-01-01\n" +
+                  "E001,RANGE,8000,0,0,0,0,0,0,AED,2026-01-01\n" +
+                  "E001,GRADE,12000,0,0,0,0,0,0,AED,2026-01-01\n";
+
+        var result = await ctrl.ImportEmployeeSalaries(new ImportSalaryStructuresRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var body = ok.Value!;
+        ((int)body.GetType().GetProperty("created")!.GetValue(body)!).Should().Be(0);
+        ((int)body.GetType().GetProperty("skipped")!.GetValue(body)!).Should().Be(5);
+        var errors = ((IEnumerable<object>)body.GetType().GetProperty("errors")!.GetValue(body)!).Select(e => e.ToString()).ToList();
+        errors.Should().Contain(e => e!.Contains("inactive"));
+        errors.Should().Contain(e => e!.Contains("different legal entity"));
+        errors.Should().Contain(e => e!.Contains("cannot start before"));
+        errors.Should().Contain(e => e!.Contains("below salary structure minimum"));
+        errors.Should().Contain(e => e!.Contains("grade is not eligible"));
+        (await db.EmployeeSalaryStructures.AnyAsync()).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task SalaryStructureImport_WithCompanyAndComponents_PersistsFullStructureContract()
     {
         var db = CreateDb();
@@ -799,13 +859,17 @@ public class PayrollModuleTests
             RegistrationNumber = "REG-001",
             DefaultCurrency = "SAR"
         };
+        var grade = new Grade { TenantId = tenantId, Code = "G-EXEC", Name = "Executive" };
+        var designation = new Designation { TenantId = tenantId, Code = "CEO", TitleEn = "Chief Executive" };
         db.Companies.Add(company);
+        db.Grades.Add(grade);
+        db.Designations.Add(designation);
         await db.SaveChangesAsync();
 
         var ctrl = MakeCtrl(db, tenantId);
-        var csv = "CompanyLegalName,Code,Name,Currency,EffectiveDate,IsActive,ComponentCode,ComponentName,ComponentType,CalculationType,Amount,Percentage,IsTaxable,ComponentIsActive\n" +
-                  "Acme Arabia LLC,EXEC,Executive Structure,SAR,2026-01-01,true,BASIC,Basic Salary,Earning,Fixed,15000,0,true,true\n" +
-                  "Acme Arabia LLC,EXEC,Executive Structure,SAR,2026-01-01,true,HOUSING,Housing Allowance,Earning,Percentage,0,25,false,true\n";
+        var csv = "CompanyLegalName,Code,Name,Currency,EffectiveDate,IsActive,MinGrossSalary,MaxGrossSalary,MinBasicSalary,MaxBasicSalary,EligibleGradeIds,EligibleDesignationIds,ComponentCode,ComponentName,ComponentType,CalculationType,Amount,Percentage,IsTaxable,ComponentIsActive\n" +
+                  $"Acme Arabia LLC,EXEC,Executive Structure,SAR,2026-01-01,true,20000,50000,15000,35000,{grade.Id},{designation.Id},BASIC,Basic Salary,Earning,Fixed,15000,0,true,true\n" +
+                  $"Acme Arabia LLC,EXEC,Executive Structure,SAR,2026-01-01,true,20000,50000,15000,35000,{grade.Id},{designation.Id},HOUSING,Housing Allowance,Earning,Percentage,0,25,false,true\n";
 
         var result = await ctrl.ImportStructures(new ImportSalaryStructuresRequest(csv), CancellationToken.None);
 
@@ -817,6 +881,12 @@ public class PayrollModuleTests
         structure.CompanyId.Should().Be(company.Id);
         structure.Currency.Should().Be("SAR");
         structure.EffectiveDate.Should().Be(new DateOnly(2026, 1, 1));
+        structure.MinGrossSalary.Should().Be(20_000m);
+        structure.MaxGrossSalary.Should().Be(50_000m);
+        structure.MinBasicSalary.Should().Be(15_000m);
+        structure.MaxBasicSalary.Should().Be(35_000m);
+        structure.EligibleGradeIdsJson.Should().Contain(grade.Id.ToString());
+        structure.EligibleDesignationIdsJson.Should().Contain(designation.Id.ToString());
 
         var components = await db.SalaryComponents.Where(c => c.TenantId == tenantId && c.SalaryStructureId == structure.Id).ToListAsync();
         components.Should().HaveCount(2);

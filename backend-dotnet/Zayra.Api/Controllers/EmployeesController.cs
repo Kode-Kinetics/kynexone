@@ -1446,11 +1446,36 @@ public class EmployeesController : ControllerBase
         employee.Status = "Inactive";
         employee.PrivacyStatus = "RetainedForStatutoryAudit";
         employee.RetentionUntilUtc = deletedAt.AddYears(7);
+
+        var pendingChanges = await _db.EmployeeChangeRequests
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.Status == "PendingApproval")
+            .ToListAsync(cancellationToken);
+        foreach (var change in pendingChanges)
+        {
+            change.Status = "Cancelled";
+            change.RejectionReason = "Employee record was deleted before approval.";
+            change.ApprovedAtUtc = deletedAt;
+        }
+
+        var pendingChangeIds = pendingChanges.Select(x => x.Id.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var pendingApprovals = await _db.ApprovalRequests
+            .Where(x => x.TenantId == tenantId
+                && x.Status == "Pending"
+                && (x.RequestedForEmployeeId == id
+                    || (x.EntityName == nameof(EmployeeChangeRequest) && pendingChangeIds.Contains(x.EntityId))))
+            .ToListAsync(cancellationToken);
+        foreach (var approval in pendingApprovals)
+        {
+            approval.Status = "Cancelled";
+            approval.CompletedAtUtc = deletedAt;
+        }
+
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employees.deleted", "Employee", id.ToString(), context, JsonSerializer.Serialize(new
         {
             employee.PrivacyStatus,
-            employee.RetentionUntilUtc
+            employee.RetentionUntilUtc,
+            CancelledApprovalRequests = pendingApprovals.Count
         }), cancellationToken);
         return NoContent();
     }

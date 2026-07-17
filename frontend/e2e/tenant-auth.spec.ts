@@ -31,9 +31,9 @@ test.describe('Tenant authentication', () => {
 
   test('wrong password shows error and stays on login', async ({ page }) => {
     await page.goto('/login');
-    await page.getByRole('textbox', { name: 'Email address' }).fill(INTELLIFLOW_ADMIN.email);
-    await page.getByRole('textbox', { name: 'Password' }).fill('WRONG_PASSWORD_XYZ!');
-    await page.getByRole('textbox', { name: 'Workspace' }).fill(INTELLIFLOW_SLUG);
+    await page.locator('#li-em, input[type="email"]').first().fill(INTELLIFLOW_ADMIN.email);
+    await page.locator('#li-pw, input[type="password"]').first().fill('WRONG_PASSWORD_XYZ!');
+    await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(INTELLIFLOW_SLUG);
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     // Wait for error message to appear after API responds
     await expect(page.getByText(/invalid|incorrect|error|wrong|credentials/i).first()).toBeVisible({ timeout: 10_000 });
@@ -42,9 +42,9 @@ test.describe('Tenant authentication', () => {
 
   test('wrong slug shows error and stays on login', async ({ page }) => {
     await page.goto('/login');
-    await page.getByRole('textbox', { name: 'Email address' }).fill(INTELLIFLOW_ADMIN.email);
-    await page.getByRole('textbox', { name: 'Password' }).fill(INTELLIFLOW_ADMIN.password);
-    await page.getByRole('textbox', { name: 'Workspace' }).fill('nonexistent-tenant-xyz');
+    await page.locator('#li-em, input[type="email"]').first().fill(INTELLIFLOW_ADMIN.email);
+    await page.locator('#li-pw, input[type="password"]').first().fill(INTELLIFLOW_ADMIN.password);
+    await page.locator('#li-ws, input[autocomplete="organization"]').first().fill('nonexistent-tenant-xyz');
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await expect(page).toHaveURL(/\/login/, { timeout: 8_000 });
   });

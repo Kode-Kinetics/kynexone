@@ -147,6 +147,39 @@ public class GovernanceHardeningTests
         AuditService.VerifyIntegrity(audit).Should().BeTrue();
     }
 
+    [Fact]
+    public async Task DeleteEmployee_CancelsPendingEmployeeChangeApprovals()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAsync(db);
+        var employee = SeedEmployee(db, tenantId);
+        var change = SeedSalaryChange(db, tenantId, employee.Id, Guid.NewGuid(), DateOnly.FromDateTime(DateTime.UtcNow.Date));
+        var approval = new ApprovalRequest
+        {
+            TenantId = tenantId,
+            WorkflowId = Guid.NewGuid(),
+            EntityName = nameof(EmployeeChangeRequest),
+            EntityId = change.Id.ToString(),
+            Title = "Salary change",
+            Status = "Pending",
+            RequestedForEmployeeId = employee.Id
+        };
+        db.ApprovalRequests.Add(approval);
+        change.ApprovalRequestId = approval.Id;
+        await db.SaveChangesAsync();
+        var controller = CreateController(db, tenantId, "Admin", Guid.NewGuid());
+
+        var result = await controller.Delete(employee.Id, CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(result);
+        (await db.EmployeeChangeRequests.FindAsync(change.Id))!.Status.Should().Be("Cancelled");
+        var cancelledApproval = await db.ApprovalRequests.FindAsync(approval.Id);
+        cancelledApproval!.Status.Should().Be("Cancelled");
+        cancelledApproval.CompletedAtUtc.Should().NotBeNull();
+        var audit = await db.AuditLogs.SingleAsync(x => x.EntityName == "Employee" && x.EntityId == employee.Id.ToString());
+        audit.Metadata.Should().Contain("CancelledApprovalRequests");
+    }
+
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())

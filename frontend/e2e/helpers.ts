@@ -27,8 +27,8 @@ export const EVOSTEL_EMP1    = { email: 'employee1@evostel.com', password: 'Demo
 
 export async function platformLogin(page: Page): Promise<void> {
   await page.goto('/platform/login');
-  await page.getByRole('textbox', { name: 'Email address' }).fill(PLATFORM_EMAIL);
-  await page.getByRole('textbox', { name: 'Password' }).fill(PLATFORM_PASSWORD);
+  await page.locator('#pl-em, input[type="email"]').first().fill(PLATFORM_EMAIL);
+  await page.locator('#pl-pw, input[type="password"]').first().fill(PLATFORM_PASSWORD);
   await page.getByRole('button', { name: /sign in/i }).click();
   await page.waitForURL(/\/platform\/dashboard/, { timeout: 15_000 });
 }
@@ -46,9 +46,9 @@ export async function tenantLogin(
   slug: string
 ): Promise<void> {
   await page.goto('/login');
-  await page.getByRole('textbox', { name: 'Email address' }).fill(email);
-  await page.getByRole('textbox', { name: 'Password' }).fill(password);
-  await page.getByRole('textbox', { name: 'Workspace' }).fill(slug);
+  await page.locator('#li-em, input[type="email"]').first().fill(email);
+  await page.locator('#li-pw, input[type="password"]').first().fill(password);
+  await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(slug);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.waitForURL(/\/(dashboard|app)/, { timeout: 15_000 });
   // Wait for the dashboard's initial API calls to settle before each test navigates away.

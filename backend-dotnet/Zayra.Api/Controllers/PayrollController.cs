@@ -328,10 +328,61 @@ public class PayrollController : ControllerBase
         return null;
     }
 
+    private static string? ValidateEmployeeSalaryAssignment(SalaryStructure structure, Employee employee, EmployeeSalaryStructureRequest req)
+    {
+        if (!structure.IsActive) return "Salary structure is inactive.";
+        if (structure.CompanyId.HasValue && employee.CompanyId.HasValue && structure.CompanyId != employee.CompanyId)
+            return "Salary structure belongs to a different legal entity than the employee.";
+        return ValidateSalaryStructureEligibility(structure, employee, req);
+    }
+
     private static HashSet<Guid> ReadGuidSet(string? json)
     {
         try { return (string.IsNullOrWhiteSpace(json) ? [] : JsonSerializer.Deserialize<List<Guid>>(json) ?? []).ToHashSet(); }
         catch { return []; }
+    }
+
+    private static string FormatGuidSet(string? json) => string.Join(';', ReadGuidSet(json));
+
+    private static bool TryReadDecimal(
+        IReadOnlyDictionary<string, string> row,
+        string column,
+        int rowNum,
+        ICollection<string> errors,
+        out decimal value)
+    {
+        var raw = row.GetValueOrDefault(column, string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            value = 0m;
+            return true;
+        }
+        if (decimal.TryParse(raw, out value)) return true;
+        errors.Add($"Row {rowNum}: {column} must be a number.");
+        return false;
+    }
+
+    private static bool TryReadGuidList(
+        IReadOnlyDictionary<string, string> row,
+        string column,
+        int rowNum,
+        ICollection<string> errors,
+        out List<Guid> values)
+    {
+        values = new List<Guid>();
+        var raw = row.GetValueOrDefault(column, string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(raw)) return true;
+        foreach (var token in raw.Split(new[] { ';', '|' }, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (Guid.TryParse(token, out var value))
+            {
+                values.Add(value);
+                continue;
+            }
+            errors.Add($"Row {rowNum}: {column} contains invalid id '{token}'.");
+            return false;
+        }
+        return true;
     }
 
     [HttpPost("employee-salary-structures")]
@@ -345,10 +396,7 @@ public class PayrollController : ControllerBase
         if (employee is null) return BadRequest(new { message = "Employee not found." });
         var structure = await _db.SalaryStructures.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.SalaryStructureId && !x.IsDeleted, cancellationToken);
         if (structure is null) return BadRequest(new { message = "Salary structure not found." });
-        if (!structure.IsActive) return BadRequest(new { message = "Salary structure is inactive." });
-        if (structure.CompanyId.HasValue && employee.CompanyId.HasValue && structure.CompanyId != employee.CompanyId)
-            return BadRequest(new { message = "Salary structure belongs to a different legal entity than the employee." });
-        var eligibilityError = ValidateSalaryStructureEligibility(structure, employee, req);
+        var eligibilityError = ValidateEmployeeSalaryAssignment(structure, employee, req);
         if (eligibilityError is not null) return BadRequest(new { message = eligibilityError });
         if (employee.GradeId.HasValue)
         {
@@ -2303,6 +2351,8 @@ public class PayrollController : ControllerBase
     private static readonly string[] SalaryStructureCsvHeaders =
         {
             "CompanyLegalName", "Code", "Name", "Currency", "EffectiveDate", "IsActive",
+            "MinGrossSalary", "MaxGrossSalary", "MinBasicSalary", "MaxBasicSalary",
+            "EligibleGradeIds", "EligibleDesignationIds",
             "ComponentCode", "ComponentName", "ComponentType", "CalculationType",
             "Amount", "Percentage", "IsTaxable", "ComponentIsActive"
         };
@@ -2336,12 +2386,16 @@ public class PayrollController : ControllerBase
                 {
                     x.company?.LegalNameEn ?? string.Empty, x.s.Code, x.s.Name, x.s.Currency,
                     x.s.EffectiveDate.ToString("yyyy-MM-dd"), x.s.IsActive ? "true" : "false",
+                    x.s.MinGrossSalary, x.s.MaxGrossSalary, x.s.MinBasicSalary, x.s.MaxBasicSalary,
+                    FormatGuidSet(x.s.EligibleGradeIdsJson), FormatGuidSet(x.s.EligibleDesignationIdsJson),
                     string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty
                 }];
             return components.Select(c => (IReadOnlyList<object?>)new object?[]
             {
                 x.company?.LegalNameEn ?? string.Empty, x.s.Code, x.s.Name, x.s.Currency,
                 x.s.EffectiveDate.ToString("yyyy-MM-dd"), x.s.IsActive ? "true" : "false",
+                x.s.MinGrossSalary, x.s.MaxGrossSalary, x.s.MinBasicSalary, x.s.MaxBasicSalary,
+                FormatGuidSet(x.s.EligibleGradeIdsJson), FormatGuidSet(x.s.EligibleDesignationIdsJson),
                 c.Code, c.Name, c.ComponentType, c.CalculationType, c.Amount, c.Percentage,
                 c.IsTaxable ? "true" : "false", c.IsActive ? "true" : "false"
             });
@@ -2390,6 +2444,35 @@ public class PayrollController : ControllerBase
             }
             DateOnly.TryParse(row.GetValueOrDefault("EffectiveDate", string.Empty), out var effectiveDate);
             if (effectiveDate == default) effectiveDate = DateOnly.FromDateTime(DateTime.UtcNow);
+            if (!TryReadDecimal(row, "MinGrossSalary", rowNum, errors, out var minGross)
+                || !TryReadDecimal(row, "MaxGrossSalary", rowNum, errors, out var maxGross)
+                || !TryReadDecimal(row, "MinBasicSalary", rowNum, errors, out var minBasic)
+                || !TryReadDecimal(row, "MaxBasicSalary", rowNum, errors, out var maxBasic)
+                || !TryReadGuidList(row, "EligibleGradeIds", rowNum, errors, out var eligibleGradeIds)
+                || !TryReadGuidList(row, "EligibleDesignationIds", rowNum, errors, out var eligibleDesignationIds))
+            {
+                skipped++;
+                continue;
+            }
+            if (minGross < 0 || maxGross < 0 || minBasic < 0 || maxBasic < 0)
+            { errors.Add($"Row {rowNum}: Salary structure range values cannot be negative."); skipped++; continue; }
+            if (maxGross > 0 && minGross > maxGross)
+            { errors.Add($"Row {rowNum}: Minimum gross salary cannot exceed maximum gross salary."); skipped++; continue; }
+            if (maxBasic > 0 && minBasic > maxBasic)
+            { errors.Add($"Row {rowNum}: Minimum basic salary cannot exceed maximum basic salary."); skipped++; continue; }
+            if (eligibleGradeIds.Count > 0)
+            {
+                var found = await _db.Grades.CountAsync(g => g.TenantId == tenantId && eligibleGradeIds.Contains(g.Id) && !g.IsDeleted, cancellationToken);
+                if (found != eligibleGradeIds.Distinct().Count())
+                { errors.Add($"Row {rowNum}: One or more eligible grades were not found."); skipped++; continue; }
+            }
+            if (eligibleDesignationIds.Count > 0)
+            {
+                var found = await _db.Designations.CountAsync(d => d.TenantId == tenantId && eligibleDesignationIds.Contains(d.Id) && !d.IsDeleted, cancellationToken);
+                if (found != eligibleDesignationIds.Distinct().Count())
+                { errors.Add($"Row {rowNum}: One or more eligible designations were not found."); skipped++; continue; }
+            }
+
             var key = (companyId, code.ToUpperInvariant());
             if (!batchStructures.TryGetValue(key, out var structure))
             {
@@ -2417,6 +2500,13 @@ public class PayrollController : ControllerBase
             if (string.IsNullOrWhiteSpace(structure.Currency)) structure.Currency = await ResolveCurrencyAsync(tenantId, cancellationToken);
             structure.EffectiveDate = effectiveDate;
             structure.IsActive = !row.TryGetValue("IsActive", out var activeRaw) || !string.Equals(activeRaw, "false", StringComparison.OrdinalIgnoreCase);
+
+            structure.MinGrossSalary = minGross;
+            structure.MaxGrossSalary = maxGross;
+            structure.MinBasicSalary = minBasic;
+            structure.MaxBasicSalary = maxBasic;
+            structure.EligibleGradeIdsJson = JsonSerializer.Serialize(eligibleGradeIds.Distinct().ToList());
+            structure.EligibleDesignationIdsJson = JsonSerializer.Serialize(eligibleDesignationIds.Distinct().ToList());
 
             if (touchedStructureIds.Add(structure.Id))
             {
@@ -3001,9 +3091,9 @@ public class PayrollController : ControllerBase
             if (string.IsNullOrWhiteSpace(structCode))
             { errors.Add($"Row {rowNum}: SalaryStructureCode is required."); skipped++; continue; }
             var structure = allStructures
-                .Where(s => string.Equals(s.Code, structCode, StringComparison.OrdinalIgnoreCase)
-                            && (s.CompanyId == employee.CompanyId || s.CompanyId == null))
+                .Where(s => string.Equals(s.Code, structCode, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(s => s.CompanyId == employee.CompanyId)
+                .ThenByDescending(s => s.CompanyId == null)
                 .FirstOrDefault();
             if (structure is null)
             { errors.Add($"Row {rowNum}: Salary structure code '{structCode}' not found for employee legal entity."); skipped++; continue; }
@@ -3021,6 +3111,22 @@ public class PayrollController : ControllerBase
             DateOnly.TryParse(row.GetValueOrDefault("EffectiveDate", string.Empty), out var effectiveDate);
             if (effectiveDate == default) effectiveDate = DateOnly.FromDateTime(DateTime.UtcNow);
             var currency = row.GetValueOrDefault("Currency", "USD");
+            var assignmentRequest = new EmployeeSalaryStructureRequest(
+                employee.Id,
+                structure.Id,
+                basic,
+                housing,
+                transport,
+                food,
+                mobile,
+                other,
+                deduction,
+                effectiveDate,
+                currency);
+            var assignmentError = ValidateEmployeeSalaryAssignment(structure, employee, assignmentRequest);
+            if (assignmentError is not null)
+            { errors.Add($"Row {rowNum}: {assignmentError}"); skipped++; continue; }
+
             var gross = basic + housing + transport + food + mobile + other - deduction;
             if (employee.GradeId.HasValue)
             {

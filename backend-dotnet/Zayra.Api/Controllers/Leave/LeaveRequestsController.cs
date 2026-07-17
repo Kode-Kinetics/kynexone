@@ -362,9 +362,14 @@ public class LeaveRequestsController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var employeeQuery = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted);
+        if (!scope.IsUnrestricted)
+            employeeQuery = employeeQuery.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
+
         var requests = await _db.LeaveRequests
             .Where(r => r.TenantId == tenantId)
-            .Join(_db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted),
+            .Join(employeeQuery,
                 r => r.EmployeeId, e => e.Id, (r, e) => new { r, e })
             .GroupJoin(_db.LeaveTypes.Where(t => t.TenantId == tenantId),
                 x => x.r.LeaveTypeId, t => t.Id, (x, types) => new { x.r, x.e, leaveType = types.FirstOrDefault() })
@@ -399,8 +404,12 @@ public class LeaveRequestsController : ControllerBase
         if (tenantId is null) return Unauthorized();
 
         var rows = Csv.Parse(req.CsvContent ?? string.Empty);
-        var employees = await _db.Employees
-            .Where(e => e.TenantId == tenantId && !e.IsDeleted)
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var employeeQuery = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted);
+        if (!scope.IsUnrestricted)
+            employeeQuery = employeeQuery.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
+
+        var employees = await employeeQuery
             .ToDictionaryAsync(e => e.EmployeeCode.ToUpperInvariant(), ct);
         var leaveTypesByCode = await _db.LeaveTypes
             .Where(t => t.TenantId == tenantId && t.IsActive)
@@ -420,7 +429,7 @@ public class LeaveRequestsController : ControllerBase
             var leaveTypeName = row.GetValueOrDefault("LeaveType", string.Empty).Trim();
 
             if (string.IsNullOrWhiteSpace(employeeCode) || !employees.TryGetValue(employeeCode.ToUpperInvariant(), out var employee))
-            { skipped++; errors.Add($"Row {rowNum}: EmployeeCode '{employeeCode}' not found."); continue; }
+            { skipped++; errors.Add($"Row {rowNum}: EmployeeCode '{employeeCode}' not found or out of scope."); continue; }
 
             LeaveType? leaveType = null;
             if (!string.IsNullOrWhiteSpace(leaveTypeCode))

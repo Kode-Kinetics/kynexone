@@ -87,12 +87,17 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             if (q is "mine" or "my")
             {
                 var callerEmployeeId = await ResolveCallerEmployeeIdAsync(tenantId, context.UserId, cancellationToken);
-                var roles = context.Roles ?? Array.Empty<string>();
+                var roles = (context.Roles ?? Array.Empty<string>())
+                    .Select(Clean)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x.ToLower())
+                    .ToArray();
                 query = query.Where(x =>
                     x.Status == "Pending" &&
                     ((context.UserId != null && x.CurrentApproverUserId == context.UserId) ||
                      (callerEmployeeId != null && x.CurrentApproverEmployeeId == callerEmployeeId) ||
-                     (x.CurrentApproverType == "Role" && roles.Contains(x.CurrentApproverRole))));
+                     ((x.CurrentApproverType ?? string.Empty).ToLower() == "role" &&
+                      roles.Contains((x.CurrentApproverRole ?? string.Empty).ToLower()))));
             }
             else if (q is "team")
             {
