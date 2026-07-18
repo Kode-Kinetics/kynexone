@@ -31,7 +31,7 @@ public class ApprovalRequestsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        var request = await _approvals.GetRequestAsync(tenantId.Value, id, cancellationToken);
+        var request = await _approvals.GetRequestAsync(tenantId.Value, id, Context(), cancellationToken);
         return request is null ? NotFound() : Ok(request);
     }
 

@@ -81,6 +81,10 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var query = _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions).Where(x => x.TenantId == tenantId);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         if (!string.IsNullOrWhiteSpace(entityName)) query = query.Where(x => x.EntityName == entityName);
+        if (string.IsNullOrWhiteSpace(queue) && context is not null && !CanViewAllApprovalRequests(context))
+        {
+            queue = "mine";
+        }
         if (!string.IsNullOrWhiteSpace(queue) && context is not null)
         {
             var q = Clean(queue).ToLowerInvariant();
@@ -116,12 +120,17 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             }
         }
         var total = await query.CountAsync(cancellationToken);
-        var items = await query
+        var approvals = await query
             .OrderBy(x => x.DueAtUtc ?? DateTime.MaxValue)
             .ThenByDescending(x => x.CreatedAtUtc)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(x => x.ToDto()).ToListAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+        var items = new List<ApprovalRequestDto>(approvals.Count);
+        foreach (var approval in approvals)
+        {
+            items.Add(approval.ToDto(await CanDecideRequestAsync(approval, context, cancellationToken)));
+        }
         return new PagedResult<ApprovalRequestDto>(items, total, page, pageSize);
     }
 
@@ -129,6 +138,14 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     {
         var request = await _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         return request?.ToDto();
+    }
+
+    public async Task<ApprovalRequestDto?> GetRequestAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken)
+    {
+        var request = await _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (request is null) return null;
+        if (!await CanViewRequestAsync(request, context, cancellationToken)) return null;
+        return request.ToDto(await CanDecideRequestAsync(request, context, cancellationToken));
     }
 
     public async Task<ApprovalRequestDto> CreateRequestAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -391,6 +408,14 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     private async Task<bool> CanDecideStepAsync(ApprovalRequest approval, ApprovalWorkflowStep step, RequestContext context, CancellationToken cancellationToken)
     {
+        return await CanDecideRequestAsync(approval, context, cancellationToken);
+    }
+
+    private async Task<bool> CanDecideRequestAsync(ApprovalRequest approval, RequestContext? context, CancellationToken cancellationToken)
+    {
+        if (context is null || approval.Status != "Pending") return false;
+        if (context.UserId is not null && approval.RequestedByUserId == context.UserId) return false;
+
         var permissions = context.Permissions ?? Array.Empty<string>();
         if (permissions.Any(x => x.Equals("approvals.override", StringComparison.OrdinalIgnoreCase)))
             return true;
@@ -408,9 +433,29 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (string.IsNullOrWhiteSpace(requiredRole) || requiredRole.Equals("Any", StringComparison.OrdinalIgnoreCase))
             return true;
         var roles = context.Roles ?? Array.Empty<string>();
-        if (roles.Any(x => x.Equals(requiredRole, StringComparison.OrdinalIgnoreCase)))
-            return true;
-        return false;
+        return roles.Any(x => x.Equals(requiredRole, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<bool> CanViewRequestAsync(ApprovalRequest approval, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (CanViewAllApprovalRequests(context)) return true;
+        if (await CanDecideRequestAsync(approval, context, cancellationToken)) return true;
+        if (context.UserId is not null && approval.RequestedByUserId == context.UserId) return true;
+
+        var callerEmployeeId = await ResolveCallerEmployeeIdAsync(approval.TenantId, context.UserId, cancellationToken);
+        if (callerEmployeeId is null || approval.RequestedForEmployeeId is null) return false;
+        var teamIds = await ResolveTeamEmployeeIdsAsync(approval.TenantId, callerEmployeeId.Value, cancellationToken);
+        return teamIds.Contains(approval.RequestedForEmployeeId.Value);
+    }
+
+    private static bool CanViewAllApprovalRequests(RequestContext context)
+    {
+        var roles = context.Roles ?? Array.Empty<string>();
+        var permissions = context.Permissions ?? Array.Empty<string>();
+        return roles.Any(x => x.Equals("Admin", StringComparison.OrdinalIgnoreCase)
+                              || x.Equals("HR Manager", StringComparison.OrdinalIgnoreCase)
+                              || x.Equals("Auditor", StringComparison.OrdinalIgnoreCase))
+               || permissions.Any(x => x.Equals("approvals.override", StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task SyncEmployeeChangeDecisionAsync(ApprovalRequest approval, string decision, RequestContext context, string comments, CancellationToken cancellationToken)

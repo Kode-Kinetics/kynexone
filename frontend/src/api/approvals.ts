@@ -29,6 +29,7 @@ export interface ApprovalRequest {
   createdAtUtc: string;
   completedAtUtc: string | null;
   decisions: ApprovalDecision[];
+  canDecide: boolean;
 }
 
 export interface ApprovalDecision {

@@ -64,7 +64,8 @@ public record ApprovalRequestDto(
     string Priority,
     DateTime CreatedAtUtc,
     DateTime? CompletedAtUtc,
-    IReadOnlyCollection<ApprovalDecisionDto> Decisions);
+    IReadOnlyCollection<ApprovalDecisionDto> Decisions,
+    bool CanDecide);
 
 public record CreateApprovalRequest(
     [Required] Guid WorkflowId,
@@ -107,7 +108,7 @@ public static class ApprovalMappings
         step.EscalationAfterHours,
         step.IsFinalStep);
 
-    public static ApprovalRequestDto ToDto(this ApprovalRequest request) => new(
+    public static ApprovalRequestDto ToDto(this ApprovalRequest request, bool canDecide = false) => new(
         request.Id,
         request.WorkflowId,
         request.EntityName,
@@ -134,7 +135,8 @@ public static class ApprovalMappings
         request.Priority,
         request.CreatedAtUtc,
         request.CompletedAtUtc,
-        request.Decisions.OrderBy(x => x.StepOrder).Select(x => x.ToDto()).ToList());
+        request.Decisions.OrderBy(x => x.StepOrder).Select(x => x.ToDto()).ToList(),
+        canDecide);
 
     public static ApprovalDecisionDto ToDto(this ApprovalDecision decision) => new(
         decision.Id,

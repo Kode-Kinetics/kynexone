@@ -231,11 +231,14 @@ export function ApprovalsPage() {
                   </td>
                   <td className="px-4 py-3"><StatusChip {...statusTone(r.status)} /></td>
                   <td className="px-4 py-3">
-                    {r.status === 'Pending' && (
+                    {r.status === 'Pending' && r.canDecide && (
                       <button type="button" onClick={() => { setSelected(r); setComments(''); }}
                         className="btn-secondary h-8 px-3 text-xs">
                         Review
                       </button>
+                    )}
+                    {r.status === 'Pending' && !r.canDecide && (
+                      <span className="text-xs font-medium text-slate-400">Watching</span>
                     )}
                   </td>
                 </tr>
@@ -260,8 +263,12 @@ export function ApprovalsPage() {
         footer={
           <>
             <button type="button" onClick={() => setSelected(null)} className="btn-secondary">Cancel</button>
-            <button type="button" onClick={() => handleDecide('Reject')} disabled={deciding} className="btn-secondary text-rose-500 hover:border-rose-300 disabled:opacity-60">Reject</button>
-            <button type="button" onClick={() => handleDecide('Approve')} disabled={deciding} className="btn-primary disabled:opacity-60">{deciding ? 'Saving…' : 'Approve'}</button>
+            {selected?.canDecide && (
+              <>
+                <button type="button" onClick={() => handleDecide('Reject')} disabled={deciding} className="btn-secondary text-rose-500 hover:border-rose-300 disabled:opacity-60">Reject</button>
+                <button type="button" onClick={() => handleDecide('Approve')} disabled={deciding} className="btn-primary disabled:opacity-60">{deciding ? 'Saving...' : 'Approve'}</button>
+              </>
+            )}
           </>
         }>
         {selected && (
@@ -313,11 +320,17 @@ export function ApprovalsPage() {
                 Waiting for first decision from the routed owner.
               </div>
             )}
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Comments (optional)</label>
-              <textarea value={comments} onChange={(e) => setComments(e.target.value)} className="input w-full resize-none" rows={3} placeholder="Add a comment…" />
-              <p className="mt-1 text-xs text-slate-400">A rejection requires a clear reason for auditability.</p>
-            </div>
+            {selected.canDecide ? (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Comments (optional)</label>
+                <textarea value={comments} onChange={(e) => setComments(e.target.value)} className="input w-full resize-none" rows={3} placeholder="Add a comment..." />
+                <p className="mt-1 text-xs text-slate-400">A rejection requires a clear reason for auditability.</p>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
+                This item is visible for accountability, but the current workflow step is assigned to another owner.
+              </div>
+            )}
           </div>
         )}
       </Modal>

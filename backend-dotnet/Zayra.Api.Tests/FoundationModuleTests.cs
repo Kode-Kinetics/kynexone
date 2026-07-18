@@ -196,6 +196,113 @@ public class FoundationModuleTests
     }
 
     [Fact]
+    public async Task ApprovalRequests_DefaultsScopedRoleToMineQueueAndSetsCanDecide()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var managerUserId = Guid.NewGuid();
+        db.ApprovalRequests.AddRange(
+            new ApprovalRequest
+            {
+                TenantId = tenantId,
+                WorkflowId = Guid.NewGuid(),
+                EntityName = "EmployeeChangeRequest",
+                EntityId = "mine",
+                Title = "My approval",
+                Status = "Pending",
+                CurrentApproverUserId = managerUserId,
+                CurrentApproverType = "Manager",
+                CurrentApproverRole = "Manager"
+            },
+            new ApprovalRequest
+            {
+                TenantId = tenantId,
+                WorkflowId = Guid.NewGuid(),
+                EntityName = "EmployeeChangeRequest",
+                EntityId = "other",
+                Title = "Other approval",
+                Status = "Pending",
+                CurrentApproverRole = "HR Manager",
+                CurrentApproverType = "Role"
+            });
+        await db.SaveChangesAsync();
+        var service = new ApprovalWorkflowService(db, new AuditService(db));
+
+        var page = await service.GetRequestsAsync(
+            tenantId,
+            "Pending",
+            null,
+            null,
+            1,
+            25,
+            new RequestContext("127.0.0.1", "tests", managerUserId, tenantId, ["Manager"], []),
+            CancellationToken.None);
+
+        Assert.Single(page.Items);
+        Assert.Equal("mine", page.Items.Single().EntityId);
+        Assert.True(page.Items.Single().CanDecide);
+    }
+
+    [Fact]
+    public async Task ApprovalRequestDetail_BlocksScopedRoleOutsideActionableOrTeamScope()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var approval = new ApprovalRequest
+        {
+            TenantId = tenantId,
+            WorkflowId = Guid.NewGuid(),
+            EntityName = "EmployeeChangeRequest",
+            EntityId = "outside",
+            Title = "Outside approval",
+            Status = "Pending",
+            CurrentApproverRole = "HR Manager",
+            CurrentApproverType = "Role"
+        };
+        db.ApprovalRequests.Add(approval);
+        await db.SaveChangesAsync();
+        var service = new ApprovalWorkflowService(db, new AuditService(db));
+
+        var detail = await service.GetRequestAsync(
+            tenantId,
+            approval.Id,
+            new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["Manager"], []),
+            CancellationToken.None);
+
+        Assert.Null(detail);
+    }
+
+    [Fact]
+    public async Task ApprovalRequestDetail_AllowsAdminAndReturnsCanDecideFalseWhenNotOwner()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var approval = new ApprovalRequest
+        {
+            TenantId = tenantId,
+            WorkflowId = Guid.NewGuid(),
+            EntityName = "EmployeeChangeRequest",
+            EntityId = "admin-visible",
+            Title = "Admin visible",
+            Status = "Pending",
+            CurrentApproverRole = "Manager",
+            CurrentApproverType = "Role"
+        };
+        db.ApprovalRequests.Add(approval);
+        await db.SaveChangesAsync();
+        var service = new ApprovalWorkflowService(db, new AuditService(db));
+
+        var detail = await service.GetRequestAsync(
+            tenantId,
+            approval.Id,
+            new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["Admin"], []),
+            CancellationToken.None);
+
+        Assert.NotNull(detail);
+        Assert.False(detail!.CanDecide);
+    }
+
+    [Fact]
     public async Task OrganizationMasterData_IsTenantScoped()
     {
         await using var db = CreateDb();
