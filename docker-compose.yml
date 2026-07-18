@@ -1,19 +1,18 @@
 services:
-  mysql:
-    image: mysql:8.4
-    container_name: zayra-mysql
+  postgres:
+    image: postgres:16-alpine
+    container_name: zayra-postgres
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-zayra}
-      MYSQL_USER: ${MYSQL_USER:-zayra}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zayra_password}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+      POSTGRES_DB: ${POSTGRES_DATABASE:-zayra}
+      POSTGRES_USER: ${POSTGRES_USER:-zayra}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zayra_password}
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - zayra-mysql-data:/var/lib/mysql
+      - zayra-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-root_password}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zayra} -d ${POSTGRES_DATABASE:-zayra}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -24,14 +23,14 @@ services:
     container_name: zayra-api
     restart: unless-stopped
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://0.0.0.0:5117
-      ConnectionStrings__Default: server=mysql;port=3306;database=${MYSQL_DATABASE:-zayra};user=${MYSQL_USER:-zayra};password=${MYSQL_PASSWORD:-zayra_password}
+      ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DATABASE:-zayra};Username=${POSTGRES_USER:-zayra};Password=${POSTGRES_PASSWORD:-zayra_password}
       AI_PROVIDER: ${AI_PROVIDER:-ollama}
       AI_MODEL: ${AI_MODEL:-gpt-oss:120b-cloud}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11435}
@@ -46,7 +45,9 @@ services:
       SeedAdmin__Email: ${SEED_ADMIN_EMAIL:-admin@zayra.local}
       SeedAdmin__FullName: ${SEED_ADMIN_NAME:-KynexOne Admin}
       SeedAdmin__Password: ${SEED_ADMIN_PASSWORD:-ChangeMe123!}
-      SeedAdmin__SeedDemoData: ${SEED_DEMO_DATA:-true}
+      # Default false so a normal local/deployment stack cannot rewrite tenant
+      # data. Use SEED_DEMO_DATA=true only in an isolated demo database.
+      SeedAdmin__SeedDemoData: ${SEED_DEMO_DATA:-false}
       PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-platform@kynexone.com}
       PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:-PlatformAdmin123!}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
@@ -85,5 +86,5 @@ services:
       retries: 5
 
 volumes:
-  zayra-mysql-data:
+  zayra-postgres-data:
   zayra-documents:

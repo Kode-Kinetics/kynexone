@@ -12,6 +12,7 @@ const apiUrl =
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  outputFileTracingRoot: __dirname,
 
   async rewrites() {
     return [
