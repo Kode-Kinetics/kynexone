@@ -47,14 +47,20 @@ public class OrganizationStructureImportController : ControllerBase
             sb.AppendLine();
         }
 
-        Section("companies", CompaniesHeaders, "Zayra Demo LLC,زيرا ديمو,Zayra,SA,SA-default,CR-001,TAX-001,WPS-001,GOSI-001,QIWA-001,SAR,true");
-        Section("branches", BranchesHeaders, "Zayra Demo LLC,HQ,Head Office,المقر الرئيسي,SA,Riyadh,King Fahd Road,Floor 12,Asia/Riyadh,RYD-LAB-001,true,true");
-        Section("costCenters", CostCentersHeaders, "Zayra Demo LLC,CC-HR,Human Resources,true");
-        Section("departments", DepartmentsHeaders, "Zayra Demo LLC,HQ,HR,Human Resources,الموارد البشرية,,EMP-0001,CC-HR,10,120000,true");
-        Section("grades", GradesHeaders, "G3,Grade 3,Professional,3,10000,13500,17000,SAR,true");
-        Section("gradePayComponents", GradePayHeaders, "G3,BASIC,Basic Salary,Earning,Fixed,8100,0,Monthly,false,true");
-        Section("designations", DesignationsHeaders, "HR_OFF,HR Officer,مسؤول موارد بشرية,HR,G3,G3,Staff,Handles HR operations,false,5,true");
-        Section("positions", PositionsHeaders, "POS-HR-001,HR Officer,Zayra Demo LLC,HQ,HR,CC-HR,HR_OFF,G3,1,13500,SAR,Open,2026-01-01,");
+        // One consistent, self-explanatory EXAMPLE row per section. Every value is
+        // neutral (no brand/demo data) and every cross-section reference resolves
+        // within this package, so downloading the template and re-uploading it passes
+        // Preview() with no blocking errors (see OrganizationStructureTemplateRoundTripTests).
+        // ManagerEmployeeCode / ParentDepartmentCode are intentionally blank — an empty
+        // tenant has no employees or parent departments to reference yet.
+        Section("companies", CompaniesHeaders, "Example Company Ltd,,Example Company,SA,SA-default,,,,,,SAR,true");
+        Section("branches", BranchesHeaders, "Example Company Ltd,HQ,Head Office,,SA,Main City,,,Asia/Riyadh,,true,true");
+        Section("costCenters", CostCentersHeaders, "Example Company Ltd,CC-OPS,Operations,true");
+        Section("departments", DepartmentsHeaders, "Example Company Ltd,HQ,OPS,Operations,,,,CC-OPS,10,100000,true");
+        Section("grades", GradesHeaders, "G1,Grade 1,Staff,1,8000,10000,12000,SAR,true");
+        Section("gradePayComponents", GradePayHeaders, "G1,BASIC,Basic Salary,Earning,Fixed,8000,0,Monthly,false,true");
+        Section("designations", DesignationsHeaders, "OPS-OFF,Operations Officer,,OPS,G1,G1,Staff,,false,5,true");
+        Section("positions", PositionsHeaders, "POS-OPS-001,Operations Officer,Example Company Ltd,HQ,OPS,CC-OPS,OPS-OFF,G1,1,10000,SAR,Open,2026-01-01,");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/plain", "organization_structure_import_package.txt");
     }
 

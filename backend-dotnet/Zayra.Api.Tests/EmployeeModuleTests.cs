@@ -487,6 +487,103 @@ public class EmployeeModuleTests
         Assert.False(await db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-RANGE-001"));
     }
 
+    // ── Regression: an OPTIONAL org reference (CostCenter/Branch) that doesn't resolve must
+    //    NOT skip the whole row. A blank code is already imported as null, so an unrecognized
+    //    code degrades to a warning + import-without-the-reference. This is what unblocks bulk
+    //    imports into a freshly-created company that has no cost centers seeded yet. ──
+
+    [Fact]
+    public async Task EmployeeImport_UnknownCostCenter_ImportsEmployeeWithWarningNotSkipped()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var company = await SeedCompany(db, tenantId, "Widget Corp");
+        var ctrl = CreateController(db, tenantId);
+
+        const string csv =
+            "EmployeeCode,FullName,CompanyLegalName,CostCenterCode,JoiningDate\n" +
+            "EMP-CC-001,Bilal Ahmed,Widget Corp,HR COST CENTER,2024-01-15\n";
+
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("\"created\":1", json);
+        Assert.Contains("\"skipped\":0", json);
+        Assert.Contains("imported without a cost center", json);
+
+        var employee = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-CC-001");
+        Assert.Equal(company.Id, employee.CompanyId);
+        Assert.Null(employee.CostCenterId);
+    }
+
+    // ── Regression: a blank FullName now records a per-row error instead of skipping silently,
+    //    so the user can see WHY nothing was created (previously it returned created:0 with an
+    //    empty errors[] — a success-looking no-op). ──
+
+    [Fact]
+    public async Task EmployeeImport_BlankFullName_RecordsPerRowErrorInsteadOfSilentSkip()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var ctrl = CreateController(db, tenantId);
+
+        const string csv =
+            "EmployeeCode,FullName,JoiningDate\n" +
+            "EMP-BLANK-001,,2024-01-15\n";
+
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("\"created\":0", json);
+        Assert.Contains("missing FullName", json);
+        Assert.False(await db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-BLANK-001"));
+    }
+
+    // ── Regression: two rows sharing an EmployeeCode in the SAME file no longer both slip past
+    //    the DB-only duplicate check and blow up the batch SaveChanges — the second is skipped
+    //    with a clear error and the first still persists. ──
+
+    [Fact]
+    public async Task EmployeeImport_DuplicateEmployeeCodeWithinFile_SkipsSecondAndPersistsFirst()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var ctrl = CreateController(db, tenantId);
+
+        const string csv =
+            "EmployeeCode,FullName,JoiningDate\n" +
+            "EMP-DUP-001,First Person,2024-01-15\n" +
+            "EMP-DUP-001,Second Person,2024-02-15\n";
+
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("\"created\":1", json);
+        Assert.Contains("duplicated within the import file", json);
+        Assert.Equal(1, await db.Employees.CountAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-DUP-001"));
+    }
+
+    private static async Task<Company> SeedCompany(ZayraDbContext db, Guid tenantId, string legalName)
+    {
+        var company = new Company
+        {
+            TenantId = tenantId,
+            LegalNameEn = legalName,
+            CountryCode = "SA",
+            Jurisdiction = "test",
+            RegistrationNumber = $"RC-{Guid.NewGuid():N}",
+            DefaultCurrency = "SAR",
+            IsActive = true,
+            CreatedAtUtc = DateTime.UtcNow,
+        };
+        db.Companies.Add(company);
+        await db.SaveChangesAsync();
+        return company;
+    }
+
     private static async Task SeedGrade(ZayraDbContext db, Guid tenantId, string code, decimal min, decimal max)
     {
         db.Grades.Add(new Grade

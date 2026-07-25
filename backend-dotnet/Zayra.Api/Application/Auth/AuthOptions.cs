@@ -25,7 +25,10 @@ public class SeedAdminOptions
     public string TenantSlug { get; set; } = "zayra";
     public string Email { get; set; } = "admin@zayra.local";
     public string FullName { get; set; } = "Zayra Admin";
-    public string Password { get; set; } = "ChangeMe123!";
+    // No hard-coded default: the bootstrap admin password MUST be supplied via config/env
+    // (SeedAdmin:Password / env SeedAdmin__Password). Program.cs fails fast in Production/dedicated
+    // deployments when it is missing or weak, and substitutes a dev default in local development.
+    public string Password { get; set; } = string.Empty;
 
     /// <summary>
     /// When true, seeds sample/demo business data (company, branches, departments,

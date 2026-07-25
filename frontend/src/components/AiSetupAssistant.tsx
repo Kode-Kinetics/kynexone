@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
-import { AlertTriangle, CheckCircle2, Database, Eye, FileSpreadsheet, FileUp, GitBranch, Rocket, ShieldCheck, Sparkles, Trash2, UploadCloud, Wand2, XCircle } from 'lucide-react';
-import { orgStructureImportApi, setupAssistantApi, type CompanyProfile, type OrgStructureImportRequest, type OrgStructureImportResult, type SetupDraft } from '../api/setupAssistant';
+import { useRef, useState } from 'react';
+import { AlertTriangle, CheckCircle2, Circle, Database, Download, Eye, FileSpreadsheet, GitBranch, Info, RefreshCw, Rocket, ShieldCheck, Sparkles, Trash2, UploadCloud, Wand2, XCircle } from 'lucide-react';
+import { orgStructureImportApi, setupAssistantApi, type CompanyProfile, type MigrationImportBatchDto, type OrgStructureImportRequest, type OrgStructureImportResult, type SetupDraft } from '../api/setupAssistant';
 
 const COUNTRIES = [
   { code: 'SA', label: 'Saudi Arabia' }, { code: 'AE', label: 'United Arab Emirates' },
@@ -40,6 +40,11 @@ export function AiSetupAssistant() {
   const [done, setDone] = useState<{ applied: Record<string, number>; total: number } | null>(null);
 
   const toggle = (k: SectionKey) => setSections(s => ({ ...s, [k]: !s[k] }));
+  const selectedCount = Object.values(sections).filter(Boolean).length;
+  // Full Record<SectionKey, boolean> literal — an Object.fromEntries shortcut would widen
+  // to { [k: string]: boolean } and fail the strict Record<SectionKey, boolean> assignment.
+  const setAllSections = (value: boolean) =>
+    setSections({ entity: value, org: value, leave: value, shifts: value, payroll: value, governance: value });
 
   const generate = async () => {
     if (!industry.trim()) { setError('Tell me your industry so the suggestions fit.'); return; }
@@ -61,7 +66,12 @@ export function AiSetupAssistant() {
       const r = await setupAssistantApi.preview(profile);
       setDraft(r.draft); setEngine(r.engine); setGenNotes(r.notes);
     } catch (e: unknown) {
-      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not generate a setup. Try again.');
+      const err = e as { response?: { status?: number; data?: { message?: string } } };
+      if (err?.response?.status === 403) {
+        setError("You don't have access to the setup assistant (Admin or HR Manager role required).");
+      } else {
+        setError(err?.response?.data?.message ?? 'Could not generate a setup. Try again.');
+      }
     } finally { setLoading(false); }
   };
 
@@ -72,7 +82,15 @@ export function AiSetupAssistant() {
       const r = await setupAssistantApi.apply(draft, country, currency, legalEntityName.trim() || undefined);
       setDone(r);
     } catch (e: unknown) {
-      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not apply the setup.');
+      // Keep the draft in state on 403 so an admin can apply the exact reviewed draft.
+      // The axios interceptor already fires a global access-denied toast; add only the
+      // inline, domain-specific message here (no second toast).
+      const err = e as { response?: { status?: number; data?: { message?: string } } };
+      if (err?.response?.status === 403) {
+        setError("Applying requires the 'organization.setup.apply' permission. Your account can preview a setup but not commit it — ask an administrator to apply this reviewed draft, or to grant you the permission.");
+      } else {
+        setError(err?.response?.data?.message ?? 'Could not apply the setup.');
+      }
     } finally { setApplying(false); }
   };
 
@@ -191,42 +209,93 @@ export function AiSetupAssistant() {
           <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Anything specific? (optional)</span>
           <input className="input w-full" value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. we run 24/7 operations with field crews" />
         </label>
-        <div className="sm:col-span-2">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Generate</span>
+        <fieldset role="group" aria-label="Sections to include in the draft" className="sm:col-span-2">
+          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Sections to include in the draft</span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400">{selectedCount} of 6 selected</span>
+              <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(true)}>Select all</button>
+              <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(false)}>Clear all</button>
+            </div>
+          </div>
+          <p className="mb-2 text-xs text-slate-400">Pick which parts of the starter configuration the assistant proposes. These are selections, not actions — nothing is generated until you choose Generate draft below.</p>
           <div className="flex flex-wrap gap-2">
             {([['entity', 'Entity & cost centers'], ['org', 'Org structure'], ['leave', 'Leave types'], ['shifts', 'Shifts & working week'], ['payroll', 'Payroll & statutory'], ['governance', 'Governance & IDs']] as [SectionKey, string][]).map(([k, label]) => (
-              <button key={k} type="button" onClick={() => toggle(k)}
-                className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-                  sections[k] ? 'border-transparent bg-sapphire text-white dark:bg-cyanAccent/80' : 'border-slate-200 text-slate-600 hover:border-slate-300 dark:border-white/10 dark:text-slate-300'
+              <label key={k}
+                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition ${
+                  sections[k]
+                    ? 'border-sapphire bg-sapphire/[0.06] text-slate-900 dark:border-cyanAccent/40 dark:bg-cyanAccent/[0.06] dark:text-white'
+                    : 'border-slate-200 text-slate-500 hover:border-slate-300 dark:border-white/10 dark:text-slate-300'
                 }`}>
+                <input type="checkbox" checked={sections[k]} onChange={() => toggle(k)} aria-label={`Include ${label} in the generated draft`} className="h-4 w-4 accent-sapphire" />
+                {sections[k] ? <CheckCircle2 className="h-3.5 w-3.5 text-sapphire dark:text-cyanAccent" /> : <Circle className="h-3.5 w-3.5 text-slate-300 dark:text-white/30" />}
                 {label}
-              </button>
+              </label>
             ))}
           </div>
-        </div>
+        </fieldset>
       </div>
 
       {error && <p className="text-sm text-red-500">{error}</p>}
 
-      <div className="flex items-center gap-3">
-        <button type="button" className="btn-primary flex items-center gap-1.5" onClick={generate} disabled={loading}>
-          <Wand2 className="h-4 w-4" />
-          {loading ? 'Thinking…' : draft ? 'Regenerate' : 'Generate Setup'}
-        </button>
-        {draft && (
-          <button type="button" className="btn-secondary flex items-center gap-1.5" onClick={apply} disabled={applying || totalItems === 0}>
-            <CheckCircle2 className="h-4 w-4" />
-            {applying ? 'Applying…' : `Apply ${totalItems} item(s)`}
+      {/* Two-step ribbon: preview (Step 1) then review & apply (Step 2) */}
+      <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium">
+        <span className={`rounded-full px-2.5 py-1 ${!draft ? 'bg-sapphire text-white dark:bg-cyanAccent/80' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`}>Step 1 · Generate draft (preview only)</span>
+        <span className="text-slate-300 dark:text-white/30">→</span>
+        <span className={`rounded-full px-2.5 py-1 ${draft ? 'bg-sapphire text-white dark:bg-cyanAccent/80' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`}>Step 2 · Review &amp; apply</span>
+      </div>
+
+      <div className="flex flex-wrap items-start gap-3">
+        <div>
+          <button type="button" className={`${draft ? 'btn-secondary' : 'btn-primary'} flex items-center gap-1.5`} onClick={generate}
+            disabled={loading || selectedCount === 0 || !industry.trim()}
+            title={!industry.trim() ? 'Add your industry first.' : selectedCount === 0 ? 'Select at least one section to include.' : undefined}>
+            <Wand2 className="h-4 w-4" />
+            {loading ? 'Thinking…' : draft ? 'Regenerate draft' : 'Generate draft'}
           </button>
+          <p className={`mt-1 text-[11px] ${!industry.trim() || selectedCount === 0 ? 'text-rose-500' : 'text-slate-400'}`}>
+            {!industry.trim() ? 'Add your industry first.' : selectedCount === 0 ? 'Select at least one section to include.' : 'Preview only — nothing is written to your workspace yet.'}
+          </p>
+        </div>
+        {draft && (
+          <div>
+            <button type="button" className="btn-primary flex items-center gap-1.5" onClick={apply} disabled={applying || totalItems === 0}
+              title={totalItems === 0 ? 'Remove-all left nothing to apply — regenerate or add rows.' : undefined}>
+              <CheckCircle2 className="h-4 w-4" />
+              {applying ? 'Applying…' : `Apply ${totalItems} item(s) to workspace`}
+            </button>
+            {totalItems === 0 && <p className="mt-1 text-[11px] text-rose-500">Remove-all left nothing to apply — regenerate or add rows.</p>}
+          </div>
         )}
       </div>
 
       {/* Preview */}
       {draft && (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-sapphire/10 px-2.5 py-1 text-xs font-medium text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent">{engine}</span>
-            {genNotes.map((n, i) => <span key={i} className="text-xs text-amber-600 dark:text-amber-400">{n}</span>)}
+          {/* Draft-only banner */}
+          <div className="flex items-start gap-3 rounded-xl border border-sapphire/20 bg-sapphire/[0.04] p-4 dark:border-cyanAccent/20 dark:bg-cyanAccent/[0.04]">
+            <Eye className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              Draft only — nothing has been saved yet. Review the <span className="font-semibold text-slate-900 dark:text-white">{totalItems}</span> item(s) below, remove anything you don&apos;t want, then apply to write them to your workspace.
+            </p>
+          </div>
+
+          {/* Provenance: how the draft was generated (surfaces engine + genNotes, incl. the deterministic-template note) */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/[0.04]">
+            <div className="flex flex-wrap items-center gap-2">
+              <Info className="h-4 w-4 text-slate-500 dark:text-slate-400" />
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">How this draft was generated</p>
+              {engine && <span className="rounded-full bg-sapphire/10 px-2.5 py-1 text-xs font-medium text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent">{engine}</span>}
+            </div>
+            {genNotes.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {genNotes.map((n, i) => (
+                  <p key={i} className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-200">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />{n}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
 
           <DraftSection title="Branches" rows={draft.branches.map(x => [x.code, `${x.nameEn} · ${x.city}${x.isHeadOffice ? ' · Head office' : ''}`])} onRemove={i => removeAt('branches', i)} />
@@ -265,17 +334,30 @@ const IMPORT_KEYS: { key: keyof OrgStructureImportRequest; section: string; labe
 
 function OrgStructureImportPanel() {
   const [payload, setPayload] = useState<OrgStructureImportRequest>({});
-  const [result, setResult] = useState<OrgStructureImportResult | null>(null);
+  const [batch, setBatch] = useState<MigrationImportBatchDto | null>(null);
   const [loading, setLoading] = useState('');
   const [error, setError] = useState('');
   const [packageName, setPackageName] = useState('');
+  const [fileNames, setFileNames] = useState<Partial<Record<keyof OrgStructureImportRequest, string>>>({});
+  const [templateDownloaded, setTemplateDownloaded] = useState(false);
+  const resultsRef = useRef<HTMLDivElement>(null);
 
+  // Any payload mutation changes the package checksum, so a prior dry-run is no longer
+  // committable — drop the batch to force re-validation (§6 invalidation rule).
   const setFile = async (key: keyof OrgStructureImportRequest, file?: File) => {
     if (!file) return;
     setPayload(p => ({ ...p, [key]: undefined }));
     const text = await file.text();
     setPayload(p => ({ ...p, [key]: text }));
-    setResult(null);
+    setFileNames(f => ({ ...f, [key]: file.name }));
+    setTemplateDownloaded(false);
+    setBatch(null);
+  };
+
+  const clearFile = (key: keyof OrgStructureImportRequest) => {
+    setPayload(p => ({ ...p, [key]: undefined }));
+    setFileNames(f => { const next = { ...f }; delete next[key]; return next; });
+    setBatch(null);
   };
 
   const setPackageFile = async (file?: File) => {
@@ -289,56 +371,120 @@ function OrgStructureImportPanel() {
     }
     setPayload(p => ({ ...p, ...parsed }));
     setPackageName(file.name);
-    setResult(null);
+    setTemplateDownloaded(false);
+    setBatch(null);
+  };
+
+  const clearPackage = () => {
+    setPayload({});
+    setFileNames({});
+    setPackageName('');
+    setBatch(null);
   };
 
   const template = async () => {
     setLoading('template'); setError('');
-    try { downloadText(await orgStructureImportApi.template(), 'organization-structure-import-package.txt'); }
+    try {
+      downloadText(await orgStructureImportApi.template(), 'organization-structure-import-package.txt');
+      setTemplateDownloaded(true);
+    }
     catch { setError('Could not download organization structure template.'); }
     finally { setLoading(''); }
   };
 
-  const preview = async () => {
-    setLoading('preview'); setError('');
-    try { setResult(await orgStructureImportApi.preview(payload)); }
-    catch { setError('Could not preview organization structure import.'); }
-    finally { setLoading(''); }
+  const runValidation = async () => {
+    setLoading('dryrun'); setError('');
+    try {
+      const dto = await orgStructureImportApi.dryRun(payload);
+      setBatch(dto);
+      requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+    } catch (e: unknown) {
+      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not validate the organization structure package.');
+    } finally { setLoading(''); }
   };
 
-  const commit = async () => {
+  const commitImport = async () => {
+    if (!batch) return;
     setLoading('commit'); setError('');
-    try { setResult(await orgStructureImportApi.commit(payload)); }
-    catch (e: unknown) {
-      const data = (e as { response?: { data?: OrgStructureImportResult } })?.response?.data;
-      if (data) setResult(data);
-      setError('Import was not committed. Resolve blocking errors and preview again.');
+    try {
+      const dto = await orgStructureImportApi.commitBatch(batch.id);
+      setBatch(dto);
+      requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number; data?: unknown } };
+      const status = err?.response?.status;
+      const data = err?.response?.data;
+      // 422: CommitBatch re-validates against live DB state and returns a full batch DTO
+      // carrying the blocking findings when the workspace changed since dry-run (or the
+      // stored payload can't be read). Surface those findings and prompt a re-validate.
+      if (status === 422 && isBatchDto(data)) {
+        setBatch(data);
+        setError('The workspace changed since validation — resolve the findings and run validation again.');
+      } else if (status === 409) {
+        // Fires when the batch is no longer DryRunPassed (e.g. Committing/Failed). §6 nulls
+        // the batch on any payload change, so in practice we only ever commit a clean batch;
+        // this is a defensive branch and the copy avoids overstating a checksum re-check.
+        if (isBatchDto(data)) setBatch(data);
+        setError('This batch is no longer in a committable state — run validation again.');
+      } else {
+        setError((data as { message?: string })?.message ?? 'Could not commit the governed import.');
+      }
     } finally { setLoading(''); }
+  };
+
+  const refreshStatus = async () => {
+    if (!batch) return;
+    setLoading('refresh'); setError('');
+    try { setBatch(await orgStructureImportApi.getBatch(batch.id)); }
+    catch { setError('Could not refresh the batch status.'); }
+    finally { setLoading(''); }
   };
 
   const hasAny = Object.values(payload).some(Boolean);
   const loadedCount = IMPORT_KEYS.filter(x => payload[x.key]).length;
   const totalRows = IMPORT_KEYS.reduce((sum, x) => sum + countCsvRows(payload[x.key]), 0);
-  const blockingGroups = groupFindings(result, 'errors');
-  const warningGroups = groupFindings(result, 'warnings');
-  const impact = result ? summarizeImportImpact(result) : null;
+  const blockingCount = batch?.errorRows ?? 0;
+  const warningCount = batch?.result?.warnings ?? 0;
+  const blockingGroups = groupFindings(batch?.result ?? null, 'errors');
+  const warningGroups = groupFindings(batch?.result ?? null, 'warnings');
+  const canCommit = batch?.status === 'DryRunPassed';
+  const commitReason = !batch ? 'Run validation first.'
+    : batch.status === 'DryRunBlocked' ? `Resolve ${blockingCount} blocking issue(s), then run validation again.`
+    : batch.status === 'Committed' ? 'Already committed.'
+    : batch.status === 'DryRunPassed' ? ''
+    : 'This batch is no longer committable — run validation again.';
+  const readiness: { label: string; tone: 'neutral' | 'success' | 'danger' } =
+    batch?.status === 'DryRunBlocked' ? { label: 'Blocked', tone: 'danger' }
+    : batch?.status === 'DryRunPassed' ? { label: 'Ready', tone: 'success' }
+    : batch?.status === 'Committed' ? { label: 'Committed', tone: 'success' }
+    : { label: 'Pending', tone: 'neutral' };
+  const validationBanner = batch?.status === 'DryRunPassed'
+    ? 'Validation complete — package is clean and ready to commit.'
+    : batch?.status === 'DryRunBlocked'
+    ? `Validation complete — ${blockingCount} blocking issue(s) and ${warningCount} warning(s) found.`
+    : batch?.status === 'Committed'
+    ? 'Committed to master data.'
+    : '';
   const runway = [
-    { label: 'Load', done: hasAny, active: !result },
-    { label: 'Validate', done: Boolean(result && !result.hasBlockingErrors), active: Boolean(result && result.hasBlockingErrors) },
-    { label: 'Commit', done: Boolean(result?.committed), active: Boolean(result && !result.hasBlockingErrors && !result.committed) },
+    { label: 'Load', done: hasAny, active: hasAny && !batch },
+    { label: 'Validate', done: Boolean(batch && batch.status !== 'DryRunBlocked'), active: batch?.status === 'DryRunBlocked' },
+    { label: 'Commit', done: batch?.status === 'Committed', active: batch?.status === 'DryRunPassed' },
   ];
 
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-white/[0.03]">
       <div className="border-b border-slate-100 bg-slate-50/80 p-5 dark:border-white/[0.06] dark:bg-white/[0.04]">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Organization Migration Cockpit</h3>
             <p className="mt-1 max-w-3xl text-xs text-slate-500 dark:text-slate-400">
               Import a complete existing organization structure with dependency validation across legal entity, branch, cost center, department, grade, payroll breakdown, and designation eligibility before anything is committed.
             </p>
           </div>
-          <button type="button" className="btn-secondary text-xs" onClick={template} disabled={loading === 'template'}><FileUp className="h-3.5 w-3.5" /> Template package</button>
+          <div className="flex flex-col items-end gap-1">
+            <button type="button" className="btn-secondary text-xs" onClick={template} disabled={loading === 'template'}><Download className="h-3.5 w-3.5" /> {loading === 'template' ? 'Downloading…' : 'Download template'}</button>
+            {templateDownloaded && <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-300">Template downloaded — fill it in and upload it above.</span>}
+          </div>
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           {runway.map((step, idx) => (
@@ -355,13 +501,24 @@ function OrgStructureImportPanel() {
       <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
         <div>
           <div className="rounded-xl border border-dashed border-sapphire/30 bg-sapphire/[0.03] p-4 dark:border-cyanAccent/25 dark:bg-cyanAccent/[0.04]">
+            <p className="mb-3 flex items-start gap-2 rounded-lg bg-white/70 px-3 py-2 text-[11px] text-slate-500 dark:bg-black/20 dark:text-slate-300">
+              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sapphire dark:text-cyanAccent" />
+              Files are read in your browser only. Nothing is sent to the server until you Run validation, and nothing is written until you Commit.
+            </p>
             <div className="flex items-start gap-3">
               <UploadCloud className="mt-0.5 h-5 w-5 text-sapphire dark:text-cyanAccent" />
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">Upload one migration package</p>
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Use the generated package with named sections, or upload individual CSV files below for controlled remediation.</p>
                 <input type="file" accept=".txt,.csv,text/plain,text/csv" onChange={e => setPackageFile(e.target.files?.[0])} className="mt-3 block w-full text-xs text-slate-500" />
-                {packageName && <p className="mt-2 text-xs font-medium text-emerald-600">Loaded package: {packageName}</p>}
+                {packageName && (
+                  <p className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-emerald-600 dark:text-emerald-300">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Loaded {packageName} — {loadedCount} section(s), {totalRows} row(s). Not written yet.
+                    <button type="button" className="text-slate-400 underline hover:text-slate-600 dark:hover:text-slate-200" onClick={clearPackage}>Clear</button>
+                  </p>
+                )}
+                <p className="mt-2 text-[11px] text-slate-400">Need the format? Download template — a starter package (.txt) with the exact section headers and one filled, consistent example row per section. Edit it, then upload it above. Some sections (companies, grades) require group-level access to import.</p>
               </div>
             </div>
           </div>
@@ -372,20 +529,26 @@ function OrgStructureImportPanel() {
               const ready = rows > 0;
               const missingDeps = item.dependsOn.filter(dep => !payload[IMPORT_KEYS.find(x => x.section === dep)?.key ?? 'companiesCsv']);
               return (
-                <label key={item.key} className={`block rounded-xl border p-3 text-xs transition ${ready ? 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-500/20 dark:bg-emerald-500/10' : 'border-slate-200 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20'}`}>
-                  <span className="flex items-start justify-between gap-2">
-                    <span>
+                <div key={item.key} className={`block rounded-xl border p-3 text-xs transition ${ready ? 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-500/20 dark:bg-emerald-500/10' : 'border-slate-200 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20'}`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
                       <span className="block font-semibold text-slate-800 dark:text-white">{item.label}</span>
                       <span className="mt-0.5 block text-slate-500 dark:text-slate-400">{item.phase}</span>
-                    </span>
+                    </div>
                     <span className={`rounded-full px-2 py-0.5 font-medium ${ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`}>{rows} rows</span>
-                  </span>
-                  <span className="mt-2 flex flex-wrap gap-1">
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
                     {item.required.slice(0, 3).map(req => <span key={req} className="rounded bg-white px-1.5 py-0.5 text-[10px] text-slate-500 ring-1 ring-slate-200 dark:bg-black/20 dark:text-slate-300 dark:ring-white/10">{req}</span>)}
-                  </span>
-                  {missingDeps.length > 0 && <span className="mt-2 flex items-center gap-1 text-amber-600 dark:text-amber-300"><GitBranch className="h-3 w-3" /> Depends on {missingDeps.join(', ')}</span>}
+                  </div>
+                  {missingDeps.length > 0 && <div className="mt-2 flex items-center gap-1 text-amber-600 dark:text-amber-300"><GitBranch className="h-3 w-3" /> Depends on {missingDeps.join(', ')}</div>}
                   <input type="file" accept=".csv,text/csv" onChange={e => setFile(item.key, e.target.files?.[0])} className="mt-3 block w-full text-xs text-slate-500" />
-                </label>
+                  {ready && (
+                    <p className="mt-2 flex flex-wrap items-center gap-2 font-medium text-emerald-600 dark:text-emerald-300">
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Loaded {fileNames[item.key] ?? 'file'} — {rows} row(s)
+                      <button type="button" className="text-slate-400 underline hover:text-slate-600 dark:hover:text-slate-200" onClick={() => clearFile(item.key)}>Clear</button>
+                    </p>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -393,46 +556,117 @@ function OrgStructureImportPanel() {
 
         <div className="space-y-4">
           <div className="grid grid-cols-3 gap-2">
-            <MetricCard icon={<FileSpreadsheet className="h-4 w-4" />} label="Files" value={`${loadedCount}/7`} />
-            <MetricCard icon={<Database className="h-4 w-4" />} label="Rows" value={String(result?.received ?? totalRows)} />
-            <MetricCard icon={<ShieldCheck className="h-4 w-4" />} label="Readiness" value={result ? result.hasBlockingErrors ? 'Blocked' : 'Clear' : 'Pending'} tone={result?.hasBlockingErrors ? 'danger' : result ? 'success' : 'neutral'} />
+            <MetricCard icon={<FileSpreadsheet className="h-4 w-4" />} label="Sections loaded" value={`${loadedCount}/${IMPORT_KEYS.length}`} />
+            <MetricCard icon={<Database className="h-4 w-4" />} label="Rows" value={String(batch?.receivedRows ?? totalRows)} />
+            <MetricCard icon={<ShieldCheck className="h-4 w-4" />} label="Readiness" value={readiness.label} tone={readiness.tone} />
           </div>
 
           {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
 
           <div className="flex flex-wrap gap-2">
-            <button type="button" className="btn-secondary" onClick={preview} disabled={!hasAny || loading === 'preview'}>
-              <Eye className="h-4 w-4" /> {loading === 'preview' ? 'Validating...' : 'Run validation'}
-            </button>
-            <button type="button" className="btn-primary" onClick={commit} disabled={!result || result.hasBlockingErrors || loading === 'commit'}>
-              <Rocket className="h-4 w-4" /> {loading === 'commit' ? 'Committing...' : 'Commit governed import'}
-            </button>
+            <div>
+              <button type="button" className="btn-secondary" onClick={runValidation} disabled={!hasAny || loading === 'dryrun'}
+                title={!hasAny ? 'Load the package or at least one section file to validate.' : undefined} aria-describedby="run-validation-reason">
+                <Eye className="h-4 w-4" /> {loading === 'dryrun' ? 'Validating…' : 'Run validation'}
+              </button>
+              {!hasAny && <p id="run-validation-reason" className="mt-1 text-[11px] text-rose-500">Load the package or at least one section file to validate.</p>}
+            </div>
+            <div>
+              <button type="button" className="btn-primary" onClick={commitImport} disabled={!canCommit || loading === 'commit'}
+                title={commitReason || undefined} aria-describedby="commit-reason">
+                <Rocket className="h-4 w-4" /> {loading === 'commit' ? 'Committing…' : 'Commit governed import'}
+              </button>
+              {commitReason && <p id="commit-reason" className={`mt-1 text-[11px] ${batch?.status === 'DryRunBlocked' ? 'text-rose-500' : 'text-slate-400'}`}>{commitReason}</p>}
+            </div>
+            {batch && (
+              <button type="button" className="btn-secondary" onClick={refreshStatus} disabled={loading === 'refresh'}>
+                <RefreshCw className="h-4 w-4" /> {loading === 'refresh' ? 'Refreshing…' : 'Refresh status'}
+              </button>
+            )}
           </div>
 
-          {result && (
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs dark:border-white/10 dark:bg-white/[0.04]">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="font-semibold text-slate-900 dark:text-white">{result.committed ? 'Committed to master data' : 'Validation preview'} · {result.received} rows</p>
-                <div className="flex gap-1.5">
-                  <span className="rounded-full bg-red-100 px-2 py-0.5 text-red-700 dark:bg-red-500/15 dark:text-red-200">{result.errors} errors</span>
-                  <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200">{result.warnings} warnings</span>
-                </div>
-              </div>
-              {impact && (
-                <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                  <Impact label="Create" value={impact.create} />
-                  <Impact label="Update" value={impact.update} />
-                  <Impact label="Blocked" value={impact.blocked} />
-                </div>
-              )}
-              {Object.keys(result.applied ?? {}).length > 0 && <p className="mt-3 text-slate-600 dark:text-slate-300">{Object.entries(result.applied).map(([k, v]) => `${k}: ${v}`).join(' · ')}</p>}
+          {batch && (
+            <>
+              <p aria-live="polite" role="status" className={`rounded-lg px-3 py-2 text-xs font-medium ${
+                batch.status === 'DryRunBlocked' ? 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-200'
+                : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200'}`}>
+                {validationBanner}
+              </p>
 
-              <FindingGroup title="Blocking findings" icon={<XCircle className="h-4 w-4" />} groups={blockingGroups} tone="danger" />
-              <FindingGroup title="Review findings" icon={<AlertTriangle className="h-4 w-4" />} groups={warningGroups} tone="warning" />
-              {!result.hasBlockingErrors && result.warnings === 0 && <p className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"><CheckCircle2 className="h-4 w-4" /> Package is clean and ready to commit.</p>}
-            </div>
+              <div ref={resultsRef} className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs dark:border-white/10 dark:bg-white/[0.04]">
+                {/* Batch audit header — the trust centerpiece */}
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3 dark:border-white/10">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-900 dark:text-white">Batch {batch.externalBatchId ?? batch.id.slice(0, 8)}</p>
+                    <p className="mt-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                      checksum {batch.packageChecksum.slice(0, 8)} · created {formatUtc(batch.createdAtUtc)}{batch.completedAtUtc ? ` · completed ${formatUtc(batch.completedAtUtc)}` : ''}
+                    </p>
+                  </div>
+                  <StatusPill status={batch.status} />
+                </div>
+
+                {/* Impact tiles */}
+                <div className="mt-3 grid gap-2 sm:grid-cols-4">
+                  <Impact label="Create" value={batch.createdRows} />
+                  <Impact label="Update" value={batch.updatedRows} />
+                  <Impact label="Skip" value={batch.skippedRows} />
+                  <Impact label="Blocked" value={batch.errorRows} />
+                </div>
+
+                <CountStrip label="Package contents" counts={batch.reconciliation.sectionCounts} />
+                <CountStrip label="In your workspace already" counts={{ ...batch.reconciliation.identityCounts, ...batch.reconciliation.operationalCounts }} muted />
+
+                {batch.status === 'Committed' && batch.result && Object.keys(batch.result.applied ?? {}).length > 0 && (
+                  <p className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200">
+                    <CheckCircle2 className="h-4 w-4" /> Applied — {Object.entries(batch.result.applied).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+                  </p>
+                )}
+
+                <FindingGroup title="Blocking findings" icon={<XCircle className="h-4 w-4" />} groups={blockingGroups} tone="danger" />
+                <FindingGroup title="Review findings" icon={<AlertTriangle className="h-4 w-4" />} groups={warningGroups} tone="warning" />
+                {batch.status === 'DryRunPassed' && warningCount === 0 && (
+                  <p className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"><CheckCircle2 className="h-4 w-4" /> Package is clean and ready to commit.</p>
+                )}
+              </div>
+            </>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function isBatchDto(v: unknown): v is MigrationImportBatchDto {
+  return typeof v === 'object' && v !== null && 'id' in v && 'status' in v && 'reconciliation' in v;
+}
+
+function formatUtc(iso?: string): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+}
+
+function StatusPill({ status }: { status: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    DryRunPassed: { label: 'Ready to commit', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200' },
+    DryRunBlocked: { label: 'Blocked', cls: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-200' },
+    Committed: { label: 'Committed', cls: 'bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-200' },
+    Failed: { label: 'Failed', cls: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-200' },
+  };
+  const s = map[status] ?? { label: status || 'Pending', cls: 'bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300' };
+  return <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${s.cls}`}>{s.label}</span>;
+}
+
+function CountStrip({ label, counts, muted = false }: { label: string; counts: Record<string, number>; muted?: boolean }) {
+  const entries = Object.entries(counts ?? {});
+  if (entries.length === 0) return null;
+  return (
+    <div className="mt-3">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {entries.map(([k, v]) => (
+          <span key={k} className={`rounded-full px-2 py-0.5 text-[11px] ${muted ? 'bg-white text-slate-500 ring-1 ring-slate-200 dark:bg-black/20 dark:text-slate-300 dark:ring-white/10' : 'bg-sapphire/10 text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent'}`}>{k}: {v}</span>
+        ))}
       </div>
     </div>
   );
@@ -513,16 +747,6 @@ function groupFindings(result: OrgStructureImportResult | null, key: 'errors' | 
     for (const finding of findings) acc[section].push(`Row ${row.rowNumber || '-'} ${row.entityCode ?? ''}: ${finding}`.trim());
     return acc;
   }, {});
-}
-
-function summarizeImportImpact(result: OrgStructureImportResult): { create: number; update: number; blocked: number } {
-  let update = 0;
-  let blocked = 0;
-  for (const row of result.rows) {
-    if (row.errors.length) blocked++;
-    if (row.warnings.some(w => w.includes('already exists and will be updated'))) update++;
-  }
-  return { create: Math.max(result.received - update - blocked, 0), update, blocked };
 }
 
 function DraftSection({ title, rows, onRemove }: { title: string; rows: [string, string][]; onRemove: (idx: number) => void }) {

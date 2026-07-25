@@ -14,6 +14,11 @@ public class AuthSeeder : IAuthSeeder
     private readonly IPasswordHasher _passwordHasher;
     private readonly SeedAdminOptions _options;
 
+    // The historical insecure bootstrap-admin default. Databases first booted with this password
+    // keep it until rotated (see SeedAsync). Kept in one place so this rotation guard and the
+    // Program.cs boot guard agree on what "weak" means.
+    private const string WeakBootstrapPassword = "ChangeMe123!";
+
     public AuthSeeder(ZayraDbContext db, IPasswordHasher passwordHasher, IOptions<SeedAdminOptions> options)
     {
         _db = db;
@@ -58,9 +63,33 @@ public class AuthSeeder : IAuthSeeder
             admin.UserRoles.Add(new UserRole { User = admin, Role = adminRole });
             _db.Users.Add(admin);
         }
-        else if (!admin.UserRoles.Any(x => x.RoleId == adminRole.Id))
+        else
         {
-            admin.UserRoles.Add(new UserRole { UserId = admin.Id, RoleId = adminRole.Id });
+            if (!admin.UserRoles.Any(x => x.RoleId == adminRole.Id))
+            {
+                admin.UserRoles.Add(new UserRole { UserId = admin.Id, RoleId = adminRole.Id });
+            }
+
+            // Weak-credential rotation for EXISTING bootstrap admins. This seeder historically only
+            // CREATED the admin and never updated it, so a database first booted with the insecure
+            // default password kept that credential live even after the operator later set a strong
+            // SeedAdmin:Password — hardening the boot guard alone did NOT remediate the live account.
+            // When the stored password still IS the known weak default AND a strong password is now
+            // configured, rotate the hash. A password the operator legitimately changed (no longer the
+            // weak default) fails the Verify check and is left untouched, so this never clobbers a
+            // deliberately-set admin password.
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(_options.Password)
+                    && _options.Password != WeakBootstrapPassword
+                    && _passwordHasher.Verify(WeakBootstrapPassword, admin.PasswordHash))
+                {
+                    admin.PasswordHash = _passwordHasher.Hash(_options.Password);
+                    admin.UpdatedAtUtc = DateTime.UtcNow;
+                    Console.WriteLine("[Seed] Bootstrap admin password ROTATED off the insecure default to the configured SeedAdmin:Password.");
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[Seed] Bootstrap admin password rotation skipped: {ex.Message}"); }
         }
         if (!admin.IsGroupScope) admin.IsGroupScope = true;
 

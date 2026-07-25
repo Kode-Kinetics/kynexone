@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
@@ -44,8 +45,9 @@ public class EmployeesController : ControllerBase
     private readonly IDataScopeService _scopeService;
     private readonly ILetterService _letters;
     private readonly IApprovalWorkflowService _approvalWorkflow;
+    private readonly ILogger<EmployeesController>? _logger;
 
-    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null)
+    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -56,6 +58,7 @@ public class EmployeesController : ControllerBase
         _scopeService = scopeService;
         _letters = letters;
         _approvalWorkflow = approvalWorkflow ?? new Zayra.Api.Infrastructure.Approvals.ApprovalWorkflowService(db, audit);
+        _logger = logger;
     }
 
     [HttpGet]
@@ -267,21 +270,53 @@ public class EmployeesController : ControllerBase
 
         int created = 0, skipped = 0;
         var errors = new List<string>();
+        // Non-fatal notices: the row IS imported, but an optional reference could not be resolved.
+        var warnings = new List<string>();
         var rowNum = 1;
         // Track employee codes created in this batch for Pass 2 resolution
         var batchCodes = new Dictionary<string, Employee>(StringComparer.OrdinalIgnoreCase);
         var batchPayroll = new Dictionary<string, (Employee emp, Dictionary<string, string> rowData)>(StringComparer.OrdinalIgnoreCase);
         var claimedPositionCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // Persist pending changes; convert a constraint violation (e.g. a duplicate
+        // employee code slipping through) into a legible 422 rather than a raw 500.
+        // The raw exception detail is logged server-side only — it is never returned
+        // to the client, to avoid leaking schema/constraint internals.
+        async Task<IActionResult?> PersistAsync()
+        {
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return null;
+            }
+            catch (DbUpdateException ex)
+            {
+                _logger?.LogError(ex, "Employee CSV import failed to persist for tenant {TenantId}.", tenantId);
+                return UnprocessableEntity(new
+                {
+                    error = "import_persist_failed",
+                    message = "Import could not be saved because a database constraint was violated. "
+                              + "This can happen when an employee code is duplicated — please review the file and retry."
+                });
+            }
+        }
+
         // ── Pass 1: create all employee records ──────────────────────────────────
         foreach (var row in rows)
         {
             rowNum++;
             var name = row.GetValueOrDefault("FullName", string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(name)) { skipped++; continue; }
+            if (string.IsNullOrWhiteSpace(name)) { skipped++; errors.Add($"Row {rowNum}: missing FullName; row skipped."); continue; }
             var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(code) && await _db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == code, ct))
-            { skipped++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' already exists."); continue; }
+            if (!string.IsNullOrWhiteSpace(code))
+            {
+                // A second row in this same file with an already-added code would both pass the
+                // DB check and violate the unique (TenantId, EmployeeCode) index at SaveChanges.
+                if (batchCodes.ContainsKey(code))
+                { skipped++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' is duplicated within the import file; row skipped."); continue; }
+                if (await _db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == code, ct))
+                { skipped++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' already exists."); continue; }
+            }
 
             DateTime.TryParse(row.GetValueOrDefault("JoiningDate", string.Empty), out var jdRaw);
             var jd = DateTime.SpecifyKind(jdRaw == default ? DateTime.UtcNow : jdRaw, DateTimeKind.Utc);
@@ -305,22 +340,26 @@ public class EmployeesController : ControllerBase
                 : null;
             if (!string.IsNullOrWhiteSpace(branchCodeRaw) && resolvedBranch is null)
             {
-                skipped++;
-                errors.Add(resolvedCompany is null
-                    ? $"Row {rowNum}: BranchCode '{branchCodeRaw}' supplied but no active company could be resolved."
-                    : $"Row {rowNum}: BranchCode '{branchCodeRaw}' not found for company '{resolvedCompany.LegalNameEn}'.");
-                continue;
+                // Branch is an OPTIONAL reference — a blank BranchCode is already allowed through as null,
+                // so an unrecognized one must not be more fatal than an absent one. Import the employee
+                // with no branch and surface a warning instead of skipping the whole row. This unblocks
+                // imports into freshly-created companies that have no org scaffolding seeded yet.
+                warnings.Add(resolvedCompany is null
+                    ? $"Row {rowNum}: BranchCode '{branchCodeRaw}' supplied but no company could be resolved — imported without a branch."
+                    : $"Row {rowNum}: BranchCode '{branchCodeRaw}' not found for company '{resolvedCompany.LegalNameEn}' — imported without a branch.");
             }
             var resolvedCostCenter = resolvedCompany is not null && !string.IsNullOrWhiteSpace(costCenterCodeRaw)
                 ? costCentersByCode.GetValueOrDefault((resolvedCompany.Id, costCenterCodeRaw))
                 : null;
             if (!string.IsNullOrWhiteSpace(costCenterCodeRaw) && resolvedCostCenter is null)
             {
-                skipped++;
-                errors.Add(resolvedCompany is null
-                    ? $"Row {rowNum}: CostCenterCode '{costCenterCodeRaw}' supplied but no active company could be resolved."
-                    : $"Row {rowNum}: CostCenterCode '{costCenterCodeRaw}' not found for company '{resolvedCompany.LegalNameEn}'.");
-                continue;
+                // Cost center is an OPTIONAL reference (blank is already allowed). An unrecognized code
+                // no longer skips the row — import with no cost center and warn. Auto-creating cost
+                // centers from an employee file is deliberately NOT done here: a typo would silently
+                // pollute financial master data. Operators create cost centers first, then re-import.
+                warnings.Add(resolvedCompany is null
+                    ? $"Row {rowNum}: CostCenterCode '{costCenterCodeRaw}' supplied but no company could be resolved — imported without a cost center."
+                    : $"Row {rowNum}: CostCenterCode '{costCenterCodeRaw}' not found for company '{resolvedCompany.LegalNameEn}' — imported without a cost center.");
             }
             var deptNameRaw = row.GetValueOrDefault("Department", string.Empty).Trim();
             var deptCodeRaw = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim().ToUpperInvariant();
@@ -474,7 +513,7 @@ public class EmployeesController : ControllerBase
             batchPayroll[finalCode] = (employee, row);
             created++;
         }
-        await _db.SaveChangesAsync(ct);
+        if (await PersistAsync() is { } saveError) return saveError;
         var importedPositionAssignments = batchCodes.Values.Where(e => e.PositionId is not null).ToList();
         if (importedPositionAssignments.Count > 0)
         {
@@ -488,7 +527,7 @@ public class EmployeesController : ControllerBase
                 position.UpdatedAtUtc = DateTime.UtcNow;
                 position.UpdatedBy = GetUserId();
             }
-            await _db.SaveChangesAsync(ct);
+            if (await PersistAsync() is { } positionSaveError) return positionSaveError;
         }
 
         // ── Pass 1b: payroll profiles + salary structures ────────────────────────
@@ -552,8 +591,8 @@ public class EmployeesController : ControllerBase
             }
             payrollProfilesCreated++;
         }
-        if (payrollProfilesCreated > 0)
-            await _db.SaveChangesAsync(ct);
+        if (payrollProfilesCreated > 0 && await PersistAsync() is { } payrollSaveError)
+            return payrollSaveError;
 
         // ── Pass 2: resolve manager/supervisor codes → IDs ────────────────────────
         int hierarchyLinked = 0;
@@ -638,11 +677,12 @@ public class EmployeesController : ControllerBase
 
             if (changed) _db.Employees.Update(emp);
         }
-        if (hierarchyLinked > 0 || hierarchyErrors.Count > 0)
-            await _db.SaveChangesAsync(ct);
+        if ((hierarchyLinked > 0 || hierarchyErrors.Count > 0) && await PersistAsync() is { } hierarchySaveError)
+            return hierarchySaveError;
 
         var allErrors = errors.Concat(hierarchyErrors).Take(30).ToList();
-        return Ok(new { received = rows.Count, created, skipped, hierarchyLinked, payrollProfilesCreated, errors = allErrors });
+        var allWarnings = warnings.Take(30).ToList();
+        return Ok(new { received = rows.Count, created, skipped, hierarchyLinked, payrollProfilesCreated, errors = allErrors, warnings = allWarnings });
     }
 
     public record ImportEmployeesRequest(string CsvContent);
