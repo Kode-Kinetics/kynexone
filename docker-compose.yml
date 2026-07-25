@@ -44,6 +44,9 @@ services:
       SeedAdmin__TenantSlug: ${SEED_TENANT_SLUG:-zayra}
       SeedAdmin__Email: ${SEED_ADMIN_EMAIL:-admin@zayra.local}
       SeedAdmin__FullName: ${SEED_ADMIN_NAME:-KynexOne Admin}
+      # DEVELOPMENT-ONLY default (ASPNETCORE_ENVIRONMENT=Development here). Production/dedicated
+      # deployments MUST provide a real SEED_ADMIN_PASSWORD — the backend refuses to boot on
+      # 'ChangeMe123!' in Production.
       SeedAdmin__Password: ${SEED_ADMIN_PASSWORD:-ChangeMe123!}
       # Default false so a normal local/deployment stack cannot rewrite tenant
       # data. Use SEED_DEMO_DATA=true only in an isolated demo database.

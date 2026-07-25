@@ -42,7 +42,8 @@ services:
         sync: false
 
       # SeedAdmin__Email / SeedAdmin__Password
-      #   Credentials for the bootstrap admin account created on first boot.
+      #   Credentials for the bootstrap admin account created on first boot. REQUIRED — the app
+      #   refuses to boot in Production when SeedAdmin__Password is unset or the weak default.
       - key: SeedAdmin__Email
         sync: false
       - key: SeedAdmin__Password
@@ -64,6 +65,12 @@ services:
       # touches tenant data. Use a SEPARATE demo/staging service with this set "true" for showcases.
       - key: SeedAdmin__SeedDemoData
         value: "false"
+
+      # Dedicated / client-hosted deployment hard lock (defense in depth). Production is already
+      # treated as dedicated, but setting this explicitly keeps demo seeders off even if
+      # ASPNETCORE_ENVIRONMENT is ever pointed at a non-Production slot.
+      - key: DEDICATED_DEPLOYMENT
+        value: "true"
 
       # Web service never runs migrations on startup in Production.
       # Migrations are applied via a Render one-off job:

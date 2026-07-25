@@ -89,6 +89,63 @@ builder.WebHost.UseUrls(listenUrl);
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
 builder.Services.Configure<SeedAdminOptions>(builder.Configuration.GetSection("SeedAdmin"));
+
+// ── Seed-admin bootstrap hardening (password fail-fast + demo-seed lock) ──────
+// Every fresh database auto-creates a bootstrap admin (SeedAdmin:Email) on first boot. A blank,
+// placeholder, or well-known password would ship every client-hosted / dedicated deployment with a
+// known-credential admin. A "dedicated" deployment is Production OR anything flagged with
+// DEDICATED_DEPLOYMENT / CLIENT_DEPLOYMENT — the SAME predicate the demo-seed gate below uses — so a
+// client slot running under a non-Production ASPNETCORE_ENVIRONMENT (Staging/QA/custom) is protected
+// too. On a dedicated deployment a weak bootstrap password is REFUSED outright; elsewhere (local dev,
+// docker-compose) a working dev default is substituted with a loud warning so zero-config bring-up
+// keeps working. This guard runs at builder time on EVERY invocation — including the
+// `dotnet Zayra.Api.dll --migrate` one-off job — so a dedicated deployment must set SeedAdmin__Password
+// before that job runs too (mirrors the JWT fail-fast above).
+{
+    const string WeakSeedAdminPassword = "ChangeMe123!";
+
+    var isDedicatedDeployment =
+        builder.Environment.IsProduction()
+        || string.Equals(Environment.GetEnvironmentVariable("DEDICATED_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Environment.GetEnvironmentVariable("CLIENT_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase);
+
+    var seedAdminPassword = builder.Configuration["SeedAdmin:Password"];
+    var isWeakOrPlaceholder =
+        string.IsNullOrWhiteSpace(seedAdminPassword)
+        || seedAdminPassword == WeakSeedAdminPassword
+        || seedAdminPassword.StartsWith("CHANGE_ME", StringComparison.OrdinalIgnoreCase);
+
+    if (isWeakOrPlaceholder)
+    {
+        if (isDedicatedDeployment)
+            throw new InvalidOperationException(
+                $"[{builder.Environment.EnvironmentName}] SeedAdmin bootstrap password fail-fast:\n" +
+                $"  SeedAdmin:Password is null, empty, a documented placeholder (CHANGE_ME...), or still the insecure default ('{WeakSeedAdminPassword}').\n" +
+                "  Set a unique, strong bootstrap admin password before first boot via env var SeedAdmin__Password (config key SeedAdmin:Password).\n" +
+                "  docker-compose maps ${SEED_ADMIN_PASSWORD} -> SeedAdmin__Password; on Render / raw containers set SeedAdmin__Password directly (SEED_ADMIN_PASSWORD is NOT read by the app).");
+
+        // Non-dedicated (local dev / docker-compose): substitute a working dev default so bring-up
+        // stays zero-config, but never persist a CHANGE_ME* placeholder as the effective password.
+        builder.Configuration["SeedAdmin:Password"] = WeakSeedAdminPassword;
+        Console.WriteLine(
+            $"[SeedAdmin] WARNING [{builder.Environment.EnvironmentName}]: bootstrap admin is using the INSECURE default " +
+            "password because SeedAdmin__Password is unset or a placeholder. Never use this outside local development.");
+    }
+
+    // Defense in depth for the AuthSeeder demo path: AuthSeeder (always-on, resolved later) seeds a
+    // demo company + 25 fake employees when SeedAdmin:SeedDemoData is "true". That flag is read from
+    // config BEFORE the runtime demo gate below is evaluated, so neutralize it here for dedicated
+    // deployments — one mis-set SeedAdmin__SeedDemoData must never pollute a client tenant.
+    if (isDedicatedDeployment
+        && string.Equals(builder.Configuration["SeedAdmin:SeedDemoData"], "true", StringComparison.OrdinalIgnoreCase))
+    {
+        builder.Configuration["SeedAdmin:SeedDemoData"] = "false";
+        Console.WriteLine(
+            $"[SeedAdmin] OVERRIDE [{builder.Environment.EnvironmentName}]: SeedAdmin__SeedDemoData was 'true' but this is a " +
+            "Production/dedicated deployment — forced to 'false' so AuthSeeder cannot seed demo org/employee data into a client tenant.");
+    }
+}
+
 builder.Services.Configure<EntityScopeOptions>(builder.Configuration.GetSection("EntityScope"));
 builder.Services.PostConfigure<EntityScopeOptions>(options =>
 {
@@ -616,9 +673,28 @@ using (var scope = app.Services.CreateScope())
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
     await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);
 
-    var seedDemoData =
+    var demoDataRequested =
         string.Equals(Environment.GetEnvironmentVariable("SEED_DEMO_DATA"), "true", StringComparison.OrdinalIgnoreCase)
         || string.Equals(app.Configuration["SeedAdmin:SeedDemoData"], "true", StringComparison.OrdinalIgnoreCase);
+
+    // Defense in depth: a client-hosted / dedicated deployment (or ANY Production env) must NEVER run
+    // demo seeders — even if SEED_DEMO_DATA / SeedAdmin__SeedDemoData is accidentally set to "true".
+    // One mis-set env var must not be able to pollute a client database with demo tenants and users.
+    // (This mirrors the builder-time predicate that also neutralizes SeedAdmin:SeedDemoData before
+    // AuthSeeder runs.)
+    var dedicatedDeployment =
+        app.Environment.IsProduction()
+        || string.Equals(Environment.GetEnvironmentVariable("DEDICATED_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Environment.GetEnvironmentVariable("CLIENT_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase);
+
+    var seedDemoData = demoDataRequested && !dedicatedDeployment;
+
+    if (demoDataRequested && dedicatedDeployment)
+        logger.LogWarning(
+            "Demo data seeding REQUESTED but REFUSED — this is a Production/dedicated client deployment " +
+            "(IsProduction={IsProd}, DEDICATED_DEPLOYMENT/CLIENT_DEPLOYMENT respected). Demo seeders will NOT run; " +
+            "only idempotent global config (auth bootstrap, GOSI/statutory rules, pricing) is seeded.",
+            app.Environment.IsProduction());
 
     logger.LogInformation("Demo data seeding: {State} (environment={Env})",
         seedDemoData ? "ENABLED" : "DISABLED", app.Environment.EnvironmentName);
@@ -630,9 +706,19 @@ using (var scope = app.Services.CreateScope())
             authSeeder,
             logger), logger);
 
-    // Enterprise GROUP demo tenants (ALMARAI_TEST/TATA_TEST/EMAAR_TEST) — E2E/demo only,
-    // idempotent, and NEVER enabled in production (separate flag from SEED_DEMO_DATA).
-    if (string.Equals(Environment.GetEnvironmentVariable(Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder.EnableEnvVar), "true", StringComparison.OrdinalIgnoreCase))
+    // Enterprise GROUP demo tenants (ALMARAI_TEST/TATA_TEST/EMAAR_TEST) — E2E/demo only, idempotent,
+    // and NEVER enabled in production/dedicated deployments (separate flag from SEED_DEMO_DATA).
+    var enterpriseTestDataRequested = string.Equals(
+        Environment.GetEnvironmentVariable(Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder.EnableEnvVar),
+        "true", StringComparison.OrdinalIgnoreCase);
+
+    if (enterpriseTestDataRequested && dedicatedDeployment)
+        logger.LogWarning(
+            "Enterprise GROUP test-data seeding REQUESTED ({Flag}=true) but REFUSED — this is a Production/dedicated " +
+            "client deployment. Enterprise demo tenants will NOT be seeded.",
+            Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder.EnableEnvVar);
+
+    if (enterpriseTestDataRequested && !dedicatedDeployment)
         await TrySeedAsync("EnterpriseGroupSeeder", () => new Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder(
             dbContext,
             scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
