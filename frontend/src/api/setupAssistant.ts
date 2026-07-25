@@ -113,10 +113,60 @@ export interface OrgStructureImportResult {
   rows: { rowNumber: number; entityCode?: string; entityName?: string; status: string; errors: string[]; warnings: string[] }[];
 }
 
+/**
+ * Governed batch import DTOs — mirror the C# records in
+ * OrganizationStructureImportController (MigrationReconciliationDetails,
+ * MigrationImportBatchDto). The batch flow (dry-run -> reconciliation -> commit)
+ * persists a checksum-keyed batch server-side; the UI drives it instead of the
+ * stateless preview()/commit() pair. `result` carries the full grouped findings
+ * inline so the client can render blocking/warning detail from one round-trip
+ * (backend DTO enrichment §9a). It is optional: until that field ships the panel
+ * degrades to error COUNTS only (blockingCount from errorRows).
+ */
+export interface MigrationReconciliationDetails {
+  sectionCounts: Record<string, number>;
+  identityCounts: Record<string, number>;
+  operationalCounts: Record<string, number>;
+  validationErrors: number;
+  validationWarnings: number;
+}
+
+export interface MigrationImportBatchDto {
+  id: string;
+  externalBatchId?: string;
+  packageType: string;
+  status: string;
+  packageChecksum: string;
+  dryRun: boolean;
+  currentSection: string;
+  receivedRows: number;
+  createdRows: number;
+  updatedRows: number;
+  skippedRows: number;
+  errorRows: number;
+  reconciliation: MigrationReconciliationDetails;
+  errors: string[];
+  result?: OrgStructureImportResult;
+  createdAtUtc: string;
+  updatedAtUtc?: string;
+  completedAtUtc?: string;
+}
+
+const BASE = '/api/setup/organization-structure-import';
+
 export const orgStructureImportApi = {
-  template: () => client.get<string>('/api/setup/organization-structure-import/template', { responseType: 'text' }).then(r => r.data),
+  template: () => client.get<string>(`${BASE}/template`, { responseType: 'text' }).then(r => r.data),
+  // Stateless preview/commit remain for existing API clients + backend scope tests;
+  // the governed cockpit UI now uses the batch endpoints below.
   preview: (body: OrgStructureImportRequest) =>
-    client.post<OrgStructureImportResult>('/api/setup/organization-structure-import/preview', body).then(r => r.data),
+    client.post<OrgStructureImportResult>(`${BASE}/preview`, body).then(r => r.data),
   commit: (body: OrgStructureImportRequest) =>
-    client.post<OrgStructureImportResult>('/api/setup/organization-structure-import/commit', body).then(r => r.data),
+    client.post<OrgStructureImportResult>(`${BASE}/commit`, body).then(r => r.data),
+  // Governed batch flow: persists a checksum-keyed batch, returns reconciliation + findings.
+  dryRun: (body: OrgStructureImportRequest) =>
+    client.post<MigrationImportBatchDto>(`${BASE}/batches/dry-run`, body).then(r => r.data),
+  getBatch: (id: string) =>
+    client.get<MigrationImportBatchDto>(`${BASE}/batches/${id}/reconciliation`).then(r => r.data),
+  commitBatch: (id: string) =>
+    client.post<MigrationImportBatchDto>(`${BASE}/batches/${id}/commit`, {}).then(r => r.data),
 };
