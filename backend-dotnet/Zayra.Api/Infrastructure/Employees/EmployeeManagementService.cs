@@ -87,6 +87,12 @@ public class EmployeeManagementService : IEmployeeManagementService
         // treats null CompanyId as invisible to scoped users, so default it here.
         employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
+        // Reject a bad IBAN BEFORE persisting anything (position/salary already validate pre-save), so a
+        // create never leaves a half-saved Draft when the bank details fail the checksum. UpsertPayrollProfile
+        // below is the backstop for other callers.
+        var createIban = Clean(request.PayrollProfile?.Iban);
+        if (!string.IsNullOrWhiteSpace(createIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(createIban))
+            throw new InvalidOperationException($"IBAN '{createIban}' is invalid — it fails the ISO 13616 mod-97 checksum. Enter a correct IBAN before saving.");
         employee.Status = "Draft";
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         _db.Employees.Add(employee);
@@ -494,7 +500,13 @@ public class EmployeeManagementService : IEmployeeManagementService
             _db.EmployeePayrollProfiles.Add(profile);
         }
         profile.BankName = Clean(request.BankName);
-        profile.Iban = Clean(request.Iban);
+        // Validate the IBAN at ENTRY (create/update), not only late at payroll-run/WPS-export time.
+        // A bad IBAN persisted here silently blocks the entire payroll run weeks later; fail fast so
+        // the person entering it fixes it now. Empty is allowed (bank details filled in later).
+        var cleanIban = Clean(request.Iban);
+        if (!string.IsNullOrWhiteSpace(cleanIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(cleanIban))
+            throw new InvalidOperationException($"IBAN '{cleanIban}' is invalid — it fails the ISO 13616 mod-97 checksum. Enter a correct IBAN before saving.");
+        profile.Iban = cleanIban;
         profile.AccountNumber = Clean(request.AccountNumber);
         profile.PaymentMethod = Clean(request.PaymentMethod);
         profile.SalaryCurrency = Clean(request.SalaryCurrency);

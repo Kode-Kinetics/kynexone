@@ -96,12 +96,17 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                     .Where(x => !string.IsNullOrWhiteSpace(x))
                     .Select(x => x.ToLower())
                     .ToArray();
+                // Ownership predicate only. Do NOT fold Status=="Pending" in here: combining this queue
+                // with an explicit status filter (e.g. status=Approved) would produce an impossible
+                // "Pending AND Approved" query, so a just-approved item vanishes from the view even though
+                // it shows in the unscoped "All" queue. When no explicit status is asked for, we still
+                // default to the actionable Pending set below.
                 query = query.Where(x =>
-                    x.Status == "Pending" &&
-                    ((context.UserId != null && x.CurrentApproverUserId == context.UserId) ||
-                     (callerEmployeeId != null && x.CurrentApproverEmployeeId == callerEmployeeId) ||
-                     ((x.CurrentApproverType ?? string.Empty).ToLower() == "role" &&
-                      roles.Contains((x.CurrentApproverRole ?? string.Empty).ToLower()))));
+                    (context.UserId != null && x.CurrentApproverUserId == context.UserId) ||
+                    (callerEmployeeId != null && x.CurrentApproverEmployeeId == callerEmployeeId) ||
+                    ((x.CurrentApproverType ?? string.Empty).ToLower() == "role" &&
+                     roles.Contains((x.CurrentApproverRole ?? string.Empty).ToLower())));
+                if (string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == "Pending");
             }
             else if (q is "team")
             {
@@ -110,7 +115,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 else
                 {
                     var teamIds = await ResolveTeamEmployeeIdsAsync(tenantId, callerEmployeeId.Value, cancellationToken);
-                    query = query.Where(x => x.Status == "Pending" && x.RequestedForEmployeeId != null && teamIds.Contains(x.RequestedForEmployeeId.Value));
+                    query = query.Where(x => x.RequestedForEmployeeId != null && teamIds.Contains(x.RequestedForEmployeeId.Value));
+                    if (string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == "Pending");
                 }
             }
             else if (q is "overdue")
@@ -247,7 +253,10 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         }
 
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("approval.request_decided", nameof(ApprovalRequest), approval.Id.ToString(), context, normalizedDecision, cancellationToken);
+        // audit_logs.metadata is a `json` column — pass a JSON object, never a bare string (a bare
+        // "Approved" is invalid JSON and would 500 AFTER the decision above already committed).
+        await _audit.WriteAsync("approval.request_decided", nameof(ApprovalRequest), approval.Id.ToString(), context,
+            JsonSerializer.Serialize(new { decision = normalizedDecision, stepOrder = step.StepOrder, comments = Clean(request.Comments) }), cancellationToken);
         return (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
     }
 
