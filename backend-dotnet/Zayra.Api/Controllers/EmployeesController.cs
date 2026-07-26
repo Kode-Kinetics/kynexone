@@ -13,6 +13,7 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.Documents;
@@ -72,8 +73,9 @@ public class EmployeesController : ControllerBase
         if (scope.IsUnrestricted && entityScope.IsGroupLevel)
             return Ok(await employeeManagement.SearchAsync(tenantId, search, status, department, page, pageSize, cancellationToken));
 
-        // Restricted scope: query directly and apply AllowedEmployeeIds and/or entity scope filter
-        var query = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted);
+        // Restricted scope: query directly and apply AllowedEmployeeIds and/or entity scope filter.
+        // Exclude former employees (terminal statuses) — they belong to the Ex-Employees archive.
+        var query = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted && !ExitEmployeeStatuses.Exit.Contains(e.Status));
         if (!scope.IsUnrestricted)
             query = query.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
         if (!entityScope.IsGroupLevel)
@@ -90,6 +92,94 @@ public class EmployeesController : ControllerBase
             .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, e.Branch ?? string.Empty, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate))
             .ToListAsync(cancellationToken);
         return Ok(new PagedResult<EmployeeListItemDto>(items, total, page, pageSize));
+    }
+
+    /// <summary>
+    /// Read-only Ex-Employees registry: former staff whose records are retained for statutory audit.
+    /// Membership = soft-deleted OR a terminal status (Archived / Offboarded / Terminated / Exited).
+    /// Surfaces only directory + lifecycle metadata (no salary/bank/identity fields), mirroring the
+    /// People list's non-sensitive projection and the same tenant + data + company scoping.
+    /// </summary>
+    [HttpGet("ex-employees")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
+    public async Task<ActionResult<PagedResult<ExEmployeeListItemDto>>> ExEmployees(
+        [FromQuery] string? search, [FromQuery] string? status,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var tenantId = RequireTenant();
+        var entityScope = this.GetEntityScope();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+
+        // IgnoreQueryFilters() is REQUIRED to see IsDeleted rows; tenant + data-scope + operational
+        // company scope are therefore re-applied here by hand. These are the tenant-isolation boundary.
+        var query = _db.Employees.AsNoTracking().IgnoreQueryFilters().Where(e => e.TenantId == tenantId);
+        query = query.Where(e => e.IsDeleted || ExitEmployeeStatuses.Exit.Contains(e.Status));
+        if (!scope.IsUnrestricted)
+            query = query.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
+        if (!entityScope.IsGroupLevel)
+        {
+            // Operational scope: a null CompanyId is invisible to a scoped user (poison-default rule).
+            var accessibleIds = entityScope.AccessibleCompanyIds;
+            query = query.Where(e => e.CompanyId.HasValue && accessibleIds.Contains(e.CompanyId.Value));
+        }
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(e => e.EmployeeCode.Contains(term) || e.FullName.Contains(term)
+                || e.EnglishName.Contains(term) || e.ArabicName.Contains(term)
+                || (e.WorkEmail != null && e.WorkEmail.Contains(term)));
+        }
+        if (!string.IsNullOrWhiteSpace(status)) query = query.Where(e => e.Status == status);
+
+        var total = await query.CountAsync(cancellationToken);
+        var pageRows = await query
+            .OrderByDescending(e => e.DeletedAtUtc ?? e.UpdatedAtUtc)   // most-recent exits first
+            .ThenBy(e => e.EmployeeCode)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(e => new
+            {
+                e.Id, e.EmployeeCode, e.FullName, e.ArabicName, e.Department, e.Designation, e.Branch,
+                e.Status, e.IsDeleted, e.DeletedAtUtc, e.UpdatedAtUtc, e.RetentionUntilUtc, e.PrivacyStatus
+            })
+            .ToListAsync(cancellationToken);
+
+        var ids = pageRows.Select(r => r.Id).ToList();
+
+        // Exit date sources: terminate writes an EmployeeStatusHistory row; offboarding writes the
+        // status DIRECTLY (no history row) but stamps EmployeeOffboarding.CompletedAtUtc / LastWorkingDay.
+        var statusExit = await _db.EmployeeStatusHistories.AsNoTracking()
+            .Where(h => h.TenantId == tenantId && ids.Contains(h.EmployeeId) && ExitEmployeeStatuses.Exit.Contains(h.NewStatus))
+            .GroupBy(h => h.EmployeeId)
+            .Select(g => new { EmployeeId = g.Key, When = g.Max(h => h.CreatedAtUtc) })
+            .ToDictionaryAsync(x => x.EmployeeId, x => (DateTime?)x.When, cancellationToken);
+        var offExit = await _db.EmployeeOffboardings.AsNoTracking()
+            .Where(o => o.TenantId == tenantId && ids.Contains(o.EmployeeId))
+            .GroupBy(o => o.EmployeeId)
+            .Select(g => new { EmployeeId = g.Key, Completed = g.Max(o => o.CompletedAtUtc), LastWorkingDay = g.Max(o => (DateOnly?)o.LastWorkingDay) })
+            .ToDictionaryAsync(x => x.EmployeeId, x => x, cancellationToken);
+
+        var items = pageRows.Select(r =>
+        {
+            DateTime? exit = r.UpdatedAtUtc; // fallback
+            if (r.IsDeleted)
+                exit = r.DeletedAtUtc;
+            else if (string.Equals(r.Status, EmployeeStatuses.Archived, StringComparison.OrdinalIgnoreCase)
+                     && offExit.TryGetValue(r.Id, out var offA) && offA.Completed.HasValue)
+                exit = offA.Completed;
+            else if (string.Equals(r.Status, EmployeeStatuses.Offboarded, StringComparison.OrdinalIgnoreCase)
+                     && offExit.TryGetValue(r.Id, out var offO) && offO.LastWorkingDay.HasValue)
+                exit = offO.LastWorkingDay.Value.ToDateTime(TimeOnly.MinValue);
+            else if (statusExit.TryGetValue(r.Id, out var when))
+                exit = when;
+            return new ExEmployeeListItemDto(
+                r.Id, r.EmployeeCode, r.FullName, r.ArabicName, r.Department, r.Designation, r.Branch,
+                r.Status, r.IsDeleted, exit, r.RetentionUntilUtc, r.PrivacyStatus);
+        }).ToList();
+
+        return Ok(new PagedResult<ExEmployeeListItemDto>(items, total, page, pageSize));
     }
 
     // ── Configurable export / import / shareable template ────────────────────────
@@ -1548,6 +1638,14 @@ public class EmployeesController : ControllerBase
             ReroutedApprovalRequests = assignedApprovals.Count,
             ApproverDeletionFallback = "Pending approvals assigned to the deleted approver are rerouted to the HR Manager role queue; approvals for the deleted employee are cancelled."
         }), cancellationToken);
+
+        // EXIT CASCADE (soft-delete): deactivate the full payroll footprint — salary structure(s) AND
+        // WPS eligibility. Safe to deactivate the salary structure here because the employee is now
+        // IsDeleted, and CalculateEosb / FinalSettlement filter on !IsDeleted, so they can no longer
+        // read the row for this employee. Idempotent — a no-op if the employee was already terminated.
+        await EmployeeManagementService.DeactivatePayrollFootprintAsync(
+            _db, _audit, tenantId, id, "soft_deleted", deactivateSalaryStructure: true, context, cancellationToken);
+
         return NoContent();
     }
 
@@ -2136,6 +2234,39 @@ public class EmployeesController : ControllerBase
 }
 
 public record EmployeeListItemDto(int Id, string EmployeeCode, string FullName, string ArabicName, string Department, string Designation, string Branch, int? ManagerEmployeeId, string Status, decimal ProfileCompletenessScore, DateOnly? VisaExpiryDate, DateOnly? PassportExpiryDate);
+
+/// <summary>Read-only Ex-Employees archive row. Directory + lifecycle metadata only — no salary,
+/// bank, or statutory-identity fields (parity with the People list's non-sensitive projection).</summary>
+public record ExEmployeeListItemDto(
+    int Id, string EmployeeCode, string FullName, string ArabicName,
+    string Department, string Designation, string Branch,
+    string LastStatus, bool IsDeleted,
+    DateTime? ExitDate, DateTime? RetentionUntilUtc, string PrivacyStatus);
+
+/// <summary>
+/// Former-employee status vocabulary for the Ex-Employees archive + exit cascade.
+/// Declared as <c>string[]</c> (NOT <c>IReadOnlySet&lt;string&gt;</c>) on purpose: EF Core translates
+/// <c>string[].Contains(x)</c> to a SQL <c>= ANY(...)</c>, whereas <c>IReadOnlySet.Contains</c> binds
+/// to the interface method and is NOT translatable on Npgsql (it would throw at runtime and, because
+/// the test suite runs EF InMemory, would pass tests yet crash production).
+/// </summary>
+public static class ExitEmployeeStatuses
+{
+    /// <summary>Terminal statuses that make an employee a FORMER employee: archive membership +
+    /// exclusion from the active People list. Offboarded (serving notice) is included for the archive
+    /// view, but is deliberately NOT a payroll-deactivation trigger.</summary>
+    public static readonly string[] Exit =
+    {
+        EmployeeStatuses.Archived, EmployeeStatuses.Offboarded, EmployeeStatuses.Terminated, EmployeeStatuses.Exited
+    };
+
+    /// <summary>Statuses that, when reached via a direct status change, deactivate the WPS footprint.
+    /// Excludes Offboarded — notice-period staff may still be paid and a rescind must stay clean.</summary>
+    public static readonly string[] PayrollDeactivation =
+    {
+        EmployeeStatuses.Archived, EmployeeStatuses.Terminated, EmployeeStatuses.Exited
+    };
+}
 public record EmployeeDocumentRequest(string DocumentType, string FileName, string ContentType, string StorageUrl, bool IsRequired, DateOnly? ExpiryDate);
 public record EmployeeTransferRequestDto(string NewDepartment, string NewBranch, int? NewManagerEmployeeId, DateOnly EffectiveDate);
 public record EmployeeUpdateRequest(DateOnly EffectiveDate, Dictionary<string, JsonElement> Changes);

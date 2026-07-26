@@ -253,8 +253,8 @@ export const grantorsApi = {
 };
 
 export const permissionGrantApi = {
-  grant: (userId: string, body: { permissionKey: string; effect: string; reason?: string; expiresAtUtc?: string }) =>
-    client.post<UserAccess>(`/api/access/users/${userId}/grant-permission`, body).then(r => r.data),
+  grantBulk: (userId: string, body: { items: { permissionKey: string; effect: 'Allow' | 'Deny' | 'Remove' }[]; reason?: string }) =>
+    client.post<UserAccess>(`/api/access/users/${userId}/grant-permissions-bulk`, body).then(r => r.data),
 };
 
 export const entityGrantsApi = {

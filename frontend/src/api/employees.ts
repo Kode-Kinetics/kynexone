@@ -40,6 +40,22 @@ export interface EmployeeListItem {
   iqamaNumber: string;
 }
 
+/** Read-only Ex-Employees archive row (former staff retained for statutory audit). */
+export interface ExEmployeeListItem {
+  id: number;
+  employeeCode: string;
+  fullName: string;
+  arabicName: string;
+  department: string;
+  designation: string;
+  branch: string;
+  lastStatus: string;
+  isDeleted: boolean;
+  exitDate?: string;
+  retentionUntilUtc?: string;
+  privacyStatus: string;
+}
+
 export interface EmployeePayrollProfileRequest {
   bankName?: string;
   iban?: string;
@@ -285,6 +301,12 @@ export interface EmployeeExpiringDocument {
 export const employeesApi = {
   list: (params: { search?: string; status?: string; department?: string; page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<EmployeeListItem>>('/api/employees', {
+      params: { page: 1, pageSize: 25, ...params },
+    }).then((r) => r.data),
+
+  /** Read-only Ex-Employees registry: terminated / archived / offboarded / soft-deleted staff. */
+  listExEmployees: (params: { search?: string; status?: string; page?: number; pageSize?: number } = {}) =>
+    client.get<PagedResult<ExEmployeeListItem>>('/api/employees/ex-employees', {
       params: { page: 1, pageSize: 25, ...params },
     }).then((r) => r.data),
 

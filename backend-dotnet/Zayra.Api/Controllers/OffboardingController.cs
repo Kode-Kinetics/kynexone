@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -18,7 +20,14 @@ namespace Zayra.Api.Controllers;
 public class OffboardingController : ControllerBase
 {
     private readonly ZayraDbContext _db;
-    public OffboardingController(ZayraDbContext db) => _db = db;
+    private readonly IAuditService _audit;
+    public OffboardingController(ZayraDbContext db, IAuditService? audit = null)
+    {
+        _db = db;
+        // Mirror EmployeesController's ApprovalWorkflowService default: DI always supplies the audit
+        // service in production; the optional fallback keeps direct-construction call sites working.
+        _audit = audit ?? new Zayra.Api.Infrastructure.Audit.AuditService(db);
+    }
 
     [HttpGet]
     public async Task<IActionResult> List([FromQuery] string? status, CancellationToken ct)
@@ -169,6 +178,19 @@ public class OffboardingController : ControllerBase
             off.AccessRevoked = true;
         }
         await _db.SaveChangesAsync(ct);
+
+        // EXIT CASCADE (offboarding complete → Archived): always deactivate WPS eligibility. Deactivate
+        // the salary STRUCTURE only once final settlement is recorded done — otherwise a still-pending
+        // EOSB / final-settlement calculation (which reads the active salary row) would break. WPS-off
+        // is always safe. Idempotent; the employee record itself is untouched (retention preserved).
+        if (emp is not null)
+        {
+            var ctx = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
+                Request.Headers.UserAgent.ToString(), this.GetUserId(), off.TenantId);
+            await EmployeeManagementService.DeactivatePayrollFootprintAsync(
+                _db, _audit, off.TenantId, off.EmployeeId, "offboarding_completed",
+                deactivateSalaryStructure: off.FinalSettlementDone, ctx, ct);
+        }
         return Ok(off);
     }
 

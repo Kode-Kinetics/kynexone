@@ -5,6 +5,7 @@ import { FileUp, History, Pencil, Plus, RefreshCw, Search, Send, UserRound, User
 import { useSearchParams } from 'next/navigation';
 import { employeesApi } from '../api/employees';
 import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem } from '../api/employees';
+import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import client from '../api/client';
 
@@ -42,6 +43,10 @@ type ComplianceFieldDefinition = {
 };
 
 const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'Probation', 'Confirmed', 'On leave', 'Suspended', 'Resigned', 'Notice period', 'Terminated', 'Retired', 'Absconded', 'Inactive', 'Blacklisted'];
+// Filter dropdown for the ACTIVE People list: drop 'Terminated' — the backend now excludes former
+// employees from this list, so filtering by it would always return empty. (Former staff live in the
+// Ex-Employees tab.) The full statusOptions list is still used by the status-change selector.
+const activeStatusFilterOptions: StatusFilter[] = statusOptions.filter((s) => s !== 'Terminated');
 const tabs: { id: DetailTab; label: string }[] = [
   { id: 'personal', label: 'Personal Information' },
   { id: 'employment', label: 'Employment Information' },
@@ -249,6 +254,7 @@ export function EmployeesPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<StatusFilter>('');
+  const [view, setView] = useState<'current' | 'ex'>('current');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
@@ -718,37 +724,66 @@ export function EmployeesPage() {
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Employee Management</h1>
-          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{total} employee records</p>
+          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
+            {view === 'current' ? `${total} employee records` : 'Former employees — retained for statutory audit'}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <ImportExportToolbar
-            entityName="Employees"
-            onExport={employeesImportExport.export}
-            onDownloadTemplate={employeesImportExport.template}
-            onImport={employeesImportExport.import}
-          />
-          <div className="relative group">
+          <div className="inline-flex rounded-lg border border-slate-200 p-0.5 dark:border-white/10" role="tablist" aria-label="Employee directory view">
             <button
               type="button"
-              onClick={() => { if (!atEmployeeLimit) openCreateEmployee(); }}
-              disabled={atEmployeeLimit}
-              className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+              role="tab"
+              aria-selected={view === 'current'}
+              onClick={() => setView('current')}
+              className={`rounded-md px-3 py-1.5 text-sm font-semibold transition ${view === 'current' ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}
             >
-              <Plus className="h-4 w-4" />
-              Add Employee
+              Current
             </button>
-            {atEmployeeLimit && usage && (
-              <div className="absolute bottom-full left-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
-                Employee limit reached ({usage.activeEmployees}/{usage.maxEmployees}). Upgrade your plan to add more employees.
-              </div>
-            )}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === 'ex'}
+              onClick={() => setView('ex')}
+              className={`rounded-md px-3 py-1.5 text-sm font-semibold transition ${view === 'ex' ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}
+            >
+              Ex-Employees
+            </button>
           </div>
+          {view === 'current' && (
+            <>
+              <ImportExportToolbar
+                entityName="Employees"
+                onExport={employeesImportExport.export}
+                onDownloadTemplate={employeesImportExport.template}
+                onImport={employeesImportExport.import}
+              />
+              <div className="relative group">
+                <button
+                  type="button"
+                  onClick={() => { if (!atEmployeeLimit) openCreateEmployee(); }}
+                  disabled={atEmployeeLimit}
+                  className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Employee
+                </button>
+                {atEmployeeLimit && usage && (
+                  <div className="absolute bottom-full left-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
+                    Employee limit reached ({usage.activeEmployees}/{usage.maxEmployees}). Upgrade your plan to add more employees.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
       {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
       {actionNotice && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">{actionNotice}</p>}
 
+      {view === 'ex' ? (
+        <ExEmployeesTable />
+      ) : (
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
         <section className="space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row">
@@ -757,7 +792,7 @@ export function EmployeesPage() {
               <input value={search} onChange={(e) => setSearch(e.target.value)} className="input w-full pl-9" placeholder="Search employee code, name, email" />
             </div>
             <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className="select sm:w-56" aria-label="Status filter">
-              {statusOptions.map((item) => <option key={item || 'all'} value={item}>{item || 'All statuses'}</option>)}
+              {activeStatusFilterOptions.map((item) => <option key={item || 'all'} value={item}>{item || 'All statuses'}</option>)}
             </select>
             <button type="button" onClick={refreshAll} className="btn-secondary">
               <RefreshCw className="h-4 w-4" />
@@ -968,6 +1003,7 @@ export function EmployeesPage() {
           )}
         </aside>
       </div>
+      )}
 
       <Modal isOpen={editOpen} title={`Edit Employee — ${selectedEmployee?.fullName ?? ''}`} size="xl" onClose={closeEditModal} footer={
         <>

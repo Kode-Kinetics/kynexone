@@ -482,6 +482,25 @@ public class AccessController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    // Atomic bulk grant/deny/reset of many permission overrides (powers the Overrides "Allow all / Deny all / Reset all").
+    // Same [Authorize] posture as grant-permission: overrides the class Admin-only policy so designated grantors work too,
+    // while the service enforces Admin-or-in-scope authority (all-or-nothing) and audits every affected key.
+    [HttpPost("users/{userId:guid}/grant-permissions-bulk")]
+    [Microsoft.AspNetCore.Authorization.Authorize]
+    public async Task<ActionResult<UserAccessDto>> GrantPermissionsBulk(Guid userId, BulkGrantPermissionsRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null) return Unauthorized();
+            var isAdmin = User.IsInRole("Admin");
+            var access = await _accessManagement.GrantPermissionsBulkAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetUserId(), isAdmin, cancellationToken);
+            return access is null ? NotFound() : Ok(access);
+        }
+        catch (UnauthorizedAccessException) { return Forbid(); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
     [HttpGet("security-settings")]
     public async Task<ActionResult<SecuritySettingDto>> GetSecuritySettings(CancellationToken cancellationToken)
     {

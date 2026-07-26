@@ -1331,60 +1331,68 @@ public class PayrollController : ControllerBase
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
 
-        var earnings  = await _db.PayrollEarnings.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
-        var deductions = await _db.PayrollDeductions.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
-        var totalNet   = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).SumAsync(x => x.NetSalary, cancellationToken);
-
-        // Build entries using source-based routing — works for both legacy codes and new pack codes
-        // (e.g. "GOSI-ANN-EE", "GPSSA-ER", "GRSIA-EE") without per-code dictionary changes.
         var entries = new List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount)>();
 
-        foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
+        // Once a run is locked, its GL is posted to the immutable FinanceGlEntries ledger. The
+        // "GL Journal" for such a run MUST reflect what was actually posted — NOT a live re-projection
+        // through the *current* tenant mappings, which a Finance user may have edited in Setup after the
+        // lock. Reading the posted entries keeps the accounting artifact truthful over a closed period.
+        var posted = await _db.FinanceGlEntries.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id)
+            .ToListAsync(cancellationToken);
+
+        var isPosted = posted.Count > 0;
+        if (isPosted)
         {
-            var first = grp.First();
-            var (acct, aName) = (first.Source, grp.Key) switch
+            foreach (var e in posted)
             {
-                ("Bonus", _)            => ("6100", "Employee Bonus Expense"),
-                (_, "BASIC")            => ("5001", "Basic Salary Expense"),
-                (_, "HOUSING")          => ("5002", "Housing Allowance Expense"),
-                (_, "TRANSPORT")        => ("5003", "Transport Allowance Expense"),
-                (_, "OTHER_ALLOWANCES") => ("5004", "Other Allowances Expense"),
-                (_, "OVERTIME")         => ("5005", "Overtime Expense"),
-                _                       => ("5099", $"Other Earnings — {grp.Key}"),
-            };
-            entries.Add((grp.Key, first.ComponentName, acct, aName, "DR", grp.Sum(e => e.Amount)));
+                var isDebit = !string.IsNullOrEmpty(e.DebitAccount);
+                var (code, name) = SplitAccountLabel(isDebit ? e.DebitAccount : e.CreditAccount);
+                var (compCode, compName) = DescribePostedLine(e.Description);
+                entries.Add((compCode, compName, code, name, isDebit ? "DR" : "CR", e.Amount));
+            }
+            // Deterministic display order: debits first, then credits, each by account code.
+            entries = entries.OrderByDescending(x => x.EntryType).ThenBy(x => x.Account, StringComparer.Ordinal).ToList();
         }
-
-        var employerStatutoryTotal = 0m;
-        foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
+        else
         {
-            var first = grp.First();
-            var isEr  = first.Source == "Statutory" && first.ComponentCode.EndsWith("-ER");
-            if (isEr) employerStatutoryTotal += grp.Sum(d => d.Amount);
+            // Draft/unposted preview: resolve every line through the SAME tenant GL mappings + routing
+            // the lock path uses (LoadGlOverridesAsync + the shared driver-key helpers), so what a Finance
+            // user maps in Setup is exactly what they see here — and exactly what will post on lock.
+            var earnings  = await _db.PayrollEarnings.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
+            var deductions = await _db.PayrollDeductions.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
+            var totalNet   = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).SumAsync(x => x.NetSalary, cancellationToken);
+            var overrides  = await LoadGlOverridesAsync(tenantId, cancellationToken);
 
-            var (acct, aName) = (first.Source, isEr) switch
+            foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
             {
-                ("Statutory", true)  => ("2106", "Social Insurance Employer Payable"),
-                ("Statutory", false) => ("2101", "Social Insurance Payable (Employee)"),
-                ("Tax", _)           => ("2102", "Income Tax Payable"),
-                ("Loan", _)          => ("2107", "Loan & Advance Deductions Payable"),
-                ("Attendance", _)    => ("2104", "Attendance Adjustment Payable"),
-                ("Leave", _)         => ("2105", "Leave Deduction Payable"),
-                _ => first.ComponentCode switch
-                {
-                    "FIXED_DEDUCTION" => ("2103", "Fixed Deductions Payable"),
-                    _                 => ("2199", $"Other Deductions — {first.ComponentCode}"),
-                },
-            };
-            entries.Add((grp.Key.ComponentCode, first.ComponentName, acct, aName, "CR", grp.Sum(d => d.Amount)));
+                var first = grp.First();
+                var driver = EarningDriverKey(grp.Key, first.Source);
+                var (acct, aName) = ResolveGlAccount(driver, overrides);
+                entries.Add((grp.Key, first.ComponentName, acct, aName, "DR", grp.Sum(e => e.Amount)));
+            }
+
+            var employerStatutoryTotal = 0m;
+            foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
+            {
+                var first = grp.First();
+                var driver = DeductionDriverKey(grp.Key.ComponentCode, grp.Key.Source, out var isEr);
+                if (isEr) employerStatutoryTotal += grp.Sum(d => d.Amount);
+                var (acct, aName) = ResolveGlAccount(driver, overrides);
+                entries.Add((grp.Key.ComponentCode, first.ComponentName, acct, aName, "CR", grp.Sum(d => d.Amount)));
+            }
+
+            // Employer statutory expense DR balances the employer-social-insurance CR liability posted above.
+            if (employerStatutoryTotal > 0)
+            {
+                var (c, n) = ResolveGlAccount("EMPLOYER_STATUTORY_EXPENSE", overrides);
+                entries.Add(("SOCIAL_INS_ER_DR", "Employer Social Insurance Expense", c, n, "DR", employerStatutoryTotal));
+            }
+
+            // Net salary payable CR balances all earning DRs net of deduction CRs.
+            var (netCode, netName) = ResolveGlAccount("NET_PAYABLE", overrides);
+            entries.Add(("NET_SALARY", "Net Salary Payable", netCode, netName, "CR", totalNet));
         }
-
-        // Employer statutory expense DR balances the CR 2106 liability posted above.
-        if (employerStatutoryTotal > 0)
-            entries.Add(("SOCIAL_INS_ER_DR", "Employer Social Insurance Expense", "5101", "Employer Social Insurance Expense", "DR", employerStatutoryTotal));
-
-        // Net salary payable CR balances all earning DRs net of deduction CRs.
-        entries.Add(("NET_SALARY", "Net Salary Payable", "2100", "Salaries Payable", "CR", totalNet));
 
         var totalDebits  = entries.Where(e => e.EntryType == "DR").Sum(e => e.Amount);
         var totalCredits = entries.Where(e => e.EntryType == "CR").Sum(e => e.Amount);
@@ -1393,6 +1401,7 @@ public class PayrollController : ControllerBase
         {
             runId    = id,
             period   = $"{run.Year}-{run.Month:D2}",
+            isPosted, // true = immutable as-posted ledger; false = live preview through current mappings
             entries  = entries.Select(e => new { componentCode = e.Code, componentName = e.Name, glAccount = e.Account, glAccountName = e.AccountName, entryType = e.EntryType, amount = e.Amount }),
             totalDebits, totalCredits,
             isBalanced = Math.Abs(totalDebits - totalCredits) < 0.01m
@@ -2219,6 +2228,72 @@ public class PayrollController : ControllerBase
     private void AddDeduction(Guid tenantId, Guid companyId, Guid runId, int employeeId, string code, string name, decimal amount, string source, bool isEmployerContribution = false) =>
         _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, CompanyId = companyId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, IsEmployerContribution = isEmployerContribution });
 
+    // ── Shared GL routing (single source of truth for BOTH the on-screen GL Journal
+    //    preview and the locked-run posting, so a preview equals what will post) ──────────
+    //
+    // These helpers were extracted from BuildPayrollGlEntries so GlJournal can resolve accounts
+    // through the exact same driver-key routing + tenant override dictionary instead of a
+    // divergent hard-coded switch. Do NOT duplicate this logic — call these from both paths.
+
+    /// <summary>Earning component group → GL driver key. Bonus source wins over the component code.</summary>
+    private static string EarningDriverKey(string componentCode, string source) =>
+        source == "Bonus" ? "EARN:BONUS" : componentCode switch
+        {
+            "BASIC"            => "EARN:BASIC",
+            "HOUSING"          => "EARN:HOUSING",
+            "TRANSPORT"        => "EARN:TRANSPORT",
+            "OTHER_ALLOWANCES" => "EARN:OTHER_ALLOWANCES",
+            "OVERTIME"         => "EARN:OVERTIME",
+            _                  => "EARN:OTHER",
+        };
+
+    /// <summary>
+    /// Deduction component group → GL driver key. Also reports the employer side
+    /// (Statutory + "-ER" suffix) so the caller can accumulate the paired employer-expense DR.
+    /// </summary>
+    private static string DeductionDriverKey(string componentCode, string source, out bool isEmployerSide)
+    {
+        isEmployerSide = source == "Statutory" && componentCode.EndsWith("-ER");
+        return (source, isEmployerSide) switch
+        {
+            ("Statutory", true)  => "DED:STATUTORY_ER",
+            ("Statutory", false) => "DED:STATUTORY_EE",
+            ("Tax", _)           => "DED:TAX",
+            ("Loan", _)          => "DED:LOAN",
+            ("Attendance", _)    => "DED:ATTENDANCE",
+            ("Leave", _)         => "DED:LEAVE",
+            _ => componentCode == "FIXED_DEDUCTION" ? "DED:FIXED_DEDUCTION" : "DED:OTHER",
+        };
+    }
+
+    /// <summary>Driver key → (code, name): tenant override wins, else catalog default, else Unmapped.</summary>
+    private static (string Code, string Name) ResolveGlAccount(
+        string driverKey, IReadOnlyDictionary<string, (string Code, string Name)>? overrides)
+    {
+        if (overrides is not null && overrides.TryGetValue(driverKey, out var o)) return o;
+        if (PayrollGlCatalog.Defaults.TryGetValue(driverKey, out var d)) return d;
+        return ("9999", "Unmapped");
+    }
+
+    /// <summary>Splits a persisted "<code> - <name>" account label on the FIRST " - " only
+    /// (account names may legitimately contain " - ").</summary>
+    private static (string Code, string Name) SplitAccountLabel(string label)
+    {
+        var idx = label.IndexOf(" - ", StringComparison.Ordinal);
+        return idx < 0 ? (label, string.Empty) : (label[..idx], label[(idx + 3)..]);
+    }
+
+    /// <summary>Best-effort (componentCode, componentName) for an as-posted ledger line, derived
+    /// from its stored Description ("Payroll earning: X" / "Payroll deduction: X" / balancing lines).</summary>
+    private static (string Code, string Name) DescribePostedLine(string description)
+    {
+        const string earnPrefix = "Payroll earning: ";
+        const string dedPrefix   = "Payroll deduction: ";
+        if (description.StartsWith(earnPrefix, StringComparison.Ordinal)) return (description[earnPrefix.Length..], description);
+        if (description.StartsWith(dedPrefix, StringComparison.Ordinal))   return (description[dedPrefix.Length..], description);
+        return (string.Empty, description);
+    }
+
     // Builds the double-entry GL lines for a payroll run.
     // Uses Source-based routing so new pack codes (GOSI-ANN-EE, GPSSA-EE, etc.) map correctly
     // without requiring changes to the component code dictionary as new packs are added.
@@ -2234,26 +2309,17 @@ public class PayrollController : ControllerBase
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         // Resolve a posting driver to "<code> - <name>": tenant override first, else built-in default.
+        // Delegates to the shared ResolveGlAccount so posting and the GL Journal preview stay identical.
         string Account(string driverKey)
         {
-            (string Code, string Name) acct;
-            if (accountOverrides is not null && accountOverrides.TryGetValue(driverKey, out var o)) acct = o;
-            else if (!PayrollGlCatalog.Defaults.TryGetValue(driverKey, out acct)) acct = ("9999", "Unmapped");
-            return $"{acct.Code} - {acct.Name}";
+            var (code, name) = ResolveGlAccount(driverKey, accountOverrides);
+            return $"{code} - {name}";
         }
 
         // ── Earnings (Debit side) ──────────────────────────────────────────────
         foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
         {
-            var driver = grp.First().Source == "Bonus" ? "EARN:BONUS" : grp.Key switch
-            {
-                "BASIC"            => "EARN:BASIC",
-                "HOUSING"          => "EARN:HOUSING",
-                "TRANSPORT"        => "EARN:TRANSPORT",
-                "OTHER_ALLOWANCES" => "EARN:OTHER_ALLOWANCES",
-                "OVERTIME"         => "EARN:OVERTIME",
-                _                  => "EARN:OTHER",
-            };
+            var driver = EarningDriverKey(grp.Key, grp.First().Source);
             lines.Add(new FinanceGlEntry
             {
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
@@ -2270,20 +2336,10 @@ public class PayrollController : ControllerBase
         decimal employerStatutoryTotal = 0m;
         foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
         {
-            var isEmployerSide = grp.Key.Source == "Statutory" && grp.Key.ComponentCode.EndsWith("-ER");
+            var driver = DeductionDriverKey(grp.Key.ComponentCode, grp.Key.Source, out var isEmployerSide);
             if (isEmployerSide)
                 employerStatutoryTotal += grp.Sum(d => d.Amount); // aggregated into DR/CR pair below
 
-            var driver = (grp.Key.Source, isEmployerSide) switch
-            {
-                ("Statutory", true)  => "DED:STATUTORY_ER",
-                ("Statutory", false) => "DED:STATUTORY_EE",
-                ("Tax", _)           => "DED:TAX",
-                ("Loan", _)          => "DED:LOAN",
-                ("Attendance", _)    => "DED:ATTENDANCE",
-                ("Leave", _)         => "DED:LEAVE",
-                _ => grp.Key.ComponentCode == "FIXED_DEDUCTION" ? "DED:FIXED_DEDUCTION" : "DED:OTHER",
-            };
             lines.Add(new FinanceGlEntry
             {
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,

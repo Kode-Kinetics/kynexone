@@ -284,6 +284,14 @@ public record GrantPermissionRequest(
     string? Reason = null,
     DateTime? ExpiresAtUtc = null);
 
+public record BulkGrantPermissionItem(
+    [System.ComponentModel.DataAnnotations.Required] string PermissionKey,
+    [System.ComponentModel.DataAnnotations.Required] string Effect);  // "Allow" | "Deny" | "Remove"
+
+public record BulkGrantPermissionsRequest(
+    [System.ComponentModel.DataAnnotations.Required] IReadOnlyCollection<BulkGrantPermissionItem> Items,
+    string? Reason = null);
+
 public record UpdateSecuritySettingRequest(
     int? PasswordMinLength,
     bool? PasswordRequireUppercase,
