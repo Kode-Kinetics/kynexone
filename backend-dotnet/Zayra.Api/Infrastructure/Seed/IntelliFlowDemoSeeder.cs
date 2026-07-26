@@ -338,7 +338,7 @@ public static class IntelliFlowDemoSeeder
                 TenantId                 = tenantId,
                 EmployeeId               = emp.Id,
                 BankName                 = isSaudi ? "Al Rajhi Bank" : "Riyad Bank",
-                Iban                     = ibans[i],
+                Iban                     = Zayra.Api.Infrastructure.Payroll.IbanValidator.WithValidCheckDigits(ibans[i]),
                 SalaryCurrency           = "SAR",
                 PaymentMethod            = "BankTransfer",
                 WpsEligible              = true,

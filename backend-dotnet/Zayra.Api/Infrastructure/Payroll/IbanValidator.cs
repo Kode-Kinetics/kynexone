@@ -27,4 +27,29 @@ public static class IbanValidator
     /// <summary>True only for a structurally valid IBAN that begins with the Saudi country code "SA".</summary>
     public static bool IsSaudiIban(string? iban)
         => IsValid(iban) && iban!.Replace(" ", "").ToUpperInvariant().StartsWith("SA");
+
+    /// <summary>
+    /// Returns the given IBAN with its two check digits recomputed so it satisfies the ISO 13616
+    /// mod-97 checksum, preserving the country code and BBAN (account body). Used to keep seeded
+    /// demo IBANs valid without hand-computing check digits — pass a structurally-shaped IBAN
+    /// (2 letters + 2 digits + BBAN) and any wrong check digits are replaced with correct ones.
+    /// Input that is too short to carry a BBAN is returned uppercased/unspaced unchanged.
+    /// </summary>
+    public static string WithValidCheckDigits(string? iban)
+    {
+        var cleaned = (iban ?? string.Empty).Replace(" ", "").ToUpperInvariant();
+        if (cleaned.Length < 5) return cleaned;
+        var country = cleaned[..2];
+        var bban = cleaned[4..];
+
+        // Move country code + "00" placeholder to the end, map letters → numbers, mod-97.
+        var rearranged = bban + country + "00";
+        var numeric = string.Concat(rearranged.Select(c => char.IsLetter(c) ? (c - 'A' + 10).ToString() : c.ToString()));
+        var remainder = 0;
+        foreach (var ch in numeric)
+            remainder = (remainder * 10 + (ch - '0')) % 97;
+
+        var check = 98 - remainder;
+        return $"{country}{check:D2}{bban}";
+    }
 }
