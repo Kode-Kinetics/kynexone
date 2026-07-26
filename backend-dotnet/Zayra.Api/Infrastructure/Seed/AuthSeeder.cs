@@ -437,6 +437,32 @@ public class AuthSeeder : IAuthSeeder
             }
         }
         await _db.SaveChangesAsync(cancellationToken);
+
+        // Self-healing prune of FOREIGN permissions. This global `permissions` catalog is shared and the
+        // upsert above is additive-only, so permission keys seeded by a DIFFERENT product that once ran
+        // against this database (the unmerged OpsTrax fleet/TMS/logistics branch) linger forever and show
+        // up in the RBAC / Overrides UI. Remove them — plus their role links and per-user overrides — on
+        // every boot. Targeted strictly by foreign namespace prefix, so HR and platform permissions can
+        // never be affected. Idempotent: a no-op once the catalog is clean.
+        var foreignPrefixes = new[] { "fleet_tms.", "fleet.", "logistics." };
+        var foreignPermissions = (await _db.Permissions.ToListAsync(cancellationToken))
+            .Where(p => foreignPrefixes.Any(prefix => p.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        if (foreignPermissions.Count > 0)
+        {
+            var foreignIds = foreignPermissions.Select(p => p.Id).ToHashSet();
+            var foreignKeys = foreignPermissions.Select(p => p.Key).ToHashSet();
+            var roleLinks = await _db.RolePermissions.Where(rp => foreignIds.Contains(rp.PermissionId)).ToListAsync(cancellationToken);
+            var overrides = await _db.UserPermissionOverrides.Where(o => foreignKeys.Contains(o.PermissionKey)).ToListAsync(cancellationToken);
+            _db.RolePermissions.RemoveRange(roleLinks);
+            _db.UserPermissionOverrides.RemoveRange(overrides);
+            _db.Permissions.RemoveRange(foreignPermissions);
+            await _db.SaveChangesAsync(cancellationToken);
+            Console.WriteLine(
+                $"[Seed] Pruned {foreignPermissions.Count} foreign (fleet/TMS/logistics) permission(s), " +
+                $"{roleLinks.Count} role link(s) and {overrides.Count} user override(s) from the RBAC catalog.");
+        }
+
         return await _db.Permissions.ToListAsync(cancellationToken);
     }
 

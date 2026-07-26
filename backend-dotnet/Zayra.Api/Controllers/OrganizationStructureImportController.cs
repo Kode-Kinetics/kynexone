@@ -866,7 +866,8 @@ public class OrganizationStructureImportController : ControllerBase
             errors,
             batch.CreatedAtUtc,
             batch.UpdatedAtUtc,
-            batch.CompletedAtUtc);
+            batch.CompletedAtUtc,
+            DeserializeOrDefault<OrganizationStructureImportResult>(batch.ResultJson));
     }
 
     private static T? DeserializeOrDefault<T>(string json)
@@ -912,7 +913,12 @@ public record MigrationImportBatchDto(
     IReadOnlyList<string> Errors,
     DateTime CreatedAtUtc,
     DateTime? UpdatedAtUtc,
-    DateTime? CompletedAtUtc);
+    DateTime? CompletedAtUtc,
+    // The full validation result (row-level findings + applied counts) the panel needs to render the
+    // blocking/warning findings list, the warning count, and the post-commit "Applied" summary. It is
+    // persisted on the batch as ResultJson; without surfacing it here the upload landing renders the
+    // "Blocked" pill but no list of WHAT to fix.
+    OrganizationStructureImportResult? Result = null);
 
 public record MigrationReconciliationDetails(
     IReadOnlyDictionary<string, int> SectionCounts,
