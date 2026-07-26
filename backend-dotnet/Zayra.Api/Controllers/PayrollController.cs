@@ -1948,6 +1948,13 @@ public class PayrollController : ControllerBase
         if (employeeId.HasValue) query = query.Where(x => x.EmployeeId == employeeId.Value);
         if (!scope.IsUnrestricted)
             query = query.Where(x => scope.AllowedEmployeeIds!.Contains(x.EmployeeId));
+        // Only surface salary rows whose employee still exists, is not soft-deleted, and is within the
+        // caller's company scope. EmployeeSalaryStructure has no IsDeleted/CompanyId of its own, and
+        // delete/offboard/terminate never cascade to it, so without this guard the assignments of removed
+        // employees linger as phantom "Active" rows (the "Emp #47xx" entries). The Employees subquery
+        // carries the global tenant + !IsDeleted + company-scope query filter, so it excludes orphaned,
+        // deleted, and out-of-scope employees in one shot.
+        query = query.Where(x => _db.Employees.Any(e => e.Id == x.EmployeeId));
         var structs = await query.OrderByDescending(x => x.EffectiveDate).ToListAsync(cancellationToken);
         return Ok(structs.Select(s => SalaryStructureAssignmentDto.Project(s, true)).ToList());
     }
