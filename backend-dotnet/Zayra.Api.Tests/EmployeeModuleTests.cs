@@ -566,6 +566,33 @@ public class EmployeeModuleTests
         Assert.Equal(1, await db.Employees.CountAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-DUP-001"));
     }
 
+    // ── Regression: an IBAN that fails the ISO 13616 mod-97 checksum is now caught at IMPORT time via a
+    //    warning (previously only a weak structural check that missed checksum failures, so a bad IBAN
+    //    slipped through and only blocked the payroll run weeks later). Import still succeeds; the IBAN
+    //    must be corrected before payroll. ──
+
+    [Fact]
+    public async Task EmployeeImport_InvalidIbanChecksum_ImportsWithMod97Warning()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        await SeedGrade(db, tenantId, "G3", 1_000m, 20_000m);
+        var ctrl = CreateController(db, tenantId);
+
+        // SA4420000009876543219876 is structurally valid (SA + 24 chars) but fails mod-97 (remainder 94).
+        const string csv =
+            "EmployeeCode,FullName,JoiningDate,Grade,BasicSalary,Currency,IBAN,BankName\n" +
+            "EMP-IBAN-BAD,Bad Iban,2024-01-15,G3,5000,SAR,SA4420000009876543219876,Al Rajhi Bank\n";
+
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("\"created\":1", json);
+        Assert.Contains("mod-97", json);
+        Assert.True(await db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-IBAN-BAD"));
+    }
+
     private static async Task<Company> SeedCompany(ZayraDbContext db, Guid tenantId, string legalName)
     {
         var company = new Company

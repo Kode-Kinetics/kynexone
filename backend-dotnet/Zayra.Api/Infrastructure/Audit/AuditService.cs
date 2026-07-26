@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -34,13 +35,34 @@ public class AuditService : IAuditService
             UserId = context.UserId,
             IpAddress = context.IpAddress,
             UserAgent = context.UserAgent,
-            Metadata = metadata,
+            Metadata = NormalizeMetadata(metadata),
             PreviousHash = previousHash,
             CreatedAtUtc = now
         };
         log.EntryHash = ComputeHash(log);
         _db.AuditLogs.Add(log);
         await _db.SaveChangesAsync(cancellationToken);
+    }
+
+    // The audit_logs.metadata column is Postgres type `json` (ZayraDbContext + schema.sql). A caller
+    // passing a bare, non-JSON string (e.g. "Approved") makes the INSERT fail with a 22P02 invalid-json
+    // error, which — because the business change was already committed before the audit write — surfaces
+    // as a post-commit 500 that leaves the record updated but the caller erroring. Normalize here so no
+    // caller can trigger that: null/blank stays SQL NULL, already-valid JSON is kept verbatim, and any
+    // other raw string is encoded as a JSON string literal ("Approved" -> "\"Approved\"").
+    private static string? NormalizeMetadata(string? metadata)
+    {
+        if (string.IsNullOrWhiteSpace(metadata)) return null;
+        var trimmed = metadata.Trim();
+        try
+        {
+            using var _ = JsonDocument.Parse(trimmed);
+            return trimmed;
+        }
+        catch (JsonException)
+        {
+            return JsonSerializer.Serialize(metadata);
+        }
     }
 
     public static bool VerifyIntegrity(AuditLog log) =>

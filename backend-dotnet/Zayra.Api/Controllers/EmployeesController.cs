@@ -535,6 +535,8 @@ public class EmployeesController : ControllerBase
         foreach (var (_, (emp, rowData)) in batchPayroll)
         {
             var ibanRaw = rowData.GetValueOrDefault("IBAN", string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(ibanRaw) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanRaw))
+                warnings.Add($"Employee {emp.EmployeeCode}: IBAN '{ibanRaw}' fails the ISO 13616 mod-97 checksum — imported, but it must be corrected before this employee can be included in a payroll run.");
             var bankNameRaw = rowData.GetValueOrDefault("BankName", string.Empty).Trim();
             var molIdRaw = rowData.GetValueOrDefault("MolId", string.Empty).Trim();
             var accountRaw = rowData.GetValueOrDefault("AccountNumber", string.Empty).Trim();
@@ -867,8 +869,10 @@ public class EmployeesController : ControllerBase
                 rowWarnings.Add($"Designation '{row.GetValueOrDefault("Designation", "")}' not found — will be unlinked");
 
             var ibanPreview = row.GetValueOrDefault("IBAN", string.Empty).Trim();
-            if (!string.IsNullOrEmpty(ibanPreview) && !IsValidIbanFormat(ibanPreview))
-                rowWarnings.Add($"IBAN '{ibanPreview}' format looks invalid — will be stored as-is but may fail WPS validation");
+            // Use the real ISO 13616 mod-97 check (not just structure) so a bad checksum is caught in
+            // preview, matching what the payroll-run/WPS gate enforces later.
+            if (!string.IsNullOrEmpty(ibanPreview) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanPreview))
+                rowWarnings.Add($"IBAN '{ibanPreview}' is invalid — fails ISO 13616 (mod-97) validation and will be stored as-is but must be corrected before this employee can be paid via WPS");
             var basicSalaryPreview = row.GetValueOrDefault("BasicSalary", string.Empty).Trim();
             if (!string.IsNullOrEmpty(basicSalaryPreview) && !decimal.TryParse(basicSalaryPreview, out _))
                 rowWarnings.Add($"BasicSalary '{basicSalaryPreview}' is not a valid number — salary will not be imported");
