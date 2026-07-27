@@ -892,6 +892,11 @@ function GlMappingTab() {
   const [saving, setSaving] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [newAcct, setNewAcct] = useState<{ code: string; name: string; accountType: string }>({ code: '', name: '', accountType: 'Expense' });
+  const [editing, setEditing] = useState<GlAccount | null>(null);
+  const [editForm, setEditForm] = useState<{ name: string; accountType: string; isActive: boolean }>({ name: '', accountType: 'Expense', isActive: true });
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -918,6 +923,38 @@ function GlMappingTab() {
     } catch (e) { notifyApiError(e); } finally { setSaving(false); }
   };
 
+  const openEdit = (a: GlAccount) => {
+    setEditing(a);
+    setEditForm({ name: a.name, accountType: a.accountType, isActive: a.isActive });
+    setEditError('');
+  };
+  const saveEdit = async () => {
+    if (!editing) return;
+    if (!editForm.name.trim()) { setEditError('Name is required'); return; }
+    // Advisory only: `rows` is local mapping state and may include unsaved dropdown edits, so this is a
+    // best-effort nudge, not a guarantee. Deactivating a mapped account silently drops that override in
+    // BOTH the GL preview and the locked posting (LoadGlOverridesAsync joins only active accounts).
+    // There is no server guard on UpdateAccount (only DeleteAccount is guarded) — a Phase-2 item.
+    if (!editForm.isActive && editing.isActive && rows.some((r) => r.mappedAccountId === editing.id) &&
+      !confirm('This account is mapped to a payroll driver. Deactivating it makes that driver fall back to its built-in default in the GL journal. Continue?')) return;
+    setSavingEdit(true); setEditError('');
+    try {
+      // Backend UpdateAccount treats Code as immutable; resend the original code to satisfy the DTO.
+      await financeGlApi.updateAccount(editing.id, {
+        code: editing.code, name: editForm.name.trim(), accountType: editForm.accountType, isActive: editForm.isActive,
+      });
+      setEditing(null); await load();
+    } catch (err: unknown) { setEditError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
+    finally { setSavingEdit(false); }
+  };
+  const deleteAccount = async (a: GlAccount) => {
+    if (!confirm(`Delete account ${a.code} — ${a.name}?`)) return;
+    setDeletingId(a.id);
+    try { await financeGlApi.deleteAccount(a.id); await load(); }
+    catch (e) { notifyApiError(e); } // surfaces "Account is in use by a payroll mapping; remap it first."
+    finally { setDeletingId(null); }
+  };
+
   if (loading) return <p className="text-sm text-slate-400">Loading…</p>;
 
   return (
@@ -941,7 +978,15 @@ function GlMappingTab() {
                   <td className="px-3 py-2 font-mono text-xs">{a.code}</td>
                   <td className="px-3 py-2">{a.name}</td>
                   <td className="px-3 py-2 text-slate-500">{a.accountType}</td>
-                  <td className="px-3 py-2 text-right"><ActiveBadge active={a.isActive} /></td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center justify-end gap-1">
+                      <ActiveBadge active={a.isActive} />
+                      <button type="button" onClick={() => openEdit(a)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
+                      <button type="button" onClick={() => deleteAccount(a)} disabled={deletingId === a.id} aria-label="Delete account" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
               <tr className="border-t border-slate-100 dark:border-white/5">
@@ -985,6 +1030,39 @@ function GlMappingTab() {
           ))}
         </div>
       </div>
+
+      <Modal
+        isOpen={!!editing}
+        title={`Edit Account ${editing?.code ?? ''}`}
+        onClose={() => setEditing(null)}
+        footer={
+          <>
+            <button type="button" onClick={() => setEditing(null)} className="btn-secondary">Cancel</button>
+            <button type="button" onClick={saveEdit} disabled={savingEdit} className="btn-primary disabled:opacity-60">{savingEdit ? 'Saving…' : 'Save'}</button>
+          </>
+        }
+      >
+        <FormError error={editError} />
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Code">
+            <input value={editing?.code ?? ''} disabled className="input w-full opacity-60" title="Account code is immutable" />
+          </FormField>
+          <FormField label="Type">
+            <select value={editForm.accountType} onChange={(e) => setEditForm((x) => ({ ...x, accountType: e.target.value }))} className="select w-full">
+              {['Asset', 'Liability', 'Expense', 'Equity', 'Revenue'].map((t) => <option key={t}>{t}</option>)}
+            </select>
+          </FormField>
+          <FormField label="Name" required>
+            <input value={editForm.name} onChange={(e) => setEditForm((x) => ({ ...x, name: e.target.value }))} className="input w-full" />
+          </FormField>
+          <FormField label="Status">
+            <select value={editForm.isActive ? 'true' : 'false'} onChange={(e) => setEditForm((x) => ({ ...x, isActive: e.target.value === 'true' }))} className="select w-full">
+              <option value="true">Active</option>
+              <option value="false">Inactive</option>
+            </select>
+          </FormField>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -39,7 +39,9 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
-        var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted);
+        // Active People list: exclude soft-deleted AND every terminal/former-employee status
+        // (Archived / Offboarded / Terminated / Exited) — those live in the Ex-Employees archive.
+        var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted && !ExitEmployeeStatuses.Exit.Contains(x.Status));
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = search.Trim();
@@ -154,7 +156,76 @@ public class EmployeeManagementService : IEmployeeManagementService
         await AddHistory(employee, "StatusChange", "Status", oldStatus, request.Status, request.EffectiveDate, request.Reason, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.status_changed", "Employee", id.ToString(), context, JsonSerializer.Serialize(new { oldStatus, request.Status, request.Reason }), cancellationToken);
+
+        // EXIT CASCADE (terminate / direct status change into a terminal state): deactivate the
+        // WPS footprint so an ex-employee cannot be swept into a SIF export. The salary STRUCTURE is
+        // intentionally left active here — CalculateEosb / FinalSettlement (PayrollController) read the
+        // active salary row and are computed for a Terminated (still non-deleted) employee, so
+        // deactivating it now would corrupt end-of-service / final-settlement money. It is deactivated
+        // instead at the points where those calculators can no longer read it (soft-delete;
+        // offboarding-complete once final settlement is done). Idempotent — safe to re-run.
+        if (ExitEmployeeStatuses.PayrollDeactivation.Contains(request.Status, StringComparer.OrdinalIgnoreCase))
+            await DeactivatePayrollFootprintAsync(_db, _audit, tenantId, id,
+                $"status:{oldStatus}->{request.Status}", deactivateSalaryStructure: false, context, cancellationToken);
+
         return await GetAsync(tenantId, id, true, context, cancellationToken);
+    }
+
+    /// <summary>
+    /// Exit cascade primitive: deactivates an employee's payroll footprint on separation so nothing
+    /// dangles active. Always marks the payroll profile WPS-ineligible; deactivates the salary
+    /// structure(s) only when <paramref name="deactivateSalaryStructure"/> is set (the caller has
+    /// established the end-of-service / final-settlement calculators can no longer read the row).
+    /// <see cref="EmployeePayrollProfile.EosbEligible"/> is never touched — gratuity is paid ON exit.
+    /// Both updates are guarded (WpsEligible / IsActive), so re-running (e.g. terminate then delete)
+    /// is a no-op. Static so the soft-delete (EmployeesController) and offboarding-complete
+    /// (OffboardingController) paths can share the exact same primitive without an interface change.
+    /// </summary>
+    public static async Task<int> DeactivatePayrollFootprintAsync(
+        ZayraDbContext db, IAuditService audit, Guid tenantId, int employeeId,
+        string reason, bool deactivateSalaryStructure, RequestContext context, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+
+        // Tracked-entity update (not ExecuteUpdate): the EF InMemory provider used by the test suite
+        // cannot translate ExecuteUpdate, and this cascade runs inside offboarding/terminate/delete
+        // paths that ARE InMemory-tested. Idempotency is preserved by the WHERE clauses selecting only
+        // rows that still need changing, so re-running (e.g. terminate then delete) is a no-op.
+
+        // WPS ineligibility — safe on every exit path; a second gate against a stale profile reaching
+        // a SIF file. EosbEligible is deliberately left untouched — gratuity is paid ON exit.
+        var profiles = await db.EmployeePayrollProfiles
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted && x.WpsEligible)
+            .ToListAsync(cancellationToken);
+        foreach (var profile in profiles)
+        {
+            profile.WpsEligible = false;
+            profile.UpdatedAtUtc = now;
+            profile.UpdatedBy = context.UserId;
+        }
+
+        // Deactivate ALL active salary-structure assignments (including future-dated) so no live
+        // package of any effective date survives. Guarded on IsActive → idempotent.
+        var salaryDeactivated = 0;
+        if (deactivateSalaryStructure)
+        {
+            var structures = await db.EmployeeSalaryStructures
+                .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.IsActive)
+                .ToListAsync(cancellationToken);
+            foreach (var structure in structures)
+                structure.IsActive = false;
+            salaryDeactivated = structures.Count;
+        }
+
+        var profileDeactivated = profiles.Count;
+        if (profileDeactivated > 0 || salaryDeactivated > 0)
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            await audit.WriteAsync("employee.payroll_footprint_deactivated", "Employee", employeeId.ToString(),
+                context, JsonSerializer.Serialize(new { reason, salaryDeactivated, profileDeactivated }), cancellationToken);
+        }
+
+        return profileDeactivated + salaryDeactivated;
     }
 
 

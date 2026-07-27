@@ -660,6 +660,135 @@ public class AccessManagementService : IAccessManagementService
         return await GetUserAccessAsync(tenantId, targetUserId, entityScope, cancellationToken);
     }
 
+    public async Task<UserAccessDto?> GrantPermissionsBulkAsync(Guid tenantId, Guid targetUserId, BulkGrantPermissionsRequest request, EntityScopeContext entityScope, Guid? callerUserId, bool isAdmin, CancellationToken cancellationToken)
+    {
+        // Normalize + de-dupe by key (last write wins) BEFORE any work.
+        var items = request.Items
+            .Where(i => !string.IsNullOrWhiteSpace(i.PermissionKey) && !string.IsNullOrWhiteSpace(i.Effect))
+            .GroupBy(i => i.PermissionKey, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.Last())
+            .ToList();
+        if (items.Count == 0) throw new InvalidOperationException("No permission changes supplied.");
+        if (items.Count > 1000) throw new InvalidOperationException("Too many permission changes in one request.");
+
+        // Self-lockout guard: an admin cannot Deny their own access-management permissions in bulk.
+        if (callerUserId is not null && targetUserId == callerUserId.Value)
+        {
+            var selfDeniedCritical = items
+                .Where(i => i.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase)
+                    && i.PermissionKey.StartsWith("access.", StringComparison.OrdinalIgnoreCase))
+                .Select(i => i.PermissionKey)
+                .ToList();
+            if (selfDeniedCritical.Count > 0)
+                throw new InvalidOperationException($"You cannot deny your own access-management permissions ({string.Join(", ", selfDeniedCritical.Take(5))}); this would lock you out of the console.");
+        }
+
+        // Non-admin grantors: EVERY key must be in scope, else reject the WHOLE batch (all-or-nothing, no partial escalation).
+        if (!isAdmin)
+        {
+            if (callerUserId is null) throw new UnauthorizedAccessException("Authentication required.");
+            var grantor = await _db.PermissionGrantorRecords
+                .Where(x => x.TenantId == tenantId && x.GrantorUserId == callerUserId.Value && x.IsActive
+                    && (x.ExpiresAtUtc == null || x.ExpiresAtUtc > DateTime.UtcNow))
+                .ToListAsync(cancellationToken);
+            var outOfScope = items.Where(i => !grantor.Any(g => PermissionMatchesScope(i.PermissionKey, g.PermissionScope))).ToList();
+            if (outOfScope.Count > 0)
+                throw new InvalidOperationException("You are not authorised to grant or revoke one or more of the selected permissions.");
+        }
+
+        var user = await LoadAccessUser(tenantId, targetUserId, entityScope, cancellationToken);
+        if (user is null) return null;
+
+        // Validate all non-Remove keys exist in ONE query (no per-key round-trips).
+        var nonRemoveKeys = items
+            .Where(i => !i.Effect.Equals("Remove", StringComparison.OrdinalIgnoreCase))
+            .Select(i => i.PermissionKey)
+            .ToList();
+        if (nonRemoveKeys.Count > 0)
+        {
+            var known = await _db.Permissions
+                .Where(p => nonRemoveKeys.Contains(p.Key))
+                .Select(p => p.Key)
+                .ToListAsync(cancellationToken);
+            var knownSet = known.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var unknown = nonRemoveKeys.Where(k => !knownSet.Contains(k)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (unknown.Count > 0) throw new InvalidOperationException($"Unknown permission key(s): {string.Join(", ", unknown.Take(5))}.");
+        }
+
+        var now = DateTime.UtcNow;
+        int allowed = 0, denied = 0, removed = 0, noop = 0;
+        var changed = new List<(string Key, string Effect)>();
+        foreach (var item in items)
+        {
+            var existing = user.PermissionOverrides.FirstOrDefault(x => x.PermissionKey == item.PermissionKey);
+            if (item.Effect.Equals("Remove", StringComparison.OrdinalIgnoreCase))
+            {
+                if (existing is not null && existing.IsActive)
+                {
+                    existing.IsActive = false;
+                    existing.UpdatedAtUtc = now;
+                    existing.UpdatedBy = callerUserId;
+                    removed++;
+                    changed.Add((item.PermissionKey, "Remove"));
+                }
+                else noop++;   // nothing to reset — skip, no audit noise, no needless revocation
+                continue;
+            }
+            var effect = item.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase) ? "Deny" : "Allow";
+            if (existing is null)
+            {
+                existing = new Models.UserPermissionOverride { TenantId = tenantId, UserId = targetUserId, PermissionKey = item.PermissionKey, CreatedBy = callerUserId };
+                _db.UserPermissionOverrides.Add(existing);
+            }
+            existing.Effect = effect;
+            existing.Reason = request.Reason ?? string.Empty;
+            existing.ExpiresAtUtc = null;
+            existing.IsActive = true;
+            existing.UpdatedAtUtc = now;
+            existing.UpdatedBy = callerUserId;
+            if (effect == "Allow") allowed++; else denied++;
+            changed.Add((item.PermissionKey, effect));
+        }
+
+        // All-noop batch (e.g. Reset-all over rows with no overrides): nothing mutated — skip revocation + audit.
+        if (changed.Count > 0)
+        {
+            var ctx = new RequestContext(null, null, callerUserId, tenantId);
+            await RevokeActiveRefreshTokensAsync(targetUserId, ctx, cancellationToken);   // ONCE, not per key
+            await _db.SaveChangesAsync(cancellationToken);                                 // ONE transaction — atomic, no half-granted user
+
+            // Per-key rows preserve exact single-override audit parity (same action + metadata shape).
+            foreach (var c in changed)
+            {
+                await _auditService.WriteAsync("access.permission_granted", "UserPermissionOverride", targetUserId.ToString(), ctx,
+                    System.Text.Json.JsonSerializer.Serialize(new { permission = c.Key, effect = c.Effect }), cancellationToken);
+            }
+            // Summary row for genuine batches — queryable, attributable, enumerates affected keys (forensic value for a 7-year audit).
+            if (changed.Count > 1)
+            {
+                var metadata = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    userId = targetUserId,
+                    allowed,
+                    denied,
+                    removed,
+                    noop,
+                    total = allowed + denied + removed,
+                    reason = request.Reason ?? string.Empty,
+                    keys = new
+                    {
+                        allowed = changed.Where(c => c.Effect == "Allow").Select(c => c.Key).ToList(),
+                        denied = changed.Where(c => c.Effect == "Deny").Select(c => c.Key).ToList(),
+                        removed = changed.Where(c => c.Effect == "Remove").Select(c => c.Key).ToList()
+                    }
+                });
+                await _auditService.WriteAsync("access.permission_bulk_grant", "UserPermissionOverride", targetUserId.ToString(), ctx, metadata, cancellationToken);
+            }
+        }
+
+        return await GetUserAccessAsync(tenantId, targetUserId, entityScope, cancellationToken);
+    }
+
     private static bool PermissionMatchesScope(string permissionKey, string scope)
     {
         if (scope.Equals("all", StringComparison.OrdinalIgnoreCase)) return true;

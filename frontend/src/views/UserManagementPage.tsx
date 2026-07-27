@@ -444,6 +444,8 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
   const [permSearch, setPermSearch] = useState('');
   const [pendingOverrides, setPendingOverrides] = useState<Record<string, { effect: 'Allow' | 'Deny' | 'Remove'; reason: string }>>({});
   const [overrideReason, setOverrideReason] = useState('');
+  const [confirmAllow, setConfirmAllow] = useState(false); // two-step confirm for bulk "Allow all"
+  const [confirmDeny, setConfirmDeny] = useState(false);   // two-step confirm for bulk "Deny all"
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState('');
   const [saveOk, setSaveOk] = useState('');
@@ -462,6 +464,8 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
     if (!grantCompanyId && companyPage.items.length > 0) setGrantCompanyId(companyPage.items[0].id);
   }, [grantCompanyId, user.id]);
   useEffect(() => { reloadCompanyAccess().catch(() => {}); }, [reloadCompanyAccess]);
+  // Reset pending bulk confirmations whenever the filter changes so a confirm always reflects the current scope.
+  useEffect(() => { setConfirmAllow(false); setConfirmDeny(false); }, [permSearch]);
 
   const saveRoles = async () => {
     setSaving(true); setSaveErr(''); setSaveOk('');
@@ -525,16 +529,19 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
     setSaving(false);
   };
 
+  // Single unified save path for BOTH per-row edits and the bulk-action buttons:
+  // one atomic request — all-or-nothing, one refresh-token revocation pass, audited per key + a batch summary.
   const saveOverrides = async () => {
     const entries = Object.entries(pendingOverrides);
     if (entries.length === 0) { setSaveErr('No changes to save.'); return; }
     setSaving(true); setSaveErr(''); setSaveOk('');
     try {
-      let latest: UserAccess | null = access;
-      for (const [permKey, { effect, reason }] of entries) {
-        latest = await permissionGrantApi.grant(user.id, { permissionKey: permKey, effect, reason: reason || overrideReason || undefined });
-      }
+      const latest = await permissionGrantApi.grantBulk(user.id, {
+        items: entries.map(([permissionKey, v]) => ({ permissionKey, effect: v.effect })),
+        reason: overrideReason || undefined,
+      });
       setAccess(latest); setPendingOverrides({}); setOverrideReason('');
+      setConfirmAllow(false); setConfirmDeny(false);
       setSaveOk(`${entries.length} permission override(s) saved.`);
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -564,6 +571,46 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
     (acc[p.module] ??= []).push(p);
     return acc;
   }, {});
+
+  // ── Bulk actions ────────────────────────────────────────────────────────────
+  // Operate on EXACTLY the rows the user sees: filteredPerms is the same array the
+  // list renders from, so the acted-on set can never drift from what's on screen.
+  const targetPerms = filteredPerms;
+  const isFiltered = permSearch.trim().length > 0;
+  const scopeLabel = isFiltered ? `${targetPerms.length} filtered` : `all ${targetPerms.length}`;
+
+  // Effective post-save effect for a row: pending change wins, else the current explicit override.
+  const effectiveOf = (key: string): 'Allow' | 'Deny' | 'Remove' | 'default' => {
+    const pending = pendingOverrides[key];
+    if (pending) return pending.effect;
+    return getOverrideState(key) ?? 'default';
+  };
+
+  const bulkSet = (target: 'Allow' | 'Deny' | 'Reset') => {
+    setSaveErr(''); setSaveOk('');
+    setPendingOverrides(prev => {
+      const next = { ...prev };
+      for (const p of targetPerms) {
+        const key = p.key;
+        if (target === 'Reset') {
+          // Stage Remove for EVERY targeted key. getOverrideState() is blind to Allow overrides that
+          // coincide with a role grant (returns null for them), so we cannot skip "clean-looking" rows
+          // or a prior Allow-all's role-coincident overrides would silently survive. The backend no-ops
+          // keys with no active override, so this is safe and is the only true "clear the override" reset.
+          next[key] = { effect: 'Remove', reason: prev[key]?.reason ?? '' };
+        } else {
+          // Allow/Deny: skip rows already ending in the target state (dedupe exact no-ops); always
+          // enqueue where it changes the outcome (incl. flipping the opposite override).
+          if (effectiveOf(key) !== target) next[key] = { effect: target, reason: prev[key]?.reason ?? '' };
+        }
+      }
+      return next;
+    });
+  };
+
+  const onAllowAll = () => { setConfirmDeny(false); if (!confirmAllow) { setConfirmAllow(true); return; } bulkSet('Allow'); setConfirmAllow(false); };
+  const onDenyAll = () => { setConfirmAllow(false); if (!confirmDeny) { setConfirmDeny(true); return; } bulkSet('Deny'); setConfirmDeny(false); };
+  const onResetAll = () => { setConfirmAllow(false); setConfirmDeny(false); bulkSet('Reset'); };
 
   const subTabs = [
     { id: 'info' as const, label: 'Info' },
@@ -731,6 +778,55 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
                   <div className="rounded-lg bg-violet-50 dark:bg-violet-900/20 px-3 py-2 text-xs text-violet-700 dark:text-violet-300">
                     Individually grant or deny permissions regardless of role. Changes here are saved in bulk when you click Save.
                   </div>
+
+                  <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2">
+                    <span className="text-xs font-medium text-slate-500">
+                      Bulk actions <span className="text-slate-400">({isFiltered ? 'filtered set' : 'all permissions'})</span>:
+                    </span>
+                    <button type="button" onClick={onAllowAll} disabled={saving || targetPerms.length === 0}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-green-900/30 dark:text-green-400">
+                      <CheckSquare className="h-3 w-3" /> Allow {scopeLabel}
+                    </button>
+                    <button type="button" onClick={onDenyAll} disabled={saving || targetPerms.length === 0}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-red-900/30 dark:text-red-400">
+                      <MinusSquare className="h-3 w-3" /> Deny {scopeLabel}
+                    </button>
+                    <button type="button" onClick={onResetAll} disabled={saving || targetPerms.length === 0}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-slate-700 dark:text-slate-300">
+                      <Square className="h-3 w-3" /> Reset {scopeLabel}
+                    </button>
+                  </div>
+
+                  {confirmAllow && (
+                    <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 px-3 py-2 text-xs text-amber-800 dark:text-amber-300 space-y-2">
+                      <p className="flex items-start gap-1 font-medium">
+                        <Shield className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <span>Grant this user <strong>every {isFiltered ? 'filtered' : ''} permission</strong> ({targetPerms.length}). This stages explicit Allow overrides — even on permissions already granted by role — and is a high-privilege change. Add a reason above, then confirm.</span>
+                      </p>
+                      <div className="flex gap-2">
+                        <button type="button" onClick={onAllowAll}
+                          className="rounded bg-amber-600 px-3 py-1 font-medium text-white hover:bg-amber-700">Confirm Allow all</button>
+                        <button type="button" onClick={() => setConfirmAllow(false)}
+                          className="rounded border border-amber-300 px-3 py-1 hover:bg-amber-100 dark:border-amber-700">Cancel</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {confirmDeny && (
+                    <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-3 py-2 text-xs text-red-800 dark:text-red-300 space-y-2">
+                      <p className="flex items-start gap-1 font-medium">
+                        <Shield className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <span>Deny this user <strong>every {isFiltered ? 'filtered' : ''} permission</strong> ({targetPerms.length}). Deny overrides beat role grants, so this can lock the user out of portal features. Add a reason above, then confirm.</span>
+                      </p>
+                      <div className="flex gap-2">
+                        <button type="button" onClick={onDenyAll}
+                          className="rounded bg-red-600 px-3 py-1 font-medium text-white hover:bg-red-700">Confirm Deny all</button>
+                        <button type="button" onClick={() => setConfirmDeny(false)}
+                          className="rounded border border-red-300 px-3 py-1 hover:bg-red-100 dark:border-red-700">Cancel</button>
+                      </div>
+                    </div>
+                  )}
+
                   <FormField label="Bulk reason (optional — applies to all changes in this batch)">
                     <input className={inp()} value={overrideReason} onChange={e => setOverrideReason(e.target.value)} placeholder="e.g. Temporary project access" />
                   </FormField>
