@@ -1026,8 +1026,12 @@ public class AccessManagementService : IAccessManagementService
     public async Task SavePermissionMatrixAsync(Guid tenantId, PermissionMatrixUpdateRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var roleIds = request.RolePermissions.Keys.Select(k => Guid.TryParse(k, out var g) ? g : (Guid?)null).Where(x => x.HasValue).Select(x => x!.Value).ToList();
+        // STRICTLY tenant-owned roles. Global (TenantId == null) roles are shared across every tenant —
+        // letting a tenant admin's matrix save load them turned this into a cross-tenant
+        // privilege-escalation write path (rewrite a null-tenant role's permissions once, affect all
+        // tenants). Global roles are platform-managed; they may be viewable but are never writable here.
         var roles = await _db.Roles.Include(x => x.RolePermissions)
-            .Where(x => (x.TenantId == tenantId || x.TenantId == null) && roleIds.Contains(x.Id) && !x.IsDeleted)
+            .Where(x => x.TenantId == tenantId && roleIds.Contains(x.Id) && !x.IsDeleted)
             .ToListAsync(cancellationToken);
         var allPermissions = await _db.Permissions.ToListAsync(cancellationToken);
         var permMap = allPermissions.ToDictionary(p => p.Key, p => p, StringComparer.OrdinalIgnoreCase);
