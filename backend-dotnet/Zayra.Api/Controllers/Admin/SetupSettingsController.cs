@@ -58,14 +58,32 @@ public class SetupSettingsController : ControllerBase
 
     // ── System Settings ─────────────────────────────────────────────────────
 
+    // Secret settings (SMTP password, API keys…) must never leave the server in plaintext.
+    // Reads replace the value with this sentinel; the upsert treats the sentinel as
+    // "unchanged" so a round-tripped admin form cannot clobber the real secret with the mask.
+    private const string SecretValueMask = "********";
+    private static bool IsSecretSetting(string settingKey) =>
+        settingKey.Contains("password", StringComparison.OrdinalIgnoreCase)
+        || settingKey.Contains("secret", StringComparison.OrdinalIgnoreCase)
+        || settingKey.Contains("apikey", StringComparison.OrdinalIgnoreCase)
+        || settingKey.Contains("api_key", StringComparison.OrdinalIgnoreCase)
+        || settingKey.Contains("token", StringComparison.OrdinalIgnoreCase)
+        || settingKey.Contains("connectionstring", StringComparison.OrdinalIgnoreCase);
+
     [HttpGet("api/admin/system-settings")]
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> GetSystemSettings([FromQuery] string? category, CancellationToken ct)
     {
         var tid = GetTenantId();
-        var q = _db.SystemSettings.Where(x => x.TenantId == tid);
+        var q = _db.SystemSettings.AsNoTracking().Where(x => x.TenantId == tid);
         if (!string.IsNullOrEmpty(category)) q = q.Where(x => x.Category == category);
-        return Ok(await q.OrderBy(x => x.Category).ThenBy(x => x.SettingKey).ToListAsync(ct));
+        var settings = await q.OrderBy(x => x.Category).ThenBy(x => x.SettingKey).ToListAsync(ct);
+        foreach (var s in settings)
+        {
+            if (IsSecretSetting(s.SettingKey) && !string.IsNullOrEmpty(s.SettingValue))
+                s.SettingValue = SecretValueMask; // AsNoTracking: mutation is serialization-only, never persisted
+        }
+        return Ok(settings);
     }
 
     [HttpPost("api/admin/system-settings")]
@@ -79,8 +97,13 @@ public class SetupSettingsController : ControllerBase
         if (existing != null)
         {
             if (existing.IsReadOnly) return BadRequest("This setting is read-only.");
-            existing.SettingValue = req.SettingValue; existing.UpdatedAtUtc = DateTime.UtcNow; existing.UpdatedBy = uid;
+            // The masked sentinel means "unchanged" — never overwrite a real secret with the mask.
+            if (!(IsSecretSetting(existing.SettingKey) && req.SettingValue == SecretValueMask))
+                existing.SettingValue = req.SettingValue;
+            existing.UpdatedAtUtc = DateTime.UtcNow; existing.UpdatedBy = uid;
             await _db.SaveChangesAsync(ct);
+            if (IsSecretSetting(existing.SettingKey) && !string.IsNullOrEmpty(existing.SettingValue))
+                existing.SettingValue = SecretValueMask; // mask the response too
             return Ok(existing);
         }
         var s = new SystemSetting
