@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260728035815_AddEmployeeTransferResolvedIds")]
+    partial class AddEmployeeTransferResolvedIds
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -510,11 +513,6 @@ namespace Zayra.Api.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
-
-                    b.Property<string>("EstablishmentEnforcementMode")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("establishment_enforcement_mode");
 
                     b.Property<bool>("RequireCostCenterForPayroll")
                         .HasColumnType("boolean")
@@ -6463,67 +6461,6 @@ namespace Zayra.Api.Migrations
                     b.ToTable("departments", (string)null);
                 });
 
-            modelBuilder.Entity("Zayra.Api.Models.DepartmentStaffingBudget", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<int>("BudgetedHeadcount")
-                        .HasColumnType("integer")
-                        .HasColumnName("budgeted_headcount");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("created_by");
-
-                    b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("deleted_at_utc");
-
-                    b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("deleted_by");
-
-                    b.Property<Guid>("DepartmentId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("department_id");
-
-                    b.Property<bool>("IsDeleted")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_deleted");
-
-                    b.Property<Guid>("StaffingLevelId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("staffing_level_id");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at_utc");
-
-                    b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("updated_by");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "DepartmentId");
-
-                    b.HasIndex("TenantId", "DepartmentId", "StaffingLevelId")
-                        .IsUnique();
-
-                    b.ToTable("department_staffing_budgets", (string)null);
-                });
-
             modelBuilder.Entity("Zayra.Api.Models.Designation", b =>
                 {
                     b.Property<Guid>("Id")
@@ -6595,10 +6532,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("level_rank");
 
-                    b.Property<Guid?>("StaffingLevelId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("staffing_level_id");
-
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
@@ -6629,8 +6562,6 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "DepartmentId");
 
                     b.HasIndex("TenantId", "IsDeleted");
-
-                    b.HasIndex("TenantId", "StaffingLevelId");
 
                     b.ToTable("designations", (string)null);
                 });
@@ -7280,10 +7211,6 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "PositionId");
 
                     b.HasIndex("TenantId", "Status");
-
-                    b.HasIndex("TenantId", "DepartmentId", "DesignationId")
-                        .HasDatabaseName("ix_employees_occupancy")
-                        .HasFilter("NOT is_deleted AND status IN ('Active','Offboarded','Suspended')");
 
                     b.ToTable("employees", (string)null);
                 });
@@ -19227,81 +19154,6 @@ namespace Zayra.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("shift_policies", (string)null);
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.StaffingLevel", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<string>("Code")
-                        .IsRequired()
-                        .HasMaxLength(60)
-                        .HasColumnType("character varying(60)")
-                        .HasColumnName("code");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("created_by");
-
-                    b.Property<DateTime?>("DeletedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("deleted_at_utc");
-
-                    b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("deleted_by");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_active");
-
-                    b.Property<bool>("IsDeleted")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_deleted");
-
-                    b.Property<string>("NameAr")
-                        .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
-                        .HasColumnName("name_ar");
-
-                    b.Property<string>("NameEn")
-                        .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
-                        .HasColumnName("name_en");
-
-                    b.Property<int>("Rank")
-                        .HasColumnType("integer")
-                        .HasColumnName("rank");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at_utc");
-
-                    b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("updated_by");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "Code")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "IsDeleted");
-
-                    b.ToTable("staffing_levels", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.StatutoryRule", b =>

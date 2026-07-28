@@ -60,7 +60,7 @@ public class SyntheticWorkforcePlanningSimulationTests
             ControllerContext = Context(user)
         };
 
-        var check = await planning.HeadcountCheck(department.Id, null, 1, CancellationToken.None);
+        var check = await planning.HeadcountCheck(department.Id, null, 1, null, CancellationToken.None);
         var checkJson = JsonSerializer.Serialize(((OkObjectResult)check).Value);
         checkJson.Should().Contain("\"WithinBudget\":false");
         checkJson.Should().Contain("would exceed");

@@ -543,6 +543,9 @@ public class ZayraDbContext : DbContext
     public DbSet<Branch> Branches => Set<Branch>();
     public DbSet<Department> Departments => Set<Department>();
     public DbSet<Designation> Designations => Set<Designation>();
+    // ── Establishment matrix (per-department, per-level staffing budgets) ──────
+    public DbSet<StaffingLevel> StaffingLevels => Set<StaffingLevel>();
+    public DbSet<DepartmentStaffingBudget> DepartmentStaffingBudgets => Set<DepartmentStaffingBudget>();
     public DbSet<Grade> Grades => Set<Grade>();
     public DbSet<GradePayScaleComponent> GradePayScaleComponents => Set<GradePayScaleComponent>();
     public DbSet<CostCenter> CostCenters => Set<CostCenter>();
@@ -638,6 +641,13 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.Department });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.HasIndex(x => new { x.TenantId, x.PositionId });
+            // Partial occupancy index for the establishment guard/matrix. The status literals
+            // mirror EstablishmentOccupancy.OccupyingStatuses (EmployeeStatuses constants — the
+            // employment-lifecycle vocabulary, not tenant business data). HasFilter is ignored by
+            // the InMemory provider, so the test suite is unaffected.
+            entity.HasIndex(x => new { x.TenantId, x.DepartmentId, x.DesignationId })
+                  .HasDatabaseName("ix_employees_occupancy")
+                  .HasFilter("NOT is_deleted AND status IN ('Active','Offboarded','Suspended')");
         });
 
         modelBuilder.Entity<Position>(entity =>
@@ -988,6 +998,26 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.DepartmentId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
+            entity.HasIndex(x => new { x.TenantId, x.StaffingLevelId });
+        });
+
+        modelBuilder.Entity<StaffingLevel>(entity =>
+        {
+            entity.ToTable("staffing_levels");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Code).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.NameEn).HasMaxLength(150).IsRequired();
+            entity.Property(x => x.NameAr).HasMaxLength(150);
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
+        });
+
+        modelBuilder.Entity<DepartmentStaffingBudget>(entity =>
+        {
+            entity.ToTable("department_staffing_budgets");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.DepartmentId, x.StaffingLevelId }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.DepartmentId });
         });
 
         modelBuilder.Entity<Grade>(entity =>

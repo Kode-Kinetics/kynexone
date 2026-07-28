@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
@@ -2265,7 +2266,14 @@ const emptyCostCenter = (companyId?: string): CostCenterRequest => ({
 // ─── SetupPage ───────────────────────────────────────────────────────────────
 
 export function SetupPage() {
-  const [activeTab, setActiveTab] = useState<Tab>('companies');
+  // Deep-link support (e.g. the blocked-assignment popup's "Edit staffing budget"
+  // opens /setup?tab=establishment&department=…&level=… in a new tab).
+  const searchParams = useSearchParams();
+  const tabParam = searchParams?.get('tab');
+  const initialTab: Tab = tabs.some((x) => x.id === tabParam) ? (tabParam as Tab) : 'companies';
+  const focusDepartmentId = searchParams?.get('department') ?? undefined;
+  const focusLevelId = searchParams?.get('level') ?? undefined;
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab);
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
   const [grades, setGrades] = useState<GradeDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
@@ -2307,7 +2315,7 @@ export function SetupPage() {
       {/* Tab content */}
       <div>
         {activeTab === 'aiSetup' && <AiSetupAssistant />}
-        {activeTab === 'establishment' && <EstablishmentPanel />}
+        {activeTab === 'establishment' && <EstablishmentPanel focusDepartmentId={focusDepartmentId} focusLevelId={focusLevelId} />}
         {activeTab === 'companies' && <CompaniesTab />}
         {activeTab === 'branches' && <BranchesTab companies={companies} />}
         {activeTab === 'departments' && <DepartmentsTab costCenters={costCenters} />}

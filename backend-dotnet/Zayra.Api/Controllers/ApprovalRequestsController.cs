@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Organization;
 
 namespace Zayra.Api.Controllers;
 
@@ -60,6 +61,9 @@ public class ApprovalRequestsController : ControllerBase
             var approval = await _approvals.DecideAsync(tenantId.Value, id, request, Context(), cancellationToken);
             return approval is null ? NotFound() : Ok(approval);
         }
+        // Establishment matrix: the target seat was consumed after submission — the decision is
+        // NOT recorded (approval stays Pending), the requester raises the budget and re-decides.
+        catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

@@ -741,6 +741,9 @@ public record EmployeeTransferDto
     public DateTime? CurrentManagerApprovedAtUtc { get; init; }
     public DateTime? NewManagerApprovedAtUtc { get; init; }
     public DateTime? HrApprovedAtUtc { get; init; }
+    /// <summary>Advisory establishment-matrix notice set at request time (null = no concern).
+    /// Never blocks — the authoritative 409 happens at HR approval.</summary>
+    public string? EstablishmentWarning { get; init; }
 
     public static EmployeeTransferDto Project(EmployeeTransferRequest t) => new()
     {

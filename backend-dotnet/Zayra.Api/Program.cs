@@ -255,6 +255,10 @@ builder.Services.AddScoped<IEnterpriseIdentityService, EnterpriseIdentityService
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<IEmployeeManagementService, EmployeeManagementService>();
 builder.Services.AddScoped<IOrganizationSetupService, OrganizationSetupService>();
+// Establishment matrix: the ONE budget guard every assignment path shares, plus the per-tenant
+// staffing-level defaults seeder (invoked from AuthSeeder + lazily by EstablishmentController).
+builder.Services.AddScoped<IEstablishmentGuard, EstablishmentGuardService>();
+builder.Services.AddScoped<EstablishmentSeeder>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Governance.ICompanyTaxPolicyResolver, Zayra.Api.Infrastructure.Governance.CompanyTaxPolicyResolver>();
 builder.Services.AddScoped<IHrmHierarchyService, HrmHierarchyService>();
 builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();

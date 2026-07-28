@@ -430,6 +430,10 @@ public class SensitiveFieldMaskingTests
         var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result).Value);
         dto.Should().NotBeNull("ApproveHrTransfer must return EmployeeDetailDto");
         dto.Department.Should().Be("Finance", "Department must be updated to new department after transfer");
+        // AC8 (establishment matrix): transfers must set the resolved DepartmentId, never a
+        // string-only department that no headcount control can count.
+        (await db.Employees.AsNoTracking().FirstAsync(e => e.Id == emp.Id)).DepartmentId
+            .Should().NotBeNull("HR transfer approval must resolve and stamp DepartmentId (AC8)");
         dto.Salary.Should().Be(50_000m, "Admin sees salary unmasked after transfer approval");
         dto.IqamaNumber.Should().Be("2000000001", "Admin sees Iqama unmasked after transfer approval");
     }
@@ -529,6 +533,16 @@ public class SensitiveFieldMaskingTests
         var tenant = new Tenant { Id = Guid.NewGuid(), Name = "Test Corp", Slug = "test-corp" };
         db.Tenants.Add(tenant);
         db.Roles.Add(new Role { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = "Employee", NormalizedName = "EMPLOYEE", Description = "Default employee role" });
+        // Org master data referenced by drafts/transfers in this suite. Establishment integrity
+        // (Batch A) resolves free-text org names to IDs at apply time and 422s on unknown names —
+        // string-only employees can no longer be manufactured, so the names must exist.
+        db.Departments.Add(new Department { TenantId = tenant.Id, Code = "ENG", NameEn = "Engineering", IsActive = true });
+        db.Departments.Add(new Department { TenantId = tenant.Id, Code = "FIN", NameEn = "Finance", IsActive = true });
+        db.Departments.Add(new Department { TenantId = tenant.Id, Code = "LEG", NameEn = "Legal", IsActive = true });
+        db.Designations.Add(new Designation { TenantId = tenant.Id, Code = "ENGR", TitleEn = "Engineer", IsActive = true });
+        db.Branches.Add(new Branch { TenantId = tenant.Id, Code = "DXB", NameEn = "Dubai", IsActive = true });
+        db.Branches.Add(new Branch { TenantId = tenant.Id, Code = "RUH", NameEn = "Riyadh", IsActive = true });
+        db.Branches.Add(new Branch { TenantId = tenant.Id, Code = "JED", NameEn = "Jeddah", IsActive = true });
         await db.SaveChangesAsync();
         return tenant.Id;
     }
