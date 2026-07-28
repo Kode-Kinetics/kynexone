@@ -21,6 +21,9 @@ const employeesImportExport = {
   import: (csvContent: string) =>
     client.post<{ received: number; created: number; skipped: number; errors: string[] }>('/api/employees/import', { csvContent }).then(r => r.data),
 };
+import { establishmentBlockFromError } from '../api/establishment';
+import type { EstablishmentBlockedPayload } from '../api/establishment';
+import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedModal';
 import { branchesApi, companiesApi, costCentersApi, departmentsApi, designationsApi, gradesApi } from '../api/organization';
 import type { BranchDto, CompanyDto, CostCenterDto, DepartmentDto, DesignationDto, GradeDto, GradePayScaleComponentDto } from '../api/organization';
 import { Avatar } from '../components/Avatar';
@@ -290,6 +293,16 @@ export function EmployeesPage() {
   const [gradePayScale, setGradePayScale] = useState<GradePayScaleComponentDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [managerCandidates, setManagerCandidates] = useState<EmployeeListItem[]>([]);
+  // Establishment guard: structured 409 (ESTABLISHMENT_BUDGET_EXCEEDED) rendered as the blocked-assignment popup.
+  // refocusId points at the department control of the originating (still-mounted) form for "Choose a different department".
+  const [establishmentBlock, setEstablishmentBlock] = useState<{ block: EstablishmentBlockedPayload; employeeName?: string; refocusId?: string } | null>(null);
+  // Advisory-mode responses carry establishmentWarning on 2xx — dismissible amber banner, never a block.
+  const [advisoryWarning, setAdvisoryWarning] = useState('');
+
+  const surfaceAdvisoryWarning = (payload: unknown) => {
+    const w = (payload as { establishmentWarning?: string } | null | undefined)?.establishmentWarning;
+    if (w) setAdvisoryWarning(w);
+  };
 
   const pageSize = 25;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -536,12 +549,21 @@ export function EmployeesPage() {
     setSaving(true);
     try {
       const created = await employeesApi.create(cleanPayload(form));
+      surfaceAdvisoryWarning(created);
       setFormOpen(false);
       setForm(emptyEmployee());
       setFormOriginal(emptyEmployee());
       await load();
       await openDetail(created.id);
     } catch (e: unknown) {
+      const block = establishmentBlockFromError(e);
+      if (block) {
+        // Form stays open with its state — after a budget raise (or a department
+        // change) the user completes the same assignment without re-entry.
+        setEstablishmentBlock({ block, employeeName: form.englishName, refocusId: 'employee-form-department' });
+        setSaving(false);
+        return;
+      }
       const status = (e as { response?: { status?: number; data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.status;
       const data = (e as { response?: { data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.data;
       if (status === 402) {
@@ -604,6 +626,7 @@ export function EmployeesPage() {
         else changes[key] = value;
       }
       const res = await employeesApi.update(selectedId, new Date().toISOString().slice(0, 10), changes);
+      surfaceAdvisoryWarning(res.data);
       if (res.status === 202) {
         const data = res.data as { sensitiveFields?: string[]; approvalRequestId?: string; appliedFields?: string[] };
         const fields = data.sensitiveFields ?? [];
@@ -619,6 +642,13 @@ export function EmployeesPage() {
         await load();
       }
     } catch (e: unknown) {
+      const block = establishmentBlockFromError(e);
+      if (block) {
+        // Edit modal stays open with its state so the change can be resubmitted after a budget raise.
+        setEstablishmentBlock({ block, employeeName: selectedEmployee?.fullName, refocusId: 'edit-field-department' });
+        setEditSaving(false);
+        return;
+      }
       const data = (e as { response?: { data?: { message?: string; errors?: Record<string, string[]> } } })?.response?.data;
       const detailMsg = data?.message ?? (data?.errors ? Object.entries(data.errors).map(([f, m]) => `${f}: ${m.join(' ')}`).join(' · ') : '');
       setEditNotice(detailMsg ? `Could not save — ${detailMsg}` : 'Could not save the changes. Please review the values and try again.');
@@ -651,12 +681,19 @@ export function EmployeesPage() {
         effectiveDate: new Date().toISOString().slice(0, 10),
         reason: statusReason,
       });
+      surfaceAdvisoryWarning(updated);
       setDetail(updated);
       setStatusReason('');
       setActionNotice(`Employee status changed to ${newStatus}.`);
       await load();
     } catch (e: unknown) {
-      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not change employee status.');
+      const block = establishmentBlockFromError(e);
+      if (block) {
+        // Reactivation into an occupying status consumes a slot — same structured popup.
+        setEstablishmentBlock({ block, employeeName: detail?.fullName });
+      } else {
+        setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not change employee status.');
+      }
     } finally {
       setStatusSaving(false);
     }
@@ -672,13 +709,21 @@ export function EmployeesPage() {
         effectiveDate: new Date().toISOString().slice(0, 10),
         reason: statusReason.trim() || 'Activated from employee profile',
       });
+      surfaceAdvisoryWarning(updated);
       setDetail(updated);
       setNewStatus('Active');
       setStatusReason('');
       setActionNotice('Employee activated and is now live.');
       await load();
     } catch (e: unknown) {
-      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not activate employee.');
+      const block = establishmentBlockFromError(e);
+      if (block) {
+        // Activation is the occupying transition — the guard's block must render
+        // as the structured popup, never a swallowed message string.
+        setEstablishmentBlock({ block, employeeName: detail?.fullName });
+      } else {
+        setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not activate employee.');
+      }
     } finally {
       setStatusSaving(false);
     }
@@ -701,14 +746,26 @@ export function EmployeesPage() {
   const requestTransfer = async () => {
     if (!selectedId || !transferDepartment || !transferReason.trim()) return;
     const dept = departments.find((item) => item.id === transferDepartment);
-    const transfer = await employeesApi.transfer(selectedId, {
-      newDepartment: dept?.nameEn ?? transferDepartment,
-      effectiveDate: new Date().toISOString().slice(0, 10),
-      reason: transferReason,
-    });
-    setDetail((current) => current ? { ...current, transfers: [transfer, ...current.transfers] } : current);
-    setTransferDepartment('');
-    setTransferReason('');
+    try {
+      const transfer = await employeesApi.transfer(selectedId, {
+        newDepartment: dept?.nameEn ?? transferDepartment,
+        effectiveDate: new Date().toISOString().slice(0, 10),
+        reason: transferReason,
+      });
+      surfaceAdvisoryWarning(transfer);
+      setDetail((current) => current ? { ...current, transfers: [transfer, ...current.transfers] } : current);
+      setTransferDepartment('');
+      setTransferReason('');
+    } catch (e: unknown) {
+      const block = establishmentBlockFromError(e);
+      if (block) {
+        // Transfer selection stays in place so the user can complete it after a
+        // budget raise, or pick a different target department.
+        setEstablishmentBlock({ block, employeeName: detail?.fullName, refocusId: 'transfer-department-select' });
+      } else {
+        setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not submit the transfer request.');
+      }
+    }
   };
 
   const atEmployeeLimit = usage !== null && usage.maxEmployees > 0 && usage.activeEmployees >= usage.maxEmployees;
@@ -780,6 +837,12 @@ export function EmployeesPage() {
 
       {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
       {actionNotice && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">{actionNotice}</p>}
+      {advisoryWarning && (
+        <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+          <span>{advisoryWarning}</span>
+          <button type="button" onClick={() => setAdvisoryWarning('')} className="shrink-0 text-xs font-semibold underline">Dismiss</button>
+        </div>
+      )}
 
       {view === 'ex' ? (
         <ExEmployeesTable />
@@ -953,7 +1016,7 @@ export function EmployeesPage() {
                 )}
                 {activeTab === 'transfers' && (
                   <div className="space-y-3">
-                    <select value={transferDepartment} onChange={(e) => setTransferDepartment(e.target.value)} className="select w-full" aria-label="Transfer to department">
+                    <select id="transfer-department-select" value={transferDepartment} onChange={(e) => setTransferDepartment(e.target.value)} className="select w-full" aria-label="Transfer to department">
                       <option value="">New department</option>
                       {departments.map((dept) => <option key={dept.id} value={dept.id}>{dept.nameEn}</option>)}
                     </select>
@@ -1038,12 +1101,12 @@ export function EmployeesPage() {
                       {editForm[f.key] !== editOriginal[f.key] && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
                     </span>
                     {f.type === 'select' ? (
-                      <select value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="select mt-1.5 w-full">
+                      <select id={`edit-field-${f.key}`} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="select mt-1.5 w-full">
                         <option value="">Select</option>
                         {f.options!.map((o) => <option key={o} value={o}>{o}</option>)}
                       </select>
                     ) : (
-                      <input type={f.type ?? 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
+                      <input id={`edit-field-${f.key}`} type={f.type ?? 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
                     )}
                   </label>
                 ))}
@@ -1105,7 +1168,7 @@ export function EmployeesPage() {
               textKey="legalNameEn"
             />
             <Lookup label="Branch" value={form.branchId ?? ''} onChange={(v) => setField('branchId', v)} items={branches} textKey="nameEn" />
-            <Lookup label="Department" value={form.departmentId ?? ''} onChange={setDepartment} items={departments} textKey="nameEn" />
+            <Lookup label="Department" selectId="employee-form-department" value={form.departmentId ?? ''} onChange={setDepartment} items={departments} textKey="nameEn" />
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
               <span className="flex items-center gap-1.5">
                 Line manager
@@ -1182,6 +1245,18 @@ export function EmployeesPage() {
           </div>
         </div>
       </Modal>
+
+      {/* Blocked-assignment popup (server-authoritative ESTABLISHMENT_BUDGET_EXCEEDED 409). */}
+      <EstablishmentBlockedModal
+        block={establishmentBlock?.block ?? null}
+        employeeName={establishmentBlock?.employeeName}
+        onClose={() => setEstablishmentBlock(null)}
+        onChooseDifferentDepartment={establishmentBlock?.refocusId ? () => {
+          const el = document.getElementById(establishmentBlock.refocusId!);
+          el?.scrollIntoView({ block: 'center' });
+          el?.focus();
+        } : undefined}
+      />
     </div>
   );
 }
@@ -1269,11 +1344,11 @@ function Select({ label, value, onChange, options, required, info, infoKey }: { 
   );
 }
 
-function Lookup<T extends { id: string }>({ label, value, onChange, items, textKey }: { label: string; value: string; onChange: (value: string) => void; items: T[]; textKey: keyof T }) {
+function Lookup<T extends { id: string }>({ label, value, onChange, items, textKey, selectId }: { label: string; value: string; onChange: (value: string) => void; items: T[]; textKey: keyof T; selectId?: string }) {
   return (
     <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
       <span>{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
+      <select id={selectId} value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
         <option value="">Select</option>
         {items.map((item) => <option key={item.id} value={item.id}>{String(item[textKey])}</option>)}
       </select>

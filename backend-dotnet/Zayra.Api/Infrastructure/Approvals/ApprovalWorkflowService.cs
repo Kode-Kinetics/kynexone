@@ -15,17 +15,20 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private readonly ZayraDbContext _db;
     private readonly IAuditService _audit;
     private readonly IHrmHierarchyService _hierarchy;
+    private readonly IEstablishmentGuard _establishmentGuard;
 
     public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit)
         : this(db, audit, new HrmHierarchyService(db, audit))
     {
     }
 
-    public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit, IHrmHierarchyService hierarchy)
+    public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit, IHrmHierarchyService hierarchy, IEstablishmentGuard? establishmentGuard = null)
     {
         _db = db;
         _audit = audit;
         _hierarchy = hierarchy;
+        // Optional with concrete fallback so direct constructions keep compiling AND enforcing.
+        _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
     }
 
     public async Task<PagedResult<ApprovalWorkflowDto>> GetWorkflowsAsync(Guid tenantId, string? entityName, int page, int pageSize, CancellationToken cancellationToken)
@@ -500,7 +503,23 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == approval.TenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) throw new InvalidOperationException("Employee for this change request was not found.");
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
+        var priorDeptId = employee.DepartmentId;
+        var priorDesigId = employee.DesignationId;
         ApplyEmployeeChange(employee, changes);
+        // Same shared resolver as EmployeesController.ApplyChanges (consultant R-B): free-text
+        // department/designation/branch changes resolve to IDs (unresolvable ⇒ throws, surfaced
+        // to the decider) — this duplicate apply path can no longer manufacture string-only rows.
+        await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver
+            .ResolveAppliedChangesAsync(_db, approval.TenantId, employee, changes.Keys, cancellationToken);
+        // ESTABLISHMENT GUARD (path "approval" via generic decide): authoritative re-check at
+        // apply. A block throws BEFORE DecideAsync saves anything, so the approval request stays
+        // Pending and the change stays PendingApproval — re-approve after a budget raise. The 409
+        // contract is rendered by ApprovalRequestsController's catch site.
+        if (employee.DepartmentId != priorDeptId || employee.DesignationId != priorDesigId)
+        {
+            await _establishmentGuard.EnforceAsync(approval.TenantId, employee.DepartmentId, employee.DesignationId,
+                excludeEmployeeId: employee.Id, path: "approval", context, cancellationToken);
+        }
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = approverId;
         change.Status = "ApprovedApplied";

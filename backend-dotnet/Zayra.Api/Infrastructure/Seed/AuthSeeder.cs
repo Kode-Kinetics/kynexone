@@ -261,6 +261,12 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "profile.read", "ess.read", "ess.write"
         }), 15, true, cancellationToken);
 
+        // Establishment matrix: seed the default staffing-level catalog here so EVERY tenant
+        // provisioning path (platform create/repair, all demo seeders, future ones) gets the
+        // editable defaults without each caller remembering to. Idempotent; respects deliberate
+        // deletion. GET /api/establishment/levels lazy-seeds pre-existing tenants as the backstop.
+        await new EstablishmentSeeder(_db).EnsureStaffingLevelsAsync(tenantId, cancellationToken);
+
         return adminRole;
     }
 
@@ -342,6 +348,7 @@ public class AuthSeeder : IAuthSeeder
             ("organization.read", "Organization", "Read companies, branches, departments, and designations"),
             ("organization.write", "Organization", "Create and update organization master data"),
             ("organization.delete", "Organization", "Delete organization master data"),
+            ("organization.establishment.write", "Organization", "Edit staffing budgets and establishment envelopes (departmental headcount by level)"),
             // Attendance
             ("attendance.read", "Attendance", "Read attendance records"),
             ("attendance.write", "Attendance", "Create and update attendance records"),

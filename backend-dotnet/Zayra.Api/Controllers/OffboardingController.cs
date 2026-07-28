@@ -75,6 +75,13 @@ public class OffboardingController : ControllerBase
         var tenantId = this.GetTenantId()!.Value;
         var emp = await _db.Employees.FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId && !e.IsDeleted, ct);
         if (emp is null) return NotFound(new { message = "Employee not found." });
+        // Establishment integrity (security review R5): "Offboarded" is an OCCUPYING status
+        // (serving notice still holds the seat). Only someone already occupying a seat
+        // (Active / Suspended) may enter offboarding — otherwise a non-occupying employee
+        // (Draft / Invited / Terminated / legacy Inactive) would transition INTO occupancy
+        // through this side door without the establishment guard ever running.
+        if (!Zayra.Api.Application.Organization.EstablishmentOccupancy.IsOccupyingStatus(emp.Status))
+            return BadRequest(new { message = $"Employee is '{emp.Status}' and cannot be offboarded — only an actively employed person (Active/Suspended) can serve notice. Reactivate the employee first if this is a data correction." });
         if (await _db.EmployeeOffboardings.AnyAsync(o => o.TenantId == tenantId && o.EmployeeId == req.EmployeeId && o.Status == "InProgress", ct))
             return BadRequest(new { message = "This employee already has an offboarding in progress." });
 

@@ -19,6 +19,10 @@ public class TenantHrConfig : ITenantOwned
     // Payroll / compliance
     public bool RequireCostCenterForPayroll { get; set; } = false;
     public bool RequireGradeForApprovalPolicy { get; set; } = false;
+    // Establishment matrix enforcement: Off | Advisory | Enforced. Default Enforced is
+    // deploy-safe because enforcement is per-budget-row opt-in (absent row = uncontrolled);
+    // changing this value is itself permission-gated + audited (never flipped by deploys).
+    public string EstablishmentEnforcementMode { get; set; } = "Enforced";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

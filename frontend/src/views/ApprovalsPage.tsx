@@ -4,6 +4,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Clock3, Inbox, ListChecks, RefreshCw, ShieldCheck, TimerReset, UserCheck, Users } from 'lucide-react';
 import { approvalsApi } from '../api/approvals';
 import type { ApprovalRequest } from '../api/approvals';
+import { establishmentBlockFromError } from '../api/establishment';
+import type { EstablishmentBlockedPayload } from '../api/establishment';
+import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedModal';
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
 
@@ -48,6 +51,9 @@ export function ApprovalsPage() {
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
   const [comments, setComments] = useState('');
   const [deciding, setDeciding] = useState(false);
+  // Stale-approval path: the establishment guard re-checks at apply time; a slot
+  // consumed since submission returns a structured 409 rendered as the popup.
+  const [establishmentBlock, setEstablishmentBlock] = useState<{ block: EstablishmentBlockedPayload; employeeName?: string } | null>(null);
 
   const loadMetrics = useCallback(async () => {
     const [mine, team, overdue, allPending] = await Promise.all([
@@ -97,8 +103,15 @@ export function ApprovalsPage() {
       setComments('');
       await Promise.all([load(), loadMetrics()]);
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      alert(msg ?? 'Failed to submit decision. Please try again.');
+      const block = establishmentBlockFromError(err);
+      if (block) {
+        // The approval stays pending — it can be re-approved after a budget raise.
+        setEstablishmentBlock({ block, employeeName: selected.entityName || undefined });
+        await Promise.all([load(), loadMetrics()]);
+      } else {
+        const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+        alert(msg ?? 'Failed to submit decision. Please try again.');
+      }
     }
     finally { setDeciding(false); }
   };
@@ -334,6 +347,13 @@ export function ApprovalsPage() {
           </div>
         )}
       </Modal>
+
+      {/* Blocked-assignment popup: apply-time establishment guard 409 (stale approval). */}
+      <EstablishmentBlockedModal
+        block={establishmentBlock?.block ?? null}
+        employeeName={establishmentBlock?.employeeName}
+        onClose={() => setEstablishmentBlock(null)}
+      />
     </div>
   );
 }

@@ -22,15 +22,20 @@ export interface HeadcountCheckResult {
   projected: number;
   withinBudget: boolean;
   message: string;
+  /** Present when designationId was supplied: advisory per-level verdict merged by the establishment guard. */
+  levelWithinBudget?: boolean;
+  levelMessage?: string;
 }
 
 export const planningApi = {
   establishment: () =>
     client.get<EstablishmentRow[]>('/api/planning/establishment').then(r => r.data),
 
-  setEstablishment: (departmentId: string, body: { approvedHeadcount: number; monthlyBudgetAmount: number; costCenterId?: string | null }) =>
+  /** Reason is required by the server when approvedHeadcount/monthlyBudgetAmount change (audited). */
+  setEstablishment: (departmentId: string, body: { approvedHeadcount: number; monthlyBudgetAmount: number; costCenterId?: string | null; reason?: string }) =>
     client.patch(`/api/planning/departments/${departmentId}/establishment`, body).then(r => r.data),
 
-  headcountCheck: (params: { departmentId?: string; departmentName?: string; headCount: number }) =>
+  /** designationId is advisory only (warn-before-submit); the guard's 409 remains authoritative. */
+  headcountCheck: (params: { departmentId?: string; departmentName?: string; headCount: number; designationId?: string }) =>
     client.get<HeadcountCheckResult>('/api/planning/headcount-check', { params }).then(r => r.data),
 };

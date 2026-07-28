@@ -14,6 +14,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Employees;
+using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.Documents;
@@ -47,8 +48,9 @@ public class EmployeesController : ControllerBase
     private readonly ILetterService _letters;
     private readonly IApprovalWorkflowService _approvalWorkflow;
     private readonly ILogger<EmployeesController>? _logger;
+    private readonly IEstablishmentGuard _establishmentGuard;
 
-    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null)
+    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -60,6 +62,9 @@ public class EmployeesController : ControllerBase
         _letters = letters;
         _approvalWorkflow = approvalWorkflow ?? new Zayra.Api.Infrastructure.Approvals.ApprovalWorkflowService(db, audit);
         _logger = logger;
+        // Optional with concrete fallback (same pattern as _approvalWorkflow): DI supplies the
+        // registered guard in production; direct constructions in tests keep compiling AND enforcing.
+        _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
     }
 
     [HttpGet]
@@ -358,6 +363,51 @@ public class EmployeesController : ControllerBase
             .Where(p => p.TenantId == tenantId && !p.IsDeleted)
             .ToDictionaryAsync(p => p.Code.ToUpperInvariant(), ct);
 
+        // ── Establishment matrix preloads (per-level budget row check, spec §5.2) ─────
+        // Same cumulative intra-batch pattern as claimedPositionCodes: file order wins — first
+        // rows fit, later rows fail deterministically with counts. Occupancy uses the SAME shared
+        // predicate as the panel/guard (absolute counts via IgnoreQueryFilters).
+        var establishmentMode = await _establishmentGuard.GetEnforcementModeAsync(tenantId, ct);
+        var levelBudgets = await _db.DepartmentStaffingBudgets.IgnoreQueryFilters().AsNoTracking()
+            .Where(b => b.TenantId == tenantId && !b.IsDeleted)
+            .ToDictionaryAsync(b => (b.DepartmentId, b.StaffingLevelId), b => b.BudgetedHeadcount, ct);
+        var levelByDesignation = new Dictionary<Guid, Guid>();
+        var levelNamesById = new Dictionary<Guid, (string Code, string NameEn, string NameAr)>();
+        var currentByCell = new Dictionary<(Guid Dept, Guid Level), int>();
+        var deptNameById = new Dictionary<Guid, string>();
+        if (levelBudgets.Count > 0 && establishmentMode != EstablishmentGuardService.ModeOff)
+        {
+            // IgnoreQueryFilters is intentional: establishment budget lookups/counts must be absolute (independent of the caller's company scope) so import checks equal the guard's; explicit TenantId (+ !IsDeleted where applicable) filters are applied inline.
+            levelByDesignation = await _db.Designations.IgnoreQueryFilters().AsNoTracking()
+                .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.StaffingLevelId != null)
+                .ToDictionaryAsync(d => d.Id, d => d.StaffingLevelId!.Value, ct);
+            levelNamesById = await _db.StaffingLevels.IgnoreQueryFilters().AsNoTracking()
+                .Where(l => l.TenantId == tenantId && !l.IsDeleted)
+                .ToDictionaryAsync(l => l.Id, l => (l.Code, l.NameEn, l.NameAr), ct);
+            deptNameById = await _db.Departments.IgnoreQueryFilters().AsNoTracking()
+                .Where(d => d.TenantId == tenantId && !d.IsDeleted)
+                .ToDictionaryAsync(d => d.Id, d => d.NameEn, ct);
+            var occupying = await Zayra.Api.Application.Organization.EstablishmentOccupancy
+                // IgnoreQueryFilters is intentional: establishment budget lookups/counts must be absolute (independent of the caller's company scope) so import checks equal the guard's; explicit TenantId (+ !IsDeleted where applicable) filters are applied inline.
+                .Occupying(_db.Employees.IgnoreQueryFilters().AsNoTracking(), tenantId)
+                .Where(e => e.DesignationId != null)
+                .Select(e => new { e.DepartmentId, e.Department, e.DesignationId })
+                .ToListAsync(ct);
+            var deptIdByName = deptNameById.ToLookup(kv => kv.Value, kv => kv.Key)
+                .ToDictionary(g => g.Key, g => g.First());
+            foreach (var e in occupying)
+            {
+                if (!levelByDesignation.TryGetValue(e.DesignationId!.Value, out var lvl)) continue;
+                var deptId = e.DepartmentId
+                    ?? (e.Department is { Length: > 0 } dn && deptIdByName.TryGetValue(dn, out var byName) ? byName : (Guid?)null);
+                if (deptId is null) continue;
+                var cell = (deptId.Value, lvl);
+                currentByCell[cell] = currentByCell.GetValueOrDefault(cell) + 1;
+            }
+        }
+        var claimedLevelSlots = new Dictionary<(Guid Dept, Guid Level), int>();
+        var establishmentBlockedRows = new List<(int RowNum, Guid DeptId, Guid LevelId, int Budgeted, int Current)>();
+
         int created = 0, skipped = 0;
         var errors = new List<string>();
         // Non-fatal notices: the row IS imported, but an optional reference could not be resolved.
@@ -526,6 +576,40 @@ public class EmployeesController : ControllerBase
                 continue;
             }
 
+            // ── Establishment matrix row check (row-level errors, spec §5.2 / AC9) ────
+            // Applies only when the row lands in a MAPPED level of a department that HAS a budget
+            // row AND the row's status occupies a seat (non-occupying imports never consume).
+            var rowStatus = string.IsNullOrWhiteSpace(statusVal) ? "Active" : statusVal;
+            if (resolvedDeptId is not null && resolvedDesigId is not null
+                && Zayra.Api.Application.Organization.EstablishmentOccupancy.IsOccupyingStatus(rowStatus)
+                && levelByDesignation.TryGetValue(resolvedDesigId.Value, out var rowLevelId)
+                && levelBudgets.TryGetValue((resolvedDeptId.Value, rowLevelId), out var rowBudget))
+            {
+                var cell = (resolvedDeptId.Value, rowLevelId);
+                var cellCurrent = currentByCell.GetValueOrDefault(cell);
+                var cellClaimed = claimedLevelSlots.GetValueOrDefault(cell);
+                if (cellCurrent + cellClaimed + 1 > rowBudget)
+                {
+                    var levelName = levelNamesById.TryGetValue(rowLevelId, out var ln) ? ln.NameEn : "budgeted-level";
+                    var deptDisplay = deptNameById.GetValueOrDefault(resolvedDeptId.Value, deptNameRaw);
+                    var message = $"Row {rowNum}: Department '{deptDisplay}' has {cellCurrent + cellClaimed} of {rowBudget} budgeted {levelName}(s); no {levelName} slot is available for assignment.";
+                    establishmentBlockedRows.Add((rowNum, resolvedDeptId.Value, rowLevelId, rowBudget, cellCurrent + cellClaimed));
+                    if (establishmentMode == EstablishmentGuardService.ModeAdvisory)
+                    {
+                        warnings.Add(message);
+                        claimedLevelSlots[cell] = cellClaimed + 1; // advisory rows still consume
+                    }
+                    else
+                    {
+                        skipped++; errors.Add(message); continue;
+                    }
+                }
+                else
+                {
+                    claimedLevelSlots[cell] = cellClaimed + 1;
+                }
+            }
+
             var finalCode = string.IsNullOrWhiteSpace(code) ? await GenerateEmployeeCode(tenantId, ct) : code;
             var employee = new Employee
             {
@@ -603,7 +687,76 @@ public class EmployeesController : ControllerBase
             batchPayroll[finalCode] = (employee, row);
             created++;
         }
-        if (await PersistAsync() is { } saveError) return saveError;
+        // First persist: when level slots were claimed and enforcement is on, serialize with the
+        // same per-cell advisory locks the single-hire paths use and RE-VERIFY each claimed cell
+        // against a fresh count inside the transaction — a concurrent import/hire racing for the
+        // last slot loses with the structured 409 instead of silently overshooting (AC7).
+        if (_db.Database.IsRelational() && claimedLevelSlots.Count > 0
+            && establishmentMode == EstablishmentGuardService.ModeEnforced)
+        {
+            IActionResult? raceLoss = null;
+            var strategy = _db.Database.CreateExecutionStrategy();
+            var persistError = await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                // Deadlock-free: cells locked in stable lock-key order.
+                var orderedCells = claimedLevelSlots
+                    .OrderBy(kv => EstablishmentGuardService.ComputeLockKey(tenantId, kv.Key.Dept, kv.Key.Level))
+                    .ToList();
+                foreach (var ((deptId, levelId), _) in orderedCells)
+                    await _establishmentGuard.AcquireSlotLockAsync(tenantId, deptId, levelId, ct);
+                foreach (var ((deptId, levelId), claimed) in orderedCells)
+                {
+                    var deptName = deptNameById.GetValueOrDefault(deptId, string.Empty);
+                    var levelDesignations = levelByDesignation.Where(kv => kv.Value == levelId).Select(kv => kv.Key).ToList();
+                    var freshCurrent = await Zayra.Api.Application.Organization.EstablishmentOccupancy
+                        // IgnoreQueryFilters is intentional: establishment budget lookups/counts must be absolute (independent of the caller's company scope) so import checks equal the guard's; explicit TenantId (+ !IsDeleted where applicable) filters are applied inline.
+                        .Occupying(_db.Employees.IgnoreQueryFilters().AsNoTracking(), tenantId)
+                        .Where(e => e.DesignationId != null && levelDesignations.Contains(e.DesignationId!.Value))
+                        .Where(e => e.DepartmentId == deptId || (e.DepartmentId == null && e.Department == deptName))
+                        .CountAsync(ct);
+                    var cellBudget = levelBudgets[(deptId, levelId)];
+                    if (freshCurrent + claimed > cellBudget)
+                    {
+                        if (!levelNamesById.TryGetValue(levelId, out var names))
+                            names = (Code: "", NameEn: "budgeted-level", NameAr: "");
+                        raceLoss = this.EstablishmentConflict(new EstablishmentBudgetExceededException(
+                            new EstablishmentBlock(deptId, deptName, levelId, names.Code, names.NameEn, names.NameAr,
+                                cellBudget, freshCurrent, claimed, 0)));
+                        return null;
+                    }
+                }
+                var innerError = await PersistAsync();
+                if (innerError is null) await tx.CommitAsync(ct);
+                return innerError;
+            });
+            if (raceLoss is not null) { _db.ChangeTracker.Clear(); return raceLoss; }
+            if (persistError is not null) return persistError;
+        }
+        else if (await PersistAsync() is { } saveError) return saveError;
+        // Blocked rows are audited AFTER the successful persist (an audit write mid-loop would
+        // flush partially-built rows). Every path logs identically — this is the demand signal.
+        foreach (var blocked in establishmentBlockedRows)
+        {
+            if (!levelNamesById.TryGetValue(blocked.LevelId, out var names))
+                names = (Code: "", NameEn: "", NameAr: "");
+            await _audit.WriteAsync("establishment.assignment_blocked", "Department", blocked.DeptId.ToString(), Context(),
+                JsonSerializer.Serialize(new
+                {
+                    path = "import",
+                    advisory = establishmentMode == EstablishmentGuardService.ModeAdvisory,
+                    rowNumber = blocked.RowNum,
+                    departmentId = blocked.DeptId,
+                    departmentName = deptNameById.GetValueOrDefault(blocked.DeptId, string.Empty),
+                    staffingLevelId = blocked.LevelId,
+                    levelCode = names.Code,
+                    levelNameEn = names.NameEn,
+                    levelNameAr = names.NameAr,
+                    budgeted = blocked.Budgeted,
+                    current = blocked.Current,
+                    attempted = 1
+                }), ct);
+        }
         var importedPositionAssignments = batchCodes.Values.Where(e => e.PositionId is not null).ToList();
         if (importedPositionAssignments.Count > 0)
         {
@@ -1160,6 +1313,7 @@ public class EmployeesController : ControllerBase
             var employee = await employeeManagement.CreateAsync(tenantId, request, Context(), cancellationToken);
             return CreatedAtAction(nameof(Get), new { id = employee.Id }, employee);
         }
+        catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -1301,6 +1455,24 @@ public class EmployeesController : ControllerBase
         if (draft is null) return NotFound();
         if (draft.Status != "PendingHrApproval" && draft.Status != "Draft") return BadRequest(new { message = "Draft is not ready for HR approval." });
 
+        // Onboarding integrity (consultant B1/R-A): EmployeeDraft stores free-text org fields only,
+        // so this hire path used to create Active employees with string-only department/designation
+        // — permanently Unclassified and invisible to every headcount control. Resolve to IDs at
+        // approve time; a non-empty name that doesn't resolve is a 422 (fix master data first).
+        Guid? draftDeptId = null; var draftDeptName = draft.Department;
+        Guid? draftDesigId = null; var draftDesigTitle = draft.Designation;
+        Guid? draftBranchId = null; var draftBranchName = draft.Branch;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(draft.Department))
+                (draftDeptId, draftDeptName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, draft.Department, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(draft.Designation))
+                (draftDesigId, draftDesigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, draft.Designation, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(draft.Branch))
+                (draftBranchId, draftBranchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, draft.Branch, cancellationToken);
+        }
+        catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
+
         var employee = new Employee
         {
             TenantId = tenantId,
@@ -1318,10 +1490,13 @@ public class EmployeesController : ControllerBase
             EmergencyContactPhone = draft.EmergencyContactPhone,
             Nationality = draft.Nationality,
             CountryCode = draft.CountryCode,
-            Department = draft.Department,
-            Designation = draft.Designation,
+            Department = draftDeptName,
+            DepartmentId = draftDeptId,
+            Designation = draftDesigTitle,
+            DesignationId = draftDesigId,
             WorkLocation = draft.WorkLocation,
-            Branch = draft.Branch,
+            Branch = draftBranchName,
+            BranchId = draftBranchId,
             ManagerEmployeeId = draft.ManagerEmployeeId,
             Status = "Active",
             JoiningDate = draft.JoiningDate ?? DateTime.UtcNow.Date,
@@ -1378,18 +1553,35 @@ public class EmployeesController : ControllerBase
             }
         }
 
-        _db.Employees.Add(employee);
-        await _db.SaveChangesAsync(cancellationToken);
+        // ESTABLISHMENT GUARD (path "draft_approve"): this creates an OCCUPYING employee
+        // (Status = Active) directly, so the seat is consumed here — transaction + slot lock +
+        // enforce + insert are atomic; a block leaves the draft untouched and returns the
+        // structured 409 for the popup.
+        try
+        {
+            await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+                excludeEmployeeId: null, path: "draft_approve", Context(), async () =>
+                {
+                    _db.Employees.Add(employee);
+                    await _db.SaveChangesAsync(cancellationToken);
 
-        var draftDocuments = await _db.EmployeeDocuments.Where(x => x.TenantId == tenantId && x.DraftId == draftId).ToListAsync(cancellationToken);
-        foreach (var document in draftDocuments) document.EmployeeId = employee.Id;
-        employee.UserAccountId = await CreateEmployeeUserAccount(employee, cancellationToken);
-        draft.Status = "Activated";
-        draft.CurrentStep = "Activated";
-        draft.ApprovedAtUtc = DateTime.UtcNow;
-        draft.ActivatedAtUtc = DateTime.UtcNow;
-        await AddHistory(employee, "Activated", DateOnly.FromDateTime(employee.JoiningDate), cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
+                    var draftDocuments = await _db.EmployeeDocuments.Where(x => x.TenantId == tenantId && x.DraftId == draftId).ToListAsync(cancellationToken);
+                    foreach (var document in draftDocuments) document.EmployeeId = employee.Id;
+                    employee.UserAccountId = await CreateEmployeeUserAccount(employee, cancellationToken);
+                    draft.Status = "Activated";
+                    draft.CurrentStep = "Activated";
+                    draft.ApprovedAtUtc = DateTime.UtcNow;
+                    draft.ActivatedAtUtc = DateTime.UtcNow;
+                    await AddHistory(employee, "Activated", DateOnly.FromDateTime(employee.JoiningDate), cancellationToken);
+                    await _db.SaveChangesAsync(cancellationToken);
+                    return true;
+                }, cancellationToken);
+        }
+        catch (EstablishmentBudgetExceededException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return this.EstablishmentConflict(ex);
+        }
         await Notify("Employee activated", $"{employee.FullName} was activated with ID {employee.EmployeeCode}.", "Employee", employee.Id.ToString(), cancellationToken);
         await Audit("employee.activated", "Employee", employee.Id.ToString(), cancellationToken);
         var documents = await _db.EmployeeDocuments.Where(x => x.EmployeeId == employee.Id).ToListAsync(cancellationToken);
@@ -1407,67 +1599,106 @@ public class EmployeesController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
         var sensitive = request.Changes.Keys.Where(SensitiveFields.Contains).ToList();
-        if (sensitive.Count > 0)
+        // Establishment integrity: the free-text department/designation/branch cases in
+        // ApplyChanges are resolved to IDs (shared resolver — unresolvable name ⇒ 422) and any
+        // resulting (department, designation) pair change routes through the guard on BOTH
+        // persistence branches below (department/designation are not SensitiveFields, so they ride
+        // the immediate branch even when mixed with sensitive fields).
+        var priorDeptId = employee.DepartmentId;
+        var priorDesigId = employee.DesignationId;
+        try
         {
-            if (!CanEditSensitive()) return Forbid();
-            var sensitiveChanges = request.Changes
-                .Where(x => SensitiveFields.Contains(x.Key))
-                .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
-            var immediateChanges = request.Changes
-                .Where(x => !SensitiveFields.Contains(x.Key))
-                .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
-
-            if (immediateChanges.Count > 0)
+            if (sensitive.Count > 0)
             {
-                ApplyChanges(employee, immediateChanges);
-                employee.UpdatedAtUtc = DateTime.UtcNow;
-                await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
+                if (!CanEditSensitive()) return Forbid();
+                var sensitiveChanges = request.Changes
+                    .Where(x => SensitiveFields.Contains(x.Key))
+                    .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+                var immediateChanges = request.Changes
+                    .Where(x => !SensitiveFields.Contains(x.Key))
+                    .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+
+                if (immediateChanges.Count > 0)
+                {
+                    ApplyChanges(employee, immediateChanges);
+                    await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken);
+                    employee.UpdatedAtUtc = DateTime.UtcNow;
+                    await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
+                }
+
+                var change = new EmployeeChangeRequest
+                {
+                    TenantId = tenantId,
+                    EmployeeId = employee.Id,
+                    RequestedByUserId = GetUserId(),
+                    EffectiveDate = request.EffectiveDate,
+                    SensitiveFields = string.Join(',', sensitive),
+                    ProposedChangesJson = JsonSerializer.Serialize(sensitiveChanges)
+                };
+                _db.EmployeeChangeRequests.Add(change);
+                var workflow = await EnsureEmployeeChangeWorkflowAsync(tenantId, cancellationToken);
+                var pairChanged = employee.DepartmentId != priorDeptId || employee.DesignationId != priorDesigId;
+                if (pairChanged)
+                {
+                    await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+                        excludeEmployeeId: employee.Id, path: "update", Context(), async () =>
+                        {
+                            await _db.SaveChangesAsync(cancellationToken);
+                            return true;
+                        }, cancellationToken);
+                }
+                else
+                {
+                    await _db.SaveChangesAsync(cancellationToken);
+                }
+                var approval = await _approvalWorkflow.CreateRequestAsync(
+                    tenantId,
+                    new CreateApprovalRequest(
+                        workflow.Id,
+                        nameof(EmployeeChangeRequest),
+                        change.Id.ToString(),
+                        $"Employee change approval - {employee.EmployeeCode} {employee.FullName}",
+                        employee.Id,
+                        employee.CompanyId,
+                        "High"),
+                    Context(),
+                    cancellationToken);
+                change.ApprovalRequestId = approval.Id;
+                await _db.SaveChangesAsync(cancellationToken);
+                await Notify("Sensitive employee change requires approval", $"Fields requiring approval: {change.SensitiveFields}. Routed to {approval.CurrentQueue}. Due {approval.DueAtUtc:yyyy-MM-dd HH:mm} UTC.", "ApprovalRequest", approval.Id.ToString(), cancellationToken);
+                await Audit("employee.change_requested", "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
+                return Accepted(new
+                {
+                    changeRequestId = change.Id,
+                    approvalRequestId = approval.Id,
+                    requiresApproval = true,
+                    sensitiveFields = sensitive,
+                    appliedFields = immediateChanges.Keys.ToList()
+                });
             }
 
-            var change = new EmployeeChangeRequest
+            ApplyChanges(employee, request.Changes);
+            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken);
+            employee.UpdatedAtUtc = DateTime.UtcNow;
+            await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
+            if (employee.DepartmentId != priorDeptId || employee.DesignationId != priorDesigId)
             {
-                TenantId = tenantId,
-                EmployeeId = employee.Id,
-                RequestedByUserId = GetUserId(),
-                EffectiveDate = request.EffectiveDate,
-                SensitiveFields = string.Join(',', sensitive),
-                ProposedChangesJson = JsonSerializer.Serialize(sensitiveChanges)
-            };
-            _db.EmployeeChangeRequests.Add(change);
-            var workflow = await EnsureEmployeeChangeWorkflowAsync(tenantId, cancellationToken);
-            await _db.SaveChangesAsync(cancellationToken);
-            var approval = await _approvalWorkflow.CreateRequestAsync(
-                tenantId,
-                new CreateApprovalRequest(
-                    workflow.Id,
-                    nameof(EmployeeChangeRequest),
-                    change.Id.ToString(),
-                    $"Employee change approval - {employee.EmployeeCode} {employee.FullName}",
-                    employee.Id,
-                    employee.CompanyId,
-                    "High"),
-                Context(),
-                cancellationToken);
-            change.ApprovalRequestId = approval.Id;
-            await _db.SaveChangesAsync(cancellationToken);
-            await Notify("Sensitive employee change requires approval", $"Fields requiring approval: {change.SensitiveFields}. Routed to {approval.CurrentQueue}. Due {approval.DueAtUtc:yyyy-MM-dd HH:mm} UTC.", "ApprovalRequest", approval.Id.ToString(), cancellationToken);
-            await Audit("employee.change_requested", "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
-            return Accepted(new
+                await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+                    excludeEmployeeId: employee.Id, path: "update", Context(), async () =>
+                    {
+                        await _db.SaveChangesAsync(cancellationToken);
+                        return true;
+                    }, cancellationToken);
+            }
+            else
             {
-                changeRequestId = change.Id,
-                approvalRequestId = approval.Id,
-                requiresApproval = true,
-                sensitiveFields = sensitive,
-                appliedFields = immediateChanges.Keys.ToList()
-            });
+                await _db.SaveChangesAsync(cancellationToken);
+            }
+            await Audit("employee.updated", "Employee", employee.Id.ToString(), cancellationToken);
+            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
         }
-
-        ApplyChanges(employee, request.Changes);
-        employee.UpdatedAtUtc = DateTime.UtcNow;
-        await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        await Audit("employee.updated", "Employee", employee.Id.ToString(), cancellationToken);
-        return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
+        catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
     [HttpPatch("{id:int}/status")]
@@ -1479,6 +1710,7 @@ public class EmployeesController : ControllerBase
             var employee = await employeeManagement.ChangeStatusAsync(RequireTenant(), id, request, Context(), cancellationToken);
             return employee is null ? NotFound() : Ok(employee);
         }
+        catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -1551,8 +1783,13 @@ public class EmployeesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<EmployeeDetailDto>> Activate(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
-        var employee = await employeeManagement.ActivateAsync(RequireTenant(), id, request, Context(), cancellationToken);
-        return employee is null ? NotFound() : Ok(employee);
+        try
+        {
+            var employee = await employeeManagement.ActivateAsync(RequireTenant(), id, request, Context(), cancellationToken);
+            return employee is null ? NotFound() : Ok(employee);
+        }
+        catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpPost("{id:int}/terminate")]
@@ -1667,16 +1904,49 @@ public class EmployeesController : ControllerBase
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == change.EmployeeId && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
-        ApplyChanges(employee, changes);
-        employee.UpdatedAtUtc = DateTime.UtcNow;
-        change.Status = "ApprovedApplied";
-        change.ApprovedByUserId = approverId;
-        change.ApprovedAtUtc = DateTime.UtcNow;
-        change.AppliedAtUtc = DateTime.UtcNow;
-        await AddHistory(employee, "SensitiveChangeApproved", change.EffectiveDate, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        await Audit("employee.change_approved", "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
-        return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
+        var priorDeptId = employee.DepartmentId;
+        var priorDesigId = employee.DesignationId;
+        try
+        {
+            ApplyChanges(employee, changes);
+            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, changes.Keys, cancellationToken);
+            employee.UpdatedAtUtc = DateTime.UtcNow;
+            change.Status = "ApprovedApplied";
+            change.ApprovedByUserId = approverId;
+            change.ApprovedAtUtc = DateTime.UtcNow;
+            change.AppliedAtUtc = DateTime.UtcNow;
+            await AddHistory(employee, "SensitiveChangeApproved", change.EffectiveDate, cancellationToken);
+            // ESTABLISHMENT GUARD (path "approval"): authoritative re-check AT APPLY — the slot may
+            // have been consumed since submission. On a block nothing is persisted (throws before
+            // save / transaction rolls back), so the change request stays PendingApproval and can
+            // be re-approved after a budget raise.
+            if (employee.DepartmentId != priorDeptId || employee.DesignationId != priorDesigId)
+            {
+                await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+                    excludeEmployeeId: employee.Id, path: "approval", Context(), async () =>
+                    {
+                        await _db.SaveChangesAsync(cancellationToken);
+                        return true;
+                    }, cancellationToken);
+            }
+            else
+            {
+                await _db.SaveChangesAsync(cancellationToken);
+            }
+            await Audit("employee.change_approved", "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
+            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
+        }
+        catch (EstablishmentBudgetExceededException ex)
+        {
+            // Discard the half-applied tracked mutations BEFORE any further write on this context
+            // (Notify saves): the change request must remain PendingApproval untouched.
+            _db.ChangeTracker.Clear();
+            await Notify("Employee change blocked by staffing budget",
+                $"The approved change for {employee.EmployeeCode} could not be applied: {ex.Block.DepartmentName} already has {ex.Block.Current} of {ex.Block.Budgeted} budgeted {ex.Block.LevelNameEn}(s). Raise the budget or amend the change; the request remains pending.",
+                "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
+            return this.EstablishmentConflict(ex);
+        }
+        catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
     private async Task<ApprovalWorkflow> EnsureEmployeeChangeWorkflowAsync(Guid tenantId, CancellationToken cancellationToken)
@@ -1732,9 +2002,25 @@ public class EmployeesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,Manager")]
     public async Task<ActionResult<EmployeeTransferDto>> RequestTransfer(int id, EmployeeTransferCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
-        var transfer = await employeeManagement.RequestTransferAsync(RequireTenant(), id, request, Context(), cancellationToken);
-        if (transfer is null) return NotFound();
-        return Created($"/api/employees/transfers/{transfer.Id}", EmployeeTransferDto.Project(transfer));
+        try
+        {
+            var tenantId = RequireTenant();
+            var transfer = await employeeManagement.RequestTransferAsync(tenantId, id, request, Context(), cancellationToken);
+            if (transfer is null) return NotFound();
+            var dto = EmployeeTransferDto.Project(transfer);
+            // Fast ADVISORY feedback at submission (never blocks — the authoritative check runs
+            // at HR approval): would the target department/level cell be over budget today?
+            if (transfer.NewDepartmentId is not null || transfer.NewDesignationId is not null)
+            {
+                var check = await _establishmentGuard.CheckAsync(tenantId,
+                    transfer.NewDepartmentId ?? transfer.CurrentDepartmentId,
+                    transfer.NewDesignationId, excludeEmployeeId: id, 1, cancellationToken);
+                if (check.Block is { } block)
+                    dto = dto with { EstablishmentWarning = $"{block.DepartmentName} already has {block.Current} of {block.Budgeted} budgeted {block.LevelNameEn}(s); HR approval of this transfer will be blocked unless the budget is raised or a seat frees." };
+            }
+            return Created($"/api/employees/transfers/{transfer.Id}", dto);
+        }
+        catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
     [HttpPost("transfers/{transferId:guid}/approve-current-manager")]
@@ -1758,18 +2044,57 @@ public class EmployeesController : ControllerBase
             return BadRequest(new { message = $"Transfer is in '{transfer.Status}' status and cannot be HR-approved." });
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == transfer.EmployeeId && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
-        employee.Department = transfer.NewDepartment;
-        employee.Branch = transfer.NewBranch;
-        employee.UpdatedAtUtc = DateTime.UtcNow;
-        if (employee.ManagerEmployeeId != transfer.NewManagerEmployeeId)
-            await hierarchy.SetManagerAsync(tenantId, employee.Id, transfer.NewManagerEmployeeId, Context(), cancellationToken);
-        transfer.Status = "ApprovedApplied";
-        transfer.HrApprovedAtUtc = DateTime.UtcNow;
-        await AddHistory(employee, "TransferApproved", transfer.EffectiveDate, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        await Notify("Employee transfer approved", $"Transfer for employee {employee.EmployeeCode} was applied.", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
-        await Audit("employee.transfer_approved", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
-        return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
+
+        // Transfer-integrity apply (Batch A / spec §1.10, AC8): work off resolved IDs — prefer the
+        // IDs stored at request time; legacy pre-migration rows (strings only) are re-resolved
+        // here; a still-unresolvable non-empty name is a 422 telling HR to fix master data. The
+        // string-only write path that manufactured uncountable employees is gone.
+        try
+        {
+            var newDeptId = transfer.NewDepartmentId; var newDeptName = transfer.NewDepartment;
+            if (newDeptId is null && !string.IsNullOrWhiteSpace(transfer.NewDepartment))
+                (newDeptId, newDeptName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, transfer.NewDepartment, cancellationToken);
+            var newBranchId = transfer.NewBranchId; var newBranchName = transfer.NewBranch;
+            if (newBranchId is null && !string.IsNullOrWhiteSpace(transfer.NewBranch))
+                (newBranchId, newBranchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, transfer.NewBranch, cancellationToken);
+            var newDesigId = transfer.NewDesignationId; var newDesigTitle = transfer.NewDesignation;
+            if (newDesigId is null && !string.IsNullOrWhiteSpace(transfer.NewDesignation))
+                (newDesigId, newDesigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, transfer.NewDesignation, cancellationToken);
+
+            if (newDeptId is not null) { employee.DepartmentId = newDeptId; employee.Department = newDeptName; }
+            if (newBranchId is not null) { employee.BranchId = newBranchId; employee.Branch = newBranchName; }
+            if (newDesigId is not null) { employee.DesignationId = newDesigId; employee.Designation = newDesigTitle; }
+            employee.UpdatedAtUtc = DateTime.UtcNow;
+            transfer.Status = "ApprovedApplied";
+            transfer.HrApprovedAtUtc = DateTime.UtcNow;
+            await AddHistory(employee, "TransferApproved", transfer.EffectiveDate, cancellationToken);
+
+            // ESTABLISHMENT GUARD (path "transfer"): inbound department/level consumes a seat;
+            // outbound frees implicitly (target-state evaluation with self-exclusion). On a block
+            // nothing persists — the transfer stays PendingHrApproval for re-approval after a raise.
+            await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+                excludeEmployeeId: employee.Id, path: "transfer", Context(), async () =>
+                {
+                    await _db.SaveChangesAsync(cancellationToken);
+                    return true;
+                }, cancellationToken);
+            if (employee.ManagerEmployeeId != transfer.NewManagerEmployeeId)
+                await hierarchy.SetManagerAsync(tenantId, employee.Id, transfer.NewManagerEmployeeId, Context(), cancellationToken);
+            await Notify("Employee transfer approved", $"Transfer for employee {employee.EmployeeCode} was applied.", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
+            await Audit("employee.transfer_approved", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
+            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
+        }
+        catch (EstablishmentBudgetExceededException ex)
+        {
+            // Discard the half-applied tracked mutations BEFORE any further write on this context
+            // (Notify saves): the transfer must remain PendingHrApproval untouched.
+            _db.ChangeTracker.Clear();
+            await Notify("Employee transfer blocked by staffing budget",
+                $"Transfer for {employee.EmployeeCode} could not be applied: {ex.Block.DepartmentName} already has {ex.Block.Current} of {ex.Block.Budgeted} budgeted {ex.Block.LevelNameEn}(s). Raise the budget or choose a different department; the transfer remains pending.",
+                "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
+            return this.EstablishmentConflict(ex);
+        }
+        catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
     [HttpGet("reports/summary")]

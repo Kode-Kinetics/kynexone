@@ -11,6 +11,11 @@ public class Designation : ITenantOwned
     public string TitleAr { get; set; } = string.Empty;
     public string JobGrade { get; set; } = string.Empty;
     public Guid? GradeId { get; set; }
+    /// <summary>Establishment matrix mapping: which tenant-configurable StaffingLevel this
+    /// designation belongs to. Nullable = unmapped (employees holding it are "Unclassified":
+    /// never counted, never blocked, surfaced loudly). Changed ONLY via the audited
+    /// level-mapping apply endpoint — never bound from designation CRUD/import DTOs.</summary>
+    public Guid? StaffingLevelId { get; set; }
     public string JobLevel { get; set; } = string.Empty;
     public string JobDescription { get; set; } = string.Empty;
     public bool IsManagerRole { get; set; }

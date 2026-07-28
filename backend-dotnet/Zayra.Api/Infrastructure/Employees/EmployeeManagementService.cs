@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Documents;
@@ -26,13 +27,18 @@ public class EmployeeManagementService : IEmployeeManagementService
     private readonly IAuditService _audit;
     private readonly IDocumentStorage _documents;
     private readonly INotificationService _notifications;
+    private readonly IEstablishmentGuard _establishmentGuard;
 
-    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications)
+    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null)
     {
         _db = db;
         _audit = audit;
         _documents = documents;
         _notifications = notifications;
+        // Optional with a concrete fallback: DI always supplies the registered guard in production
+        // (Program.cs); the fallback keeps the many direct-construction test call sites compiling
+        // and STILL ENFORCING (same pattern as EmployeesController's ApprovalWorkflowService).
+        _establishmentGuard = establishmentGuard ?? new Zayra.Api.Infrastructure.Organization.EstablishmentGuardService(db);
     }
 
     public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, int page, int pageSize, CancellationToken cancellationToken)
@@ -97,16 +103,26 @@ public class EmployeeManagementService : IEmployeeManagementService
             throw new InvalidOperationException($"IBAN '{createIban}' is invalid — it fails the ISO 13616 mod-97 checksum. Enter a correct IBAN before saving.");
         employee.Status = "Draft";
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
-        _db.Employees.Add(employee);
-        await _db.SaveChangesAsync(cancellationToken);
-        await EnsurePrimaryReportingLineAsync(employee, context, cancellationToken);
-        await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
+        // ESTABLISHMENT GUARD (path "create"): hard-enforced at the form save even though a Draft
+        // does not occupy a seat — a Draft that could never activate would be a wasted data-entry
+        // session. The authoritative consume re-check happens at the occupying transition
+        // (ChangeStatusAsync). Lock + enforce + persist run atomically under the execution
+        // strategy; over-budget throws EstablishmentBudgetExceededException → structured 409.
+        await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+            excludeEmployeeId: null, path: "create", context, async () =>
+            {
+                _db.Employees.Add(employee);
+                await _db.SaveChangesAsync(cancellationToken);
+                await EnsurePrimaryReportingLineAsync(employee, context, cancellationToken);
+                await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
 
-        await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
-        await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
-        await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
-        await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
+                await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
+                await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
+                await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
+                await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
+                await _db.SaveChangesAsync(cancellationToken);
+                return true;
+            }, cancellationToken);
         await _audit.WriteAsync("employee.created", "Employee", employee.Id.ToString(), context, null, cancellationToken);
         return (await GetAsync(tenantId, employee.Id, true, context, cancellationToken))!;
     }
@@ -121,6 +137,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         TrackChange(employee, "Manager", employee.ManagerEmployeeId?.ToString() ?? "", request.ReportingManagerEmployeeId?.ToString() ?? "", request.JoiningDate, "Manager update", context);
         TrackChange(employee, "Grade", employee.Grade, request.GradeId?.ToString() ?? employee.Grade, request.JoiningDate, "Grade update", context);
 
+        var priorDepartmentId = employee.DepartmentId;
+        var priorDesignationId = employee.DesignationId;
         await ApplyEmployee(employee, request, tenantId, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
@@ -129,8 +147,26 @@ public class EmployeeManagementService : IEmployeeManagementService
         await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
         await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        await SynchronizePositionIncumbencyAsync(employee, priorPositionId, context, cancellationToken);
+        // ESTABLISHMENT GUARD (path "update"): fires ONLY when the (department, designation) pair
+        // actually changed — an unrelated edit (phone number, IBAN, …) can never trip it, and an
+        // over-budget department is never invalidated by editing its existing employees
+        // (grandfathering). The employee excludes themself from the target count (idempotent
+        // re-saves and promotions-within-level are free).
+        if (employee.DepartmentId != priorDepartmentId || employee.DesignationId != priorDesignationId)
+        {
+            await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+                excludeEmployeeId: employee.Id, path: "update", context, async () =>
+                {
+                    await _db.SaveChangesAsync(cancellationToken);
+                    await SynchronizePositionIncumbencyAsync(employee, priorPositionId, context, cancellationToken);
+                    return true;
+                }, cancellationToken);
+        }
+        else
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+            await SynchronizePositionIncumbencyAsync(employee, priorPositionId, context, cancellationToken);
+        }
         await _audit.WriteAsync("employee.updated", "Employee", id.ToString(), context, null, cancellationToken);
         return await GetAsync(tenantId, id, true, context, cancellationToken);
     }
@@ -154,7 +190,23 @@ public class EmployeeManagementService : IEmployeeManagementService
             ChangedByUserId = context.UserId
         });
         await AddHistory(employee, "StatusChange", "Status", oldStatus, request.Status, request.EffectiveDate, request.Reason, context, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
+        // ESTABLISHMENT GUARD (path "reactivate"): only a transition INTO an occupying status
+        // (Draft/Invited/Terminated/… → Active, activation, rehire) consumes a seat and is
+        // enforced. Occupying→occupying (e.g. Suspended→Active reinstatement, Active→Offboarded
+        // notice) and transitions OUT of occupancy never call the guard.
+        if (EstablishmentOccupancy.IsOccupyingStatus(request.Status) && !EstablishmentOccupancy.IsOccupyingStatus(oldStatus))
+        {
+            await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+                excludeEmployeeId: employee.Id, path: "reactivate", context, async () =>
+                {
+                    await _db.SaveChangesAsync(cancellationToken);
+                    return true;
+                }, cancellationToken);
+        }
+        else
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
         await _audit.WriteAsync("employee.status_changed", "Employee", id.ToString(), context, JsonSerializer.Serialize(new { oldStatus, request.Status, request.Reason }), cancellationToken);
 
         // EXIT CASCADE (terminate / direct status change into a terminal state): deactivate the
@@ -274,6 +326,21 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
+
+        // Transfer-integrity fix (Batch A / Conflict R7): resolve free-text targets to IDs AT
+        // REQUEST TIME so a transfer can never manufacture a string-only (uncountable) employee.
+        // A non-empty name that resolves to nothing throws → 422 naming the missing master data.
+        // Legacy display strings are kept alongside the IDs.
+        Guid? newDepartmentId = null; var newDepartmentName = Clean(request.NewDepartment);
+        if (!string.IsNullOrWhiteSpace(newDepartmentName))
+            (newDepartmentId, newDepartmentName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, newDepartmentName, cancellationToken);
+        Guid? newBranchId = null; var newBranchName = Clean(request.NewBranch);
+        if (!string.IsNullOrWhiteSpace(newBranchName))
+            (newBranchId, newBranchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, newBranchName, cancellationToken);
+        Guid? newDesignationId = null; var newDesignationTitle = Clean(request.NewDesignation);
+        if (!string.IsNullOrWhiteSpace(newDesignationTitle))
+            (newDesignationId, newDesignationTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, newDesignationTitle, cancellationToken);
+
         var transfer = new EmployeeTransferRequest
         {
             TenantId = tenantId,
@@ -281,10 +348,14 @@ public class EmployeeManagementService : IEmployeeManagementService
             CurrentBranch = employee.Branch,
             CurrentDepartment = employee.Department,
             CurrentDesignation = employee.Designation,
+            CurrentDepartmentId = employee.DepartmentId,
             CurrentManagerEmployeeId = employee.ManagerEmployeeId,
-            NewBranch = Clean(request.NewBranch),
-            NewDepartment = Clean(request.NewDepartment),
-            NewDesignation = Clean(request.NewDesignation),
+            NewBranch = newBranchName,
+            NewDepartment = newDepartmentName,
+            NewDesignation = newDesignationTitle,
+            NewBranchId = newBranchId,
+            NewDepartmentId = newDepartmentId,
+            NewDesignationId = newDesignationId,
             NewManagerEmployeeId = request.NewManagerEmployeeId,
             EffectiveDate = request.EffectiveDate,
             Reason = Clean(request.Reason),
