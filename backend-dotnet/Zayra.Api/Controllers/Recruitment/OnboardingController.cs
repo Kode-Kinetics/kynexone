@@ -25,6 +25,7 @@ public class OnboardingController : ControllerBase
     // ── Checklists ─────────────────────────────────────────────────────────────
 
     [HttpGet("checklists")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> ListChecklists([FromQuery] bool activeOnly = true, CancellationToken ct = default)
     {
         var tid = GetTenantId();
@@ -57,6 +58,7 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("checklists/{checklistId:guid}/template-tasks")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> ListTemplateTasks(Guid checklistId, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -112,6 +114,7 @@ public class OnboardingController : ControllerBase
 
     // GET /api/recruitment/onboarding/tasks?employeeId=...&applicationId=...&status=...
     [HttpGet("tasks")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> ListTasks(
         [FromQuery] Guid? employeeId = null,
         [FromQuery] Guid? applicationId = null,
@@ -247,6 +250,7 @@ public class OnboardingController : ControllerBase
 
     // PATCH /api/recruitment/onboarding/tasks/{id}/status
     [HttpPatch("tasks/{id:guid}/status")]
+    [Authorize(Roles = "Admin,HR Manager,Recruiter")]
     public async Task<IActionResult> UpdateTaskStatus(Guid id, [FromBody] UpdateTaskStatusRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -275,6 +279,7 @@ public class OnboardingController : ControllerBase
 
     // GET /api/recruitment/onboarding/summary?employeeId=...
     [HttpGet("summary")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> Summary([FromQuery] Guid? employeeId = null, [FromQuery] Guid? applicationId = null, CancellationToken ct = default)
     {
         var tid = GetTenantId();

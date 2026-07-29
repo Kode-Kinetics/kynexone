@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { notifyApiError } from '../api/client';
-import { useAutoTranslate } from '../hooks/useAutoTranslate';
+import { TransliterateButton } from '../components/TransliterateButton';
 import {
   CreditCard, DollarSign, Gift, Plus, CheckCircle, XCircle,
   FileText, TrendingUp, AlertTriangle, BookOpen, ShieldCheck,
@@ -175,9 +175,6 @@ function LoanTypesTab() {
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
-  const { translation: autoLoanNameAr, isTranslating: translatingLoanNameAr } = useAutoTranslate(form.nameEn);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (autoLoanNameAr && !form.nameAr) f('nameAr', autoLoanNameAr); }, [autoLoanNameAr]);
 
   return (
     <>
@@ -225,7 +222,7 @@ function LoanTypesTab() {
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Code" required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="PERSONAL_LOAN" /></FormField>
           <FormField label="Name (EN)" required><input value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" title="Name (EN)" /></FormField>
-          <FormField label="Name (AR)"><input value={form.nameAr} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" title="Name (AR)" placeholder={translatingLoanNameAr && !form.nameAr ? 'Translating…' : undefined} /></FormField>
+          <FormField label="Name (AR)"><div className="flex items-stretch gap-1.5"><input value={form.nameAr} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" title="Name (AR)" /><TransliterateButton source={form.nameEn} onSuggest={(s) => f('nameAr', s)} /></div></FormField>
           <FormField label={`Max Amount (${currencyCode})`} required><input type="number" value={form.maxAmount} onChange={(e) => f('maxAmount', Number(e.target.value))} className="input w-full" title="Max Amount" /></FormField>
           <FormField label="Max Installments"><input type="number" value={form.maxInstallments} onChange={(e) => f('maxInstallments', Number(e.target.value))} className="input w-full" title="Max Installments" /></FormField>
           <FormField label="Repayment Frequency">
@@ -795,9 +792,6 @@ function BonusTypesTab() {
   }, [includeInactive]);
   useEffect(() => { load(); }, [load]);
 
-  const { translation: autoBonusNameAr, isTranslating: translatingBonusNameAr } = useAutoTranslate(form.nameEn);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (autoBonusNameAr && !form.nameAr) setForm(x => ({ ...x, nameAr: autoBonusNameAr })); }, [autoBonusNameAr]);
 
   const openCreate = () => { setEditingId(null); setForm({ ...EMPTY_BONUS_TYPE_FORM }); setError(''); setModalOpen(true); };
   const openEdit = (t: BonusType) => {
@@ -961,7 +955,7 @@ function BonusTypesTab() {
             </FormField>
           )}
           <FormField label="Name (EN)" required><input value={form.nameEn} onChange={(e) => setForm(x => ({ ...x, nameEn: e.target.value }))} className="input w-full" title="Name (EN)" placeholder="e.g. Annual Performance Bonus" /></FormField>
-          <FormField label="Name (AR)"><input value={form.nameAr} onChange={(e) => setForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full" dir="rtl" placeholder={translatingBonusNameAr && !form.nameAr ? 'Translating…' : undefined} /></FormField>
+          <FormField label="Name (AR)"><div className="flex items-stretch gap-1.5"><input value={form.nameAr} onChange={(e) => setForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full flex-1" dir="rtl" /><TransliterateButton source={form.nameEn} onSuggest={(s) => setForm(x => ({ ...x, nameAr: s }))} /></div></FormField>
 
           {/* Eligibility */}
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 pt-1">Eligibility</p>

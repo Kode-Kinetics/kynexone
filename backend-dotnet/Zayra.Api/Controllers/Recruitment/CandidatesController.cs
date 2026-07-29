@@ -16,6 +16,7 @@ public class CandidatesController : ControllerBase
     public CandidatesController(ZayraDbContext db) => _db = db;
 
     [HttpGet]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> List(
         [FromQuery] string? search,
         [FromQuery] string? status,
@@ -67,6 +68,7 @@ public class CandidatesController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;

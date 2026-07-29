@@ -162,6 +162,12 @@ public static class CompanyScopeBackfill
         n += await SystemScope(db.PassportRecords).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
         n += await SystemScope(db.WorkPermitRecords).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
         n += await SystemScope(db.WPSFileBatches).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
+        // Recruitment: candidates/applications/offers have no reliable employee link, so they
+        // belong in the default sweep (not the employee-accurate pass). Without this, legacy
+        // null-CompanyId recruitment rows become invisible to company-scoped users.
+        n += await SystemScope(db.Candidates).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
+        n += await SystemScope(db.JobApplications).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
+        n += await SystemScope(db.OfferLetters).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
         return n;
     }
 

@@ -489,13 +489,9 @@ public class PayrollController : ControllerBase
         var periodStart = new DateOnly(run.Year, run.Month, 1);
         var periodEnd = periodStart.AddMonths(1).AddDays(-1);
 
-        // Delete existing generated rows so reprocessing is idempotent.
-        var existingSlips = _db.PayrollSlips.Where(s => s.RunId == id && s.TenantId == tenantId);
-        _db.PayrollSlips.RemoveRange(existingSlips);
-        _db.PayrollRunEmployees.RemoveRange(_db.PayrollRunEmployees.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
-        _db.PayrollEarnings.RemoveRange(_db.PayrollEarnings.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
-        _db.PayrollDeductions.RemoveRange(_db.PayrollDeductions.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
-        _db.PayrollValidationResults.RemoveRange(_db.PayrollValidationResults.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+        // NOTE (P0-2 atomicity): the idempotent delete of previously-generated rows was moved
+        // INTO the execution-strategy transaction below so a mid-run fault never commits the
+        // deletes (or the slip writes) without the loan-ledger decrement.
 
         // Resolve company → country pack for statutory deduction.
         var activeCompaniesForTenant = await _db.Companies.AsNoTracking()
@@ -684,6 +680,41 @@ public class PayrollController : ControllerBase
             .Select(r => r.EmployeeId)
             .Distinct()
             .ToListAsync(cancellationToken)).ToHashSet();
+
+        // ── P0-2: ALL-OR-NOTHING MUTATION ──────────────────────────────────────────
+        // Everything from here (idempotent delete → slip writes → statutory/loan/advance
+        // ledger decrements → audit) commits as one transaction, so a cancel/crash/DB error
+        // mid-run rolls the whole thing back: no payslips persist, the run stays in its prior
+        // (Draft/Failed) status, and the loan/advance OutstandingBalance is unchanged — leaving
+        // the run fully re-processable. AddDbContextPool + EnableRetryOnFailure requires the
+        // whole tx to live inside the execution-strategy delegate; a bare BeginTransactionAsync
+        // would throw. Mirrors EstablishmentGuardService.EnforceAndExecuteAsync — the delegate
+        // must be safe to re-run from scratch, so every tracked-and-mutated entity (run, the
+        // idempotent deletes, loans/advances/installments) is (re)loaded INSIDE after Clear();
+        // read-only snapshots loaded above are immutable and safe to reuse across a retry.
+        var attempt = 0;
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            // Retry-safety: on a transient RETRY, discard the failed attempt's tracked state so the
+            // rebuild starts clean. We do NOT clear on the first attempt — that would detach entities
+            // the caller is still holding (the request's scoped context), changing observable behaviour.
+            if (attempt++ > 0)
+                _db.ChangeTracker.Clear();
+            // (Re)load the run we mutate. First attempt: returns the already-tracked instance.
+            // Retry: re-materialises it after the Clear() above.
+            run = await _db.PayrollRuns.FirstAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
+
+            // The transaction MUST open BEFORE the ExecuteUpdateAsync impact-status writes below,
+            // otherwise that raw SQL auto-commits on its own connection and re-opens the split.
+            await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
+
+            // Idempotent delete of previously-generated rows (enrolls in this tx).
+            _db.PayrollSlips.RemoveRange(_db.PayrollSlips.Where(s => s.RunId == id && s.TenantId == tenantId));
+            _db.PayrollRunEmployees.RemoveRange(_db.PayrollRunEmployees.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+            _db.PayrollEarnings.RemoveRange(_db.PayrollEarnings.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+            _db.PayrollDeductions.RemoveRange(_db.PayrollDeductions.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+            _db.PayrollValidationResults.RemoveRange(_db.PayrollValidationResults.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
 
         var slips = new List<PayrollSlip>();
         foreach (var e in employees)
@@ -983,7 +1014,10 @@ public class PayrollController : ControllerBase
         }
 
         await PayrollAudit("payroll.run.processed", "PayrollRun", run.Id.ToString(), new { employeeCount = slips.Count, totalNet = run.TotalNetSalary, bonusesConsumed = toConsumeBonuses.Count }, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken); // second save: validation results + loan/advance decrements
+
+            await tx.CommitAsync(cancellationToken); // commit the whole run atomically
+        });
         return Ok(run);
     }
 

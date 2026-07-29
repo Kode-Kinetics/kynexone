@@ -96,6 +96,7 @@ public class AssessmentsController : ControllerBase
     // ── Candidate Assessments ──────────────────────────────────────────────────
 
     [HttpGet]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> List(
         [FromQuery] Guid? applicationId = null,
         [FromQuery] string? status = null,

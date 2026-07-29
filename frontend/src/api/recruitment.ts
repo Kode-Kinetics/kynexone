@@ -430,6 +430,11 @@ export const offersApi = {
 
   decline: (id: string, reason: string) =>
     client.patch<OfferLetter>(`/api/recruitment/offers/${id}/decline`, { reason }).then(r => r.data),
+
+  // Authenticated offer document download (bearer token attached by the axios client).
+  // Replaces the bearer-less, XSS-prone `applications/offers/{id}/html` anchor.
+  download: (id: string) =>
+    client.get(`/api/recruitment/offers/${id}/download`, { responseType: 'blob' }).then(r => r.data as Blob),
 };
 
 export const onboardingApi = {
@@ -521,9 +526,6 @@ export const applicationsApi = {
 
   declineOffer: (offerId: string, reason: string) =>
     client.post(`/api/recruitment/applications/offers/${offerId}/decline`, { reason }).then(r => r.data),
-
-  getOfferHtml: (offerId: string) =>
-    client.get<string>(`/api/recruitment/applications/offers/${offerId}/html`, { responseType: 'text' }).then(r => r.data),
 };
 
 // ── AI recruitment helpers (opt-in, advisory) ─────────────────────────────────

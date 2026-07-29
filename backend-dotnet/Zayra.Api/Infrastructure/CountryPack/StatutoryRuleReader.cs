@@ -8,6 +8,14 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
 {
     private readonly ZayraDbContext _db;
 
+    // Per-request memo (the reader is AddScoped → one instance per request = one payroll run).
+    // A payroll run resolves the same statutory rule with identical arguments 5-6× per employee;
+    // without this, a 500-employee KSA run fires ~2,500-3,000 identical uncached FirstOrDefault
+    // queries and times out. Keyed on the full argument tuple so distinct rules never collide;
+    // caching the null-miss too preserves the exact fallback-default behaviour. Values are
+    // byte-identical to the un-memoized query — only repeat lookups are served from the dict.
+    private readonly Dictionary<(string cc, string jur, string ruleKey, DateOnly eff, Guid? tenantId), string?> _memo = new();
+
     public StatutoryRuleReader(ZayraDbContext db) => _db = db;
 
     public async Task<decimal?> GetDecimalAsync(
@@ -29,6 +37,9 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
         string countryCode, string jurisdiction, string ruleKey,
         DateOnly effectiveDate, Guid? tenantId, CancellationToken ct)
     {
+        var memoKey = (countryCode, jurisdiction, ruleKey, effectiveDate, tenantId);
+        if (_memo.TryGetValue(memoKey, out var cached)) return cached;
+
         var cutoff = effectiveDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
 
         // IgnoreQueryFilters is intentional: StatutoryRule rows span two scopes — platform defaults
@@ -54,6 +65,7 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
             .Select(r => r.RuleValue)
             .FirstOrDefaultAsync(ct);
 
+        _memo[memoKey] = row;
         return row;
     }
 }

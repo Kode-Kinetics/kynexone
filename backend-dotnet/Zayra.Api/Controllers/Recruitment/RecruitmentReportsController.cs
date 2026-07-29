@@ -18,6 +18,7 @@ public class RecruitmentReportsController : ControllerBase
 
     // GET /api/recruitment/reports/pipeline-summary
     [HttpGet("pipeline-summary")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> PipelineSummary(CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -46,6 +47,7 @@ public class RecruitmentReportsController : ControllerBase
 
     // GET /api/recruitment/reports/time-to-hire
     [HttpGet("time-to-hire")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> TimeToHire(
         [FromQuery] int year = 0,
         [FromQuery] int month = 0,
@@ -76,6 +78,7 @@ public class RecruitmentReportsController : ControllerBase
 
     // GET /api/recruitment/reports/source-effectiveness
     [HttpGet("source-effectiveness")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> SourceEffectiveness(CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -101,6 +104,7 @@ public class RecruitmentReportsController : ControllerBase
 
     // GET /api/recruitment/reports/open-positions
     [HttpGet("open-positions")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> OpenPositions(CancellationToken ct)
     {
         var tid = GetTenantId();

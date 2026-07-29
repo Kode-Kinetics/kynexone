@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -29,6 +30,7 @@ public class OffersController : ControllerBase
 
     // GET /api/recruitment/offers?applicationId=...&status=...
     [HttpGet]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> List(
         [FromQuery] Guid? applicationId = null,
         [FromQuery] string? status = null,
@@ -51,6 +53,7 @@ public class OffersController : ControllerBase
 
     // GET /api/recruitment/offers/{id}
     [HttpGet("{id:guid}")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -79,6 +82,7 @@ public class OffersController : ControllerBase
         var offer = new OfferLetter
         {
             TenantId = tid,
+            CompanyId = app.CompanyId, // inherit legal entity from parent application
             ApplicationId = req.ApplicationId,
             CandidateName = app.CandidateName,
             OfferedJobTitle = req.OfferedJobTitle,
@@ -90,7 +94,11 @@ public class OffersController : ControllerBase
             OtherAllowances = req.OtherAllowances,
             GrossSalary = gross,
             ProbationMonths = req.ProbationMonths,
-            ContentHtml = req.ContentHtml ?? string.Empty,
+            // Encode-on-write: the caller-supplied HTML is an arbitrary-HTML sink stored verbatim
+            // and later served as text/html. HTML-encoding here guarantees stored content can never
+            // execute (stored-XSS defense over localStorage JWTs). Zero-dependency safe default;
+            // swap for an allowlist sanitizer only if rich offer formatting is later required.
+            ContentHtml = HtmlEncoder.Default.Encode(req.ContentHtml ?? string.Empty),
             ResponseDeadline = req.ResponseDeadline,
         };
 

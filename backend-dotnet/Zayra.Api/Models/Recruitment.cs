@@ -90,10 +90,12 @@ public class JobOpening : ITenantOwned
 
 // ── Candidate (Talent Pool) ────────────────────────────────────────────────────
 
-public class Candidate : ITenantOwned
+public class Candidate : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public string FirstName { get; set; } = string.Empty;
     public string LastName { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
@@ -114,10 +116,12 @@ public class Candidate : ITenantOwned
 
 // ── Job Application (Pipeline record) ─────────────────────────────────────────
 
-public class JobApplication : ITenantOwned
+public class JobApplication : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Stamped from the parent candidate on create; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid JobOpeningId { get; set; }
     public string JobTitle { get; set; } = string.Empty;
     public Guid CandidateId { get; set; }
@@ -173,10 +177,12 @@ public class InterviewSchedule : ITenantOwned
 
 // ── Offer Letter ───────────────────────────────────────────────────────────────
 
-public class OfferLetter : ITenantOwned
+public class OfferLetter : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Stamped from the parent application on create; required for new operational writes.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid ApplicationId { get; set; }
     public string CandidateName { get; set; } = string.Empty;
     public string OfferedJobTitle { get; set; } = string.Empty;
