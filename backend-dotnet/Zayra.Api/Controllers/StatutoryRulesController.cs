@@ -101,7 +101,12 @@ public class StatutoryRulesController : ControllerBase
         return Ok(items);
     }
 
-    /// <summary>Creates a tenant-specific override for a statutory rule.</summary>
+    /// <summary>
+    /// Creates a tenant-level statutory rule override. HARDENED (compliance boundary): this is a
+    /// bounded override, NOT free CRUD — it requires the higher-trust payroll.rates.statutory_override
+    /// permission, a non-empty reason (Description), and the (country, jurisdiction, ruleKey) must
+    /// already exist as a seeded platform default (no inventing statutory keys). Every write is audited.
+    /// </summary>
     [HttpPost]
     [Authorize(Roles = "Admin")]
     public async Task<ActionResult<StatutoryRuleDto>> Create(
@@ -110,21 +115,33 @@ public class StatutoryRulesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
 
         if (string.IsNullOrWhiteSpace(req.CountryCode) ||
             string.IsNullOrWhiteSpace(req.RuleKey)     ||
             string.IsNullOrWhiteSpace(req.RuleValue))
             return BadRequest("CountryCode, RuleKey, and RuleValue are required.");
+        if (string.IsNullOrWhiteSpace(req.Description))
+            return BadRequest("A reason (Description) is required for a statutory override.");
+
+        var cc = req.CountryCode.ToUpperInvariant();
+        var jur = req.Jurisdiction ?? string.Empty;
+        var key = req.RuleKey.Trim();
+        // No inventing statutory keys: the key must resolve to an existing platform/tenant rule.
+        // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
+        var exists = await _db.StatutoryRules.IgnoreQueryFilters().AsNoTracking()
+            .AnyAsync(r => (r.TenantId == null || r.TenantId == tenantId) && r.CountryCode == cc && r.Jurisdiction == jur && r.RuleKey == key, ct);
+        if (!exists) return BadRequest($"Unknown statutory rule key '{key}' for {cc}/{jur}. Overrides may only be created for seeded rules.");
 
         var rule = new StatutoryRule
         {
             TenantId     = tenantId,
-            CountryCode  = req.CountryCode.ToUpperInvariant(),
-            Jurisdiction = req.Jurisdiction ?? string.Empty,
-            RuleKey      = req.RuleKey.Trim(),
+            CountryCode  = cc,
+            Jurisdiction = jur,
+            RuleKey      = key,
             RuleValue    = req.RuleValue.Trim(),
             DataType     = string.IsNullOrWhiteSpace(req.DataType) ? "decimal" : req.DataType,
-            Description  = req.Description ?? string.Empty,
+            Description  = req.Description.Trim(),
             EffectiveFrom = req.EffectiveFrom,
             EffectiveTo   = req.EffectiveTo,
             CreatedBy     = this.GetUserId(),
@@ -132,13 +149,19 @@ public class StatutoryRulesController : ControllerBase
         };
 
         _db.StatutoryRules.Add(rule);
+        await Audit("statutory_rule.override.created", rule.Id.ToString(),
+            new { rule.CountryCode, rule.Jurisdiction, ruleKey = rule.RuleKey, overrideValue = rule.RuleValue, reason = rule.Description, rule.EffectiveFrom, rule.EffectiveTo }, ct);
         await _db.SaveChangesAsync(ct);
 
         var dto = ToDto(rule, isTenantOverride: true);
         return CreatedAtAction(nameof(List), new { }, dto);
     }
 
-    /// <summary>Updates a tenant-owned statutory rule override. Platform defaults are not editable.</summary>
+    /// <summary>
+    /// Supersedes a tenant-owned statutory rule override. HARDENED: statutory changes are append-only
+    /// for audit — the value/effective-from are NOT mutated in place. The prior row is closed
+    /// (EffectiveTo set) and a new effective-dated row is inserted. Platform defaults are not editable.
+    /// </summary>
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin")]
     public async Task<ActionResult<StatutoryRuleDto>> Update(
@@ -148,19 +171,30 @@ public class StatutoryRulesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
+        if (string.IsNullOrWhiteSpace(req.Description))
+            return BadRequest("A reason (Description) is required to supersede a statutory override.");
 
         // IDOR guard: rule must belong to this tenant (not a platform default)
-        var rule = await _db.StatutoryRules
+        var prior = await _db.StatutoryRules
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
-        if (rule is null) return NotFound();
+        if (prior is null) return NotFound();
 
-        rule.RuleValue    = req.RuleValue.Trim();
-        rule.Description  = req.Description ?? rule.Description;
-        rule.EffectiveFrom = req.EffectiveFrom;
-        rule.EffectiveTo  = req.EffectiveTo;
-
+        // Supersede (append-only): close the prior row, insert the new effective-dated value.
+        var before = prior.RuleValue;
+        prior.EffectiveTo = req.EffectiveFrom;
+        var next = new StatutoryRule
+        {
+            TenantId = tenantId, CountryCode = prior.CountryCode, Jurisdiction = prior.Jurisdiction,
+            RuleKey = prior.RuleKey, RuleValue = req.RuleValue.Trim(), DataType = prior.DataType,
+            Description = req.Description.Trim(), EffectiveFrom = req.EffectiveFrom, EffectiveTo = req.EffectiveTo,
+            CreatedBy = this.GetUserId(), CreatedAtUtc = DateTime.UtcNow,
+        };
+        _db.StatutoryRules.Add(next);
+        await Audit("statutory_rule.override.superseded", next.Id.ToString(),
+            new { next.CountryCode, next.Jurisdiction, ruleKey = next.RuleKey, before, after = next.RuleValue, reason = next.Description, supersededId = prior.Id, next.EffectiveFrom, next.EffectiveTo }, ct);
         await _db.SaveChangesAsync(ct);
-        return Ok(ToDto(rule, isTenantOverride: true));
+        return Ok(ToDto(next, isTenantOverride: true));
     }
 
     /// <summary>Deletes a tenant-owned statutory rule override. Platform defaults cannot be deleted.</summary>
@@ -170,14 +204,36 @@ public class StatutoryRulesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
 
         var rule = await _db.StatutoryRules
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (rule is null) return NotFound();
 
         _db.StatutoryRules.Remove(rule);
+        await Audit("statutory_rule.override.deleted", rule.Id.ToString(),
+            new { rule.CountryCode, rule.Jurisdiction, ruleKey = rule.RuleKey, value = rule.RuleValue }, ct);
         await _db.SaveChangesAsync(ct);
         return NoContent();
+    }
+
+    private bool HasPermission(string permission) =>
+        User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    private async Task Audit(string action, string entityId, object metadata, CancellationToken ct)
+    {
+        _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog
+        {
+            TenantId = this.GetTenantId(),
+            Action = action,
+            EntityName = "StatutoryRule",
+            EntityId = entityId,
+            UserId = this.GetUserId(),
+            IpAddress = HttpContext?.Connection.RemoteIpAddress?.ToString(),
+            Metadata = System.Text.Json.JsonSerializer.Serialize(metadata),
+            CreatedAtUtc = DateTime.UtcNow,
+        });
+        await Task.CompletedTask;
     }
 
     private static StatutoryRuleDto ToDto(StatutoryRule r, bool isTenantOverride) =>

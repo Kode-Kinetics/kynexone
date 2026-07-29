@@ -1198,6 +1198,10 @@ public class PlatformController : ControllerBase
 
         // Full standard RBAC set (Admin → Employee), same as the seeded tenant
         var adminRole = await _authSeeder.EnsureTenantRolesAsync(tenant.Id, ct);
+        // Phase 2: eager-seed the GL defaults (chart of accounts, tenant-default mappings, the 17
+        // system posting drivers, and the client-configurable rate allow-list) for the new tenant.
+        await Zayra.Api.Infrastructure.Seed.GlDriverSeeder.SeedTenantDefaultsAsync(_db, tenant.Id, ct);
+        await _db.SaveChangesAsync(ct);
 
         var admin = new User
         {
@@ -3277,6 +3281,10 @@ public class PlatformController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         var adminRole = await _authSeeder.EnsureTenantRolesAsync(tenant.Id, ct);
+        // Phase 2: eager-seed the GL defaults (chart of accounts, tenant-default mappings, the 17
+        // system posting drivers, and the client-configurable rate allow-list) for the new tenant.
+        await Zayra.Api.Infrastructure.Seed.GlDriverSeeder.SeedTenantDefaultsAsync(_db, tenant.Id, ct);
+        await _db.SaveChangesAsync(ct);
         var plan = string.IsNullOrWhiteSpace(req.Plan) ? "Trial" : req.Plan;
         var (defaultMaxUsers, defaultMaxEmployees) = SubscriptionTiers.GetDefaults(plan);
 

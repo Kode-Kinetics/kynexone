@@ -1027,9 +1027,9 @@ public class PayrollController : ControllerBase
             var glCompany  = await _db.Companies.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId, cancellationToken);
             var glCurrency = glCompany?.DefaultCurrency ?? "SAR";
-            var glOverrides = await LoadGlOverridesAsync(tenantId, cancellationToken);
+            var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
             var (glLines, totalDebits, totalCredits) = BuildPayrollGlEntries(
-                tenantId, id, period, earnings, dedxns, totalNet, uid, uname, glCurrency, glOverrides);
+                tenantId, id, period, earnings, dedxns, totalNet, uid, uname, glCurrency, glCtx);
             if (Math.Abs(totalDebits - totalCredits) > 0.01m)
                 return UnprocessableEntity(new
                 {
@@ -1362,35 +1362,51 @@ public class PayrollController : ControllerBase
             var earnings  = await _db.PayrollEarnings.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
             var deductions = await _db.PayrollDeductions.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
             var totalNet   = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).SumAsync(x => x.NetSalary, cancellationToken);
-            var overrides  = await LoadGlOverridesAsync(tenantId, cancellationToken);
+            var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
 
             foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
             {
                 var first = grp.First();
-                var driver = EarningDriverKey(grp.Key, first.Source);
-                var (acct, aName) = ResolveGlAccount(driver, overrides);
+                var driver = ResolveDriverForComponent(glCtx.Drivers, grp.Key, first.Source, GlDriverCategories.Earning)?.Key
+                             ?? EarningDriverKey(grp.Key, first.Source);
+                var (acct, aName) = ResolveGlAccount(driver, glCtx.Overrides, glCtx.DriverDefaults);
                 entries.Add((grp.Key, first.ComponentName, acct, aName, "DR", grp.Sum(e => e.Amount)));
             }
 
-            var employerStatutoryTotal = 0m;
+            var employerExpenseByPairKey = new Dictionary<string, decimal>(StringComparer.Ordinal);
             foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
             {
                 var first = grp.First();
-                var driver = DeductionDriverKey(grp.Key.ComponentCode, grp.Key.Source, out var isEr);
-                if (isEr) employerStatutoryTotal += grp.Sum(d => d.Amount);
-                var (acct, aName) = ResolveGlAccount(driver, overrides);
+                var driverRow = ResolveDriverForComponent(glCtx.Drivers, grp.Key.ComponentCode, grp.Key.Source, GlDriverCategories.Deduction);
+                string driver;
+                if (driverRow is not null)
+                {
+                    driver = driverRow.Key;
+                    if (driverRow.EmitsEmployerExpensePair)
+                    {
+                        var pk = driverRow.PairedExpenseDriverKey ?? "EMPLOYER_STATUTORY_EXPENSE";
+                        employerExpenseByPairKey[pk] = employerExpenseByPairKey.GetValueOrDefault(pk) + grp.Sum(d => d.Amount);
+                    }
+                }
+                else
+                {
+                    driver = DeductionDriverKey(grp.Key.ComponentCode, grp.Key.Source, out var isEr);
+                    if (isEr) employerExpenseByPairKey["EMPLOYER_STATUTORY_EXPENSE"] = employerExpenseByPairKey.GetValueOrDefault("EMPLOYER_STATUTORY_EXPENSE") + grp.Sum(d => d.Amount);
+                }
+                var (acct, aName) = ResolveGlAccount(driver, glCtx.Overrides, glCtx.DriverDefaults);
                 entries.Add((grp.Key.ComponentCode, first.ComponentName, acct, aName, "CR", grp.Sum(d => d.Amount)));
             }
 
             // Employer statutory expense DR balances the employer-social-insurance CR liability posted above.
-            if (employerStatutoryTotal > 0)
+            foreach (var (pairKey, amount) in employerExpenseByPairKey.OrderBy(kv => kv.Key, StringComparer.Ordinal))
             {
-                var (c, n) = ResolveGlAccount("EMPLOYER_STATUTORY_EXPENSE", overrides);
-                entries.Add(("SOCIAL_INS_ER_DR", "Employer Social Insurance Expense", c, n, "DR", employerStatutoryTotal));
+                if (amount <= 0) continue;
+                var (c, n) = ResolveGlAccount(pairKey, glCtx.Overrides, glCtx.DriverDefaults);
+                entries.Add(("SOCIAL_INS_ER_DR", "Employer Social Insurance Expense", c, n, "DR", amount));
             }
 
             // Net salary payable CR balances all earning DRs net of deduction CRs.
-            var (netCode, netName) = ResolveGlAccount("NET_PAYABLE", overrides);
+            var (netCode, netName) = ResolveGlAccount("NET_PAYABLE", glCtx.Overrides, glCtx.DriverDefaults);
             entries.Add(("NET_SALARY", "Net Salary Payable", netCode, netName, "CR", totalNet));
         }
 
@@ -2266,13 +2282,77 @@ public class PayrollController : ControllerBase
         };
     }
 
-    /// <summary>Driver key → (code, name): tenant override wins, else catalog default, else Unmapped.</summary>
+    /// <summary>Driver key → (code, name): company/tenant mapping override wins, else the persisted
+    /// driver default (company row → tenant row), else the compiled catalog default, else Unmapped.</summary>
     private static (string Code, string Name) ResolveGlAccount(
-        string driverKey, IReadOnlyDictionary<string, (string Code, string Name)>? overrides)
+        string driverKey,
+        IReadOnlyDictionary<string, (string Code, string Name)>? overrides,
+        IReadOnlyDictionary<string, (string Code, string Name)>? driverDefaults = null)
     {
         if (overrides is not null && overrides.TryGetValue(driverKey, out var o)) return o;
+        if (driverDefaults is not null && driverDefaults.TryGetValue(driverKey, out var dd)) return dd;
         if (PayrollGlCatalog.Defaults.TryGetValue(driverKey, out var d)) return d;
         return ("9999", "Unmapped");
+    }
+
+    // ── Data-driven driver routing (Phase 2 driver store) ────────────────────────
+    // Replaces the compiled EarningDriverKey/DeductionDriverKey switches with a match over the
+    // persisted gl_drivers set. When the store is empty (or no driver matches) it falls back to the
+    // compiled switch so behaviour is byte-identical for tenants that have not seeded drivers yet.
+
+    private sealed record GlDriverRow(
+        string Key, string Category, string PostingSide, string? MatchSource, string MatchMode,
+        string? MatchComponentCode, bool EmitsEmployerExpensePair, string? PairedExpenseDriverKey,
+        bool IsSystem, int SortOrder);
+
+    /// <summary>Everything the shared GL routing needs, loaded once per run (company-first).</summary>
+    private sealed record GlResolutionContext(
+        IReadOnlyDictionary<string, (string Code, string Name)> Overrides,
+        IReadOnlyDictionary<string, (string Code, string Name)> DriverDefaults,
+        IReadOnlyList<GlDriverRow> Drivers)
+    {
+        public static readonly GlResolutionContext Empty = new(
+            new Dictionary<string, (string, string)>(),
+            new Dictionary<string, (string, string)>(),
+            Array.Empty<GlDriverRow>());
+    }
+
+    private static int SpecificityRank(string matchMode) => matchMode switch
+    {
+        GlDriverMatchModes.Exact => 3,
+        GlDriverMatchModes.Suffix => 2,
+        GlDriverMatchModes.Prefix => 2,
+        _ => 1, // Any
+    };
+
+    private static bool DriverMatches(GlDriverRow d, string componentCode, string source)
+    {
+        if (d.MatchSource is not null && !string.Equals(d.MatchSource, source, StringComparison.Ordinal))
+            return false;
+        return d.MatchMode switch
+        {
+            GlDriverMatchModes.Exact => d.MatchComponentCode is not null && componentCode == d.MatchComponentCode,
+            GlDriverMatchModes.Suffix => d.MatchComponentCode is not null && componentCode.EndsWith(d.MatchComponentCode, StringComparison.Ordinal),
+            GlDriverMatchModes.Prefix => d.MatchComponentCode is not null && componentCode.StartsWith(d.MatchComponentCode, StringComparison.Ordinal),
+            _ => d.MatchComponentCode is null, // Any
+        };
+    }
+
+    /// <summary>Most-specific driver for a component within a category, or null (→ compiled fallback).
+    /// Add-only authority: system wins on a specificity tie so a custom driver can only WIN by being
+    /// strictly more specific.</summary>
+    private static GlDriverRow? ResolveDriverForComponent(
+        IReadOnlyList<GlDriverRow> drivers, string componentCode, string source, string category)
+    {
+        if (drivers.Count == 0) return null;
+        return drivers
+            .Where(d => d.Category == category && DriverMatches(d, componentCode, source))
+            .OrderByDescending(d => SpecificityRank(d.MatchMode))
+            .ThenByDescending(d => d.MatchSource != null)
+            .ThenBy(d => d.SortOrder)
+            .ThenByDescending(d => d.IsSystem)
+            .ThenBy(d => d.Key, StringComparer.Ordinal)
+            .FirstOrDefault();
     }
 
     /// <summary>Splits a persisted "<code> - <name>" account label on the FIRST " - " only
@@ -2303,23 +2383,27 @@ public class PayrollController : ControllerBase
         List<PayrollEarning> earnings, List<PayrollDeduction> deductions,
         decimal totalNetSalary, Guid? postedBy, string postedByName,
         string currency = "SAR",  // default SAR since this is primarily a Saudi HRM
-        IReadOnlyDictionary<string, (string Code, string Name)>? accountOverrides = null)
+        GlResolutionContext? gl = null)
     {
+        gl ??= GlResolutionContext.Empty;
         var lines = new List<FinanceGlEntry>();
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
-        // Resolve a posting driver to "<code> - <name>": tenant override first, else built-in default.
-        // Delegates to the shared ResolveGlAccount so posting and the GL Journal preview stay identical.
+        // Resolve a posting driver to "<code> - <name>": mapping override → persisted driver default →
+        // compiled default. Delegates to the shared ResolveGlAccount so posting and the GL Journal
+        // preview stay identical.
         string Account(string driverKey)
         {
-            var (code, name) = ResolveGlAccount(driverKey, accountOverrides);
+            var (code, name) = ResolveGlAccount(driverKey, gl.Overrides, gl.DriverDefaults);
             return $"{code} - {name}";
         }
 
         // ── Earnings (Debit side) ──────────────────────────────────────────────
         foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
         {
-            var driver = EarningDriverKey(grp.Key, grp.First().Source);
+            var src = grp.First().Source;
+            var driver = ResolveDriverForComponent(gl.Drivers, grp.Key, src, GlDriverCategories.Earning)?.Key
+                         ?? EarningDriverKey(grp.Key, src);
             lines.Add(new FinanceGlEntry
             {
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
@@ -2333,12 +2417,28 @@ public class PayrollController : ControllerBase
         }
 
         // ── Deductions (Credit side) ──────────────────────────────────────────
-        decimal employerStatutoryTotal = 0m;
+        // Employer-expense pairs accumulate per paired-expense driver key so a client-defined pair
+        // (via a custom driver) balances the same way the system DED:STATUTORY_ER row does.
+        var employerExpenseByPairKey = new Dictionary<string, decimal>(StringComparer.Ordinal);
         foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
         {
-            var driver = DeductionDriverKey(grp.Key.ComponentCode, grp.Key.Source, out var isEmployerSide);
+            var driverRow = ResolveDriverForComponent(gl.Drivers, grp.Key.ComponentCode, grp.Key.Source, GlDriverCategories.Deduction);
+            string driver;
+            bool isEmployerSide;
+            string pairKey;
+            if (driverRow is not null)
+            {
+                driver = driverRow.Key;
+                isEmployerSide = driverRow.EmitsEmployerExpensePair;
+                pairKey = driverRow.PairedExpenseDriverKey ?? "EMPLOYER_STATUTORY_EXPENSE";
+            }
+            else
+            {
+                driver = DeductionDriverKey(grp.Key.ComponentCode, grp.Key.Source, out isEmployerSide);
+                pairKey = "EMPLOYER_STATUTORY_EXPENSE";
+            }
             if (isEmployerSide)
-                employerStatutoryTotal += grp.Sum(d => d.Amount); // aggregated into DR/CR pair below
+                employerExpenseByPairKey[pairKey] = employerExpenseByPairKey.GetValueOrDefault(pairKey) + grp.Sum(d => d.Amount);
 
             lines.Add(new FinanceGlEntry
             {
@@ -2353,17 +2453,20 @@ public class PayrollController : ControllerBase
         }
 
         // Employer statutory contribution: DR expense to balance the CR liability above.
-        if (employerStatutoryTotal > 0)
+        foreach (var (pairKey, amount) in employerExpenseByPairKey.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            if (amount <= 0) continue;
             lines.Add(new FinanceGlEntry
             {
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = "PayrollLock",
-                DebitAccount = Account("EMPLOYER_STATUTORY_EXPENSE"), CreditAccount = string.Empty,
-                Amount = employerStatutoryTotal, Currency = currency,
+                DebitAccount = Account(pairKey), CreditAccount = string.Empty,
+                Amount = amount, Currency = currency,
                 EntryDate = today, Period = period,
                 Description = "Employer statutory contributions (social insurance)",
                 PostedBy = postedBy, PostedByName = postedByName,
             });
+        }
 
         // Net salary payable balances all DR earnings vs. CR deductions.
         lines.Add(new FinanceGlEntry
@@ -2382,15 +2485,54 @@ public class PayrollController : ControllerBase
         return (lines, totalDebits, totalCredits);
     }
 
-    /// <summary>Loads the tenant's driver→account overrides (active mappings joined to active accounts).</summary>
-    private async Task<IReadOnlyDictionary<string, (string Code, string Name)>> LoadGlOverridesAsync(Guid tenantId, CancellationToken ct)
+    /// <summary>
+    /// Loads the company-first GL resolution context for a run: mapping overrides (company row wins
+    /// over tenant default per driver), the persisted driver defaults (company row → tenant row), and
+    /// the driver set for data-driven routing. IgnoreQueryFilters is intentional and mirrors
+    /// CompanyTaxPolicyResolver: GL posting is a SYSTEM read that must see BOTH the run's company rows
+    /// and the tenant-default (CompanyId == null) rows regardless of the caller's own company claims;
+    /// the WHERE re-applies exact tenant + company/default scope and never reads another tenant.
+    /// </summary>
+    private async Task<GlResolutionContext> LoadGlResolutionContextAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
     {
-        var rows = await _db.GlAccountMappings.AsNoTracking()
-            .Where(m => m.TenantId == tenantId && m.IsActive)
-            .Join(_db.GlAccounts.AsNoTracking().Where(a => a.TenantId == tenantId && a.IsActive),
-                  m => m.AccountId, a => a.Id, (m, a) => new { m.DriverKey, a.Code, a.Name })
+        // Mapping overrides joined to active accounts; company-scoped mapping/account beat tenant default.
+        var mapRows = await _db.GlAccountMappings.IgnoreQueryFilters().AsNoTracking()
+            .Where(m => m.TenantId == tenantId && m.IsActive && (m.CompanyId == companyId || m.CompanyId == null))
+            .Join(_db.GlAccounts.IgnoreQueryFilters().AsNoTracking()
+                    .Where(a => a.TenantId == tenantId && a.IsActive && (a.CompanyId == companyId || a.CompanyId == null)),
+                  m => m.AccountId, a => a.Id,
+                  (m, a) => new { m.DriverKey, m.CompanyId, a.Code, a.Name })
             .ToListAsync(ct);
-        return rows.ToDictionary(r => r.DriverKey, r => (r.Code, r.Name));
+        var overrides = mapRows
+            .GroupBy(r => r.DriverKey)
+            .ToDictionary(g => g.Key, g =>
+            {
+                var win = g.OrderByDescending(r => r.CompanyId != null).First();
+                return (win.Code, win.Name);
+            });
+
+        // IgnoreQueryFilters is intentional: same system-read rationale as the mapping load above —
+        // must see the run's company drivers AND tenant-default drivers regardless of caller claims.
+        var driverRows = await _db.GlDrivers.IgnoreQueryFilters().AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.IsActive && (d.CompanyId == companyId || d.CompanyId == null))
+            .ToListAsync(ct);
+
+        // Company driver row wins over the tenant driver row for both routing and default account.
+        var driverDefaults = driverRows
+            .GroupBy(d => d.Key)
+            .ToDictionary(g => g.Key, g =>
+            {
+                var win = g.OrderByDescending(d => d.CompanyId != null).First();
+                return (win.DefaultCode, win.DefaultName);
+            });
+        var drivers = driverRows
+            .GroupBy(d => d.Key)
+            .Select(g => g.OrderByDescending(d => d.CompanyId != null).First())
+            .Select(d => new GlDriverRow(d.Key, d.Category, d.PostingSide, d.MatchSource, d.MatchMode,
+                d.MatchComponentCode, d.EmitsEmployerExpensePair, d.PairedExpenseDriverKey, d.IsSystem, d.SortOrder))
+            .ToList();
+
+        return new GlResolutionContext(overrides, driverDefaults, drivers);
     }
 
     // M1: audit log now captures caller IP and structured metadata

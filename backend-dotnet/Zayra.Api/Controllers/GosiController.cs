@@ -69,7 +69,13 @@ public class GosiController : ControllerBase
         [FromBody] CreateGosiRuleRequest req,
         CancellationToken ct)
     {
-        if (!HasPermission("payroll.manage")) return Forbid();
+        // HARDENED (compliance boundary): GOSI contribution rates are the flagship statutory rate and
+        // the actual computation source (GosiCalculationService), so overriding one is a bounded
+        // statutory action — it requires the higher-trust payroll.rates.statutory_override permission
+        // (not ordinary payroll.manage) and a non-empty reason. Every write is audited below.
+        if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
+        if (string.IsNullOrWhiteSpace(req.SourceReference) && string.IsNullOrWhiteSpace(req.Notes))
+            return BadRequest(new { error = "A reason (SourceReference or Notes) is required to override a GOSI contribution rate." });
 
         var tenantId = GetTenantId();
         var rule = new GosiContributionRule
