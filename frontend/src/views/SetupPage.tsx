@@ -6,7 +6,7 @@ import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
-import { financeGlApi, type GlAccount, type GlMappingRow } from '../api/financeGl';
+import { GlSetupPanel } from '../components/gl/GlSetupPanel';
 import { CountrySelect } from '../components/CountrySelect';
 import {
   companiesApi,
@@ -78,7 +78,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'gccSettings', label: 'GCC Settings', icon: Globe },
   { id: 'fiscalYears', label: 'Fiscal Years', icon: Calendar },
   { id: 'locations', label: 'Locations', icon: MapPin },
-  { id: 'glMapping', label: 'GL Mapping', icon: Landmark },
+  { id: 'glMapping', label: 'GL & Rates', icon: Landmark },
   { id: 'notificationTemplates', label: 'Notifications', icon: Bell },
   { id: 'emailConfig', label: 'Email / SMTP', icon: Settings },
   { id: 'adminAuditLogs', label: 'Audit Logs', icon: ClipboardList },
@@ -880,190 +880,6 @@ function PayScaleEditor({ components, onChange }: { components: GradePayScaleCom
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-// ─── GL Mapping (chart of accounts + payroll driver→account) ─────────────────
-
-function GlMappingTab() {
-  const [accounts, setAccounts] = useState<GlAccount[]>([]);
-  const [rows, setRows] = useState<GlMappingRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [seeding, setSeeding] = useState(false);
-  const [newAcct, setNewAcct] = useState<{ code: string; name: string; accountType: string }>({ code: '', name: '', accountType: 'Expense' });
-  const [editing, setEditing] = useState<GlAccount | null>(null);
-  const [editForm, setEditForm] = useState<{ name: string; accountType: string; isActive: boolean }>({ name: '', accountType: 'Expense', isActive: true });
-  const [savingEdit, setSavingEdit] = useState(false);
-  const [editError, setEditError] = useState('');
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [a, m] = await Promise.all([financeGlApi.listAccounts(), financeGlApi.listMappings()]);
-      setAccounts(a); setRows(m);
-    } catch { /**/ } finally { setLoading(false); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
-
-  const seed = async () => { setSeeding(true); try { await financeGlApi.seedDefaults(); await load(); } catch (e) { notifyApiError(e); } finally { setSeeding(false); } };
-  const addAccount = async () => {
-    if (!newAcct.code.trim() || !newAcct.name.trim()) return;
-    try { await financeGlApi.createAccount({ ...newAcct, isActive: true }); setNewAcct({ code: '', name: '', accountType: 'Expense' }); await load(); }
-    catch (e) { notifyApiError(e); }
-  };
-  const setMapping = (driverKey: string, accountId: string) =>
-    setRows((rs) => rs.map((r) => (r.driverKey === driverKey ? { ...r, mappedAccountId: accountId || null } : r)));
-  const saveMappings = async () => {
-    setSaving(true);
-    try {
-      const payload = rows.filter((r) => r.mappedAccountId).map((r) => ({ driverKey: r.driverKey, accountId: r.mappedAccountId as string }));
-      await financeGlApi.setMappings(payload); await load();
-    } catch (e) { notifyApiError(e); } finally { setSaving(false); }
-  };
-
-  const openEdit = (a: GlAccount) => {
-    setEditing(a);
-    setEditForm({ name: a.name, accountType: a.accountType, isActive: a.isActive });
-    setEditError('');
-  };
-  const saveEdit = async () => {
-    if (!editing) return;
-    if (!editForm.name.trim()) { setEditError('Name is required'); return; }
-    // Advisory only: `rows` is local mapping state and may include unsaved dropdown edits, so this is a
-    // best-effort nudge, not a guarantee. Deactivating a mapped account silently drops that override in
-    // BOTH the GL preview and the locked posting (LoadGlOverridesAsync joins only active accounts).
-    // There is no server guard on UpdateAccount (only DeleteAccount is guarded) — a Phase-2 item.
-    if (!editForm.isActive && editing.isActive && rows.some((r) => r.mappedAccountId === editing.id) &&
-      !confirm('This account is mapped to a payroll driver. Deactivating it makes that driver fall back to its built-in default in the GL journal. Continue?')) return;
-    setSavingEdit(true); setEditError('');
-    try {
-      // Backend UpdateAccount treats Code as immutable; resend the original code to satisfy the DTO.
-      await financeGlApi.updateAccount(editing.id, {
-        code: editing.code, name: editForm.name.trim(), accountType: editForm.accountType, isActive: editForm.isActive,
-      });
-      setEditing(null); await load();
-    } catch (err: unknown) { setEditError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
-    finally { setSavingEdit(false); }
-  };
-  const deleteAccount = async (a: GlAccount) => {
-    if (!confirm(`Delete account ${a.code} — ${a.name}?`)) return;
-    setDeletingId(a.id);
-    try { await financeGlApi.deleteAccount(a.id); await load(); }
-    catch (e) { notifyApiError(e); } // surfaces "Account is in use by a payroll mapping; remap it first."
-    finally { setDeletingId(null); }
-  };
-
-  if (loading) return <p className="text-sm text-slate-400">Loading…</p>;
-
-  return (
-    <div className="space-y-6">
-      <div className="surface p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Chart of Accounts</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">GL accounts payroll can post to. Unmapped drivers use built-in defaults.</p>
-          </div>
-          <button type="button" onClick={seed} disabled={seeding} className="btn-secondary text-xs disabled:opacity-60">{seeding ? 'Seeding…' : 'Seed defaults'}</button>
-        </div>
-        <div className="overflow-hidden rounded-lg border border-slate-200 dark:border-white/10">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
-              <tr><th className="px-3 py-2">Code</th><th className="px-3 py-2">Name</th><th className="px-3 py-2">Type</th><th className="px-3 py-2"></th></tr>
-            </thead>
-            <tbody>
-              {accounts.map((a) => (
-                <tr key={a.id} className="border-t border-slate-100 dark:border-white/5">
-                  <td className="px-3 py-2 font-mono text-xs">{a.code}</td>
-                  <td className="px-3 py-2">{a.name}</td>
-                  <td className="px-3 py-2 text-slate-500">{a.accountType}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center justify-end gap-1">
-                      <ActiveBadge active={a.isActive} />
-                      <button type="button" onClick={() => openEdit(a)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                      <button type="button" onClick={() => deleteAccount(a)} disabled={deletingId === a.id} aria-label="Delete account" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              <tr className="border-t border-slate-100 dark:border-white/5">
-                <td className="px-3 py-2"><input aria-label="New account code" value={newAcct.code} onChange={(e) => setNewAcct((x) => ({ ...x, code: e.target.value }))} className="input h-8 w-24 text-xs" placeholder="5006" /></td>
-                <td className="px-3 py-2"><input aria-label="New account name" value={newAcct.name} onChange={(e) => setNewAcct((x) => ({ ...x, name: e.target.value }))} className="input h-8 w-full text-xs" placeholder="Account name" /></td>
-                <td className="px-3 py-2">
-                  <select aria-label="New account type" value={newAcct.accountType} onChange={(e) => setNewAcct((x) => ({ ...x, accountType: e.target.value }))} className="select h-8 text-xs">
-                    {['Asset', 'Liability', 'Expense', 'Equity', 'Revenue'].map((t) => <option key={t}>{t}</option>)}
-                  </select>
-                </td>
-                <td className="px-3 py-2 text-right"><button type="button" onClick={addAccount} className="btn-secondary h-8 px-2 text-xs"><Plus className="h-3 w-3" /> Add</button></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="surface p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Payroll GL Mapping</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">Point each payroll posting line at one of your accounts. Blank = use the default.</p>
-          </div>
-          <button type="button" onClick={saveMappings} disabled={saving} className="btn-primary text-xs disabled:opacity-60">{saving ? 'Saving…' : 'Save mappings'}</button>
-        </div>
-        <div className="space-y-1.5">
-          {rows.map((r) => (
-            <div key={r.driverKey} className="grid grid-cols-12 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-              <div className="col-span-5">
-                <p className="text-sm text-slate-800 dark:text-slate-100">{r.label}</p>
-                <p className="text-[11px] text-slate-400">default: {r.defaultAccount}</p>
-              </div>
-              <div className="col-span-2 text-xs text-slate-500">{r.accountType}</div>
-              <div className="col-span-5">
-                <select aria-label={`Account for ${r.label}`} value={r.mappedAccountId ?? ''} onChange={(e) => setMapping(r.driverKey, e.target.value)} className="select w-full text-xs">
-                  <option value="">— use default —</option>
-                  {accounts.filter((a) => a.isActive).map((a) => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
-                </select>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <Modal
-        isOpen={!!editing}
-        title={`Edit Account ${editing?.code ?? ''}`}
-        onClose={() => setEditing(null)}
-        footer={
-          <>
-            <button type="button" onClick={() => setEditing(null)} className="btn-secondary">Cancel</button>
-            <button type="button" onClick={saveEdit} disabled={savingEdit} className="btn-primary disabled:opacity-60">{savingEdit ? 'Saving…' : 'Save'}</button>
-          </>
-        }
-      >
-        <FormError error={editError} />
-        <div className="grid grid-cols-2 gap-3">
-          <FormField label="Code">
-            <input value={editing?.code ?? ''} disabled className="input w-full opacity-60" title="Account code is immutable" />
-          </FormField>
-          <FormField label="Type">
-            <select value={editForm.accountType} onChange={(e) => setEditForm((x) => ({ ...x, accountType: e.target.value }))} className="select w-full">
-              {['Asset', 'Liability', 'Expense', 'Equity', 'Revenue'].map((t) => <option key={t}>{t}</option>)}
-            </select>
-          </FormField>
-          <FormField label="Name" required>
-            <input value={editForm.name} onChange={(e) => setEditForm((x) => ({ ...x, name: e.target.value }))} className="input w-full" />
-          </FormField>
-          <FormField label="Status">
-            <select value={editForm.isActive ? 'true' : 'false'} onChange={(e) => setEditForm((x) => ({ ...x, isActive: e.target.value === 'true' }))} className="select w-full">
-              <option value="true">Active</option>
-              <option value="false">Inactive</option>
-            </select>
-          </FormField>
-        </div>
-      </Modal>
     </div>
   );
 }
@@ -2328,7 +2144,7 @@ export function SetupPage() {
         {activeTab === 'gccSettings' && <GCCSettingsTab />}
         {activeTab === 'fiscalYears' && <FiscalYearsTab />}
         {activeTab === 'locations' && <LocationsTab />}
-        {activeTab === 'glMapping' && <GlMappingTab />}
+        {activeTab === 'glMapping' && <GlSetupPanel companies={companies} costCenters={costCenters} />}
         {activeTab === 'notificationTemplates' && <NotificationTemplatesTab />}
         {activeTab === 'emailConfig' && <EmailConfigTab />}
         {activeTab === 'adminAuditLogs' && <AdminAuditLogsTab />}

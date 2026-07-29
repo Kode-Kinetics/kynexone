@@ -191,7 +191,10 @@ public class AuthSeeder : IAuthSeeder
         await EnsureRole(tenantId, "Payroll Manager", "Manages payroll processing and WPS submissions", Ps(new[] {
             "dashboard.read", "employees.read", "employees.sensitive", "attendance.read", "leave.read",
             "overtime.read", "payroll.read", "payroll.write", "payroll.approve", "loans.read", "loans.approve",
-            "approvals.read", "approvals.decide", "reports.read", "notifications.read"
+            "approvals.read", "approvals.decide", "reports.read", "notifications.read",
+            // Phase 2 GL + non-statutory rates (NOT statutory_override / author_predicates — higher trust).
+            "finance.gl.read", "finance.gl.manage", "finance.gl.drivers.manage",
+            "payroll.rates.read", "payroll.rates.manage"
         }), 4, true, cancellationToken);
 
         // Level 5 — HR Officer: HR operations specialist
@@ -210,7 +213,8 @@ public class AuthSeeder : IAuthSeeder
         // Level 7 — Finance Approver: finance approvals
         await EnsureRole(tenantId, "Finance Approver", "Finance approver for loans, advances and payroll", Ps(new[] {
             "dashboard.read", "employees.read", "payroll.read", "payroll.approve",
-            "loans.read", "loans.approve", "approvals.read", "approvals.decide"
+            "loans.read", "loans.approve", "approvals.read", "approvals.decide",
+            "finance.gl.read", "payroll.rates.read"
         }), 7, true, cancellationToken);
 
         // Level 8 — Compliance Officer: compliance and contracts
@@ -434,6 +438,15 @@ public class AuthSeeder : IAuthSeeder
             ("qiwa.configure", "QIWA", "Configure QIWA establishment credentials and connection"),
             ("qiwa.sync", "QIWA", "Trigger and manage QIWA employee sync operations"),
             ("qiwa.read", "QIWA", "View QIWA connection status and sync logs"),
+            // Finance — GL configuration (Phase 2)
+            ("finance.gl.read", "Finance", "View chart of accounts and payroll GL mappings"),
+            ("finance.gl.manage", "Finance", "Manage GL accounts, mappings and per-company overrides"),
+            ("finance.gl.drivers.manage", "Finance", "Manage custom GL posting drivers"),
+            ("finance.gl.drivers.author_predicates", "Finance", "Author non-Exact GL driver predicates and employer-expense pairs (Admin/vendor)"),
+            // Payroll — client rate configuration (Phase 2)
+            ("payroll.rates.read", "Payroll", "View company and statutory rate configuration"),
+            ("payroll.rates.manage", "Payroll", "Manage non-statutory company rate policies"),
+            ("payroll.rates.statutory_override", "Payroll", "Create bounded per-company statutory rate overrides (reason + effective-dated + audited)"),
         };
 
         foreach (var definition in definitions)

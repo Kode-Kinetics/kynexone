@@ -607,6 +607,10 @@ public class ZayraDbContext : DbContext
     public DbSet<FinanceGlEntry> FinanceGlEntries => Set<FinanceGlEntry>();
     public DbSet<GlAccount> GlAccounts => Set<GlAccount>();
     public DbSet<GlAccountMapping> GlAccountMappings => Set<GlAccountMapping>();
+    public DbSet<GlDriver> GlDrivers => Set<GlDriver>();
+    public DbSet<CompanyRatePolicy> CompanyRatePolicies => Set<CompanyRatePolicy>();
+    public DbSet<CompanyStatutoryOverride> CompanyStatutoryOverrides => Set<CompanyStatutoryOverride>();
+    public DbSet<ClientRateDefinition> ClientRateDefinitions => Set<ClientRateDefinition>();
     // ── Reports & Analytics ────────────────────────────────────────────────────
     public DbSet<SavedReport> SavedReports => Set<SavedReport>();
     public DbSet<ReportSchedule> ReportSchedules => Set<ReportSchedule>();
@@ -1045,14 +1049,49 @@ public class ZayraDbContext : DbContext
         {
             entity.ToTable("gl_accounts");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // Non-unique helper index; the real UNIQUE (tenant, company, code) NULLS NOT DISTINCT
+            // is created via raw SQL in RekeyGlUniquesForCompanyScope (Npgsql 8 can't express it).
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code });
         });
 
         modelBuilder.Entity<GlAccountMapping>(entity =>
         {
             entity.ToTable("gl_account_mappings");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.DriverKey }).IsUnique();
+            // Non-unique helper index; real UNIQUE (tenant, company, driver_key) NULLS NOT DISTINCT via raw SQL.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.DriverKey });
+            entity.HasOne<GlAccount>().WithMany()
+                  .HasForeignKey(x => x.AccountId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<GlDriver>(entity =>
+        {
+            entity.ToTable("gl_drivers");
+            entity.HasKey(x => x.Id);
+            // Non-unique helper index; real UNIQUE (tenant, company, key) NULLS NOT DISTINCT via raw SQL.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Key });
+        });
+
+        modelBuilder.Entity<CompanyRatePolicy>(entity =>
+        {
+            entity.ToTable("company_rate_policies");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.RateKey, x.Status, x.EffectiveFrom });
+            entity.Property(x => x.RateValue).HasMaxLength(128);
+        });
+
+        modelBuilder.Entity<CompanyStatutoryOverride>(entity =>
+        {
+            entity.ToTable("company_statutory_overrides");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.CountryCode, x.Jurisdiction, x.RuleKey, x.Status, x.EffectiveFrom });
+        });
+
+        modelBuilder.Entity<ClientRateDefinition>(entity =>
+        {
+            entity.ToTable("client_rate_definitions");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.RateKey }).IsUnique();
         });
 
         modelBuilder.Entity<CostCenter>(entity =>

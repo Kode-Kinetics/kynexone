@@ -43,6 +43,10 @@ public class StatutoryRulesIsolationTests
                     new Claim("tenant_id", tenantId.ToString()),
                     new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
                     new Claim(ClaimTypes.Role, "Admin"),
+                    // Phase 2: statutory overrides are gated by this higher-trust permission; grant it
+                    // here so these tests continue to exercise the tenant-ISOLATION dimension (NotFound),
+                    // not the permission gate (Forbid).
+                    new Claim("permission", "payroll.rates.statutory_override"),
                 }, "Test"))
             }
         };
