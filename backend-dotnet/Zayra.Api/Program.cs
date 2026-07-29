@@ -268,8 +268,13 @@ builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
 builder.Services.AddScoped<IApprovalPolicyService, ApprovalPolicyService>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
 builder.Services.AddScoped<IEmployeeModuleSchemaBootstrapper, EmployeeModuleSchemaBootstrapper>();
-builder.Services.AddScoped<IDocumentStorage, LocalDocumentStorage>();
+// P0-5: config-selected durable storage with a Production fail-fast (Render dyno disk is
+// ephemeral on plan:free — LocalDocumentStorage would lose compliance documents on restart).
+builder.Services.AddDocumentStorage(builder.Configuration, builder.Environment.IsDevelopment());
 builder.Services.AddScoped<IHijriDateService, HijriDateService>();
+// P0-6: offline Latin→Arabic transliteration (replaces the third-party MyMemory keystroke call).
+builder.Services.AddScoped<Zayra.Api.Application.Localization.ITransliterationService,
+    Zayra.Api.Infrastructure.Localization.TransliterationService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IEmailService, SmtpEmailService>();
 builder.Services.AddScoped<ILetterService, LetterService>();
@@ -501,38 +506,11 @@ app.UseExceptionHandler(errApp => errApp.Run(async ctx =>
     });
 }));
 
-// Security + Cache-Control response headers.
+// Security + Cache-Control response headers (CSP/HSTS/Permissions-Policy + path-aware caching).
+// Logic lives in SecurityHeaders.Apply so it is unit-testable without booting the host.
 app.Use(async (context, next) =>
 {
-    var headers = context.Response.Headers;
-    headers["X-Content-Type-Options"] = "nosniff";
-    headers["X-Frame-Options"] = "DENY";
-    headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
-    headers["X-Permitted-Cross-Domain-Policies"] = "none";
-
-    var path = context.Request.Path.Value ?? string.Empty;
-    // Sensitive: auth, payroll, personal data — must never be cached anywhere.
-    if (path.StartsWith("/api/auth", StringComparison.OrdinalIgnoreCase) ||
-        path.StartsWith("/api/payroll", StringComparison.OrdinalIgnoreCase) ||
-        path.StartsWith("/api/employees", StringComparison.OrdinalIgnoreCase))
-    {
-        headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
-        headers["Pragma"] = "no-cache";
-    }
-    // Semi-static reference data: short private cache so browser avoids round trips.
-    else if (path.StartsWith("/api/master-data", StringComparison.OrdinalIgnoreCase) ||
-             path.StartsWith("/api/features", StringComparison.OrdinalIgnoreCase) ||
-             path.StartsWith("/api/localization", StringComparison.OrdinalIgnoreCase) ||
-             path.StartsWith("/api/help-text", StringComparison.OrdinalIgnoreCase))
-    {
-        headers["Cache-Control"] = "private, max-age=300"; // 5 min, per-user
-    }
-    // Everything else: don't cache by default; controllers can override explicitly.
-    else
-    {
-        headers["Cache-Control"] = "no-store";
-    }
-
+    Zayra.Api.Infrastructure.Http.SecurityHeaders.Apply(context.Response.Headers, context.Request.Path.Value ?? string.Empty);
     await next();
 });
 

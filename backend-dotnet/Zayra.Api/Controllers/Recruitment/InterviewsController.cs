@@ -24,6 +24,7 @@ public class InterviewsController : ControllerBase
 
     // GET /api/recruitment/interviews?applicationId=...&status=...
     [HttpGet]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> List(
         [FromQuery] Guid? applicationId = null,
         [FromQuery] string? status = null,
@@ -46,6 +47,7 @@ public class InterviewsController : ControllerBase
 
     // GET /api/recruitment/interviews/{id}
     [HttpGet("{id:guid}")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter,Manager")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -149,12 +151,28 @@ public class InterviewsController : ControllerBase
 
     // POST /api/recruitment/interviews/{id}/feedback
     [HttpPost("{id:guid}/feedback")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter,Manager")]
     public async Task<IActionResult> SubmitFeedback(Guid id, [FromBody] SubmitFeedbackRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var interview = await _db.InterviewSchedules
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (interview == null) return NotFound();
+
+        // Assigned-interviewer guard: a panel-only interviewer (Manager, not an HR coordinator)
+        // may submit feedback ONLY for an interview they are assigned to — prevents tenant-wide
+        // feedback injection into arbitrary interview ids. HR coordinators (Admin/HR Manager/
+        // HR Officer/Recruiter) run panels and may record on behalf of any interviewer.
+        var isHrCoordinator = User.IsInRole("Admin") || User.IsInRole("HR Manager")
+            || User.IsInRole("HR Officer") || User.IsInRole("Recruiter");
+        if (!isHrCoordinator)
+        {
+            var me = GetUserName();
+            var assigned = !string.IsNullOrWhiteSpace(me)
+                && interview.InterviewerNames.Contains(me, StringComparison.OrdinalIgnoreCase);
+            if (!assigned)
+                return Forbid();
+        }
 
         var feedback = new InterviewFeedback
         {
@@ -183,6 +201,7 @@ public class InterviewsController : ControllerBase
 
     // GET /api/recruitment/interviews/{id}/feedback
     [HttpGet("{id:guid}/feedback")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> GetFeedback(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();

@@ -26,6 +26,7 @@ public class ApplicationsController : ControllerBase
     // ── Pipeline list ──────────────────────────────────────────────────────────
 
     [HttpGet]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> List(
         [FromQuery] Guid? jobOpeningId,
         [FromQuery] string? stage,
@@ -50,6 +51,7 @@ public class ApplicationsController : ControllerBase
 
     // Kanban — all active apps for an opening grouped by stage
     [HttpGet("kanban/{jobOpeningId:guid}")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> Kanban(Guid jobOpeningId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -70,6 +72,7 @@ public class ApplicationsController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -118,6 +121,7 @@ public class ApplicationsController : ControllerBase
         var app = new JobApplication
         {
             TenantId = tenantId,
+            CompanyId = candidate.CompanyId, // inherit legal entity from parent candidate
             JobOpeningId = req.JobOpeningId,
             JobTitle = opening.Title,
             CandidateId = req.CandidateId,
@@ -314,6 +318,7 @@ public class ApplicationsController : ControllerBase
         var offer = new OfferLetter
         {
             TenantId = tenantId,
+            CompanyId = app.CompanyId, // inherit legal entity from parent application
             ApplicationId = id,
             CandidateName = app.CandidateName,
             OfferedJobTitle = app.JobTitle,
@@ -436,11 +441,17 @@ public class ApplicationsController : ControllerBase
     }
 
     [HttpGet("offers/{offerId:guid}/html")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
     public async Task<IActionResult> GetOfferHtml(Guid offerId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
         if (offer is null) return NotFound();
+        // Defense-in-depth: never render stored offer HTML inline on the SPA origin (where
+        // JWTs live in localStorage). Force a download; the API-origin CSP (script-src 'self')
+        // additionally neutralises any injected inline script in stored ContentHtml. The
+        // frontend uses the authenticated PDF download path, not this endpoint.
+        Response.Headers["Content-Disposition"] = $"attachment; filename=\"offer-{offerId}.html\"";
         return Content(offer.ContentHtml, "text/html");
     }
 

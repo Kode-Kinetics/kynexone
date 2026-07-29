@@ -857,6 +857,21 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
     finally { setActing(''); }
   };
 
+  // Authenticated offer preview: fetch the PDF via the axios client (bearer token attached),
+  // then open the blob. The old `<a href=.../html>` sent no token (401) and served executable
+  // HTML on the SPA origin — replaced with this token-authenticated document download.
+  const downloadOffer = async () => {
+    if (!offer) return;
+    setActing('preview');
+    try {
+      const blob = await offersApi.download(offer.id);
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noopener,noreferrer');
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) { notifyApiError(e); }
+    finally { setActing(''); }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="flex-1 bg-black/40" onClick={onClose} />
@@ -1014,10 +1029,10 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                     </div>
                   </div>
                   <div className="mt-3 flex gap-2">
-                    <a href={`/api/recruitment/applications/offers/${offer.id}/html`} target="_blank" rel="noreferrer"
-                      className="flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-200 dark:bg-white/10 dark:text-slate-300">
-                      <FileText className="h-3.5 w-3.5" />Preview
-                    </a>
+                    <button type="button" disabled={acting === 'preview'} onClick={downloadOffer}
+                      className="flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-50 dark:bg-white/10 dark:text-slate-300">
+                      <FileText className="h-3.5 w-3.5" />{acting === 'preview' ? 'Opening…' : 'Preview'}
+                    </button>
                     {offer.status === 'Draft' && (
                       <button type="button" disabled={acting === 'send'} onClick={() => offerAction('send')}
                         className="flex items-center gap-1 rounded-lg bg-sapphire px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">

@@ -56,7 +56,7 @@ import type {
   AdminAuditLog,
 } from '../api/setup';
 import { Modal } from '../components/Modal';
-import { useAutoTranslate } from '../hooks/useAutoTranslate';
+import { TransliterateButton } from '../components/TransliterateButton';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 
@@ -152,9 +152,6 @@ function CompaniesTab() {
   };
 
   const f = (key: keyof CompanyRequest, v: string | boolean) => setForm((x) => ({ ...x, [key]: v }));
-  const { translation: autoLegalNameAr, isTranslating: translatingLegalNameAr } = useAutoTranslate(form.legalNameEn);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (autoLegalNameAr && !form.legalNameAr) f('legalNameAr', autoLegalNameAr); }, [autoLegalNameAr]);
   const deleteCompany = async (id: string) => {
     if (!confirm('Delete this company? This cannot be undone.')) return;
     setDeleting(id);
@@ -252,7 +249,10 @@ function CompaniesTab() {
             <input type="text" value={form.legalNameEn} onChange={(e) => f('legalNameEn', e.target.value)} className="input w-full" placeholder="Acme Corp LLC" />
           </FormField>
           <FormField label="Legal Name (AR)">
-            <input type="text" value={form.legalNameAr ?? ''} onChange={(e) => f('legalNameAr', e.target.value)} className="input w-full" dir="rtl" placeholder={translatingLegalNameAr && !form.legalNameAr ? 'Translating…' : undefined} />
+            <div className="flex items-stretch gap-1.5">
+              <input type="text" value={form.legalNameAr ?? ''} onChange={(e) => f('legalNameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+              <TransliterateButton source={form.legalNameEn} onSuggest={(s) => f('legalNameAr', s)} />
+            </div>
           </FormField>
           <FormField label="Trade Name">
             <input type="text" value={form.tradeName ?? ''} onChange={(e) => f('tradeName', e.target.value)} className="input w-full" />
@@ -356,9 +356,6 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   };
 
   const f = (key: keyof BranchRequest, v: string | boolean) => setForm((x) => ({ ...x, [key]: v }));
-  const { translation: autoBranchNameAr, isTranslating: translatingBranchNameAr } = useAutoTranslate(form.nameEn);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (autoBranchNameAr && !form.nameAr) f('nameAr', autoBranchNameAr); }, [autoBranchNameAr]);
   const deleteBranch = async (id: string) => {
     if (!confirm('Delete this branch?')) return;
     setDeleting(id);
@@ -441,7 +438,10 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <input type="text" value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" placeholder="Dubai Head Office" />
           </FormField>
           <FormField label="Name (AR)">
-            <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" placeholder={translatingBranchNameAr && !form.nameAr ? 'Translating…' : undefined} />
+            <div className="flex items-stretch gap-1.5">
+              <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+              <TransliterateButton source={form.nameEn} onSuggest={(s) => f('nameAr', s)} />
+            </div>
           </FormField>
           <FormField label="Country" required>
             <CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Branch country" />
@@ -507,9 +507,6 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   };
 
   const f = (key: keyof DepartmentRequest, v: string | boolean | number | undefined) => setForm((x) => ({ ...x, [key]: v }));
-  const { translation: autoDeptNameAr, isTranslating: translatingDeptNameAr } = useAutoTranslate(form.nameEn);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (autoDeptNameAr && !form.nameAr) f('nameAr', autoDeptNameAr); }, [autoDeptNameAr]);
   const deleteDept = async (id: string) => {
     if (!confirm('Delete this department?')) return;
     setDeleting(id);
@@ -572,7 +569,10 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             <input type="text" value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" placeholder="Engineering" />
           </FormField>
           <FormField label="Name (AR)">
-            <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" placeholder={translatingDeptNameAr && !form.nameAr ? 'Translating…' : undefined} />
+            <div className="flex items-stretch gap-1.5">
+              <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+              <TransliterateButton source={form.nameEn} onSuggest={(s) => f('nameAr', s)} />
+            </div>
           </FormField>
           <FormField label="Cost Center">
             <select value={form.costCenterId ?? ''} onChange={(e) => f('costCenterId', e.target.value || undefined)} className="select w-full">
@@ -631,9 +631,6 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   };
 
   const f = (key: keyof DesignationRequest, v: string | boolean | undefined) => setForm((x) => ({ ...x, [key]: v }));
-  const { translation: autoTitleAr, isTranslating: translatingTitleAr } = useAutoTranslate(form.titleEn);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (autoTitleAr && !form.titleAr) f('titleAr', autoTitleAr); }, [autoTitleAr]);
   const deleteDesig = async (id: string) => {
     if (!confirm('Delete this designation?')) return;
     setDeleting(id);
@@ -698,7 +695,10 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
             <input type="text" value={form.titleEn} onChange={(e) => f('titleEn', e.target.value)} className="input w-full" placeholder="Software Engineer" />
           </FormField>
           <FormField label="Title (AR)">
-            <input type="text" value={form.titleAr ?? ''} onChange={(e) => f('titleAr', e.target.value)} className="input w-full" dir="rtl" placeholder={translatingTitleAr && !form.titleAr ? 'Translating…' : undefined} />
+            <div className="flex items-stretch gap-1.5">
+              <input type="text" value={form.titleAr ?? ''} onChange={(e) => f('titleAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+              <TransliterateButton source={form.titleEn} onSuggest={(s) => f('titleAr', s)} />
+            </div>
           </FormField>
           <FormField label="Job Grade">
             <input type="text" value={form.jobGrade ?? ''} onChange={(e) => f('jobGrade', e.target.value)} className="input w-full" placeholder="L3" />

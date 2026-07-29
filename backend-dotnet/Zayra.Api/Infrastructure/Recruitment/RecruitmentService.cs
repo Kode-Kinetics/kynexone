@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
@@ -84,6 +85,12 @@ public class RecruitmentService : IRecruitmentService
         var today = DateTime.UtcNow.ToString("dd MMMM yyyy");
         var startFormatted = d.StartDate.ToString("dd MMMM yyyy");
         var probationEnd = d.StartDate.AddMonths(d.ProbationMonths).ToString("dd MMMM yyyy");
+        // Stored-XSS defense: every free-text field interpolated into the offer HTML is HTML-encoded.
+        // Numerics (:N2) and formatted dates are non-injectable. This document is stored as ContentHtml
+        // and can later be served text/html, so encoding here closes the injection sink at the source.
+        var candidateName = HtmlEncoder.Default.Encode(d.CandidateName ?? string.Empty);
+        var jobTitle = HtmlEncoder.Default.Encode(d.JobTitle ?? string.Empty);
+        var department = HtmlEncoder.Default.Encode(d.Department ?? string.Empty);
         var otherRow = d.OtherAllowances > 0
             ? $"<tr><td>Other Allowances</td><td>{d.OtherAllowances:N2}</td></tr>"
             : string.Empty;
@@ -118,12 +125,12 @@ public class RecruitmentService : IRecruitmentService
     <div class=""date-block""><div>{today}</div><div>Confidential</div></div>
   </div>
   <div class=""badge"">OFFER OF EMPLOYMENT</div>
-  <p>Dear <span class=""highlight"">{d.CandidateName}</span>,</p>
+  <p>Dear <span class=""highlight"">{candidateName}</span>,</p>
   <p>We are pleased to extend this offer of employment to you at <strong>Zayra AI Workforce</strong>. After careful consideration of your application and interviews, we are confident you will be a valuable addition to our team.</p>
   <h2>Position Details</h2>
   <table>
-    <tr><td width=""40%"">Job Title</td><td><strong>{d.JobTitle}</strong></td></tr>
-    <tr><td>Department</td><td>{d.Department}</td></tr>
+    <tr><td width=""40%"">Job Title</td><td><strong>{jobTitle}</strong></td></tr>
+    <tr><td>Department</td><td>{department}</td></tr>
     <tr><td>Start Date</td><td>{startFormatted}</td></tr>
     <tr><td>Employment Type</td><td>Full-Time, Permanent</td></tr>
     <tr><td>Probation Period</td><td>{d.ProbationMonths} months (ending {probationEnd})</td></tr>
@@ -145,7 +152,7 @@ public class RecruitmentService : IRecruitmentService
   <p>Please indicate your acceptance by signing and returning this letter to our HR department.</p>
   <div class=""signature-block"">
     <div class=""sig""><div class=""sig-line"">Authorized Signatory<br/>Human Resources</div></div>
-    <div class=""sig""><div class=""sig-line"">Candidate Acceptance<br/>{d.CandidateName}</div></div>
+    <div class=""sig""><div class=""sig-line"">Candidate Acceptance<br/>{candidateName}</div></div>
   </div>
   <div class=""footer"">System-generated offer letter &mdash; Zayra AI Workforce &mdash; Confidential</div>
 </div>

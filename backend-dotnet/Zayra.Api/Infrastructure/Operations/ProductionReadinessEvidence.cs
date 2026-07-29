@@ -16,8 +16,14 @@ public static class ProductionReadinessEvidence
         var tenantCount = dbProbe.Healthy ? await db.Tenants.AsNoTracking().CountAsync(ct) : 0;
         var activeTenantCount = dbProbe.Healthy ? await db.Tenants.AsNoTracking().CountAsync(x => x.IsActive, ct) : 0;
 
+        // P0-4: migration-parity gate. A migration-bearing image deployed against a DB that
+        // has NOT yet had `dotnet Zayra.Api.dll --migrate` applied would 42703/42P01 tenant-wide.
+        // Reporting not_ready here makes /health/ready return 503 so Render refuses to route
+        // traffic to the un-migrated instance until the pre-deploy migrate step has run.
+        var pendingMigrations = await CountPendingMigrationsAsync(db, dbProbe.Healthy, ct);
+
         return new ReadinessEvidence(
-            dbProbe.Healthy ? "ready" : "not_ready",
+            ResolveStatus(dbProbe.Healthy, pendingMigrations),
             DateTime.UtcNow,
             new ReadinessDependencies(
                 dbProbe,
@@ -25,7 +31,28 @@ public static class ProductionReadinessEvidence
                 QiwaDependency(config),
                 await SmtpDependencyAsync(db, ct)),
             tenantCount,
-            activeTenantCount);
+            activeTenantCount,
+            pendingMigrations);
+    }
+
+    /// <summary>Pure status rule: ready iff the DB is reachable AND no migrations are pending.</summary>
+    public static string ResolveStatus(bool dbHealthy, int pendingMigrations)
+        => dbHealthy && pendingMigrations == 0 ? "ready" : "not_ready";
+
+    private static async Task<int> CountPendingMigrationsAsync(ZayraDbContext db, bool dbHealthy, CancellationToken ct)
+    {
+        if (!dbHealthy) return 0; // DB probe already reports not_ready; don't double-count.
+        try
+        {
+            var pending = await db.Database.GetPendingMigrationsAsync(ct);
+            return pending.Count();
+        }
+        catch
+        {
+            // Non-relational or a schema created via EnsureCreated (dev/test) has no migrations
+            // history table — treat as "no pending" so those environments stay ready.
+            return 0;
+        }
     }
 
     public static async Task<TelemetryEvidence> BuildTelemetryAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct)
@@ -143,7 +170,8 @@ public sealed record ReadinessEvidence(
     DateTime Utc,
     ReadinessDependencies Dependencies,
     int Tenants,
-    int ActiveTenants);
+    int ActiveTenants,
+    int PendingMigrations);
 
 public sealed record ReadinessDependencies(
     DependencyProbe Database,

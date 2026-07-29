@@ -6,8 +6,23 @@ services:
     dockerContext: .
     plan: free
     branch: main
-    autoDeploy: true
-    healthCheckPath: /health
+    # P0-4/P2-18: single deploy trigger. autoDeploy is OFF so the ONLY path to production is the
+    # CI-gated Render deploy hook (.github/workflows/ci.yml → deploy-backend), which fires only
+    # AFTER tests + security gates + the DB-migration step succeed. Two triggers (autoDeploy + hook)
+    # risked overlapping deploys per commit.
+    autoDeploy: false
+    # P0-4: gate traffic on migration parity. /health/ready returns 503 while EF reports pending
+    # migrations (ProductionReadinessEvidence.ResolveStatus), so a migration-bearing image deployed
+    # against an un-migrated DB is NEVER promoted to serve traffic — Render keeps the old instance
+    # live until `--migrate` has run. This backstop works on ANY plan (including free).
+    healthCheckPath: /health/ready
+    # ── DB MIGRATIONS ON DEPLOY (P0-4) ──────────────────────────────────────────────
+    # Migrations are applied by the CI `migrate-backend` job (dotnet ef database update against the
+    # production DB) which the deploy hook depends on — so schema is always ahead of code.
+    # Render's native `preDeployCommand: dotnet Zayra.Api.dll --migrate` is the preferred mechanism
+    # and should be enabled once the WEB service is bumped to a Starter instance (pre-deploy commands
+    # are not available on plan:free). Until then, the CI migrate step + the /health/ready gate above
+    # are the enforced controls. See docs/DEPLOY_ROLLBACK_RUNBOOK.md.
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
         value: Production
@@ -88,3 +103,26 @@ services:
       # AI provider — set to "none" to disable AI features entirely.
       - key: AI_PROVIDER
         value: none
+
+      # ── DOCUMENT STORAGE (P0-5) ─────────────────────────────────────────────────────
+      # The dyno filesystem is EPHEMERAL on plan:free — LocalDocumentStorage would lose every
+      # uploaded compliance document (offer letters, IDs, contracts) on each restart/redeploy,
+      # breaking KSA/GOSI statutory retention. The app FAILS FAST at boot in Production unless a
+      # durable S3-compatible backend is configured (DocumentStorageRegistration.ResolveAndValidate).
+      # This keeps plan:free — documents live in object storage, not on the dyno disk.
+      #
+      # PDPL/GDPR RESIDENCY: pin the bucket to an APPROVED GCC/KSA (or adequacy) jurisdiction.
+      # Set Storage__Region/Storage__Endpoint to that region's endpoint — do NOT leave a generic
+      # "auto" for personal-data buckets. Record the chosen jurisdiction in the deploy runbook.
+      - key: Storage__Provider          # value: s3  (required in Production)
+        value: s3
+      - key: Storage__Bucket
+        sync: false
+      - key: Storage__Endpoint          # R2: https://<acct>.r2.cloudflarestorage.com ; empty for AWS
+        sync: false
+      - key: Storage__AccessKey
+        sync: false
+      - key: Storage__SecretKey
+        sync: false
+      - key: Storage__Region            # pin to an approved GCC/KSA region (or R2 bucket's jurisdiction)
+        sync: false

@@ -27,7 +27,7 @@ import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedMod
 import { branchesApi, companiesApi, costCentersApi, departmentsApi, designationsApi, gradesApi } from '../api/organization';
 import type { BranchDto, CompanyDto, CostCenterDto, DepartmentDto, DesignationDto, GradeDto, GradePayScaleComponentDto } from '../api/organization';
 import { Avatar } from '../components/Avatar';
-import { useAutoTranslate } from '../hooks/useAutoTranslate';
+import { TransliterateButton } from '../components/TransliterateButton';
 import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
@@ -508,10 +508,6 @@ export function EmployeesPage() {
 
   const setGrade = (value: string) =>
     setForm((current) => ({ ...current, gradeId: value }));
-
-  const { translation: autoArabicName, isTranslating: translatingArabicName } = useAutoTranslate(form.englishName);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (autoArabicName && !form.arabicName) setField('arabicName', autoArabicName); }, [autoArabicName]);
 
   const setPayrollField = (key: string, value: string | boolean) =>
     setForm((current) => ({ ...current, payrollProfile: { ...current.payrollProfile!, [key]: value } }));
@@ -1135,7 +1131,7 @@ export function EmployeesPage() {
               Manual override
             </label>
             <Input label="English full name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
-            <Input label="Arabic full name" value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} rtl placeholder={translatingArabicName && !form.arabicName ? 'Translating…' : undefined} />
+            <Input label="Arabic full name" value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} rtl action={<TransliterateButton source={form.englishName} onSuggest={(s) => setField('arabicName', s)} />} />
             <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
             <Select label="Gender" required value={form.gender} onChange={(v) => setField('gender', v)} options={['Male', 'Female', 'Other']} />
             <Input label="Nationality" value={form.nationality ?? ''} onChange={(v) => setField('nationality', v)} />
@@ -1323,11 +1319,18 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Input({ label, value, onChange, required, type = 'text', placeholder, rtl, info, infoKey }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; info?: string; infoKey?: string }) {
+function Input({ label, value, onChange, required, type = 'text', placeholder, rtl, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
   return (
     <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}</span>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className="input mt-1.5 w-full" />
+      {action ? (
+        <span className="mt-1.5 flex items-stretch gap-1.5">
+          <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className="input w-full flex-1" />
+          {action}
+        </span>
+      ) : (
+        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className="input mt-1.5 w-full" />
+      )}
     </label>
   );
 }
