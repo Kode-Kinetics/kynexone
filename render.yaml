@@ -114,8 +114,16 @@ services:
       # PDPL/GDPR RESIDENCY: pin the bucket to an APPROVED GCC/KSA (or adequacy) jurisdiction.
       # Set Storage__Region/Storage__Endpoint to that region's endpoint — do NOT leave a generic
       # "auto" for personal-data buckets. Record the chosen jurisdiction in the deploy runbook.
-      - key: Storage__Provider          # value: s3  (required in Production)
-        value: s3
+      # TRANSITION STATE (2026-07-29): S3 not yet provisioned. Provider=local + AllowEphemeral=true so
+      # the service BOOTS (with a loud, logged ephemeral-storage warning every start) instead of hard-
+      # failing. Uploaded documents are LOST on restart until S3 is set up. TO HARDEN (closes P0-5):
+      #   1. set Storage__Provider=s3, fill Storage__Bucket/AccessKey/SecretKey/Region/Endpoint
+      #      (pin Region to an approved GCC/KSA jurisdiction for PDPL residency),
+      #   2. REMOVE Storage__AllowEphemeral (or set "false") — the app then enforces durable storage.
+      - key: Storage__Provider          # "s3" to enable durable storage; "local" is ephemeral
+        value: local
+      - key: Storage__AllowEphemeral    # REMOVE once Provider=s3 is configured (restores fail-fast)
+        value: "true"
       - key: Storage__Bucket
         sync: false
       - key: Storage__Endpoint          # R2: https://<acct>.r2.cloudflarestorage.com ; empty for AWS
