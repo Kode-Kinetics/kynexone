@@ -5,7 +5,9 @@ using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Shifts;
+using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -18,12 +20,15 @@ public class ShiftsController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
     private readonly IRosterPlannerService _planner;
+    private readonly IWorkWeekService _workWeek;
 
-    public ShiftsController(ZayraDbContext db, IDataScopeService scopeService, IRosterPlannerService planner)
+    public ShiftsController(ZayraDbContext db, IDataScopeService scopeService, IRosterPlannerService planner, IWorkWeekService? workWeek = null)
     {
         _db = db;
         _scopeService = scopeService;
         _planner = planner;
+        // Optional so existing callers/tests keep working; DI always supplies the real one.
+        _workWeek = workWeek ?? new WorkWeekService(db);
     }
 
     // ── Shift Definitions ─────────────────────────────────────────────
@@ -190,10 +195,12 @@ public class ShiftsController : ControllerBase
             employeeQuery = employeeQuery.Where(e => req.EmployeeIds.Contains(e.Id));
         var employees = await employeeQuery.Select(e => new { e.Id, e.FullName }).ToListAsync(ct);
 
+        // Weekend skip honours the configured working week (WorkWeekService), not a hard-coded Sat/Sun.
+        var autoAssignWeekend = await _workWeek.ResolveAsync(tenantId, null, null, ct);
         var days = new List<DateOnly>();
         for (var d = req.DateFrom; d <= req.DateTo; d = d.AddDays(1))
         {
-            if (req.SkipWeekend && (d.DayOfWeek == DayOfWeek.Saturday || d.DayOfWeek == DayOfWeek.Sunday))
+            if (req.SkipWeekend && autoAssignWeekend.IsWeekend(d.DayOfWeek))
                 continue;
             days.Add(d);
         }
@@ -319,7 +326,10 @@ public class ShiftsController : ControllerBase
             .Where(h => h.TenantId == tenantId && h.Date >= req.DateFrom && h.Date <= req.DateTo)
             .Select(h => h.Date).ToListAsync(ct)).ToHashSet();
 
-        var weekendDow = ParseWeekendDays(req.WeekendDays);
+        // Per-run override kept: an explicit client-supplied weekend-day list wins; otherwise
+        // fall back to the configured working week (WorkWeekService), never a hard-coded Sat/Sun.
+        var weekendDow = WorkWeekParser.ParseWeekendDays(req.WeekendDays)
+            ?? (await _workWeek.ResolveAsync(tenantId, null, null, ct)).WeekendDays;
         var weekendDays = new HashSet<DateOnly>();
         for (var d = req.DateFrom; d <= req.DateTo; d = d.AddDays(1))
             if (weekendDow.Contains(d.DayOfWeek)) weekendDays.Add(d);
@@ -431,15 +441,6 @@ public class ShiftsController : ControllerBase
         return new ShiftPolicyDto(genderRules, afternoon, new(), new(), 8, 6);
     }
 
-    private static HashSet<DayOfWeek> ParseWeekendDays(List<string>? names)
-    {
-        if (names is not { Count: > 0 })
-            return new HashSet<DayOfWeek> { DayOfWeek.Saturday, DayOfWeek.Sunday };
-        var set = new HashSet<DayOfWeek>();
-        foreach (var n in names)
-            if (Enum.TryParse<DayOfWeek>(n, ignoreCase: true, out var dow)) set.Add(dow);
-        return set.Count > 0 ? set : new HashSet<DayOfWeek> { DayOfWeek.Saturday, DayOfWeek.Sunday };
-    }
 }
 
 public record ShiftDefinitionRequest(string Code, string Name, string StartTime, string EndTime, int BreakMinutes, string Color);

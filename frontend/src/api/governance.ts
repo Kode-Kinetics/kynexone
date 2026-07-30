@@ -24,6 +24,10 @@ export interface CompanyTaxPolicyInput {
   incomeTaxRatePercent?: number | null;
   appliesToBonus?: boolean;
   notes?: string;
+  // Explicit, server-logged acknowledgement required to set a NON-ZERO income tax rate for a
+  // zero-PIT GCC jurisdiction (SA/AE/QA/KW/OM/BH). Without it the write is rejected 400 by
+  // StatutoryRateGuard.ValidateIncomeTaxRate. Optional + defaults false → backward compatible.
+  acknowledgeNonZeroGccTax?: boolean;
 }
 
 export interface CompanyComplianceProfile {

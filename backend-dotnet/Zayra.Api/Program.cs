@@ -263,6 +263,7 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Governance.ICompanyTaxPolicy
 // Phase 2 rate resolvers: bounded statutory-override precedence + non-statutory company rate precedence.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IStatutoryRateResolver, Zayra.Api.Infrastructure.Payroll.StatutoryRateResolver>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ICompanyRatePolicyResolver, Zayra.Api.Infrastructure.Payroll.CompanyRatePolicyResolver>();
+builder.Services.AddScoped<Zayra.Api.Application.WorkWeek.IWorkWeekService, Zayra.Api.Infrastructure.WorkWeek.WorkWeekService>();
 builder.Services.AddScoped<IHrmHierarchyService, HrmHierarchyService>();
 builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
 builder.Services.AddScoped<IApprovalPolicyService, ApprovalPolicyService>();

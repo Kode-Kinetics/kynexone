@@ -1201,6 +1201,10 @@ public class PlatformController : ControllerBase
         // Phase 2: eager-seed the GL defaults (chart of accounts, tenant-default mappings, the 17
         // system posting drivers, and the client-configurable rate allow-list) for the new tenant.
         await Zayra.Api.Infrastructure.Seed.GlDriverSeeder.SeedTenantDefaultsAsync(_db, tenant.Id, ct);
+        // FIX 1 (C1): the idempotent per-tenant provisioning bundle — country rules, MasterData,
+        // HR categories, default attendance/leave/approval policies, and bilingual notification
+        // templates. Ensures no tenant is born without its statutory/reference/config foundation.
+        await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(_db, tenant.Id, ct);
         await _db.SaveChangesAsync(ct);
 
         var admin = new User
@@ -3284,6 +3288,10 @@ public class PlatformController : ControllerBase
         // Phase 2: eager-seed the GL defaults (chart of accounts, tenant-default mappings, the 17
         // system posting drivers, and the client-configurable rate allow-list) for the new tenant.
         await Zayra.Api.Infrastructure.Seed.GlDriverSeeder.SeedTenantDefaultsAsync(_db, tenant.Id, ct);
+        // FIX 1 (C1): the idempotent per-tenant provisioning bundle — country rules, MasterData,
+        // HR categories, default attendance/leave/approval policies, and bilingual notification
+        // templates. Ensures no tenant is born without its statutory/reference/config foundation.
+        await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(_db, tenant.Id, ct);
         await _db.SaveChangesAsync(ct);
         var plan = string.IsNullOrWhiteSpace(req.Plan) ? "Trial" : req.Plan;
         var (defaultMaxUsers, defaultMaxEmployees) = SubscriptionTiers.GetDefaults(plan);

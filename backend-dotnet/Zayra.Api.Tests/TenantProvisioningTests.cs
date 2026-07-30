@@ -417,6 +417,75 @@ public class TenantProvisioningTests
         return ctx;
     }
 
+    // ── FIX 1 (C1): the provisioning bundle installs the full config foundation, idempotently ──
+    //
+    // Before the fix, only the bootstrap tenant got country rules and MasterData/categories/
+    // templates/policies seeded only in the demo path — every post-bootstrap tenant was born broken.
+    // This asserts a freshly-created tenant has country rules, MasterData, HR categories, templates,
+    // and default attendance/leave/approval policies; that UAE weekend is corrected to Sat-Sun and
+    // packs are tier-tagged; and that re-running the bundle adds nothing (insert-if-absent).
+
+    [Fact]
+    public async Task ProvisioningBundle_InstallsConfigFoundation_AndIsIdempotent()
+    {
+        await using var db = _fx.CreateDb();
+        var tenant = new Tenant { Id = Guid.NewGuid(), Name = "Provisioned Co", Slug = $"prov-{Guid.NewGuid():N}" };
+        db.Tenants.Add(tenant);
+        await db.SaveChangesAsync();
+
+        var result = await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+
+        // Country payroll rules present; UAE weekend corrected to Sat-Sun; packs tier-tagged.
+        var countryRules = await db.CountryPayrollRules.Where(r => r.TenantId == tenant.Id).ToListAsync();
+        countryRules.Should().NotBeEmpty();
+        countryRules.First(r => r.CountryCode == "AE" && r.RuleKey == "weekend_days").RuleValue.Should().Be("Sat-Sun");
+        countryRules.First(r => r.CountryCode == "SA" && r.RuleKey == "weekend_days").RuleValue.Should().Be("Fri-Sat");
+        countryRules.First(r => r.CountryCode == "SA" && r.RuleKey == "payroll_tier").RuleValue.Should().Be("certified");
+        countryRules.First(r => r.CountryCode == "US" && r.RuleKey == "payroll_tier").RuleValue.Should().Be("hr-only");
+
+        // MasterData system types + values.
+        (await db.MasterDataTypes.CountAsync(t => t.TenantId == tenant.Id && t.IsSystemDefined)).Should().BeGreaterThan(0);
+        (await db.MasterDataTypes.AnyAsync(t => t.TenantId == tenant.Id && t.Code == "Gender")).Should().BeTrue();
+        (await db.MasterDataValues.CountAsync(v => v.TenantId == tenant.Id)).Should().BeGreaterThan(0);
+
+        // HR request categories (moved out of the demo path).
+        (await db.HRRequestCategories.CountAsync(c => c.TenantId == tenant.Id)).Should().Be(5);
+
+        // Bilingual notification templates.
+        var templates = await db.NotificationTemplates.Where(t => t.TenantId == tenant.Id).ToListAsync();
+        templates.Should().NotBeEmpty();
+        templates.Should().OnlyContain(t => t.BodyAr != "" && t.BodyEn != "");
+
+        // Default policies: attendance DEFAULT, an annual leave type + default policy, approval policies.
+        (await db.AttendancePolicies.AnyAsync(p => p.TenantId == tenant.Id && p.Code == "DEFAULT")).Should().BeTrue();
+        (await db.LeaveTypes.AnyAsync(t => t.TenantId == tenant.Id && t.Code == "ANNUAL")).Should().BeTrue();
+        (await db.LeavePolicies.AnyAsync(p => p.TenantId == tenant.Id && p.CompanyId == null)).Should().BeTrue();
+        (await db.ApprovalPolicies.CountAsync(p => p.TenantId == tenant.Id && p.IsDefault)).Should().BeGreaterThan(0);
+
+        var countryRuleCount = countryRules.Count;
+        var mdValueCount = await db.MasterDataValues.CountAsync(v => v.TenantId == tenant.Id);
+
+        // ── Idempotency: re-run installs NOTHING new and never duplicates ──
+        var second = await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        second.CountryRules.Should().Be(0);
+        second.MasterDataTypes.Should().Be(0);
+        second.MasterDataValues.Should().Be(0);
+        second.HrCategories.Should().Be(0);
+        second.AttendancePolicies.Should().Be(0);
+        second.LeaveTypes.Should().Be(0);
+        second.LeavePolicies.Should().Be(0);
+        second.ApprovalPolicies.Should().Be(0);
+        second.NotificationTemplates.Should().Be(0);
+
+        (await db.CountryPayrollRules.CountAsync(r => r.TenantId == tenant.Id)).Should().Be(countryRuleCount);
+        (await db.MasterDataValues.CountAsync(v => v.TenantId == tenant.Id)).Should().Be(mdValueCount);
+        (await db.HRRequestCategories.CountAsync(c => c.TenantId == tenant.Id)).Should().Be(5);
+
+        // Sanity on the first-run result counts.
+        result.CountryRules.Should().BeGreaterThan(0);
+        result.HrCategories.Should().Be(5);
+    }
+
     private static User MakeUser(Guid tenantId, string email) => new()
     {
         Id = Guid.NewGuid(),

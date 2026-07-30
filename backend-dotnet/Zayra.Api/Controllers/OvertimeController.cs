@@ -4,7 +4,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
+using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -17,12 +19,15 @@ public class OvertimeController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
     private readonly IHrmHierarchyService _hierarchyService;
+    private readonly IWorkWeekService _workWeek;
 
-    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService)
+    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null)
     {
         _db = db;
         _scopeService = scopeService;
         _hierarchyService = hierarchyService;
+        // Optional so existing callers/tests keep working; DI always supplies the real one.
+        _workWeek = workWeek ?? new WorkWeekService(db);
     }
 
     [HttpGet("policies")]
@@ -354,7 +359,11 @@ public class OvertimeController : ControllerBase
             _ => basic
         };
         var hourlyRate = policy.HourlyRateBasis == "FixedHourlyRate" ? policy.FixedHourlyRate : Math.Round(rateBase / Math.Max(1, policy.StandardMonthlyHours), 2);
-        var dayCategory = await IsPublicHoliday(tenantId, request.WorkDate, ct) ? "PublicHoliday" : request.WorkDate.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday ? "Weekend" : "RegularDay";
+        // Weekend categorisation is config-driven (WorkWeekService): the employee's company
+        // resolves the rest days, not a hard-coded Fri/Sat — which was wrong for UAE (Sat/Sun)
+        // and any non-default tenant.
+        var workWeek = await _workWeek.ResolveAsync(tenantId, employee?.CompanyId, string.IsNullOrWhiteSpace(employee?.CountryCode) ? null : employee!.CountryCode, ct);
+        var dayCategory = await IsPublicHoliday(tenantId, request.WorkDate, ct) ? "PublicHoliday" : workWeek.IsWeekend(request.WorkDate.DayOfWeek) ? "Weekend" : "RegularDay";
         var multiplier = await _db.OvertimeMultipliers.AsNoTracking().Where(x => x.TenantId == tenantId && x.OvertimePolicyId == policy.Id && x.DayCategory == dayCategory && x.IsActive).Select(x => x.Multiplier).FirstOrDefaultAsync(ct);
         if (multiplier <= 0) multiplier = dayCategory == "PublicHoliday" ? 2m : dayCategory == "Weekend" ? 1.5m : 1.25m;
         var approvedHours = Math.Round(request.ApprovedMinutes / 60m, 2);

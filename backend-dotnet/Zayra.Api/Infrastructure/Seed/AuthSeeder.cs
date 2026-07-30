@@ -95,11 +95,12 @@ public class AuthSeeder : IAuthSeeder
 
         await _db.SaveChangesAsync(cancellationToken);
 
-        // Global labour-law / payroll rule packs for major countries — seeded for every
-        // tenant as configurable reference data (not demo). Admins can edit, override,
-        // or import additional country packs. This keeps the platform global, not UAE-only.
-        try { await EnsureGlobalCountryRules(tenant.Id, cancellationToken); }
-        catch (Exception ex) { Console.WriteLine($"[Seed] Country rule packs skipped: {ex.Message}"); }
+        // FIX 1 (C1): the single idempotent per-tenant provisioning bundle installs the
+        // statutory/reference/config foundation (country rules, MasterData, HR categories,
+        // default attendance/leave/approval policies, bilingual notification templates) for the
+        // bootstrap tenant, exactly as PlatformController.CreateTenant does for every new tenant.
+        try { await TenantProvisioningBundle.ProvisionAsync(_db, tenant.Id, cancellationToken); }
+        catch (Exception ex) { Console.WriteLine($"[Seed] Tenant provisioning bundle skipped: {ex.Message}"); }
 
         // Sample organisation/business data is seeded only when explicitly enabled
         // (SeedAdmin:SeedDemoData). Production tenants start clean — tenant, roles,
@@ -274,60 +275,9 @@ public class AuthSeeder : IAuthSeeder
         return adminRole;
     }
 
-    private async Task EnsureGlobalCountryRules(Guid tenantId, CancellationToken ct)
-    {
-        if (await _db.CountryPayrollRules.AnyAsync(x => x.TenantId == tenantId, ct)) return;
-
-        // (CountryCode, Currency, Weekend, AnnualLeaveDays, SickLeaveDays, ProbationMonths,
-        //  NoticeDays, OtNormal, OtHoliday, EndOfServiceNote)
-        var packs = new (string Country, string Currency, string Weekend, int Annual, int Sick, int Probation, int Notice, decimal OtNormal, decimal OtHoliday, string Eosb)[]
-        {
-            // GCC
-            ("AE", "AED", "Fri-Sat", 30, 90, 6, 30, 1.25m, 1.50m, "Gratuity: 21 days/yr for first 5 yrs, 30 days/yr thereafter (UAE Labour Law)"),
-            ("SA", "SAR", "Fri-Sat", 21, 120, 3, 60, 1.50m, 2.00m, "End-of-service: 0.5 month/yr first 5 yrs, 1 month/yr after"),
-            ("QA", "QAR", "Fri-Sat", 21, 84, 6, 30, 1.25m, 1.50m, "End-of-service gratuity: min 3 weeks basic/yr (Labour Law No. 14/2004)"),
-            ("KW", "KWD", "Fri-Sat", 30, 75, 3, 90, 1.25m, 1.50m, "Indemnity: 15 days/yr first 5 yrs, 1 month/yr thereafter"),
-            ("OM", "OMR", "Fri-Sat", 30, 70, 3, 30, 1.25m, 2.00m, "Gratuity per Omani Labour Law for non-citizens"),
-            ("BH", "BHD", "Fri-Sat", 30, 55, 3, 30, 1.25m, 1.50m, "Leaving indemnity: 15 days/yr first 3 yrs, 1 month/yr after"),
-            // Middle East / Africa
-            ("EG", "EGP", "Fri-Sat", 21, 180, 3, 60, 1.35m, 2.00m, "End-of-service per Egyptian Labour Law No. 12/2003"),
-            ("ZA", "ZAR", "Sat-Sun", 21, 30, 3, 30, 1.50m, 2.00m, "Severance 1 week/yr (BCEA); sick 30 days per 36-month cycle"),
-            ("NG", "NGN", "Sat-Sun", 6, 12, 3, 30, 1.50m, 2.00m, "Per Nigerian Labour Act; redundancy by agreement"),
-            // Asia
-            ("IN", "INR", "Sat-Sun", 18, 12, 6, 30, 2.00m, 2.00m, "Gratuity (Payment of Gratuity Act): 15 days wages/yr after 5 yrs"),
-            ("PK", "PKR", "Sat-Sun", 14, 16, 3, 30, 2.00m, 2.00m, "Gratuity 30 days/yr or provident fund"),
-            ("PH", "PHP", "Sat-Sun", 5, 0, 6, 30, 1.25m, 2.00m, "13th-month pay mandatory; separation pay per Labor Code"),
-            ("SG", "SGD", "Sat-Sun", 14, 14, 3, 30, 1.50m, 2.00m, "No statutory gratuity; OT under Employment Act for covered staff"),
-            // Europe
-            ("GB", "GBP", "Sat-Sun", 28, 28, 3, 30, 1.50m, 2.00m, "Statutory: no gratuity; redundancy pay per service length"),
-            ("DE", "EUR", "Sat-Sun", 20, 42, 6, 28, 1.25m, 1.50m, "No statutory severance; 6 weeks continued sick pay; notice per BGB §622"),
-            ("FR", "EUR", "Sat-Sun", 25, 90, 2, 30, 1.25m, 1.50m, "35-hr week; severance per Code du Travail; OT +25% then +50%"),
-            // North America
-            ("US", "USD", "Sat-Sun", 15, 5, 3, 14, 1.50m, 1.50m, "At-will; FLSA overtime 1.5x over 40 hrs/week; no statutory gratuity"),
-            ("CA", "CAD", "Sat-Sun", 10, 10, 3, 14, 1.50m, 1.50m, "Vacation pay 4%+; severance per ESA; no gratuity (province-specific)"),
-            // Oceania
-            ("AU", "AUD", "Sat-Sun", 20, 10, 6, 28, 1.50m, 2.00m, "4 weeks annual leave; redundancy & long-service leave per NES"),
-        };
-
-        var rules = new List<CountryPayrollRule>();
-        void Add(string country, string key, string val, string type, string desc) =>
-            rules.Add(new CountryPayrollRule { TenantId = tenantId, CountryCode = country, RuleKey = key, RuleValue = val, DataType = type, Description = desc });
-
-        foreach (var p in packs)
-        {
-            Add(p.Country, "default_currency", p.Currency, "string", "Default payroll currency");
-            Add(p.Country, "weekend_days", p.Weekend, "string", "Statutory weekend");
-            Add(p.Country, "annual_leave_days", p.Annual.ToString(), "int", "Statutory annual leave entitlement (days)");
-            Add(p.Country, "sick_leave_days", p.Sick.ToString(), "int", "Statutory sick leave entitlement (days)");
-            Add(p.Country, "probation_months", p.Probation.ToString(), "int", "Maximum probation period (months)");
-            Add(p.Country, "notice_period_days", p.Notice.ToString(), "int", "Default notice period (days)");
-            Add(p.Country, "overtime_multiplier_normal", p.OtNormal.ToString(System.Globalization.CultureInfo.InvariantCulture), "decimal", "Overtime multiplier — normal day");
-            Add(p.Country, "overtime_multiplier_holiday", p.OtHoliday.ToString(System.Globalization.CultureInfo.InvariantCulture), "decimal", "Overtime multiplier — public holiday/rest day");
-            Add(p.Country, "end_of_service", p.Eosb, "string", "End-of-service / gratuity rule");
-        }
-        _db.CountryPayrollRules.AddRange(rules);
-        await _db.SaveChangesAsync(ct);
-    }
+    // NOTE: the former private EnsureGlobalCountryRules country-pack table moved into the single
+    // idempotent TenantProvisioningBundle (FIX 1 / C1), which every tenant-create path invokes so
+    // the packs are installed uniformly (per-rule idempotent, UAE weekend corrected, tier-tagged).
 
     private async Task<List<Permission>> EnsurePermissions(CancellationToken cancellationToken)
     {
