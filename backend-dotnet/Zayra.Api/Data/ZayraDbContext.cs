@@ -2606,7 +2606,11 @@ public class ZayraDbContext : DbContext
             entity.HasKey(x => x.Id);
             entity.Property(x => x.EosbYears1To5Rate).HasPrecision(8, 2);
             entity.Property(x => x.EosbYearsAbove5Rate).HasPrecision(8, 2);
-            entity.HasIndex(x => new { x.TenantId, x.CountryCode }).IsUnique();
+            // T+C natural key: a tenant-default row (CompanyId = null) and a per-company
+            // override (CompanyId set) may coexist for the same country. Non-null CompanyId
+            // uniqueness is DB-enforced; the null-default row's single-row invariant is held
+            // in-app by the provisioning bundle (insert-if-absent).
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.CountryCode }).IsUnique();
         });
 
         modelBuilder.Entity<Location>(entity =>

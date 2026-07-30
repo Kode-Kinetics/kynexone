@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -42,6 +43,11 @@ public class CompanyTaxPoliciesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        // Within-tenant company-scope enforcement: a company-scoped Payroll Manager cannot
+        // create a policy targeting a sibling company they cannot access (B3 — the resolver
+        // wiring in FIX 3 makes this load-bearing for other companies' net pay).
+        if (req.CompanyId is Guid cidCreate && !this.GetEntityScope().CanAccessCompany(cidCreate))
+            return Forbid();
         var error = await ValidateAsync(tenantId.Value, req, ct);
         if (error is not null) return BadRequest(new { message = error });
 
@@ -71,6 +77,13 @@ public class CompanyTaxPoliciesController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var policy = await _db.CompanyTaxPolicies.FirstOrDefaultAsync(p => p.TenantId == tenantId && p.Id == id && !p.IsDeleted, ct);
         if (policy is null) return NotFound();
+        // Company-scope enforcement on BOTH the existing target and the requested new target:
+        // a scoped user can neither edit a policy outside their scope nor re-point one at a
+        // company they cannot access.
+        var scope = this.GetEntityScope();
+        if ((policy.CompanyId is Guid existingCid && !scope.CanAccessCompany(existingCid)) ||
+            (req.CompanyId is Guid newCid && !scope.CanAccessCompany(newCid)))
+            return Forbid();
         var error = await ValidateAsync(tenantId.Value, req, ct);
         if (error is not null) return BadRequest(new { message = error });
 
@@ -112,6 +125,11 @@ public class CompanyTaxPoliciesController : ControllerBase
         if (req.CompanyId is Guid cid &&
             !await _db.Companies.AnyAsync(c => c.TenantId == tenantId && c.Id == cid && !c.IsDeleted, ct))
             return "Company not found in this tenant.";
+        // Income-tax rate bound + GCC zero-PIT compliance floor (single write-path check owned
+        // by StatutoryRateGuard). A non-zero PIT in a zero-PIT GCC state needs explicit ack.
+        var iso2 = CountryCodeStandard.NormalizeToIso2(req.CountryCode);
+        var rateError = StatutoryRateGuard.ValidateIncomeTaxRate(iso2, req.IncomeTaxRatePercent, req.AcknowledgeNonZeroGccTax ?? false);
+        if (rateError is not null) return rateError;
         return null;
     }
 
@@ -270,7 +288,10 @@ public class CompanyComplianceProfilesController : ControllerBase
 
 public record CompanyTaxPolicyRequest(
     Guid? CompanyId, string CountryCode, DateOnly EffectiveFrom, DateOnly? EffectiveTo,
-    string? Status, decimal? IncomeTaxRatePercent, bool? AppliesToBonus, string? Notes);
+    string? Status, decimal? IncomeTaxRatePercent, bool? AppliesToBonus, string? Notes,
+    // Explicit, logged acknowledgement required to set a NON-ZERO income tax rate for a
+    // zero-PIT GCC jurisdiction (compliance floor — see StatutoryRateGuard.ValidateIncomeTaxRate).
+    bool? AcknowledgeNonZeroGccTax = null);
 
 public record CompanyComplianceProfileRequest(
     Guid? CompanyId, string CountryCode, string? Jurisdiction, string? CompliancePack,

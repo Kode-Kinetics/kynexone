@@ -517,6 +517,87 @@ public class PayrollFailLoudTests
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
+    // ── FIX 3: a CompanyTaxPolicy actually changes the computed payroll income tax ──────────
+    //
+    // Before the wiring, PayrollController read ["Payroll"/"IncomeTaxRate"] from SystemSettings and
+    // the CompanyTaxPolicyResolver had zero consumers (config theater). This proves the resolver is
+    // now enforced: with no policy the income tax is zero; adding an Active company-scoped
+    // CompanyTaxPolicy (10%) makes the INCOME_TAX deduction line appear at basic × 10%.
+    [Fact]
+    public async Task CompanyTaxPolicy_ChangesComputedPayrollTax()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+
+        var company = new Company
+        {
+            Id = Guid.NewGuid(), TenantId = tenantId,
+            LegalNameEn = "TaxPolicyCo", CountryCode = "SAU", Jurisdiction = "KSA-mainland",
+            RegistrationNumber = $"TAX-{Guid.NewGuid():N}", DefaultCurrency = "SAR", IsActive = true,
+            CreatedAtUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.Companies.Add(company);
+
+        var emp = new Employee
+        {
+            TenantId = tenantId, CompanyId = company.Id,
+            EmployeeCode = $"TAX-{Guid.NewGuid():N}", FullName = "Taxable Person",
+            Nationality = "Saudi", Status = "Active",
+            JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.Employees.Add(emp);
+        await db.SaveChangesAsync();
+
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 10_000m, EffectiveDate = new DateOnly(2024, 1, 1), IsActive = true,
+        });
+        await db.SaveChangesAsync();
+
+        // ── Run 1: NO CompanyTaxPolicy, no SystemSettings tax → income tax must be zero ──
+        var run1 = new PayrollRun
+        {
+            TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 11,
+            CreatedAtUtc = new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.PayrollRuns.Add(run1);
+        await db.SaveChangesAsync();
+
+        var r1 = await BuildController(db, tenantId, BuildKsaResolver()).Process(run1.Id, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(r1);
+        var tax1 = await db.PayrollDeductions
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == run1.Id && d.EmployeeId == emp.Id && d.ComponentCode == "INCOME_TAX")
+            .SumAsync(d => d.Amount);
+        Assert.Equal(0m, tax1);
+
+        // ── Add an Active company-scoped CompanyTaxPolicy: 10% income tax ──
+        db.CompanyTaxPolicies.Add(new CompanyTaxPolicy
+        {
+            TenantId = tenantId, CompanyId = company.Id, CountryCode = "SA",
+            EffectiveFrom = new DateOnly(2024, 1, 1), Status = CompanyPolicyStatuses.Active,
+            IncomeTaxRatePercent = 10m, AppliesToBonus = true,
+        });
+        await db.SaveChangesAsync();
+
+        // ── Run 2: same employee/salary, new period, WITH the policy → tax = 10,000 × 10% = 1,000 ──
+        var run2 = new PayrollRun
+        {
+            TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 12,
+            CreatedAtUtc = new DateTime(2026, 12, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.PayrollRuns.Add(run2);
+        await db.SaveChangesAsync();
+
+        var r2 = await BuildController(db, tenantId, BuildKsaResolver()).Process(run2.Id, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(r2);
+        var tax2 = await db.PayrollDeductions
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == run2.Id && d.EmployeeId == emp.Id && d.ComponentCode == "INCOME_TAX")
+            .SumAsync(d => d.Amount);
+        Assert.Equal(1_000m, tax2);
+        Assert.True(tax2 > tax1, "A CompanyTaxPolicy must change (increase) the computed payroll income tax.");
+    }
+
     private static StubRuleReader BuildDefaultKsaRules() => new StubRuleReader()
         .Set("gosi.saudi_employee_rate",            0.09m)
         .Set("gosi.saudi_employer_rate",            0.09m)

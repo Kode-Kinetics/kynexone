@@ -12,6 +12,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
+using Zayra.Api.Infrastructure.Governance;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -32,10 +33,12 @@ public class PayrollController : ControllerBase
     private readonly ILetterService _letters;
     private readonly IDocumentStorage _storage;
     private readonly PdfRenderGate _pdfGate;
+    private readonly ICompanyTaxPolicyResolver _taxResolver;
 
     public PayrollController(ZayraDbContext db, IDataScopeService scopeService, IHttpContextAccessor http,
         INotificationService notifications, ICountryPackResolver packResolver, IStatutoryRuleReader ruleReader,
-        ILetterService letters, IDocumentStorage storage, PdfRenderGate pdfGate)
+        ILetterService letters, IDocumentStorage storage, PdfRenderGate pdfGate,
+        ICompanyTaxPolicyResolver? taxResolver = null)
     {
         _db = db;
         _scopeService = scopeService;
@@ -46,6 +49,8 @@ public class PayrollController : ControllerBase
         _letters = letters;
         _storage = storage;
         _pdfGate = pdfGate;
+        // Optional so existing test constructors keep working; DI always supplies the real one.
+        _taxResolver = taxResolver ?? new CompanyTaxPolicyResolver(db);
     }
 
     [HttpGet("salary-structures")]
@@ -567,12 +572,27 @@ public class PayrollController : ControllerBase
             .Where(x => x.TenantId == tenantId && x.SalaryStructureId.HasValue && structureIds.Contains(x.SalaryStructureId!.Value))
             .ToListAsync(cancellationToken);
 
-        // Income tax rate from System Settings (0 if not configured — GCC has no personal income tax by default)
-        var taxRateSetting = await _db.SystemSettings.AsNoTracking()
-            .Where(x => x.Category == "Payroll" && x.SettingKey == "IncomeTaxRate")
-            .Select(x => x.SettingValue)
-            .FirstOrDefaultAsync(cancellationToken);
-        decimal.TryParse(taxRateSetting, out var incomeTaxRate); // 0 if unset
+        // FIX 3 (program P12): the effective income-tax rate for THIS legal entity is resolved
+        // via CompanyTaxPolicyResolver — company override → tenant default (server-derived
+        // company.Id, never client input). The legacy SystemSettings ["Payroll"/"IncomeTaxRate"]
+        // magic key is now a LOGGED DEPRECATION FALLBACK, used only when no CompanyTaxPolicy is
+        // configured, so payroll actually enforces the per-company policy instead of ignoring it.
+        var taxPolicy = await _taxResolver.ResolveAsync(tenantId, company.Id, periodEnd, cancellationToken);
+        decimal incomeTaxRate;
+        if (taxPolicy?.IncomeTaxRatePercent is decimal policyRate)
+        {
+            incomeTaxRate = policyRate;
+        }
+        else
+        {
+            var taxRateSetting = await _db.SystemSettings.AsNoTracking()
+                .Where(x => x.Category == "Payroll" && x.SettingKey == "IncomeTaxRate")
+                .Select(x => x.SettingValue)
+                .FirstOrDefaultAsync(cancellationToken);
+            decimal.TryParse(taxRateSetting, out incomeTaxRate); // 0 if unset
+            if (incomeTaxRate > 0m)
+                Console.WriteLine($"[Payroll] DEPRECATION: tenant {tenantId} income tax resolved from the legacy SystemSettings magic key (no CompanyTaxPolicy). Migrate to a CompanyTaxPolicy for company {company.Id}.");
+        }
         var attendanceImpacts = await _db.AttendancePayrollImpacts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId))
             .ToListAsync(cancellationToken);

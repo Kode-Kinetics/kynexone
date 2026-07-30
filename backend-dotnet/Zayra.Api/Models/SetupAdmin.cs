@@ -82,10 +82,13 @@ public class SystemSetting : ITenantOwned
 
 // ── GCC Compliance Settings ───────────────────────────────────────────────────
 
-public class GCCComplianceSetting : ITenantOwned
+public class GCCComplianceSetting : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    // T+C: null = tenant-wide default (visible to all, the WorkWeekService fallback tier);
+    // set = per-legal-entity override that wins for that company. Config-scope semantics.
+    public Guid? CompanyId { get; set; }
     public string CountryCode { get; set; } = string.Empty; // SA, AE, KW, BH, QA, OM
     // WPS/SIF
     public bool WpsEnabled { get; set; }

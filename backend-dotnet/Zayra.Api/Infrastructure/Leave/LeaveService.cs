@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Leave;
+using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Leave;
@@ -10,11 +12,14 @@ public class LeaveService : ILeaveService
 {
     private readonly ZayraDbContext _db;
     private readonly IApprovalPolicyService _policyService;
+    private readonly IWorkWeekService _workWeek;
 
-    public LeaveService(ZayraDbContext db, IApprovalPolicyService policyService)
+    public LeaveService(ZayraDbContext db, IApprovalPolicyService policyService, IWorkWeekService? workWeek = null)
     {
         _db = db;
         _policyService = policyService;
+        // Optional so existing callers/tests keep working; DI always supplies the real one.
+        _workWeek = workWeek ?? new WorkWeekService(db);
     }
 
     public async Task<EmployeeLeaveBalance> GetOrCreateBalanceAsync(Guid tenantId, int employeeId, Guid leaveTypeId, int year, CancellationToken ct = default)
@@ -118,16 +123,11 @@ public class LeaveService : ILeaveService
 
         if (!policy.WeekendsIncluded)
         {
-            var weekendDays = 0;
-            var current = start;
-            while (current <= end)
-            {
-                var dow = current.DayOfWeek;
-                if (dow == DayOfWeek.Saturday || dow == DayOfWeek.Sunday)
-                    weekendDays++;
-                current = current.AddDays(1);
-            }
-            workingDays -= weekendDays;
+            // Weekend (rest) days come from configuration via WorkWeekService — company override
+            // → tenant default → country pack → GCC default. Hard-coding Sat/Sun here was the
+            // legally-wrong leave deduction for GCC tenants (over-deducts Fri, under-deducts Sun).
+            var workWeek = await _workWeek.ResolveAsync(tenantId, policy.CompanyId, policy.CountryCode, ct);
+            workingDays -= workWeek.CountWeekendDays(start, end);
         }
 
         if (!policy.PublicHolidaysIncluded)

@@ -1,3 +1,4 @@
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Payroll;
@@ -33,6 +34,31 @@ public static class StatutoryRateGuard
         if (string.IsNullOrWhiteSpace(rateKey)) return false;
         var k = rateKey.Trim().ToLowerInvariant();
         return StatutoryPrefixes.Any(p => k.StartsWith(p, StringComparison.Ordinal));
+    }
+
+    /// <summary>Upper ceiling for a client income-tax rate (percent). Income tax is legitimately
+    /// client config (not a statutory <c>gosi.</c>/<c>saned.</c> key), so it is not free-CRUD
+    /// bounded via the prefix families above — but it still needs its own sanity floor/ceiling
+    /// and the GCC zero-PIT compliance boundary. This is the single write-path check for the
+    /// <c>tax.</c> surface, mirroring the CompanyStatutoryOverride bounded-override philosophy.</summary>
+    public const decimal MaxIncomeTaxRatePercent = 100m;
+
+    /// <summary>
+    /// Validates a CompanyTaxPolicy income-tax rate on write. Returns an error string to reject,
+    /// or null to allow. Rules: 0 ≤ rate ≤ 100; and a NON-ZERO rate for a zero-PIT GCC
+    /// jurisdiction must be explicitly acknowledged (and the caller logs/audits it) — a fabricated
+    /// positive PIT in a zero-PIT GCC state is otherwise refused.
+    /// </summary>
+    public static string? ValidateIncomeTaxRate(string? countryCode, decimal? ratePercent, bool acknowledgedNonZeroGcc)
+    {
+        if (ratePercent is null) return null; // no rate configured → nothing to bound
+        var r = ratePercent.Value;
+        if (r < 0m) return "IncomeTaxRatePercent cannot be negative.";
+        if (r > MaxIncomeTaxRatePercent) return $"IncomeTaxRatePercent cannot exceed {MaxIncomeTaxRatePercent}%.";
+        if (r > 0m && CountryTier.IsZeroPersonalIncomeTax(countryCode) && !acknowledgedNonZeroGcc)
+            return $"'{countryCode?.Trim().ToUpperInvariant()}' is a zero personal-income-tax GCC jurisdiction. " +
+                   "A non-zero income tax rate must be explicitly acknowledged (acknowledgeNonZeroGccTax=true) and is logged.";
+        return null;
     }
 
     /// <summary>
