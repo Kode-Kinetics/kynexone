@@ -144,6 +144,12 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public DateTime? UpdatedAtUtc { get; set; }
     public Guid? UpdatedBy { get; set; }
     public DateTime? ActivatedAtUtc { get; set; }
+    // ── Readiness snapshot (denormalized for the list badge; the gate always recomputes live) ──
+    /// <summary>Ready | NeedsAttention | Blocked. Fail-safe default for a new incomplete record.</summary>
+    public string ReadinessState { get; set; } = "Blocked";
+    /// <summary>Count of failClosed activate-gate items still missing (drives the "Incomplete · N" badge).</summary>
+    public int ActivationBlockersCount { get; set; }
+    public DateTime? ReadinessEvaluatedAtUtc { get; set; }
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAtUtc { get; set; }
     public Guid? DeletedBy { get; set; }

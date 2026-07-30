@@ -32,7 +32,8 @@ public static class TenantProvisioningBundle
 {
     public readonly record struct ProvisionResult(
         int CountryRules, int MasterDataTypes, int MasterDataValues, int HrCategories,
-        int AttendancePolicies, int LeaveTypes, int LeavePolicies, int ApprovalPolicies, int NotificationTemplates);
+        int AttendancePolicies, int LeaveTypes, int LeavePolicies, int ApprovalPolicies, int NotificationTemplates,
+        int ComplianceProfiles = 0);
 
     public static async Task<ProvisionResult> ProvisionAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
@@ -45,10 +46,50 @@ public static class TenantProvisioningBundle
         var (leaveTypes, leavePolicies) = await InstallDefaultLeaveAsync(db, tenantId, ct);
         var apPolicies    = await InstallDefaultApprovalPoliciesAsync(db, tenantId, ct);
         var notifs        = await InstallNotificationTemplatesAsync(db, tenantId, ct);
+        var compliance    = await InstallComplianceProfilesAsync(db, tenantId, ct);
 
         await db.SaveChangesAsync(ct);
         return new ProvisionResult(countryRules, mdTypes, mdValues, hrCategories,
-            attnPolicies, leaveTypes, leavePolicies, apPolicies, notifs);
+            attnPolicies, leaveTypes, leavePolicies, apPolicies, notifs, compliance);
+    }
+
+    // ── 8. Tenant-default compliance profiles per GCC state (§3.5) ──
+    // An EDITABLE starting point mirroring the code readiness floor — never forced (opt-out by editing),
+    // insert-if-absent by (tenant, CompanyId==null, country). The CODE floor (GccReadinessFloor) remains
+    // the GUARANTEE regardless of whether this seed ran, so a fresh/mis-provisioned tenant still gates.
+    // Keys are jurisdiction readiness vocabulary (EmployeeFieldRegistry), not tenant business data.
+    private static readonly (string Country, string RequiredFieldsJson)[] ComplianceSeeds =
+    {
+        ("SA", """[{"key":"GosiReference","category":"identity","failClosed":true},{"key":"IqamaNumber","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"SA"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
+        ("AE", """[{"key":"EmiratesId","category":"identity","failClosed":true},{"key":"WorkPermitNumber","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"AE"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
+        ("QA", """[{"key":"Qid","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"QA"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
+        ("KW", """[{"key":"CivilId","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"KW"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
+        ("OM", """[{"key":"CivilId","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"OM"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
+        ("BH", """[{"key":"CivilId","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"BH"}},{"key":"SocialInsuranceReference","category":"identity","failClosed":true},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
+    };
+
+    private static async Task<int> InstallComplianceProfilesAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    {
+        // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent, never touches another tenant.
+        var existing = (await db.CompanyComplianceProfiles.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.CompanyId == null)
+            .Select(p => p.CountryCode).ToListAsync(ct))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var added = 0;
+        foreach (var (country, json) in ComplianceSeeds)
+        {
+            if (!existing.Add(country)) continue; // insert-if-absent by (tenant, default, country)
+            db.CompanyComplianceProfiles.Add(new CompanyComplianceProfile
+            {
+                TenantId = tenantId, CompanyId = null, CountryCode = country,
+                Jurisdiction = string.Empty, CompliancePack = string.Empty,
+                EffectiveFrom = new DateOnly(2020, 1, 1), Status = CompanyPolicyStatuses.Active,
+                RequiredFieldsJson = json,
+                Notes = "Seeded tenant-default readiness profile (editable). The code floor remains the guarantee.",
+            });
+            added++;
+        }
+        return added;
     }
 
     // ── 1. Country payroll rules (per-rule idempotent; UAE weekend corrected; tier-tagged) ──

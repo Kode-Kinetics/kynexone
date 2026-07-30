@@ -1,12 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { FileUp, History, Pencil, Plus, RefreshCw, Search, Send, UserRound, Users } from 'lucide-react';
+import { AlertTriangle, FileUp, History, Pencil, Plus, RefreshCw, Search, Send, UserRound, Users } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
-import { employeesApi } from '../api/employees';
-import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem } from '../api/employees';
+import { employeesApi, notActivatableFromError } from '../api/employees';
+import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable } from '../api/employees';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
+import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
+import { ReadinessChecklist } from '../components/ReadinessChecklist';
 import client from '../api/client';
 
 const employeesImportExport = {
@@ -18,8 +20,8 @@ const employeesImportExport = {
     const csv = await client.get<string>('/api/employees/import-template', { responseType: 'text' }).then(r => r.data);
     downloadCsv(csv, 'employees-template.csv');
   },
-  import: (csvContent: string) =>
-    client.post<{ received: number; created: number; skipped: number; errors: string[] }>('/api/employees/import', { csvContent }).then(r => r.data),
+  // Import/preview are wired inline at the toolbar so they can refresh the list and deep-link
+  // into the readiness worklist (see the ImportExportToolbar usage below).
 };
 import { establishmentBlockFromError } from '../api/establishment';
 import type { EstablishmentBlockedPayload } from '../api/establishment';
@@ -145,6 +147,10 @@ const EDIT_FIELDS: EditField[] = [
   { section: 'Payroll & Banking', key: 'bankIban', label: 'IBAN', sensitive: true },
 ];
 
+// Display-labels + entity-key mapping ONLY (label text, edit-field wiring, document-type list).
+// The `required` flag here is NOT the source of "required to activate" — that is resolved
+// server-side and surfaced via the readiness checklist (GET /{id}/readiness). Do not reintroduce
+// a client-side required-field gate from this list (§8.5, "no hard-coded field list" on the client).
 const COMMON_COMPLIANCE_FIELDS: ComplianceFieldDefinition[] = [
   { fieldKey: 'passport_number', fieldLabel: 'Passport Number', entityKey: 'passportNumber', expiryEntityKey: 'passportExpiryDate', required: true },
 ];
@@ -240,6 +246,25 @@ function documentTypesForCountry(countryCode?: string) {
   return [...new Set([...statutory, 'Contract', 'Offer letter', 'NDA', 'Policy acknowledgment'])];
 }
 
+// Fast-fix field targets the PUT /{id} edit endpoint can persist — its ApplyChanges keys, plus the
+// IBAN alias. Payroll sub-fields (MOL ID, routing, payment method), org IDs, and compliance-sourced
+// expiries have no post-create edit path, so their checklist items stay informational rather than
+// exposing a dead input. Requiredness itself is server-policy-driven (the readiness checklist), never
+// this list.
+const READINESS_FIELD_EDIT_ALIAS: Record<string, string> = {
+  'payrollProfile.iban': 'bankIban',
+};
+const READINESS_EDITABLE_TARGETS = new Set<string>([
+  'englishName', 'dateOfBirth', 'nationality', 'gender', 'workEmail', 'phone', 'joiningDate',
+  'contractType', 'employmentType', 'iqamaNumber', 'gosiReference', 'emiratesId', 'qid', 'civilId',
+  'passportNumber', 'visaNumber', 'workPermitNumber', 'muqeemNumber', 'laborCardNumber',
+  'passportExpiryDate', 'visaExpiryDate', 'salary',
+]);
+function readinessUpdateKey(target: string): string | null {
+  if (READINESS_FIELD_EDIT_ALIAS[target]) return READINESS_FIELD_EDIT_ALIAS[target];
+  return READINESS_EDITABLE_TARGETS.has(target) ? target : null;
+}
+
 interface EmployeeUsageData {
   activeEmployees: number;
   maxEmployees: number;
@@ -257,6 +282,9 @@ export function EmployeesPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<StatusFilter>('');
+  // Client-side readiness refinement over the loaded page (the list endpoint has no server-side
+  // readiness filter). "Needs info" = the Blocked worklist the import results view deep-links into.
+  const [readinessFilter, setReadinessFilter] = useState<'' | 'Blocked' | 'Ready'>('');
   const [view, setView] = useState<'current' | 'ex'>('current');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -271,6 +299,10 @@ export function EmployeesPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<EmployeeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // Live activation checklist for the open employee, plus the structured 422 to render inline
+  // when an activation is refused (both drive the same ReadinessChecklist component).
+  const [readiness, setReadiness] = useState<EmployeeReadiness | null>(null);
+  const [blockedPanel, setBlockedPanel] = useState<EmployeeNotActivatable | null>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>('personal');
   const [statusReason, setStatusReason] = useState('');
   const [newStatus, setNewStatus] = useState<StatusFilter>('Active');
@@ -445,12 +477,22 @@ export function EmployeesPage() {
     }
   }, [documentType, selectedDocumentTypes]);
 
+  const loadReadiness = async (id: number) => {
+    try {
+      setReadiness(await employeesApi.readiness(id));
+    } catch {
+      setReadiness(null);
+    }
+  };
+
   const openDetail = async (id: number, preserveTab = false) => {
     setSelectedId(id);
     setDetailLoading(true);
+    setBlockedPanel(null);
     if (!preserveTab) setActiveTab('personal');
     try {
       setDetail(await employeesApi.get(id));
+      loadReadiness(id);
     } catch {
       setError('Could not load employee detail from the API.');
     } finally {
@@ -530,8 +572,11 @@ export function EmployeesPage() {
   const saveEmployee = async () => {
     setError('');
     setFormError('');
-    if (!form.englishName.trim() || !form.gender) {
-      setFormError('English full name and gender are required.');
+    // Create floor is name-only (server floor). Gender, IDs, and statutory fields are readiness
+    // items surfaced on the People list, not create-time gates — "save what I have" never fights
+    // the user (§8.6). Required-to-activate is driven by the server policy, not the client.
+    if (!form.englishName.trim()) {
+      setFormError('English full name is required.');
       return;
     }
     if (selectedDesignation?.gradeId && form.gradeId && selectedDesignation.gradeId !== form.gradeId) {
@@ -679,10 +724,20 @@ export function EmployeesPage() {
       });
       surfaceAdvisoryWarning(updated);
       setDetail(updated);
+      setBlockedPanel(null);
       setStatusReason('');
       setActionNotice(`Employee status changed to ${newStatus}.`);
       await load();
+      loadReadiness(selectedId);
     } catch (e: unknown) {
+      // Becoming Active from a non-occupying status can be refused by the readiness gate (422).
+      const notActivatable = notActivatableFromError(e);
+      if (notActivatable) {
+        setBlockedPanel(notActivatable);
+        loadReadiness(selectedId);
+        setStatusSaving(false);
+        return;
+      }
       const block = establishmentBlockFromError(e);
       if (block) {
         // Reactivation into an occupying status consumes a slot — same structured popup.
@@ -707,11 +762,22 @@ export function EmployeesPage() {
       });
       surfaceAdvisoryWarning(updated);
       setDetail(updated);
+      setBlockedPanel(null);
       setNewStatus('Active');
       setStatusReason('');
       setActionNotice('Employee activated and is now live.');
       await load();
+      loadReadiness(selectedId);
     } catch (e: unknown) {
+      // Readiness gate (422): render the returned blocking[] inline via the same checklist
+      // component — single source of truth = server, never a red banner (§8.3).
+      const notActivatable = notActivatableFromError(e);
+      if (notActivatable) {
+        setBlockedPanel(notActivatable);
+        loadReadiness(selectedId);
+        setStatusSaving(false);
+        return;
+      }
       const block = establishmentBlockFromError(e);
       if (block) {
         // Activation is the occupying transition — the guard's block must render
@@ -737,6 +803,36 @@ export function EmployeesPage() {
     setDetail((current) => current ? { ...current, documents: [uploaded, ...current.documents] } : current);
     setDocumentFile(null);
     setDocumentExpiry('');
+    loadReadiness(selectedId);
+  };
+
+  // ── Fast-fix: close a single readiness gap without opening the ~40-field edit modal (§8.4) ──
+  const handleFixField = async (target: string, value: string): Promise<{ ok: boolean; message?: string }> => {
+    if (!selectedId) return { ok: false };
+    const key = readinessUpdateKey(target);
+    if (!key) return { ok: false, message: 'Add this in the full profile.' };
+    const changes: Record<string, unknown> = { [key]: key === 'salary' ? Number(value) : value };
+    try {
+      const res = await employeesApi.update(selectedId, new Date().toISOString().slice(0, 10), changes);
+      if (res.status === 202) {
+        // Sensitive identity/payroll fields route to the Approval Center — the gap clears once approved.
+        await loadReadiness(selectedId);
+        return { ok: false, message: 'Submitted to the Approval Center — clears once approved.' };
+      }
+      await openDetail(selectedId, true);
+      await load();
+      return { ok: true };
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      return { ok: false, message: msg ?? 'Could not save — check the value and try again.' };
+    }
+  };
+
+  const isFixFieldEditable = (target: string) => readinessUpdateKey(target) !== null;
+
+  const handleFixDocument = (documentType: string) => {
+    setActiveTab('documents');
+    setDocumentType(documentType);
   };
 
   const requestTransfer = async () => {
@@ -765,6 +861,18 @@ export function EmployeesPage() {
   };
 
   const atEmployeeLimit = usage !== null && usage.maxEmployees > 0 && usage.activeEmployees >= usage.maxEmployees;
+
+  // "Needs info" refinement runs over the loaded page (the list endpoint has no readiness param).
+  const visibleEmployees = readinessFilter
+    ? employees.filter((e) => (readinessFilter === 'Blocked' ? e.readinessState === 'Blocked' : e.readinessState !== 'Blocked'))
+    : employees;
+
+  // Activate-button gating. The readiness gate fires only on first-time activations from a
+  // non-occupying status — mandated Suspended→Active / Offboarded→Active reinstatements are NOT
+  // gated (§5.2), so those stay enabled even with open blockers.
+  const activationBlockers = readiness?.blocking.length ?? 0;
+  const isReinstatement = !!selectedEmployee && ['Suspended', 'Offboarded'].includes(selectedEmployee.status);
+  const activateGateBlocked = !isReinstatement && activationBlockers > 0;
 
   return (
     <div className="space-y-5">
@@ -808,7 +916,9 @@ export function EmployeesPage() {
                 entityName="Employees"
                 onExport={employeesImportExport.export}
                 onDownloadTemplate={employeesImportExport.template}
-                onImport={employeesImportExport.import}
+                onImport={async (csv) => { const r = await employeesApi.import(csv); await load(); return r; }}
+                onPreview={(csv) => employeesApi.importPreview(csv)}
+                onViewIncomplete={() => { setSearch(''); setStatus(''); setReadinessFilter('Blocked'); }}
               />
               <div className="relative group">
                 <button
@@ -853,6 +963,11 @@ export function EmployeesPage() {
             <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className="select sm:w-56" aria-label="Status filter">
               {activeStatusFilterOptions.map((item) => <option key={item || 'all'} value={item}>{item || 'All statuses'}</option>)}
             </select>
+            <select value={readinessFilter} onChange={(e) => setReadinessFilter(e.target.value as '' | 'Blocked' | 'Ready')} className="select sm:w-44" aria-label="Readiness filter">
+              <option value="">All readiness</option>
+              <option value="Blocked">Needs info</option>
+              <option value="Ready">Ready</option>
+            </select>
             <button type="button" onClick={refreshAll} className="btn-secondary">
               <RefreshCw className="h-4 w-4" />
               Refresh
@@ -871,8 +986,8 @@ export function EmployeesPage() {
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                   {loading && <EmptyRow label="Loading live employees..." />}
-                  {!loading && employees.length === 0 && <EmptyRow label="No employees found" />}
-                  {!loading && employees.map((employee) => (
+                  {!loading && visibleEmployees.length === 0 && <EmptyRow label={readinessFilter ? 'No employees match this readiness filter on this page.' : 'No employees found'} />}
+                  {!loading && visibleEmployees.map((employee) => (
                     <tr key={employee.id} onClick={() => openDetail(employee.id)} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
@@ -887,7 +1002,15 @@ export function EmployeesPage() {
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.designation || '-'}</td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.branch || '-'}</td>
                       <td className="px-4 py-3"><StatusChip {...statusTone(employee.status)} /></td>
-                      <td className="px-4 py-3 font-semibold text-slate-700 dark:text-slate-200">{employee.profileCompletenessScore.toFixed(0)}%</td>
+                      <td className="px-4 py-3">
+                        <ReadinessBadge
+                          state={employee.readinessState}
+                          blockersCount={employee.activationBlockersCount}
+                          expiring={hasExpiringId([employee.visaExpiryDate, employee.passportExpiryDate])}
+                          onClick={() => openDetail(employee.id)}
+                          title={`Profile ${employee.profileCompletenessScore.toFixed(0)}% complete — open the activation checklist`}
+                        />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -937,6 +1060,37 @@ export function EmployeesPage() {
                 </div>
               </div>
               <div className="space-y-4 p-4">
+                {/* Activation readiness — the 422 block and the live checklist share the SAME
+                    server-authoritative component; fast-fix closes gaps in place (§8.3/§8.4). */}
+                {blockedPanel ? (
+                  <div className="rounded-lg border border-rose-300 bg-rose-50/60 p-3 dark:border-rose-500/40 dark:bg-rose-500/[0.06]">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="flex items-center gap-1.5 text-sm font-bold text-rose-700 dark:text-rose-300">
+                        <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        Cannot activate yet — {blockedPanel.blocking.length} required {blockedPanel.blocking.length === 1 ? 'detail' : 'details'} missing
+                      </p>
+                      <button type="button" onClick={() => setBlockedPanel(null)} className="shrink-0 text-xs font-semibold text-slate-500 underline">Dismiss</button>
+                    </div>
+                    <ReadinessChecklist
+                      readiness={blockedPanel}
+                      onFixField={handleFixField}
+                      onFixDocument={handleFixDocument}
+                      isFieldEditable={isFixFieldEditable}
+                    />
+                  </div>
+                ) : readiness ? (
+                  <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
+                    <p className="mb-2 text-xs font-bold uppercase text-slate-400">Activation checklist</p>
+                    <ReadinessChecklist
+                      readiness={readiness}
+                      onFixField={handleFixField}
+                      onFixDocument={handleFixDocument}
+                      isFieldEditable={isFixFieldEditable}
+                      showPresent
+                    />
+                  </div>
+                ) : null}
+
                 {activeTab === 'personal' && (
                   <DetailGrid rows={[
                     ['English name', selectedEmployee.englishName],
@@ -1038,10 +1192,23 @@ export function EmployeesPage() {
                     </select>
                     <input value={statusReason} onChange={(e) => setStatusReason(e.target.value)} className="input w-full" placeholder="Required reason" />
                     {selectedEmployee.status !== 'Active' && (
-                      <button type="button" onClick={activateEmployee} disabled={statusSaving} className="btn-primary justify-center disabled:opacity-50">
-                        <UserRound className="h-4 w-4" />
-                        {statusSaving ? 'Activating...' : 'Activate employee'}
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={activateEmployee}
+                          disabled={statusSaving || activateGateBlocked}
+                          title={activateGateBlocked ? `${activationBlockers} required detail${activationBlockers === 1 ? '' : 's'} missing` : undefined}
+                          className="btn-primary justify-center disabled:opacity-50"
+                        >
+                          <UserRound className="h-4 w-4" />
+                          {statusSaving ? 'Activating...' : 'Activate employee'}
+                        </button>
+                        {activateGateBlocked && (
+                          <p className="text-center text-[11px] text-slate-400">
+                            {activationBlockers} required detail{activationBlockers === 1 ? '' : 's'} missing — complete the checklist above.
+                          </p>
+                        )}
+                      </>
                     )}
                     <button type="button" onClick={changeStatus} disabled={!statusReason.trim() || statusSaving} className="btn-secondary justify-center disabled:opacity-40">
                       <History className="h-4 w-4" />
@@ -1133,7 +1300,7 @@ export function EmployeesPage() {
             <Input label="English full name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
             <Input label="Arabic full name" value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} rtl action={<TransliterateButton source={form.englishName} onSuggest={(s) => setField('arabicName', s)} />} />
             <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
-            <Select label="Gender" required value={form.gender} onChange={(v) => setField('gender', v)} options={['Male', 'Female', 'Other']} />
+            <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={['Male', 'Female', 'Other']} />
             <Input label="Nationality" value={form.nationality ?? ''} onChange={(v) => setField('nationality', v)} />
             <Input label="Personal email" value={form.personalEmail ?? ''} onChange={(v) => setField('personalEmail', v)} type="email" />
             <Input label="Work email" value={form.workEmail ?? ''} onChange={(v) => setField('workEmail', v)} type="email" info="Company email address. Also used to link this employee to their login account for self-service (ESS)." infoKey="employees.work_email" />

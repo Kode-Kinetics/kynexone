@@ -20,21 +20,30 @@ public static class WpsSifValidator
             "Approved", "Locked", "Paid",
         };
 
+    // A wage file must never carry a non-employed person. Draft/Suspended are included: a Draft was
+    // never activated (never a payable relationship) and a Suspended employee's pay is legally on hold —
+    // both previously slipped through entirely. Being in this set is now a BLOCKING error, not a warning.
     private static readonly IReadOnlySet<string> InactiveEmployeeStatuses =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "Archived", "Offboarded", "Terminated",
+            "Archived", "Offboarded", "Terminated", "Draft", "Suspended", "Invited", "Inactive", "Exited",
         };
 
     /// <summary>
     /// Validates the payroll run + its slips + employee profiles + employee master data
     /// and returns a full validation result.
+    ///
+    /// <paramref name="payBlockedEmployeeIds"/> is the readiness pay-block set — computed by the CALLER
+    /// via the ONE readiness evaluator (missing GOSI/social-insurance ref, expired Iqama/visa/EID/QID/CivilId
+    /// at pay date, missing MolId/routing where required, State==Blocked). The validator stays PURE: it
+    /// simply turns membership into a blocking error so activation and pay read the same evaluator.
     /// </summary>
     public static WpsValidationResult Validate(
         PayrollRun                       run,
         IReadOnlyList<PayrollSlip>       slips,
         IReadOnlyList<EmployeePayrollProfile> profiles,
-        IReadOnlyList<Employee>          employees)
+        IReadOnlyList<Employee>          employees,
+        IReadOnlySet<int>?               payBlockedEmployeeIds = null)
     {
         var errors   = new List<WpsValidationIssue>();
         var warnings = new List<WpsValidationIssue>();
@@ -98,6 +107,17 @@ public static class WpsSifValidator
                 warnings.Add(EmpWarning("NON_SAUDI_IBAN", empId, empCode,
                     $"Employee {empCode} IBAN does not start with 'SA'. Confirm the bank account is in Saudi Arabia."));
 
+            // WpsEligible is now LOAD-BEARING (honours the exit cascade's WpsEligible=false): an
+            // ineligible profile can never reach a wage file, independent of any other check.
+            if (profile is not null && !profile.WpsEligible)
+                errors.Add(EmpError("WPS_INELIGIBLE", empId, empCode,
+                    $"Employee {empCode} is marked WPS-ineligible (e.g. separated / exit cascade). They cannot be included in a WPS export."));
+
+            // Readiness pay-block: the ONE evaluator's verdict (missing/expired statutory details, State==Blocked).
+            if (payBlockedEmployeeIds is not null && payBlockedEmployeeIds.Contains(empId))
+                errors.Add(EmpError("READINESS_PAY_BLOCKED", empId, empCode,
+                    $"Employee {empCode} is not payroll-ready — required statutory details are missing or expired. Complete their readiness checklist before exporting."));
+
             // Identity/master-data checks
             var emp = employees.FirstOrDefault(e => e.Id == empId);
             if (emp is null)
@@ -111,9 +131,11 @@ public static class WpsSifValidator
                     errors.Add(EmpError("MISSING_ID_NUMBER", empId, empCode,
                         $"Employee {empCode} is missing a government ID number required for WPS regulatory reporting."));
 
+                // Non-employed status is now a BLOCKING error (was a warning): a Draft/Suspended/terminal
+                // employee must never be swept into a wage file.
                 if (InactiveEmployeeStatuses.Contains(emp.Status))
-                    warnings.Add(EmpWarning("INACTIVE_EMPLOYEE", empId, empCode,
-                        $"Employee {empCode} has status '{emp.Status}'. Confirm this employee should be included in this WPS export."));
+                    errors.Add(EmpError("INACTIVE_EMPLOYEE", empId, empCode,
+                        $"Employee {empCode} has status '{emp.Status}' and cannot be included in a WPS export."));
             }
         }
 

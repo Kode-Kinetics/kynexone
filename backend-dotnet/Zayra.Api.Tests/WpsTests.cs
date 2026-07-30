@@ -244,8 +244,10 @@ public class WpsTests
     }
 
     [Fact]
-    public void Validator_InactiveEmployee_IsWarningNotError()
+    public void Validator_InactiveEmployee_BlocksExport()
     {
+        // Pay interlock (§6.2): a non-employed status is now a BLOCKING error, not a warning — a
+        // Draft/Suspended/terminal employee must never be swept into a wage file.
         var tenantId = Guid.NewGuid();
         var run  = ApprovedRun(tenantId);
         var slip = Slip(tenantId, run.Id, 1, "EMP-001");
@@ -256,8 +258,43 @@ public class WpsTests
 
         var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp });
 
-        Assert.True(result.CanExport);  // warning, not blocking
-        Assert.Contains(result.Warnings, w => w.Code == "INACTIVE_EMPLOYEE");
+        Assert.False(result.CanExport);
+        Assert.Contains(result.BlockingErrors, e => e.Code == "INACTIVE_EMPLOYEE");
+    }
+
+    [Fact]
+    public void Validator_ReadinessPayBlocked_BlocksExport()
+    {
+        // Pay interlock (§6): the ONE evaluator's pay-block verdict (missing/expired statutory details)
+        // becomes a blocking error in the wage file — activation and pay read the same evaluator.
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) },
+            new[] { ActiveEmployee(tenantId, 1) }, payBlockedEmployeeIds: new HashSet<int> { 1 });
+
+        Assert.False(result.CanExport);
+        Assert.Contains(result.BlockingErrors, e => e.Code == "READINESS_PAY_BLOCKED" && e.EmployeeId == 1);
+    }
+
+    [Fact]
+    public void Validator_WpsIneligibleProfile_BlocksExport()
+    {
+        // WpsEligible is now load-bearing (honours the exit-cascade false) — an ineligible profile can
+        // never reach a wage file.
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+        var profile = Profile(tenantId, 1);
+        profile.WpsEligible = false;
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { profile }, new[] { ActiveEmployee(tenantId, 1) });
+
+        Assert.False(result.CanExport);
+        Assert.Contains(result.BlockingErrors, e => e.Code == "WPS_INELIGIBLE");
     }
 
     [Fact]

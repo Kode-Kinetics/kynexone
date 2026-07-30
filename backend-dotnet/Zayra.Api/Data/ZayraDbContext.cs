@@ -640,8 +640,11 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.Salary).HasPrecision(12, 2);
             entity.Property(x => x.ProfileCompletenessScore).HasPrecision(5, 2);
             entity.Property(x => x.PrivacyStatus).HasMaxLength(80);
+            entity.Property(x => x.ReadinessState).HasMaxLength(20).HasDefaultValue("Blocked");
             entity.HasIndex(x => new { x.TenantId, x.EmployeeCode }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Status });
+            // "Needs info" worklist filter — employees whose readiness is Blocked.
+            entity.HasIndex(x => new { x.TenantId, x.ReadinessState });
             entity.HasIndex(x => new { x.TenantId, x.Department });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.HasIndex(x => new { x.TenantId, x.PositionId });

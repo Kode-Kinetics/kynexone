@@ -119,13 +119,14 @@ public class SensitiveFieldMaskingTests
     [Fact]
     public void EmployeeListItemDto_HasExpectedFieldCount()
     {
-        // 12 fields: Id, EmployeeCode, FullName, ArabicName, Department, Designation, Branch,
-        // ManagerEmployeeId, Status, ProfileCompletenessScore, VisaExpiryDate, PassportExpiryDate.
-        // If someone adds a sensitive field to the list DTO, this test breaks and forces review.
+        // 14 fields: Id, EmployeeCode, FullName, ArabicName, Department, Designation, Branch,
+        // ManagerEmployeeId, Status, ProfileCompletenessScore, VisaExpiryDate, PassportExpiryDate,
+        // ReadinessState, ActivationBlockersCount. The two readiness fields are non-sensitive
+        // (a state enum + a count — no PII). If someone adds a sensitive field, this test breaks.
         typeof(EmployeeListItemDto).GetConstructors().Single()
             .GetParameters()
-            .Should().HaveCount(12,
-                "list DTO must contain exactly 12 non-sensitive fields");
+            .Should().HaveCount(14,
+                "list DTO must contain exactly 14 non-sensitive fields");
     }
 
     // ── Detail endpoint — EmployeeManagementService.GetAsync ─────────────────────
