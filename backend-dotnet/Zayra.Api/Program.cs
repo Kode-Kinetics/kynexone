@@ -260,6 +260,10 @@ builder.Services.AddScoped<IOrganizationSetupService, OrganizationSetupService>(
 builder.Services.AddScoped<IEstablishmentGuard, EstablishmentGuardService>();
 builder.Services.AddScoped<EstablishmentSeeder>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Governance.ICompanyTaxPolicyResolver, Zayra.Api.Infrastructure.Governance.CompanyTaxPolicyResolver>();
+// Employee readiness / hard activation gate (statutory-floor UNION resolver + evaluator + guard).
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeReadinessPolicyResolver, Zayra.Api.Infrastructure.Employees.EmployeeReadinessPolicyResolver>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeReadinessEvaluator, Zayra.Api.Infrastructure.Employees.EmployeeReadinessEvaluator>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard, Zayra.Api.Infrastructure.Employees.EmployeeActivationGuard>();
 // Phase 2 rate resolvers: bounded statutory-override precedence + non-statutory company rate precedence.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IStatutoryRateResolver, Zayra.Api.Infrastructure.Payroll.StatutoryRateResolver>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ICompanyRatePolicyResolver, Zayra.Api.Infrastructure.Payroll.CompanyRatePolicyResolver>();

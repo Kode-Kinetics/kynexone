@@ -49,8 +49,9 @@ public class EmployeesController : ControllerBase
     private readonly IApprovalWorkflowService _approvalWorkflow;
     private readonly ILogger<EmployeesController>? _logger;
     private readonly IEstablishmentGuard _establishmentGuard;
+    private readonly IEmployeeActivationGuard _activationGuard;
 
-    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null)
+    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -65,6 +66,7 @@ public class EmployeesController : ControllerBase
         // Optional with concrete fallback (same pattern as _approvalWorkflow): DI supplies the
         // registered guard in production; direct constructions in tests keep compiling AND enforcing.
         _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
+        _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
     }
 
     [HttpGet]
@@ -94,7 +96,7 @@ public class EmployeesController : ControllerBase
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(e => e.Department == department);
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(e => e.FullName).Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, e.Branch ?? string.Empty, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate))
+            .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, e.Branch ?? string.Empty, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate, e.ReadinessState, e.ActivationBlockersCount))
             .ToListAsync(cancellationToken);
         return Ok(new PagedResult<EmployeeListItemDto>(items, total, page, pageSize));
     }
@@ -413,6 +415,35 @@ public class EmployeesController : ControllerBase
         // Non-fatal notices: the row IS imported, but an optional reference could not be resolved.
         var warnings = new List<string>();
         var rowNum = 1;
+
+        // ── Readiness (§7): import stays name-only lenient but NEVER silently lands Active. Policy is
+        // resolved once per (company, country, nationality) and cached; each row is evaluated with the
+        // pure Evaluate primitive (never aborts the file). Blank status ⇒ Draft; explicit Active with
+        // activate-blockers ⇒ downgraded to Draft + warning (row still created).
+        var readinessPolicyCache = new Dictionary<string, ResolvedReadinessPolicy>();
+        var importBatchId = Guid.NewGuid();
+        var incompleteCreated = new List<(Employee Emp, int BlockingCount)>();
+
+        async Task<(string Landing, EmployeeReadiness Readiness, bool HasPolicy)> ResolveRowLandingAsync(
+            Dictionary<string, string> row, Guid? companyId, Guid? deptId, Guid? desigId, DateTime jd, string csvStatus)
+        {
+            var country = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
+            var nationality = row.GetValueOrDefault("Nationality", string.Empty).Trim();
+            var key = $"{companyId}|{country.ToUpperInvariant()}|{Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(nationality)}";
+            if (!readinessPolicyCache.TryGetValue(key, out var policy))
+            {
+                policy = await _activationGuard.ResolvePolicyAsync(tenantId, companyId, country, nationality, ct);
+                readinessPolicyCache[key] = policy;
+            }
+            var snap = ImportReadinessSnapshot(row, deptId, desigId, jd);
+            var readiness = _activationGuard.Evaluate(snap, policy);
+            string landing = string.IsNullOrWhiteSpace(csvStatus)
+                ? EmployeeStatuses.Draft                                   // blank ⇒ Draft, never Active
+                : string.Equals(csvStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
+                    ? (readiness.IsBlocked ? EmployeeStatuses.Draft : EmployeeStatuses.Active)  // Active + blockers ⇒ Draft
+                    : csvStatus;                                           // any other status honoured as-is
+            return (landing, readiness, policy.Items.Count > 0);
+        }
         // Track employee codes created in this batch for Pass 2 resolution
         var batchCodes = new Dictionary<string, Employee>(StringComparer.OrdinalIgnoreCase);
         var batchPayroll = new Dictionary<string, (Employee emp, Dictionary<string, string> rowData)>(StringComparer.OrdinalIgnoreCase);
@@ -576,10 +607,18 @@ public class EmployeesController : ControllerBase
                 continue;
             }
 
+            // ── Readiness landing decision (§7): blank ⇒ Draft; Active + activate-blockers ⇒ Draft + warning ──
+            var (rowStatus, rowReadiness, rowHasPolicy) = await ResolveRowLandingAsync(
+                row, resolvedCompany?.Id, resolvedDeptId, resolvedDesigId, jd, statusVal);
+            if (!string.IsNullOrWhiteSpace(statusVal)
+                && string.Equals(statusVal, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
+                && rowStatus == EmployeeStatuses.Draft)
+                warnings.Add($"Row {rowNum}: {name} imported as Draft — cannot be Active until: "
+                             + $"{string.Join(", ", rowReadiness.Blocking.Select(b => b.Label))}. Fix in the People list.");
+
             // ── Establishment matrix row check (row-level errors, spec §5.2 / AC9) ────
             // Applies only when the row lands in a MAPPED level of a department that HAS a budget
             // row AND the row's status occupies a seat (non-occupying imports never consume).
-            var rowStatus = string.IsNullOrWhiteSpace(statusVal) ? "Active" : statusVal;
             if (resolvedDeptId is not null && resolvedDesigId is not null
                 && Zayra.Api.Application.Organization.EstablishmentOccupancy.IsOccupyingStatus(rowStatus)
                 && levelByDesignation.TryGetValue(resolvedDesigId.Value, out var rowLevelId)
@@ -640,7 +679,11 @@ public class EmployeesController : ControllerBase
                 JobTitle = row.GetValueOrDefault("JobTitle", desigTitleRaw),
                 EmploymentType = row.GetValueOrDefault("EmploymentType", "Full-time"),
                 ContractType = row.GetValueOrDefault("ContractType", string.Empty),
-                Status = string.IsNullOrWhiteSpace(statusVal) ? "Active" : statusVal,
+                Status = rowStatus,
+                ReadinessState = rowReadiness.State,
+                ActivationBlockersCount = rowReadiness.Blocking.Count,
+                ReadinessEvaluatedAtUtc = DateTime.UtcNow,
+                ProfileCompletenessScore = rowHasPolicy ? rowReadiness.Score : 0m,
                 JoiningDate = jd == default ? DateTime.UtcNow : jd,
                 ConfirmationDate = ReadCsvDate(row, "ConfirmationDate"),
                 ProbationStartDate = ReadCsvDate(row, "ProbationStartDate"),
@@ -685,6 +728,7 @@ public class EmployeesController : ControllerBase
             _db.Employees.Add(employee);
             batchCodes[finalCode] = employee;
             batchPayroll[finalCode] = (employee, row);
+            if (rowReadiness.IsBlocked) incompleteCreated.Add((employee, rowReadiness.Blocking.Count));
             created++;
         }
         // First persist: when level slots were claimed and enforcement is on, serialize with the
@@ -927,7 +971,20 @@ public class EmployeesController : ControllerBase
 
         var allErrors = errors.Concat(hierarchyErrors).Take(30).ToList();
         var allWarnings = warnings.Take(30).ToList();
-        return Ok(new { received = rows.Count, created, skipped, hierarchyLinked, payrollProfilesCreated, errors = allErrors, warnings = allWarnings });
+        // Rows created but not activatable (imported as Draft, need completion before they can go Active).
+        var createdIncomplete = incompleteCreated
+            .Select(x => new { employeeId = x.Emp.Id, employeeCode = x.Emp.EmployeeCode, name = x.Emp.FullName, blockingCount = x.BlockingCount })
+            .ToList();
+        if (createdIncomplete.Count > 0)
+            await _audit.WriteAsync("employee.import_created_incomplete", "Employee", importBatchId.ToString(), Context(),
+                JsonSerializer.Serialize(new { importBatchId, createdIncompleteCount = createdIncomplete.Count }), ct);
+        return Ok(new
+        {
+            received = rows.Count, created, skipped, hierarchyLinked, payrollProfilesCreated,
+            importBatchId,
+            errors = allErrors, warnings = allWarnings,
+            createdIncomplete,
+        });
     }
 
     public record ImportEmployeesRequest(string CsvContent);
@@ -954,6 +1011,49 @@ public class EmployeesController : ControllerBase
     {
         var value = row.GetValueOrDefault(key, string.Empty).Trim();
         return int.TryParse(value, out var number) ? number : null;
+    }
+
+    /// <summary>Materializes a readiness snapshot from a CSV row (§5.4 — built at the call-site). No
+    /// documents exist at import, so doc:* requirements evaluate as missing; identity/payroll numbers +
+    /// expiries come straight off the row.</summary>
+    private static Zayra.Api.Infrastructure.Employees.EmployeeReadinessSnapshot ImportReadinessSnapshot(
+        Dictionary<string, string> row, Guid? deptId, Guid? desigId, DateTime jd)
+    {
+        string V(string k) => row.GetValueOrDefault(k, string.Empty).Trim();
+        return new Zayra.Api.Infrastructure.Employees.EmployeeReadinessSnapshot
+        {
+            CountryCode = V("CountryCode"),
+            Nationality = V("Nationality"),
+            EnglishName = V("FullName"),
+            FullName = V("FullName"),
+            Gender = V("Gender"),
+            DateOfBirth = ReadCsvDate(row, "DateOfBirth"),
+            WorkEmail = V("WorkEmail"),
+            Phone = V("Phone"),
+            DepartmentId = deptId,
+            DesignationId = desigId,
+            JoiningDate = jd,
+            ContractType = V("ContractType"),
+            EmploymentType = V("EmploymentType"),
+            PassportNumber = V("PassportNumber"),
+            PassportExpiryDate = ReadCsvDate(row, "PassportExpiryDate"),
+            IqamaNumber = V("IqamaNumber"),
+            GosiReference = V("GosiReference"),
+            EmiratesId = V("EmiratesId"),
+            Qid = V("Qid"),
+            CivilId = V("CivilId"),
+            IdNumber = V("IdNumber"),
+            VisaNumber = V("VisaNumber"),
+            VisaExpiryDate = ReadCsvDate(row, "VisaExpiryDate"),
+            WorkPermitNumber = V("WorkPermitNumber"),
+            MuqeemNumber = V("MuqeemNumber"),
+            LaborCardNumber = V("LaborCardNumber"),
+            BankIban = V("IBAN"),
+            MolId = V("MolId"),
+            BankRoutingCode = V("BankRoutingCode"),
+            PaymentMethod = V("PaymentMethod"),
+            HasSalary = GrossSalaryFromRow(row) > 0m,
+        };
     }
 
     private async Task<SalaryStructure> ResolveImportSalaryStructureAsync(Guid tenantId, Guid? companyId, Grade? grade, string requestedCode, string currency, CancellationToken ct)
@@ -1047,7 +1147,10 @@ public class EmployeesController : ControllerBase
 
         var previewRows = new List<object>();
         var seen = new HashSet<string>();
-        int wouldCreate = 0, wouldSkip = 0;
+        int wouldCreate = 0, wouldSkip = 0, wouldCreateActive = 0, wouldCreateDraft = 0;
+        // Dry-run readiness projection (§7.1): per non-error row, the landing state it WOULD get
+        // (Active vs Draft) + why. Persists nothing. Tenant-default policy per (country, nationality).
+        var previewPolicyCache = new Dictionary<string, ResolvedReadinessPolicy>();
 
         int rowNum = 1;
         foreach (var row in rows)
@@ -1130,11 +1233,39 @@ public class EmployeesController : ControllerBase
                 }
             }
 
+            // Readiness projection for a row that WILL be created (before subscription-limit gate).
+            string projectedStatus = string.Empty;
+            List<string> projBlocking = new(), projRecommended = new();
+            if (!hasErrors)
+            {
+                var csvStatus = row.GetValueOrDefault("Status", string.Empty).Trim();
+                var country = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
+                var nationality = row.GetValueOrDefault("Nationality", string.Empty).Trim();
+                var key = $"{country.ToUpperInvariant()}|{Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(nationality)}";
+                if (!previewPolicyCache.TryGetValue(key, out var policy))
+                {
+                    policy = await _activationGuard.ResolvePolicyAsync(tenantId, null, country, nationality, ct);
+                    previewPolicyCache[key] = policy;
+                }
+                DateTime.TryParse(row.GetValueOrDefault("JoiningDate", string.Empty), out var pjd);
+                var snap = ImportReadinessSnapshot(row, null, null, pjd == default ? DateTime.UtcNow : pjd);
+                var readiness = _activationGuard.Evaluate(snap, policy);
+                projBlocking = readiness.Blocking.Select(b => b.Label).ToList();
+                projRecommended = readiness.Recommended.Select(b => b.Label).ToList();
+                projectedStatus = string.IsNullOrWhiteSpace(csvStatus)
+                    ? EmployeeStatuses.Draft
+                    : string.Equals(csvStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
+                        ? (readiness.IsBlocked ? EmployeeStatuses.Draft : EmployeeStatuses.Active)
+                        : csvStatus;
+            }
+
             if (hasErrors) { status = "Error"; wouldSkip++; }
             else
             {
                 status = "WillCreate";
                 wouldCreate++;
+                if (string.Equals(projectedStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)) wouldCreateActive++;
+                else if (string.Equals(projectedStatus, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)) wouldCreateDraft++;
                 if (!string.IsNullOrWhiteSpace(code)) seen.Add(code.ToUpperInvariant());
             }
 
@@ -1144,6 +1275,9 @@ public class EmployeesController : ControllerBase
                 employeeCode = code,
                 fullName = name,
                 status,
+                projectedStatus,
+                blocking = projBlocking,
+                recommended = projRecommended,
                 errors = rowErrors,
                 warnings = rowWarnings
             });
@@ -1154,6 +1288,8 @@ public class EmployeesController : ControllerBase
             received = rows.Count,
             wouldCreate,
             wouldSkip,
+            wouldCreateActive,
+            wouldCreateDraft,
             rows = previewRows
         });
     }
@@ -1553,6 +1689,35 @@ public class EmployeesController : ControllerBase
             }
         }
 
+        // READINESS GATE (§5.3, 3rd Active path): the draft is approved straight to Active, so it must
+        // satisfy the resolved readiness policy first. Snapshot is built AT THE CALL-SITE from the
+        // in-memory employee (Id==0) + the draft's documents (keyed by DraftId) + the draft IBAN string
+        // (no payroll row exists yet) — never DB-load-by-id (§5.4). A block leaves the draft UNTOUCHED
+        // and returns the structured 422; the draft can still be saved, just not approved-to-Active.
+        var draftDocsForGate = await _db.EmployeeDocuments.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.DraftId == draftId && !x.IsDeleted)
+            .Select(x => new { x.DocumentType, x.ApprovalStatus, x.ExpiryDate })
+            .ToListAsync(cancellationToken);
+        var gateDocs = draftDocsForGate
+            .Select(x => new DocumentPresence(x.DocumentType, string.Equals(x.ApprovalStatus, "Verified", StringComparison.OrdinalIgnoreCase), x.ExpiryDate))
+            .ToList();
+        var draftSnapshot = EmployeeReadinessEvaluator.BuildFromEmployee(
+            employee, null, gateDocs, new Dictionary<string, DateOnly?>(), (employee.Salary ?? 0m) > 0m);
+        EmployeeReadiness draftReadiness;
+        try
+        {
+            draftReadiness = await _activationGuard.EnsureActivatableAsync(tenantId, employee.CompanyId, draftSnapshot, Context(), cancellationToken);
+        }
+        catch (EmployeeActivationBlockedException ex)
+        {
+            _db.ChangeTracker.Clear();
+            await Audit("employee.activation_blocked", "EmployeeDraft", draftId.ToString(), cancellationToken);
+            return this.NotActivatable(ex);
+        }
+        employee.ReadinessState = draftReadiness.State;
+        employee.ActivationBlockersCount = draftReadiness.Blocking.Count;
+        employee.ReadinessEvaluatedAtUtc = DateTime.UtcNow;
+
         // ESTABLISHMENT GUARD (path "draft_approve"): this creates an OCCUPYING employee
         // (Status = Active) directly, so the seat is consumed here — transaction + slot lock +
         // enforce + insert are atomic; a block leaves the draft untouched and returns the
@@ -1710,6 +1875,9 @@ public class EmployeesController : ControllerBase
             var employee = await employeeManagement.ChangeStatusAsync(RequireTenant(), id, request, Context(), cancellationToken);
             return employee is null ? NotFound() : Ok(employee);
         }
+        // Readiness block MUST be caught before InvalidOperationException (which would swallow the
+        // structured body into a generic 400) — EmployeeActivationBlockedException is standalone (§5.6).
+        catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
@@ -1788,6 +1956,7 @@ public class EmployeesController : ControllerBase
             var employee = await employeeManagement.ActivateAsync(RequireTenant(), id, request, Context(), cancellationToken);
             return employee is null ? NotFound() : Ok(employee);
         }
+        catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
@@ -1799,6 +1968,80 @@ public class EmployeesController : ControllerBase
         var employee = await employeeManagement.TerminateAsync(RequireTenant(), id, request, Context(), cancellationToken);
         return employee is null ? NotFound() : Ok(employee);
     }
+
+    /// <summary>Live readiness for one employee (§8.3): the itemized activation checklist + policy
+    /// provenance + disclaimer. Server-computed — the single source of truth for the badge, the
+    /// checklist drawer, and the inline 422 rendering.</summary>
+    [HttpGet("{id:int}/readiness")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Manager,Auditor")]
+    public async Task<IActionResult> Readiness(int id, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        var evaluation = await _activationGuard.EvaluateEmployeeAsync(tenantId, id, cancellationToken);
+        if (evaluation is null) return NotFound();
+        var (readiness, policy) = evaluation.Value;
+        return Ok(new
+        {
+            employeeId = id,
+            state = readiness.State,
+            score = readiness.Score,
+            progress = new { present = readiness.Present.Count, requiredTotal = readiness.RequiredTotal },
+            policy = new { countryCode = policy.CountryCode, tier = policy.Tier, sources = policy.Sources },
+            blocking = readiness.Blocking.Select(ReadinessItemDto),
+            payBlocking = readiness.PayBlocking.Select(ReadinessItemDto),
+            recommended = readiness.Recommended.Select(ReadinessItemDto),
+            present = readiness.Present.Select(ReadinessItemDto),
+            expiringSoon = readiness.ExpiringSoon.Select(ReadinessItemDto),
+            disclaimer = policy.Disclaimer,
+        });
+    }
+
+    /// <summary>Multi-select bulk activation (§5.3) for the "Needs info" worklist: each employee passes
+    /// the SAME guard; returns per-employee outcomes so a mixed batch never fails as a whole.</summary>
+    [HttpPost("bulk-activate")]
+    [Authorize(Roles = "Admin,HR Manager")]
+    public async Task<IActionResult> BulkActivate([FromBody] BulkActivateRequest req, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var activated = new List<int>();
+        var blocked = new List<object>();
+        foreach (var id in (req.EmployeeIds ?? System.Array.Empty<int>()).Distinct())
+        {
+            if (!await CanAccessEmployeeAsync(id, cancellationToken)) { blocked.Add(new { id, error = "forbidden" }); continue; }
+            try
+            {
+                var dto = await employeeManagement.ActivateAsync(tenantId, id,
+                    new EmployeeStatusChangeRequest("Active", DateOnly.FromDateTime(DateTime.UtcNow.Date), req.Reason ?? "Bulk activation"),
+                    Context(), cancellationToken);
+                if (dto is null) blocked.Add(new { id, error = "not_found" });
+                else activated.Add(id);
+            }
+            catch (EmployeeActivationBlockedException ex)
+            {
+                await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken);
+                blocked.Add(new { id, blocking = ex.Readiness.Blocking.Select(ReadinessItemDto) });
+            }
+            catch (EstablishmentBudgetExceededException) { blocked.Add(new { id, error = "establishment_budget_exceeded" }); }
+            catch (InvalidOperationException ex) { blocked.Add(new { id, error = ex.Message }); }
+        }
+        return Ok(new { activated, blocked });
+    }
+
+    public record BulkActivateRequest(int[] EmployeeIds, string? Reason);
+
+    private static object ReadinessItemDto(Zayra.Api.Infrastructure.Employees.ReadinessItem i) => new
+    {
+        key = i.Key,
+        label = i.Label,
+        category = i.Category,
+        reason = i.Reason,
+        jurisdiction = i.Jurisdiction,
+        gate = i.Gate,
+        fix = i.FixKind == "document"
+            ? (object)new { kind = i.FixKind, documentType = i.DocumentType }
+            : new { kind = i.FixKind, target = i.FixTarget },
+    };
 
     /// <summary>Soft-deletes an employee record (audit trail preserved; hidden from all lists).</summary>
     [HttpDelete("{id:int}")]
@@ -2545,7 +2788,7 @@ public class EmployeesController : ControllerBase
     private bool CanViewSensitive() => CanEditSensitive() || User.IsInRole("Payroll Officer") || User.HasClaim("permission", "employees.sensitive");
     private Task Notify(string title, string message, string entity, string? entityId, CancellationToken cancellationToken) => _notifications.NotifyAsync(RequireTenant(), null, title, message, entity, entityId, cancellationToken);
 
-    private EmployeeListItemDto ToListItem(Employee employee) => new(employee.Id, employee.EmployeeCode, employee.FullName, employee.ArabicName, employee.Department, employee.Designation, employee.Branch, employee.ManagerEmployeeId, employee.Status, employee.ProfileCompletenessScore, employee.VisaExpiryDate, employee.PassportExpiryDate);
+    private EmployeeListItemDto ToListItem(Employee employee) => new(employee.Id, employee.EmployeeCode, employee.FullName, employee.ArabicName, employee.Department, employee.Designation, employee.Branch, employee.ManagerEmployeeId, employee.Status, employee.ProfileCompletenessScore, employee.VisaExpiryDate, employee.PassportExpiryDate, employee.ReadinessState, employee.ActivationBlockersCount);
     private static string FirstNonEmpty(params string[] values) => values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "Unnamed Employee";
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id") ?? throw new UnauthorizedAccessException("Tenant claim missing."));
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
@@ -2558,7 +2801,7 @@ public class EmployeesController : ControllerBase
     private Task Audit(string action, string entity, string? entityId, CancellationToken cancellationToken) => _audit.WriteAsync(action, entity, entityId, new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant()), null, cancellationToken);
 }
 
-public record EmployeeListItemDto(int Id, string EmployeeCode, string FullName, string ArabicName, string Department, string Designation, string Branch, int? ManagerEmployeeId, string Status, decimal ProfileCompletenessScore, DateOnly? VisaExpiryDate, DateOnly? PassportExpiryDate);
+public record EmployeeListItemDto(int Id, string EmployeeCode, string FullName, string ArabicName, string Department, string Designation, string Branch, int? ManagerEmployeeId, string Status, decimal ProfileCompletenessScore, DateOnly? VisaExpiryDate, DateOnly? PassportExpiryDate, string ReadinessState, int ActivationBlockersCount);
 
 /// <summary>Read-only Ex-Employees archive row. Directory + lifecycle metadata only — no salary,
 /// bank, or statutory-identity fields (parity with the People list's non-sensitive projection).</summary>

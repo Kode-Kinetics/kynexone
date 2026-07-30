@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -207,6 +208,15 @@ public class CompanyComplianceProfilesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        // Company-scope enforcement (privilege-escalation fix, §9): once this policy GATES activation, a
+        // company-scoped Compliance Officer must not be able to author another company's activation rules.
+        // A company-specific profile requires access to that company; a tenant-default row (CompanyId==null)
+        // is Admin-only.
+        if (req.CompanyId is Guid cidCreate)
+        {
+            if (!this.GetEntityScope().CanAccessCompany(cidCreate)) return Forbid();
+        }
+        else if (!User.IsInRole("Admin")) return Forbid();
         var error = await ValidateAsync(tenantId.Value, req, ct);
         if (error is not null) return BadRequest(new { message = error });
 
@@ -237,6 +247,15 @@ public class CompanyComplianceProfilesController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var profile = await _db.CompanyComplianceProfiles.FirstOrDefaultAsync(p => p.TenantId == tenantId && p.Id == id && !p.IsDeleted, ct);
         if (profile is null) return NotFound();
+        // Company-scope enforcement on BOTH the existing target and the requested new target (mirrors
+        // CompanyTaxPoliciesController): a scoped user can neither edit a policy outside their scope nor
+        // re-point one at a company they cannot access; tenant-default rows (CompanyId==null) stay Admin-only.
+        var scope = this.GetEntityScope();
+        if ((profile.CompanyId is Guid existingCid && !scope.CanAccessCompany(existingCid)) ||
+            (req.CompanyId is Guid newCid && !scope.CanAccessCompany(newCid)))
+            return Forbid();
+        if ((profile.CompanyId is null || req.CompanyId is null) && !User.IsInRole("Admin"))
+            return Forbid();
         var error = await ValidateAsync(tenantId.Value, req, ct);
         if (error is not null) return BadRequest(new { message = error });
 
@@ -262,12 +281,54 @@ public class CompanyComplianceProfilesController : ControllerBase
             return "EffectiveTo cannot be before EffectiveFrom.";
         if (!string.IsNullOrWhiteSpace(req.RequiredFieldsJson))
         {
-            try { JsonDocument.Parse(req.RequiredFieldsJson); }
-            catch { return "RequiredFieldsJson must be valid JSON."; }
+            var jsonError = ValidateRequiredFieldsJson(req.RequiredFieldsJson);
+            if (jsonError is not null) return jsonError;
         }
         if (req.CompanyId is Guid cid &&
             !await _db.Companies.AnyAsync(c => c.TenantId == tenantId && c.Id == cid && !c.IsDeleted, ct))
             return "Company not found in this tenant.";
+        return null;
+    }
+
+    private static readonly HashSet<string> AllowedCategories =
+        new(StringComparer.OrdinalIgnoreCase) { "identity", "payroll", "org", "contract", "document", "personal" };
+    private static readonly HashSet<string> AllowedGates =
+        new(StringComparer.OrdinalIgnoreCase) { "activate", "pay" };
+    private const int MaxRequiredFields = 100;
+
+    /// <summary>Closes the WRITE side of the fail-open hole: an unevaluable requirement can never be
+    /// saved. Rejects unknown keys (not in EmployeeFieldRegistry), unknown category/gate, and over-long
+    /// arrays. Still 400s on malformed JSON (unchanged contract). Accepts "field" as an alias for "key".</summary>
+    internal static string? ValidateRequiredFieldsJson(string json)
+    {
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch { return "RequiredFieldsJson must be valid JSON."; }
+        using (doc)
+        {
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                return "RequiredFieldsJson must be a JSON array of field requirements.";
+            var count = 0;
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                if (++count > MaxRequiredFields)
+                    return $"RequiredFieldsJson may not exceed {MaxRequiredFields} field requirements.";
+                if (item.ValueKind != JsonValueKind.Object)
+                    return "Each RequiredFieldsJson item must be an object.";
+                var key = (item.TryGetProperty("key", out var k) ? k.GetString() : null)
+                          ?? (item.TryGetProperty("field", out var f) ? f.GetString() : null);
+                if (string.IsNullOrWhiteSpace(key))
+                    return "Each RequiredFieldsJson item must carry a non-empty 'key' (or 'field').";
+                if (!EmployeeFieldRegistry.IsKnown(key))
+                    return $"Unknown required field '{key}'. It is not a resolvable readiness field.";
+                if (item.TryGetProperty("category", out var cat) && cat.ValueKind == JsonValueKind.String
+                    && !AllowedCategories.Contains(cat.GetString() ?? ""))
+                    return $"Unknown category '{cat.GetString()}'. Use identity, payroll, org, contract, document or personal.";
+                if (item.TryGetProperty("gate", out var gate) && gate.ValueKind == JsonValueKind.String
+                    && !AllowedGates.Contains(gate.GetString() ?? ""))
+                    return $"Unknown gate '{gate.GetString()}'. Use 'activate' or 'pay'.";
+            }
+        }
         return null;
     }
 
@@ -331,16 +392,27 @@ public static class ComplianceReadinessCalculator
     {
         var results = new List<FieldReadiness>();
         if (string.IsNullOrWhiteSpace(requiredFieldsJson)) return results;
+        // Presence is resolved through the code-owned EmployeeFieldRegistry (single source of truth):
+        // a key the registry cannot resolve returns NotEvaluable ⇒ counted MISSING (fail closed) — this
+        // reverses the old `_ => "n/a"` fail-open, where an unknown/statutory key silently passed for
+        // every employee. Employees are projected into a minimal snapshot the registry reads.
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var snapshots = employees.Select(ToSnapshot).ToList();
         try
         {
             using var doc = JsonDocument.Parse(requiredFieldsJson);
             if (doc.RootElement.ValueKind != JsonValueKind.Array) return results;
             foreach (var item in doc.RootElement.EnumerateArray())
             {
-                var field = item.TryGetProperty("field", out var f) ? f.GetString() ?? "" : "";
+                var field = (item.TryGetProperty("key", out var k) ? k.GetString() : null)
+                            ?? (item.TryGetProperty("field", out var f) ? f.GetString() : null) ?? "";
                 if (field.Length == 0) continue;
                 var failClosed = item.TryGetProperty("failClosed", out var fc) && fc.ValueKind == JsonValueKind.True;
-                var missing = employees.Count(e => string.IsNullOrWhiteSpace(GetField(e, field)));
+                var missing = snapshots.Count(s =>
+                {
+                    var presence = EmployeeFieldRegistry.Presence(s, field, today, 0);
+                    return presence is not (FieldPresence.Present or FieldPresence.ExpiringSoon);
+                });
                 results.Add(new FieldReadiness(field, failClosed, missing));
             }
         }
@@ -348,16 +420,10 @@ public static class ComplianceReadinessCalculator
         return results;
     }
 
-    private static string? GetField(EmployeeStatutoryFields e, string field) => field switch
+    private static EmployeeReadinessSnapshot ToSnapshot(EmployeeStatutoryFields e) => new()
     {
-        "IqamaNumber" => e.IqamaNumber,
-        "GosiReference" => e.GosiReference,
-        "EmiratesId" => e.EmiratesId,
-        "IdNumber" => e.IdNumber,
-        "PassportNumber" => e.PassportNumber,
-        "Qid" => e.Qid,
-        "CivilId" => e.CivilId,
-        "BankIban" => e.BankIban,
-        _ => "n/a", // unknown field name — counts as present, never breaks readiness
+        IqamaNumber = e.IqamaNumber, GosiReference = e.GosiReference, EmiratesId = e.EmiratesId,
+        IdNumber = e.IdNumber, PassportNumber = e.PassportNumber, Qid = e.Qid, CivilId = e.CivilId,
+        BankIban = e.BankIban,
     };
 }

@@ -21,12 +21,14 @@ public class OffboardingController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly IAuditService _audit;
-    public OffboardingController(ZayraDbContext db, IAuditService? audit = null)
+    private readonly IEmployeeActivationGuard _activationGuard;
+    public OffboardingController(ZayraDbContext db, IAuditService? audit = null, IEmployeeActivationGuard? activationGuard = null)
     {
         _db = db;
         // Mirror EmployeesController's ApprovalWorkflowService default: DI always supplies the audit
         // service in production; the optional fallback keeps direct-construction call sites working.
         _audit = audit ?? new Zayra.Api.Infrastructure.Audit.AuditService(db);
+        _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
     }
 
     [HttpGet]
@@ -212,7 +214,32 @@ public class OffboardingController : ControllerBase
         off.Status = "Cancelled";
         off.UpdatedAtUtc = DateTime.UtcNow;
         var emp = await _db.Employees.FirstOrDefaultAsync(e => e.Id == off.EmployeeId && e.TenantId == off.TenantId, ct);
-        if (emp is not null) { emp.Status = "Active"; emp.UpdatedAtUtc = DateTime.UtcNow; }
+        if (emp is not null)
+        {
+            // 4th Active path (§5.3): rescind-resignation reinstates the employee. Route through the
+            // SHARED readiness gate rather than a raw write (guard-parity). Old status is Offboarded —
+            // an OCCUPYING status — so the §5.2 gate auto-exempts (a mandated reinstatement is never
+            // refused); the guard is still consulted so no Active write bypasses it.
+            var ctx = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
+                Request.Headers.UserAgent.ToString(), this.GetUserId(), off.TenantId);
+            try
+            {
+                if (_activationGuard.ShouldGate(emp.Status, "Active"))
+                {
+                    var snap = await _activationGuard.BuildSnapshotAsync(off.TenantId, emp.Id, ct);
+                    if (snap is not null)
+                        await _activationGuard.EnsureActivatableAsync(off.TenantId, emp.CompanyId, snap, ctx, ct);
+                }
+            }
+            catch (EmployeeActivationBlockedException ex)
+            {
+                _db.ChangeTracker.Clear();
+                await _audit.WriteAsync("employee.activation_blocked", "Employee", emp.Id.ToString(), ctx, null, ct);
+                return this.NotActivatable(ex);
+            }
+            emp.Status = "Active";
+            emp.UpdatedAtUtc = DateTime.UtcNow;
+        }
         await _db.SaveChangesAsync(ct);
         return Ok(off);
     }

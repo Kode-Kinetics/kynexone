@@ -38,6 +38,10 @@ export interface EmployeeListItem {
   visaExpiryDate?: string;
   passportExpiryDate?: string;
   iqamaNumber: string;
+  // Denormalized readiness snapshot (server-computed; display-only, the gate always
+  // re-evaluates live). readinessState ∈ "Ready" | "NeedsAttention" | "Blocked".
+  readinessState: string;
+  activationBlockersCount: number;
 }
 
 /** Read-only Ex-Employees archive row (former staff retained for statutory audit). */
@@ -298,6 +302,125 @@ export interface EmployeeExpiringDocument {
   expiryDate?: string;
 }
 
+// ── Readiness / hard activation gate (server is the single source of truth) ──────
+// A `fix` hint tells the UI how to close a gap: an inline field edit, or a document upload.
+export type ReadinessFix =
+  | { kind: 'field'; target: string }
+  | { kind: 'document'; documentType: string };
+
+/** One checklist item, identical shape across GET /readiness and the 422 body. */
+export interface ReadinessItem {
+  key: string;
+  label: string;
+  category: string;
+  reason?: string;
+  jurisdiction?: string;
+  gate?: string;
+  fix?: ReadinessFix;
+}
+
+export interface ReadinessProgress {
+  present: number;
+  requiredTotal: number;
+}
+
+export interface ReadinessPolicy {
+  countryCode: string;
+  tier: string;
+  sources: string[];
+}
+
+/**
+ * Shape shared by the live readiness endpoint and the activation-blocked 422 body, so the
+ * ReadinessChecklist component renders both from one server-authoritative source.
+ */
+export interface ReadinessView {
+  progress: ReadinessProgress;
+  policy: ReadinessPolicy;
+  blocking: ReadinessItem[];
+  payBlocking: ReadinessItem[];
+  recommended: ReadinessItem[];
+  present?: ReadinessItem[];
+  expiringSoon?: ReadinessItem[];
+  disclaimer: string;
+}
+
+/** GET /api/employees/{id}/readiness */
+export interface EmployeeReadiness extends ReadinessView {
+  employeeId: number;
+  state: string; // Ready | NeedsAttention | Blocked
+  score: number;
+  present: ReadinessItem[];
+  expiringSoon: ReadinessItem[];
+}
+
+/** 422 body returned by Activate / ChangeStatus / ApproveDraft / bulk-activate when blocked. */
+export interface EmployeeNotActivatable extends ReadinessView {
+  error: 'employee_not_activatable';
+  employeeId: number;
+  message: string;
+}
+
+export interface EmployeeImportCreatedIncomplete {
+  employeeId: number;
+  employeeCode: string;
+  name: string;
+  blockingCount: number;
+}
+
+/** POST /api/employees/import response (leniency + persistent results). */
+export interface EmployeeImportResult {
+  received: number;
+  created: number;
+  skipped: number;
+  hierarchyLinked?: number;
+  payrollProfilesCreated?: number;
+  importBatchId: string;
+  errors: string[];
+  warnings: string[];
+  createdIncomplete: EmployeeImportCreatedIncomplete[];
+}
+
+export interface EmployeeImportPreviewRow {
+  row: number;
+  employeeCode: string;
+  fullName: string;
+  status: string; // "WillCreate" | "Error"
+  projectedStatus: string; // "Active" | "Draft" | ""
+  blocking: string[];
+  recommended: string[];
+  errors: string[];
+  warnings: string[];
+}
+
+/** POST /api/employees/import-preview response (dry-run, persists nothing). */
+export interface EmployeeImportPreview {
+  received: number;
+  wouldCreate: number;
+  wouldSkip: number;
+  wouldCreateActive: number;
+  wouldCreateDraft: number;
+  rows: EmployeeImportPreviewRow[];
+}
+
+export interface BulkActivateResult {
+  activated: number[];
+  blocked: Array<{ id: number; blocking?: ReadinessItem[]; error?: string }>;
+}
+
+/**
+ * Returns the structured employee_not_activatable 422 payload when the error is the
+ * readiness gate's 422, otherwise null. Use at every Activate / ChangeStatus catch site so
+ * the block renders as the itemized checklist rather than a swallowed message string.
+ */
+export function notActivatableFromError(err: unknown): EmployeeNotActivatable | null {
+  const e = err as { response?: { status?: number; data?: { error?: string } } };
+  if (e?.response?.status === 422 && e.response.data?.error === 'employee_not_activatable') {
+    return e.response.data as EmployeeNotActivatable;
+  }
+  return null;
+}
+
 export const employeesApi = {
   list: (params: { search?: string; status?: string; department?: string; page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<EmployeeListItem>>('/api/employees', {
@@ -325,6 +448,22 @@ export const employeesApi = {
 
   activate: (id: number, data: Omit<EmployeeStatusChangeRequest, 'status'>) =>
     client.post<EmployeeDetail>(`/api/employees/${id}/activate`, { ...data, status: 'Active' }).then((r) => r.data),
+
+  /** Live activation checklist for one employee (server-computed; drives the badge, drawer, and inline 422). */
+  readiness: (id: number) =>
+    client.get<EmployeeReadiness>(`/api/employees/${id}/readiness`).then((r) => r.data),
+
+  /** Dry-run: projects each row's Active-vs-Draft landing without persisting anything. */
+  importPreview: (csvContent: string) =>
+    client.post<EmployeeImportPreview>('/api/employees/import-preview', { csvContent }).then((r) => r.data),
+
+  /** Lenient import: creates everything with a name, records gaps, never silently lands Active. */
+  import: (csvContent: string) =>
+    client.post<EmployeeImportResult>('/api/employees/import', { csvContent }).then((r) => r.data),
+
+  /** Multi-select activation for the "Needs info" worklist; each id passes the same gate. */
+  bulkActivate: (employeeIds: number[], reason?: string) =>
+    client.post<BulkActivateResult>('/api/employees/bulk-activate', { employeeIds, reason }).then((r) => r.data),
 
   terminate: (id: number, data: Omit<EmployeeStatusChangeRequest, 'status'>) =>
     client.post<EmployeeDetail>(`/api/employees/${id}/terminate`, { ...data, status: 'Terminated' }).then((r) => r.data),

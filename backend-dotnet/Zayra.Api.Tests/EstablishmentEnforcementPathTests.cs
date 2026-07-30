@@ -121,11 +121,13 @@ public class EstablishmentEnforcementPathTests
         var fx = await SeedOrg(db, managerBudget: 2);
         var controller = CreateController(db, fx.TenantId);
 
+        // Status=Active is explicit: these rows are meant to OCCUPY manager seats so the establishment
+        // budget check fires (blank status now lands Draft, which never consumes a seat — §7).
         const string csv =
-            "EmployeeCode,FullName,Department,Designation,JoiningDate\n" +
-            "M1,Mgr One,Operations,Operations Manager,2026-01-01\n" +
-            "M2,Mgr Two,Operations,Operations Manager,2026-01-01\n" +
-            "M3,Mgr Three,Operations,Operations Manager,2026-01-01\n";
+            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate\n" +
+            "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01\n" +
+            "M2,Mgr Two,Operations,Operations Manager,Active,2026-01-01\n" +
+            "M3,Mgr Three,Operations,Operations Manager,Active,2026-01-01\n";
 
         var result = await controller.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
         var payload = JsonSerializer.Serialize(((OkObjectResult)result).Value);
@@ -175,9 +177,9 @@ public class EstablishmentEnforcementPathTests
         var controller = CreateController(db, fx.TenantId);
 
         const string csv =
-            "EmployeeCode,FullName,Department,Designation,JoiningDate\n" +
-            "M1,Mgr One,Operations,Operations Manager,2026-01-01\n" +
-            "M2,Mgr Two,Operations,Operations Manager,2026-01-01\n";
+            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate\n" +
+            "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01\n" +
+            "M2,Mgr Two,Operations,Operations Manager,Active,2026-01-01\n";
 
         var payload = JsonSerializer.Serialize(((OkObjectResult)await controller.Import(
             new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None)).Value);

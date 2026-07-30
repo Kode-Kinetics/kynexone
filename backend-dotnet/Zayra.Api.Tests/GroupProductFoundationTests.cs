@@ -168,7 +168,7 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
     // ── Readiness math ──────────────────────────────────────────────────────────
 
     [Fact]
-    public void ReadinessCalculator_CountsMissingFields_AndIgnoresUnknownOnes()
+    public void ReadinessCalculator_CountsMissingFields_AndFailsClosedOnUnknownOnes()
     {
         var employees = new[]
         {
@@ -182,7 +182,9 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         result.Should().HaveCount(3);
         result.Single(f => f.Field == "IqamaNumber").MissingEmployeeCount.Should().Be(1);
         result.Single(f => f.Field == "GosiReference").MissingEmployeeCount.Should().Be(2);
-        result.Single(f => f.Field == "NotARealField").MissingEmployeeCount.Should().Be(0, "unknown fields never break the page");
+        // Fail CLOSED: an unresolvable key is counted MISSING for every employee (was silently present
+        // under the old `_ => "n/a"` hole) so a statutory gap can never hide behind an unknown key.
+        result.Single(f => f.Field == "NotARealField").MissingEmployeeCount.Should().Be(2, "unknown/unresolvable keys fail closed");
         ComplianceReadinessCalculator.Evaluate("{broken", employees).Should().BeEmpty();
     }
 

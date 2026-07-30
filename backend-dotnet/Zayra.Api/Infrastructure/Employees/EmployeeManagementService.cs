@@ -28,8 +28,9 @@ public class EmployeeManagementService : IEmployeeManagementService
     private readonly IDocumentStorage _documents;
     private readonly INotificationService _notifications;
     private readonly IEstablishmentGuard _establishmentGuard;
+    private readonly IEmployeeActivationGuard _activationGuard;
 
-    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null)
+    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null)
     {
         _db = db;
         _audit = audit;
@@ -39,6 +40,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         // (Program.cs); the fallback keeps the many direct-construction test call sites compiling
         // and STILL ENFORCING (same pattern as EmployeesController's ApprovalWorkflowService).
         _establishmentGuard = establishmentGuard ?? new Zayra.Api.Infrastructure.Organization.EstablishmentGuardService(db);
+        // Readiness/activation gate — same optional-with-fallback pattern; self-composes its resolver
+        // + evaluator from db so direct-construction test sites keep enforcing.
+        _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
     }
 
     public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, int page, int pageSize, CancellationToken cancellationToken)
@@ -58,7 +62,7 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(x => x.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(x => new EmployeeListItemDto(x.Id, x.EmployeeCode, x.FullName, x.ArabicName, x.Department, x.Designation, x.Branch, x.ManagerEmployeeId, x.Status, x.ProfileCompletenessScore, x.VisaExpiryDate, x.PassportExpiryDate))
+            .Select(x => new EmployeeListItemDto(x.Id, x.EmployeeCode, x.FullName, x.ArabicName, x.Department, x.Designation, x.Branch, x.ManagerEmployeeId, x.Status, x.ProfileCompletenessScore, x.VisaExpiryDate, x.PassportExpiryDate, x.ReadinessState, x.ActivationBlockersCount))
             .ToListAsync(cancellationToken);
         return new PagedResult<EmployeeListItemDto>(items, total, page, pageSize);
     }
@@ -123,6 +127,9 @@ public class EmployeeManagementService : IEmployeeManagementService
                 await _db.SaveChangesAsync(cancellationToken);
                 return true;
             }, cancellationToken);
+        // Stamp the readiness badge now that the employee + payroll/compliance rows are persisted.
+        await RefreshReadinessSnapshotAsync(employee, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.created", "Employee", employee.Id.ToString(), context, null, cancellationToken);
         return (await GetAsync(tenantId, employee.Id, true, context, cancellationToken))!;
     }
@@ -167,6 +174,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _db.SaveChangesAsync(cancellationToken);
             await SynchronizePositionIncumbencyAsync(employee, priorPositionId, context, cancellationToken);
         }
+        await RefreshReadinessSnapshotAsync(employee, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.updated", "Employee", id.ToString(), context, null, cancellationToken);
         return await GetAsync(tenantId, id, true, context, cancellationToken);
     }
@@ -176,6 +185,17 @@ public class EmployeeManagementService : IEmployeeManagementService
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
         var oldStatus = employee.Status;
+        // READINESS GATE (§5.2/§5.3): fire ONLY when becoming Active from a NON-occupying status —
+        // first-time activations and rehires (Draft/Invited/Terminated/…→Active). Runs BEFORE any
+        // mutation so a block leaves the record untouched (the guard is a pure read; it throws
+        // EmployeeActivationBlockedException). Suspended→Active / Offboarded→Active reinstatements are
+        // occupying→occupying and are deliberately NOT gated (mandated reinstatement is never refused).
+        if (_activationGuard.ShouldGate(oldStatus, request.Status))
+        {
+            var gateSnapshot = await _activationGuard.BuildSnapshotAsync(tenantId, id, cancellationToken);
+            if (gateSnapshot is not null)
+                await _activationGuard.EnsureActivatableAsync(tenantId, employee.CompanyId, gateSnapshot, context, cancellationToken);
+        }
         employee.Status = request.Status;
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = context.UserId;
@@ -190,6 +210,9 @@ public class EmployeeManagementService : IEmployeeManagementService
             ChangedByUserId = context.UserId
         });
         await AddHistory(employee, "StatusChange", "Status", oldStatus, request.Status, request.EffectiveDate, request.Reason, context, cancellationToken);
+        // Stamp ActivatedAtUtc on the first successful activation (the gate above already passed).
+        if (string.Equals(request.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase) && employee.ActivatedAtUtc is null)
+            employee.ActivatedAtUtc = DateTime.UtcNow;
         // ESTABLISHMENT GUARD (path "reactivate"): only a transition INTO an occupying status
         // (Draft/Invited/Terminated/… → Active, activation, rehire) consumes a seat and is
         // enforced. Occupying→occupying (e.g. Suspended→Active reinstatement, Active→Offboarded
@@ -207,6 +230,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         {
             await _db.SaveChangesAsync(cancellationToken);
         }
+        await RefreshReadinessSnapshotAsync(employee, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.status_changed", "Employee", id.ToString(), context, JsonSerializer.Serialize(new { oldStatus, request.Status, request.Reason }), cancellationToken);
 
         // EXIT CASCADE (terminate / direct status change into a terminal state): deactivate the
@@ -308,6 +333,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         _db.EmployeeDocumentVersions.Add(new EmployeeDocumentVersion { TenantId = tenantId, EmployeeDocumentId = document.Id, VersionNumber = document.VersionNumber, FileName = document.FileName, ContentType = document.ContentType, StorageUrl = document.StorageUrl, CreatedBy = context.UserId });
         await AddHistory(new Employee { Id = employeeId, TenantId = tenantId }, "DocumentRenewal", "Document", string.Empty, document.DocumentType, DateOnly.FromDateTime(DateTime.UtcNow), "Document uploaded", context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+        // A newly-uploaded doc can satisfy a doc:{Type} requirement — refresh the readiness badge.
+        await RefreshEmployeeReadinessByIdAsync(tenantId, employeeId, cancellationToken);
         await _audit.WriteAsync("employee.document_uploaded", "EmployeeDocument", document.Id.ToString(), context, null, cancellationToken);
         return document;
     }
@@ -436,6 +463,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (notes is not null) doc.Notes = notes.Trim();
 
         await _db.SaveChangesAsync(cancellationToken);
+        // Verification can satisfy a requireVerified doc requirement — refresh the readiness badge.
+        await RefreshEmployeeReadinessByIdAsync(tenantId, employeeId, cancellationToken);
         await _audit.WriteAsync("employee.document_verified", "EmployeeDocument", doc.Id.ToString(), context,
             JsonSerializer.Serialize(new { before, after = "Verified", documentType = doc.DocumentType }), cancellationToken);
 
@@ -926,6 +955,37 @@ public class EmployeeManagementService : IEmployeeManagementService
             case "work_permit": employee.WorkPermitNumber = record.FieldValue; break;
             case "sponsor": employee.SponsorName = record.FieldValue; break;
         }
+    }
+
+    // ── Readiness snapshot recompute-and-stamp (§4.3) ─────────────────────────
+    // Refreshes the DENORMALIZED display columns (ReadinessState / ActivationBlockersCount /
+    // ReadinessEvaluatedAtUtc) for the list badge. Display-only and best-effort (never throws) — the
+    // activation gate always recomputes live and never trusts these columns. Callers SaveChanges after.
+    // "already calls CalculateCompleteness" is FALSE for these paths — each needs an explicit refresh.
+    private async Task RefreshReadinessSnapshotAsync(Employee employee, CancellationToken ct)
+    {
+        if (employee.TenantId is null || employee.Id == 0) return;
+        var snapshot = await _activationGuard.BuildSnapshotAsync(employee.TenantId.Value, employee.Id, ct);
+        if (snapshot is null) return;
+        var policy = await _activationGuard.ResolvePolicyAsync(employee.TenantId.Value, employee.CompanyId, employee.CountryCode, employee.Nationality, ct);
+        var readiness = _activationGuard.Evaluate(snapshot, policy);
+        employee.ReadinessState = readiness.State;
+        employee.ActivationBlockersCount = readiness.Blocking.Count;
+        employee.ReadinessEvaluatedAtUtc = DateTime.UtcNow;
+        // Policy-aware completeness (§4.2): the score now reflects readiness against the resolved policy
+        // so the % and the badge never contradict (was a fixed ~22-field HR denominator with ZERO
+        // statutory fields — an employee read 100% while missing Iqama/GOSI/IBAN). Only overwrite when a
+        // policy actually applies, so a no-policy tenant keeps the prior HR-completeness signal.
+        if (policy.Items.Count > 0)
+            employee.ProfileCompletenessScore = readiness.Score;
+    }
+
+    private async Task RefreshEmployeeReadinessByIdAsync(Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, ct);
+        if (employee is null) return;
+        await RefreshReadinessSnapshotAsync(employee, ct);
+        await _db.SaveChangesAsync(ct);
     }
 
     private static decimal CalculateCompleteness(Employee employee, EmployeePayrollProfileRequest? payroll, IReadOnlyCollection<EmployeeComplianceRecordRequest>? compliance)

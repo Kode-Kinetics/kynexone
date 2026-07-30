@@ -34,11 +34,13 @@ public class PayrollController : ControllerBase
     private readonly IDocumentStorage _storage;
     private readonly PdfRenderGate _pdfGate;
     private readonly ICompanyTaxPolicyResolver _taxResolver;
+    private readonly Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard _activationGuard;
 
     public PayrollController(ZayraDbContext db, IDataScopeService scopeService, IHttpContextAccessor http,
         INotificationService notifications, ICountryPackResolver packResolver, IStatutoryRuleReader ruleReader,
         ILetterService letters, IDocumentStorage storage, PdfRenderGate pdfGate,
-        ICompanyTaxPolicyResolver? taxResolver = null)
+        ICompanyTaxPolicyResolver? taxResolver = null,
+        Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard? activationGuard = null)
     {
         _db = db;
         _scopeService = scopeService;
@@ -51,6 +53,41 @@ public class PayrollController : ControllerBase
         _pdfGate = pdfGate;
         // Optional so existing test constructors keep working; DI always supplies the real one.
         _taxResolver = taxResolver ?? new CompanyTaxPolicyResolver(db);
+        _activationGuard = activationGuard ?? new Zayra.Api.Infrastructure.Employees.EmployeeActivationGuard(db);
+    }
+
+    /// <summary>
+    /// PAY INTERLOCK (§6): run the ONE readiness evaluator over the run's employees and split them into
+    /// (a) HARD pay-blocks — under-documented / expired-ID / State==Blocked employees who are NOT Active
+    /// (a wage file must never carry them), and (b) DRIFT warnings — already-Active employees who fell
+    /// pay-blocked after a policy change: these are surfaced and require explicit acknowledgement rather
+    /// than being SILENTLY dropped from a run (§6.6 — a silent exclusion could miss a mandated salary).
+    /// </summary>
+    private async Task<(HashSet<int> HardBlocked, HashSet<int> DriftWarn)> ComputePayReadinessAsync(
+        Guid tenantId, IReadOnlyList<Employee> employees, CancellationToken ct)
+    {
+        var hard = new HashSet<int>();
+        var drift = new HashSet<int>();
+        if (employees.Count == 0) return (hard, drift);
+        // Batch-load snapshots (3 bulk queries), resolve policy per distinct (company, country, nationality).
+        var snapshots = await new Zayra.Api.Infrastructure.Employees.EmployeeReadinessEvaluator(_db)
+            .LoadSnapshotsAsync(tenantId, employees.Select(e => e.Id).ToList(), ct);
+        var policyCache = new Dictionary<string, Zayra.Api.Infrastructure.Employees.ResolvedReadinessPolicy>();
+        foreach (var emp in employees)
+        {
+            if (!snapshots.TryGetValue(emp.Id, out var snap)) continue;
+            var key = $"{emp.CompanyId}|{emp.CountryCode}|{Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(emp.Nationality)}";
+            if (!policyCache.TryGetValue(key, out var policy))
+            {
+                policy = await _activationGuard.ResolvePolicyAsync(tenantId, emp.CompanyId, emp.CountryCode, emp.Nationality, ct);
+                policyCache[key] = policy;
+            }
+            var readiness = _activationGuard.Evaluate(snap, policy);
+            if (readiness.PayBlocking.Count == 0 && !readiness.IsBlocked) continue;
+            if (string.Equals(emp.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)) drift.Add(emp.Id);
+            else hard.Add(emp.Id);
+        }
+        return (hard, drift);
     }
 
     [HttpGet("salary-structures")]
@@ -1572,7 +1609,8 @@ public class PayrollController : ControllerBase
         var empIds   = slips.Select(s => s.EmployeeId).Distinct().ToList();
         var employees = await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && empIds.Contains(e.Id)).ToListAsync(cancellationToken);
 
-        var result = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees);
+        var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken);
+        var result = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees, hardBlocked);
 
         return Ok(new
         {
@@ -1582,6 +1620,9 @@ public class PayrollController : ControllerBase
             warningCount = result.WarningCount,
             blockingErrors = result.BlockingErrors,
             warnings       = result.Warnings,
+            // §6.6: already-Active employees who drifted pay-blocked after a policy change. Surfaced
+            // (never silently dropped); GenerateWps requires explicit acknowledgement to proceed.
+            readinessDrift = driftWarn.ToArray(),
         });
     }
 
@@ -1592,7 +1633,7 @@ public class PayrollController : ControllerBase
     /// Requires payroll.export permission.
     /// </summary>
     [HttpPost("payment-batches/{id:guid}/wps-file")]
-    public async Task<IActionResult> GenerateWps(Guid id, CancellationToken cancellationToken)
+    public async Task<IActionResult> GenerateWps(Guid id, [FromQuery] bool acknowledgeReadinessDrift, CancellationToken cancellationToken)
     {
         if (!HasPermission("payroll.export")) return Forbid();
 
@@ -1645,7 +1686,8 @@ public class PayrollController : ControllerBase
 
         // Full validator: same rules as WpsValidation endpoint.
         var slips = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == run.Id).ToListAsync(cancellationToken);
-        var validation = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees);
+        var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken);
+        var validation = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees, hardBlocked);
         if (!validation.CanExport)
             return BadRequest(new
             {
@@ -1653,6 +1695,17 @@ public class PayrollController : ControllerBase
                 message        = "WPS export blocked by validation errors. Resolve all blocking issues and retry.",
                 errorCount     = validation.ErrorCount,
                 blockingErrors = validation.BlockingErrors,
+            });
+        // §6.6: already-Active employees who drifted pay-blocked after a policy change are NEVER silently
+        // dropped from a wage file (that could miss a mandated salary). They are surfaced and require an
+        // explicit acknowledgement to proceed — the export then includes them (their pay is not withheld).
+        if (driftWarn.Count > 0 && !acknowledgeReadinessDrift)
+            return UnprocessableEntity(new
+            {
+                error = "readiness_drift_acknowledgement_required",
+                message = $"{driftWarn.Count} active employee(s) no longer meet the current readiness policy. "
+                          + "Review and re-submit with acknowledgeReadinessDrift=true to include them, or fix their details first.",
+                driftedEmployeeIds = driftWarn.ToArray(),
             });
 
         var gcc         = await _db.GCCComplianceSettings.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
