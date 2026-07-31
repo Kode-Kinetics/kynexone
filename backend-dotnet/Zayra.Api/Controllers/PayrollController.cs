@@ -752,6 +752,19 @@ public class PayrollController : ControllerBase
             .Distinct()
             .ToListAsync(cancellationToken)).ToHashSet();
 
+        // ── Configurability keystone: the data-driven pay-component set for this run ─────────────
+        // The pay engine replaces the fixed compiled earning/deduction sequence below with a company-first
+        // seeded catalog (PayComponent). Loaded ONCE per run (company is fixed for the run) as an immutable
+        // read-only snapshot, safe to reuse across an execution-strategy retry. Empty store ⇒ compiled
+        // PayComponentCatalog fallback (mirrors the gl_drivers store), so an un-seeded tenant is unaffected.
+        // Payroll/UseComponentEngine is a per-tenant kill-switch (default ON): the engine is proven
+        // byte-identical to the legacy inline block by the golden-master + equivalence-twin tests and never
+        // changes any output, so "false" only exists for instant per-tenant rollback to the legacy path.
+        var useComponentEngine = await ResolveUseComponentEngineAsync(tenantId, cancellationToken);
+        var payComponents = useComponentEngine
+            ? await LoadPayComponentsAsync(tenantId, company.Id, cancellationToken)
+            : (IReadOnlyList<PayComponent>)Array.Empty<PayComponent>();
+
         // ── P0-2: ALL-OR-NOTHING MUTATION ──────────────────────────────────────────
         // Everything from here (idempotent delete → slip writes → statutory/loan/advance
         // ledger decrements → audit) commits as one transaction, so a cancel/crash/DB error
@@ -918,6 +931,15 @@ public class PayrollController : ControllerBase
             slips.Add(slip);
             slip.CompanyId = company.Id;
             _db.PayrollRunEmployees.Add(new PayrollRunEmployee { TenantId = tenantId, PayrollRunId = id, EmployeeId = e.Id, GrossEarnings = slip.GrossSalary, TotalDeductions = deductions, NetPay = slip.NetSalary });
+            // ── LINE EMISSION ────────────────────────────────────────────────────────────────────
+            // The legacy inline block (kept VERBATIM under the kill-switch, so its behaviour is provably
+            // unchanged) and the data-driven PayComponentEngine emit the SAME PayrollEarning/PayrollDeduction
+            // rows for the seeded component set. Both call the same AddEarning/AddDeduction helpers, so GL
+            // routing, WPS and the payslip builder downstream are identical either way. The slip header +
+            // every aggregate (deductions/net/statutory totals) are projected above from the same scalars in
+            // BOTH paths, so the run is byte-identical regardless of which branch runs.
+            if (!useComponentEngine)
+            {
             // Bonus earning lines (one per bonus in the batch, gross amount for GL expense tracking).
             foreach (var bonus in empBonuses)
                 AddEarning(tenantId, id, e.Id, $"BONUS_{bonus.BonusTypeName.ToUpperInvariant().Replace(' ', '_')}", bonus.BonusTypeName, bonus.GrossBonusAmount, "Bonus");
@@ -955,6 +977,40 @@ public class PayrollController : ControllerBase
                 AddDeduction(tenantId, company.Id, id, e.Id, line.Code, line.Label, line.EmployeeAmount, "Statutory");
             foreach (var line in statutoryResult.Lines.Where(l => l.EmployerAmount > 0))
                 AddDeduction(tenantId, company.Id, id, e.Id, line.Code, line.Label, line.EmployerAmount, "Statutory", isEmployerContribution: true);
+            }
+            else
+            {
+                // Data-driven path: build the pure engine context from the SAME computed scalars +
+                // subsystem/pack results the legacy block uses (statutory amounts stay pack-owned; the
+                // engine never touches the social-insurance base), then emit the ordered lines through the
+                // same AddEarning/AddDeduction helpers. Family/statutory codes+labels are pre-built here so
+                // NormalizeCode/AdjustmentLabel/pack labels produce byte-identical output.
+                var payCtx = new PayComponentContext
+                {
+                    Basic = basic, Housing = housing, Transport = transport,
+                    OtherAllowances = otherAllowances, FixedDeduction = fixedDeduction, Gross = gross,
+                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = hourlyRate, OtMultiplier = otMultiplier,
+                    TaxDeduction = taxDeduction, IncomeTaxRate = incomeTaxRate,
+                    AttendanceDeduction = attendanceDeduction,
+                    LopDeduction = lopDeduction, LopDays = lopDays, LopDayRate = lopDayRate,
+                    LeaveDeduction = leaveDeduction, LoanEmi = loanEmi, AdvEmi = advEmi,
+                    BonusLines = empBonuses
+                        .Select(b => new PayComponentLine($"BONUS_{b.BonusTypeName.ToUpperInvariant().Replace(' ', '_')}", b.BonusTypeName, b.GrossBonusAmount, "Bonus", false))
+                        .ToList(),
+                    AdjustmentEarningLines = empAdjustments.Where(a => a.Amount > 0m)
+                        .Select(a => new PayComponentLine($"ADJ_{NormalizeCode(a.AdjustmentType)}", AdjustmentLabel(a), a.Amount, "Adjustment", false))
+                        .ToList(),
+                    AdjustmentDeductionLines = empAdjustments.Where(a => a.Amount < 0m)
+                        .Select(a => new PayComponentLine($"ADJ_{NormalizeCode(a.AdjustmentType)}", AdjustmentLabel(a), Math.Abs(a.Amount), "Adjustment", false))
+                        .ToList(),
+                    StatutoryLines = statutoryResult.Lines,
+                };
+                var computation = PayComponentEngine.Compute(payComponents, payCtx);
+                foreach (var line in computation.Earnings)
+                    AddEarning(tenantId, id, e.Id, line.Code, line.Name, line.Amount, line.Source);
+                foreach (var line in computation.Deductions)
+                    AddDeduction(tenantId, company.Id, id, e.Id, line.Code, line.Name, line.Amount, line.Source, isEmployerContribution: line.IsEmployerContribution);
+            }
         }
 
         _db.PayrollSlips.AddRange(slips);
@@ -2669,6 +2725,45 @@ public class PayrollController : ControllerBase
             .ToList();
 
         return new GlResolutionContext(overrides, driverDefaults, drivers);
+    }
+
+    /// <summary>Per-tenant kill-switch for the data-driven pay-component engine. Default ON: the engine is
+    /// proven byte-identical to the legacy compiled sequence by the golden-master + equivalence-twin tests
+    /// and falls back to the compiled PayComponentCatalog when the store is empty, so enabling it changes NO
+    /// output for any tenant (seeded or not). Setting Payroll/UseComponentEngine to "false"/"0"/"off"
+    /// reverts a tenant to the legacy inline block for instant rollback. Explicitly tenant-scoped (does not
+    /// rely on the ambient global query filter) so the switch is correct regardless of the resolving
+    /// context — this is a per-tenant behaviour toggle, never a cross-tenant read.</summary>
+    private async Task<bool> ResolveUseComponentEngineAsync(Guid tenantId, CancellationToken ct)
+    {
+        var val = await _db.SystemSettings.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Category == "Payroll" && x.SettingKey == "UseComponentEngine")
+            .Select(x => x.SettingValue)
+            .FirstOrDefaultAsync(ct);
+        if (string.IsNullOrWhiteSpace(val)) return true; // default ON
+        return val.Trim().ToLowerInvariant() is not ("false" or "0" or "off" or "no" or "disabled");
+    }
+
+    /// <summary>Loads the active pay-component definitions for a run (company-first). Mirrors
+    /// LoadGlResolutionContextAsync / CompanyTaxPolicyResolver: IgnoreQueryFilters is intentional — payroll
+    /// processing is a SYSTEM read that must see BOTH the run's company rows AND the tenant-default
+    /// (CompanyId == null) rows regardless of the caller's own company claims; the WHERE re-applies exact
+    /// tenant + company/default scope and never reads another tenant. The company row wins over the
+    /// tenant-default per (Code, ComponentType). When the store is empty the compiled PayComponentCatalog
+    /// system seeds are returned so an un-seeded tenant is byte-identical to the legacy path (the same
+    /// empty-store fallback the gl_drivers store uses).</summary>
+    private async Task<IReadOnlyList<PayComponent>> LoadPayComponentsAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    {
+        var rows = await _db.PayComponents.IgnoreQueryFilters().AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted
+                     && (c.CompanyId == companyId || c.CompanyId == null))
+            .ToListAsync(ct);
+        if (rows.Count == 0)
+            return PayComponentCatalog.SystemComponentSeeds(tenantId); // compiled fallback (empty store)
+        return rows
+            .GroupBy(c => (c.Code, c.ComponentType))
+            .Select(g => g.OrderByDescending(c => c.CompanyId != null).First())
+            .ToList();
     }
 
     // M1: audit log now captures caller IP and structured metadata

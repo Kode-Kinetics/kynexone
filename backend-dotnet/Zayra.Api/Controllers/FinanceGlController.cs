@@ -348,10 +348,13 @@ public class FinanceGlController : ControllerBase
         if (!this.GetEntityScope().IsGroupLevel) return Forbid();
 
         var seeded = await GlDriverSeeder.SeedTenantDefaultsAsync(_db, tid.Value, ct);
+        // Configurability keystone: seed the data-driven pay-component defaults alongside the GL defaults
+        // (same tenant-default, idempotent, add-only contract) so the two catalogs are always provisioned together.
+        var seededComponents = await Zayra.Api.Infrastructure.Seed.PayComponentSeeder.SeedTenantDefaultsAsync(_db, tid.Value, ct);
         await WriteAudit("finance.gl.seed_defaults", "GlDriver", tid.ToString(), null,
-            new { accounts = seeded.Accounts, mappings = seeded.Mappings, drivers = seeded.Drivers, rateDefs = seeded.RateDefinitions }, ct);
+            new { accounts = seeded.Accounts, mappings = seeded.Mappings, drivers = seeded.Drivers, rateDefs = seeded.RateDefinitions, payComponents = seededComponents.Components }, ct);
         await _db.SaveChangesAsync(ct);
-        return Ok(new { accounts = seeded.Accounts, mappings = seeded.Mappings, drivers = seeded.Drivers, rateDefinitions = seeded.RateDefinitions });
+        return Ok(new { accounts = seeded.Accounts, mappings = seeded.Mappings, drivers = seeded.Drivers, rateDefinitions = seeded.RateDefinitions, payComponents = seededComponents.Components });
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
