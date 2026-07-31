@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Payroll;
@@ -98,7 +99,7 @@ public class PayslipTemplatesController : ControllerBase
     // ── Create ────────────────────────────────────────────────────────────────
 
     [HttpPost]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Manager")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> Create([FromBody] TemplateUpsertRequest req, CancellationToken ct)
     {
         var tenantId = GetTenantId();
@@ -129,7 +130,7 @@ public class PayslipTemplatesController : ControllerBase
     // ── Update (creates new version, archives old) ────────────────────────────
 
     [HttpPut("{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Manager")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> Update(Guid id, [FromBody] TemplateUpsertRequest req, CancellationToken ct)
     {
         var tenantId = GetTenantId();
@@ -172,7 +173,7 @@ public class PayslipTemplatesController : ControllerBase
     // ── Set default ───────────────────────────────────────────────────────────
 
     [HttpPost("{id:guid}/set-default")]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Manager")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> SetDefault(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();
@@ -193,7 +194,7 @@ public class PayslipTemplatesController : ControllerBase
     // ── Soft delete ───────────────────────────────────────────────────────────
 
     [HttpDelete("{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Manager")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();
@@ -213,7 +214,7 @@ public class PayslipTemplatesController : ControllerBase
     // ── Logo upload ───────────────────────────────────────────────────────────
 
     [HttpPost("logo")]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Manager")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> UploadLogo(IFormFile file, CancellationToken ct)
     {
         var tenantId = GetTenantId();
@@ -230,7 +231,7 @@ public class PayslipTemplatesController : ControllerBase
     // ── Preview PDF ───────────────────────────────────────────────────────────
 
     [HttpPost("{id:guid}/preview")]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
+    [HasPermission("payroll.read", "payroll.write")]
     public async Task<IActionResult> Preview(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();

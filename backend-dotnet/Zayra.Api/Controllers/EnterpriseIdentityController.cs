@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Authorization;
 
 namespace Zayra.Api.Controllers;
 
@@ -30,7 +31,7 @@ public class EnterpriseIdentityController : ControllerBase
     }
 
     [HttpPut("settings")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<ActionResult<EnterpriseIdentitySettingsDto>> UpdateSettings(UpdateEnterpriseIdentitySettingsRequest request, CancellationToken ct)
     {
         try
@@ -45,7 +46,7 @@ public class EnterpriseIdentityController : ControllerBase
     }
 
     [HttpPost("scim/token")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<ActionResult<RotateScimTokenResponse>> RotateScimToken(CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

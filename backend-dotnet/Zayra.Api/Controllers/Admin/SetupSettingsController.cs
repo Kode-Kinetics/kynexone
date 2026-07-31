@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Models;
 
@@ -29,7 +30,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpPost("api/admin/numbering-rules")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<IActionResult> UpsertNumberingRule([FromBody] NumberingRuleRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -87,7 +88,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpPost("api/admin/system-settings")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<IActionResult> UpsertSystemSetting([FromBody] SystemSettingRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -120,7 +121,7 @@ public class SetupSettingsController : ControllerBase
     // Sends a real test email through the configured SMTP server so admins can
     // verify connectivity (host/port/credentials/TLS) instead of guessing.
     [HttpPost("api/admin/system-settings/smtp/test")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<IActionResult> TestSmtp([FromServices] IEmailService email, CancellationToken ct)
     {
         if (!await email.IsConfiguredAsync(ct))
@@ -158,7 +159,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpPost("api/admin/gcc-settings")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<IActionResult> UpsertGCCSetting([FromBody] GCCSettingRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -208,7 +209,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpPost("api/admin/fiscal-years")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.write")]
     public async Task<IActionResult> CreateFiscalYear([FromBody] FiscalYearRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -226,7 +227,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpPatch("api/admin/fiscal-years/{id:guid}/close")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<IActionResult> CloseFiscalYear(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -250,7 +251,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpPost("api/admin/locations")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.write")]
     public async Task<IActionResult> CreateLocation([FromBody] LocationRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -272,7 +273,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpPut("api/admin/locations/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.write")]
     public async Task<IActionResult> UpdateLocation(Guid id, [FromBody] LocationRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -290,7 +291,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpDelete("api/admin/locations/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.write")]
     public async Task<IActionResult> DeleteLocation(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -303,7 +304,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpDelete("api/admin/fiscal-years/{id:guid}")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<IActionResult> DeleteFiscalYear(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -316,7 +317,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpDelete("api/admin/numbering-rules/{id:guid}")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<IActionResult> DeleteNumberingRule(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -340,7 +341,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpPost("api/admin/notification-templates")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("notifications.manage")]
     public async Task<IActionResult> CreateNotificationTemplate([FromBody] NotificationTemplateRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -360,7 +361,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpPut("api/admin/notification-templates/{id:guid}")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("notifications.manage")]
     public async Task<IActionResult> UpdateNotificationTemplate(Guid id, [FromBody] NotificationTemplateRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -376,7 +377,7 @@ public class SetupSettingsController : ControllerBase
     }
 
     [HttpDelete("api/admin/notification-templates/{id:guid}")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("notifications.manage")]
     public async Task<IActionResult> DeleteNotificationTemplate(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();

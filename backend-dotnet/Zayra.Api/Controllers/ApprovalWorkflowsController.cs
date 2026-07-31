@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Authorization;
 
 namespace Zayra.Api.Controllers;
 
@@ -29,7 +30,7 @@ public class ApprovalWorkflowsController : ControllerBase
         => await _approvals.GetWorkflowAsync(RequireTenant(), id, cancellationToken) is { } workflow ? Ok(workflow) : NotFound();
 
     [HttpPost]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("approvals.manage")]
     public async Task<ActionResult<ApprovalWorkflowDto>> Create(ApprovalWorkflowRequest request, CancellationToken cancellationToken)
     {
         try
@@ -41,7 +42,7 @@ public class ApprovalWorkflowsController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("approvals.manage")]
     public async Task<ActionResult<ApprovalWorkflowDto>> Update(Guid id, ApprovalWorkflowRequest request, CancellationToken cancellationToken)
     {
         try
@@ -65,7 +66,7 @@ public class ApprovalWorkflowsController : ControllerBase
     }
 
     [HttpPost("requests")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager")]
+    [HasPermission("approvals.write")]
     public async Task<ActionResult<ApprovalRequestDto>> Start(CreateApprovalRequest request, CancellationToken cancellationToken)
     {
         try

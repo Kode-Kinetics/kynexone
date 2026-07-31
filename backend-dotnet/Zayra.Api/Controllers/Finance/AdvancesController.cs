@@ -5,6 +5,7 @@ using System.Text.Json;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Finance;
@@ -41,7 +42,7 @@ public class AdvancesController : ControllerBase
     }
 
     [HttpPost("policy")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("loans.write")]
     public async Task<IActionResult> UpsertPolicy([FromBody] AdvancePolicyRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();

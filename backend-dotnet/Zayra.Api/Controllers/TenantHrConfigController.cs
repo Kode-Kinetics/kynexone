@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Organization;
 
@@ -12,7 +13,7 @@ namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/tenant-hr-config")]
-[Authorize(Roles = "Admin,HR Manager")]
+[Authorize]
 public class TenantHrConfigController : ControllerBase
 {
     private readonly ZayraDbContext _db;
@@ -26,6 +27,7 @@ public class TenantHrConfigController : ControllerBase
     }
 
     [HttpGet]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Get(CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -45,6 +47,7 @@ public class TenantHrConfigController : ControllerBase
     }
 
     [HttpPut]
+    [HasPermission("organization.write")]
     public async Task<IActionResult> Upsert([FromBody] TenantHrConfigRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

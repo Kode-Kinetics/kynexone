@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -47,7 +48,9 @@ public sealed record UpdateStatutoryRuleRequest(
 /// </summary>
 [ApiController]
 [Route("api/statutory-rules")]
-[Authorize(Roles = "Admin,HR Manager,Auditor")]
+// Reads stay role-gated per-method (List below); the write surface moves to the Admin-exclusive
+// payroll.rates.statutory_override permission so a custom compliance role can be granted it.
+[Authorize]
 public class StatutoryRulesController : ControllerBase
 {
     private readonly ZayraDbContext _db;
@@ -62,6 +65,7 @@ public class StatutoryRulesController : ControllerBase
     /// Query-filtered by countryCode and/or jurisdiction if provided.
     /// </summary>
     [HttpGet]
+    [Authorize(Roles = "Admin,HR Manager,Auditor")]
     public async Task<ActionResult<IReadOnlyList<StatutoryRuleDto>>> List(
         [FromQuery] string? countryCode,
         [FromQuery] string? jurisdiction,
@@ -108,7 +112,7 @@ public class StatutoryRulesController : ControllerBase
     /// already exist as a seeded platform default (no inventing statutory keys). Every write is audited.
     /// </summary>
     [HttpPost]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("payroll.rates.statutory_override")]
     public async Task<ActionResult<StatutoryRuleDto>> Create(
         [FromBody] CreateStatutoryRuleRequest req,
         CancellationToken ct)
@@ -163,7 +167,7 @@ public class StatutoryRulesController : ControllerBase
     /// (EffectiveTo set) and a new effective-dated row is inserted. Platform defaults are not editable.
     /// </summary>
     [HttpPut("{id:guid}")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("payroll.rates.statutory_override")]
     public async Task<ActionResult<StatutoryRuleDto>> Update(
         Guid id,
         [FromBody] UpdateStatutoryRuleRequest req,
@@ -199,7 +203,7 @@ public class StatutoryRulesController : ControllerBase
 
     /// <summary>Deletes a tenant-owned statutory rule override. Platform defaults cannot be deleted.</summary>
     [HttpDelete("{id:guid}")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("payroll.rates.statutory_override")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

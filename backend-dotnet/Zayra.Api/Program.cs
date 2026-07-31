@@ -244,6 +244,14 @@ builder.Services.AddAuthorization(options =>
         .Build();
 });
 
+// [HasPermission] mechanism: a policy provider that synthesizes "perm:<key|key>" policies on
+// demand (delegating every other policy — PlatformAdmin, the default-deny fallback — to the
+// framework default) plus the handler that enforces them against the JWT `permission` claim.
+// This is what lets a client-created CUSTOM role actually be granted access: the attribute
+// checks effective permissions, not role names. Server-side only; fail-closed.
+builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider, Zayra.Api.Infrastructure.Authorization.PermissionPolicyProvider>();
+builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, Zayra.Api.Infrastructure.Authorization.PermissionAuthorizationHandler>();
+
 builder.Services.AddScoped<IPasswordHasher, Pbkdf2PasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuditService, AuditService>();

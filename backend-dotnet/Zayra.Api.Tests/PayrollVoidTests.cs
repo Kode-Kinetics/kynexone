@@ -181,18 +181,14 @@ public class PayrollVoidTests
         var method = typeof(PayrollController).GetMethod(nameof(PayrollController.VoidRun));
         method.Should().NotBeNull("VoidRun endpoint must exist");
 
-        var attr = method!.GetCustomAttributes(typeof(AuthorizeAttribute), false)
-            .Cast<AuthorizeAttribute>()
+        // Voiding a run is now gated by the payroll.lock PERMISSION (via [HasPermission]) rather than a
+        // hard-coded role name — so a client custom role granted payroll.lock can void, and the seeded
+        // Admin/Finance Controller bundles carry payroll.lock while Payroll Officer/HR Manager do not.
+        var attr = method!.GetCustomAttributes(typeof(Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute), false)
+            .Cast<Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute>()
             .FirstOrDefault();
-        attr.Should().NotBeNull("[Authorize] must be present on VoidRun");
-
-        var roles = (attr!.Roles ?? string.Empty)
-            .Split(',').Select(r => r.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        roles.Should().Contain("Admin",              "Admin must be able to void a run");
-        roles.Should().Contain("Finance Controller", "Finance Controller must be able to void a run");
-        roles.Should().NotContain("Payroll Officer", "Payroll Officer must NOT be able to void a run");
-        roles.Should().NotContain("HR Manager",      "HR Manager must NOT be able to void payroll runs");
+        attr.Should().NotBeNull("[HasPermission] must gate VoidRun");
+        attr!.Permissions.Should().Contain("payroll.lock", "voiding/locking a run requires the payroll.lock permission");
     }
 
     // ── (f) Voided run excluded from GL totals; period re-usable ────────────────

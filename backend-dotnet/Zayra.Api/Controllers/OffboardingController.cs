@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Models;
 
@@ -16,7 +17,9 @@ namespace Zayra.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/offboarding")]
-[Authorize(Roles = "Admin,HR Manager,HR Officer")]
+// Reads keep their original role list (re-applied per GET below); write actions move to
+// employees.write / employees.approve so a custom HR role can be granted the offboarding surface.
+[Authorize]
 public class OffboardingController : ControllerBase
 {
     private readonly ZayraDbContext _db;
@@ -32,6 +35,7 @@ public class OffboardingController : ControllerBase
     }
 
     [HttpGet]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> List([FromQuery] string? status, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -42,6 +46,7 @@ public class OffboardingController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -51,6 +56,7 @@ public class OffboardingController : ControllerBase
 
     /// <summary>Attrition insight: in-notice/completed counts, avg exit rating, and reasons breakdown.</summary>
     [HttpGet("summary")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> Summary(CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -71,7 +77,7 @@ public class OffboardingController : ControllerBase
     }
 
     [HttpPost("initiate")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> Initiate([FromBody] InitiateOffboardingRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -139,6 +145,7 @@ public class OffboardingController : ControllerBase
     }
 
     [HttpPatch("{id:guid}/exit-interview")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> ExitInterview(Guid id, [FromBody] ExitInterviewRequest req, CancellationToken ct)
     {
         var off = await Find(id, ct);
@@ -154,6 +161,7 @@ public class OffboardingController : ControllerBase
     }
 
     [HttpPatch("{id:guid}/checklist")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> Checklist(Guid id, [FromBody] OffboardingChecklistRequest req, CancellationToken ct)
     {
         var off = await Find(id, ct);
@@ -169,7 +177,7 @@ public class OffboardingController : ControllerBase
 
     /// <summary>Finalise: archive the employee (removes them from live headcount).</summary>
     [HttpPost("{id:guid}/complete")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> Complete(Guid id, CancellationToken ct)
     {
         var off = await Find(id, ct);
@@ -205,7 +213,7 @@ public class OffboardingController : ControllerBase
 
     /// <summary>Rescind a resignation while serving notice — reinstates the employee.</summary>
     [HttpPost("{id:guid}/cancel")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> Cancel(Guid id, CancellationToken ct)
     {
         var off = await Find(id, ct);
