@@ -1,0 +1,28 @@
+# Zayra secret-scan configuration (gitleaks).
+# Runs the full default ruleset (see [extend]) and fails CI on any real secret.
+# The allowlists below remove deterministic FALSE POSITIVES only:
+#   • build artifacts / local env files that never exist in a clean CI checkout;
+#   • obviously-synthetic TEST fixture keys (named "TEST_…", "…MUST_BE_64_CHARS…").
+# It deliberately does NOT blanket-allowlist the test projects — a realistic secret
+# hardcoded in a test would still trip the scan.
+title = "Zayra gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Build artifacts, local env, lockfiles, and synthetic test fixtures"
+# File paths that are gitignored (absent from CI) or are lockfiles/build output.
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.next/''',
+  '''(^|/)\.vercel/''',
+  '''(^|/)\.env(\.[^/]+)?\.local$''',
+  '''(^|/)package-lock\.json$''',
+  '''(^|/)(bin|obj|dist|out)/''',
+]
+# Secret VALUES that are plainly synthetic test fixtures (not real credentials).
+regexes = [
+  '''(?i)(test|example|sample|dummy|placeholder|changeme|fake|invalid)[-_ ]?(audience|signing|jwt|secret|api|access|token|key)''',
+  '''MUST_BE_\d+_CHARS''',
+]
