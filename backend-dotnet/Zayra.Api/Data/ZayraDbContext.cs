@@ -608,6 +608,7 @@ public class ZayraDbContext : DbContext
     public DbSet<GlAccount> GlAccounts => Set<GlAccount>();
     public DbSet<GlAccountMapping> GlAccountMappings => Set<GlAccountMapping>();
     public DbSet<GlDriver> GlDrivers => Set<GlDriver>();
+    public DbSet<PayComponent> PayComponents => Set<PayComponent>();
     public DbSet<CompanyRatePolicy> CompanyRatePolicies => Set<CompanyRatePolicy>();
     public DbSet<CompanyStatutoryOverride> CompanyStatutoryOverrides => Set<CompanyStatutoryOverride>();
     public DbSet<ClientRateDefinition> ClientRateDefinitions => Set<ClientRateDefinition>();
@@ -1073,6 +1074,28 @@ public class ZayraDbContext : DbContext
             entity.HasKey(x => x.Id);
             // Non-unique helper index; real UNIQUE (tenant, company, key) NULLS NOT DISTINCT via raw SQL.
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Key });
+        });
+
+        modelBuilder.Entity<PayComponent>(entity =>
+        {
+            entity.ToTable("pay_components");
+            entity.HasKey(x => x.Id);
+            // Non-unique helper index; the real UNIQUE (tenant, company, code, component_type) NULLS NOT
+            // DISTINCT is created via raw SQL in the AddPayComponentDefinitions migration (Npgsql 8 cannot
+            // express NULLS NOT DISTINCT fluently — same idiom as gl_drivers). component_type is part of the
+            // key because "ADJ" is legitimately both an earning family and a deduction family.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code, x.ComponentType });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive, x.IsDeleted });
+            entity.Property(x => x.Code).HasMaxLength(64);
+            entity.Property(x => x.NameEn).HasMaxLength(200);
+            entity.Property(x => x.NameAr).HasMaxLength(200);
+            entity.Property(x => x.ComponentType).HasMaxLength(40);
+            entity.Property(x => x.CalcMethod).HasMaxLength(40);
+            entity.Property(x => x.StructureField).HasMaxLength(64);
+            entity.Property(x => x.ProviderKey).HasMaxLength(64);
+            entity.Property(x => x.GlDriverKey).HasMaxLength(80);
+            entity.Property(x => x.FormulaExpression).HasMaxLength(1024);
+            entity.Property(x => x.Value).HasPrecision(18, 4);
         });
 
         modelBuilder.Entity<CompanyRatePolicy>(entity =>

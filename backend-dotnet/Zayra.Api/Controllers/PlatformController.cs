@@ -1201,6 +1201,10 @@ public class PlatformController : ControllerBase
         // Phase 2: eager-seed the GL defaults (chart of accounts, tenant-default mappings, the 17
         // system posting drivers, and the client-configurable rate allow-list) for the new tenant.
         await Zayra.Api.Infrastructure.Seed.GlDriverSeeder.SeedTenantDefaultsAsync(_db, tenant.Id, ct);
+        // Configurability keystone: eager-seed the data-driven pay-component defaults (the system rows
+        // that reproduce the current payslip earning/deduction set) so a new tenant is born with an
+        // editable component catalog rather than a hard-coded sequence.
+        await Zayra.Api.Infrastructure.Seed.PayComponentSeeder.SeedTenantDefaultsAsync(_db, tenant.Id, ct);
         // FIX 1 (C1): the idempotent per-tenant provisioning bundle — country rules, MasterData,
         // HR categories, default attendance/leave/approval policies, and bilingual notification
         // templates. Ensures no tenant is born without its statutory/reference/config foundation.
@@ -3288,6 +3292,10 @@ public class PlatformController : ControllerBase
         // Phase 2: eager-seed the GL defaults (chart of accounts, tenant-default mappings, the 17
         // system posting drivers, and the client-configurable rate allow-list) for the new tenant.
         await Zayra.Api.Infrastructure.Seed.GlDriverSeeder.SeedTenantDefaultsAsync(_db, tenant.Id, ct);
+        // Configurability keystone: eager-seed the data-driven pay-component defaults (the system rows
+        // that reproduce the current payslip earning/deduction set) so a new tenant is born with an
+        // editable component catalog rather than a hard-coded sequence.
+        await Zayra.Api.Infrastructure.Seed.PayComponentSeeder.SeedTenantDefaultsAsync(_db, tenant.Id, ct);
         // FIX 1 (C1): the idempotent per-tenant provisioning bundle — country rules, MasterData,
         // HR categories, default attendance/leave/approval policies, and bilingual notification
         // templates. Ensures no tenant is born without its statutory/reference/config foundation.
