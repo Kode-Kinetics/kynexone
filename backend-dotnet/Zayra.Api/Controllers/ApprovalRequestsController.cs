@@ -4,12 +4,13 @@ using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
+using Zayra.Api.Infrastructure.Authorization;
 
 namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/approval-requests")]
-[Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
+[Authorize]
 public class ApprovalRequestsController : ControllerBase
 {
     private readonly IApprovalWorkflowService _approvals;
@@ -20,6 +21,7 @@ public class ApprovalRequestsController : ControllerBase
     }
 
     [HttpGet]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
     public async Task<ActionResult<PagedResult<ApprovalRequestDto>>> Search([FromQuery] string? status, [FromQuery] string? entityName, [FromQuery] string? queue, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
         var tenantId = this.GetTenantId();
@@ -28,6 +30,7 @@ public class ApprovalRequestsController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
     public async Task<ActionResult<ApprovalRequestDto>> Get(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = this.GetTenantId();
@@ -37,7 +40,7 @@ public class ApprovalRequestsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager")]
+    [HasPermission("approvals.write")]
     public async Task<ActionResult<ApprovalRequestDto>> Create(CreateApprovalRequest request, CancellationToken cancellationToken)
     {
         try
@@ -51,7 +54,7 @@ public class ApprovalRequestsController : ControllerBase
     }
 
     [HttpPost("{id:guid}/decisions")]
-    [Authorize(Roles = "Admin,HR Manager,Manager")]
+    [HasPermission("approvals.decide")]
     public async Task<ActionResult<ApprovalRequestDto>> Decide(Guid id, ApprovalDecisionRequest request, CancellationToken cancellationToken)
     {
         try

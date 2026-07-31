@@ -5,13 +5,18 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/access")]
-[Authorize(Roles = "Admin")]
+// RBAC / user / override management crown jewel — every action was Admin-only. security.manage is
+// held ONLY by the seeded Admin role, so this preserves Admin-exclusive access exactly (no downgrade,
+// no lockout) while letting a client mint a real custom "Console Admin" role by granting security.manage.
+// The two grant-permission endpoints keep their method-level [Authorize]; it AND-combines to security.manage.
+[HasPermission("security.manage")]
 public class AccessController : ControllerBase
 {
     private readonly IAccessManagementService _accessManagement;

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -12,7 +13,7 @@ namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/approval-policies")]
-[Authorize(Roles = "Admin,HR Manager")]
+[Authorize]
 public class ApprovalPoliciesController : ControllerBase
 {
     private readonly ZayraDbContext _db;
@@ -26,6 +27,7 @@ public class ApprovalPoliciesController : ControllerBase
     public ApprovalPoliciesController(ZayraDbContext db) => _db = db;
 
     [HttpGet]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> List(CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -39,6 +41,7 @@ public class ApprovalPoliciesController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -51,6 +54,7 @@ public class ApprovalPoliciesController : ControllerBase
     }
 
     [HttpPost]
+    [HasPermission("approvals.manage")]
     public async Task<IActionResult> Create([FromBody] ApprovalPolicyCreateRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -88,6 +92,7 @@ public class ApprovalPoliciesController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [HasPermission("approvals.manage")]
     public async Task<IActionResult> Update(Guid id, [FromBody] ApprovalPolicyCreateRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -128,6 +133,7 @@ public class ApprovalPoliciesController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [HasPermission("approvals.manage")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -142,6 +148,7 @@ public class ApprovalPoliciesController : ControllerBase
     }
 
     [HttpGet("export")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -168,6 +175,7 @@ public class ApprovalPoliciesController : ControllerBase
     }
 
     [HttpGet("import-template")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public IActionResult ImportTemplate()
     {
         var sb = new StringBuilder();
@@ -184,6 +192,7 @@ public class ApprovalPoliciesController : ControllerBase
     }
 
     [HttpPost("import-preview")]
+    [HasPermission("approvals.manage")]
     public async Task<IActionResult> ImportPreview([FromBody] ApprovalPolicyImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -192,6 +201,7 @@ public class ApprovalPoliciesController : ControllerBase
     }
 
     [HttpPost("import")]
+    [HasPermission("approvals.manage")]
     public async Task<IActionResult> Import([FromBody] ApprovalPolicyImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

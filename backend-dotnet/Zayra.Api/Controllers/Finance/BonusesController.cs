@@ -5,6 +5,7 @@ using System.Text.Json;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Governance;
 using Zayra.Api.Models;
 
@@ -72,7 +73,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpPost("types")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> CreateBonusType([FromBody] BonusTypeRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -103,7 +104,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpPut("types/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> UpdateBonusType(Guid id, [FromBody] BonusTypeRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -133,7 +134,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpDelete("types/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> DeleteBonusType(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -189,7 +190,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpPost("batches")]
-    [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> CreateBatch([FromBody] CreateBatchRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -216,7 +217,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpPut("batches/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> UpdateBatch(Guid id, [FromBody] UpdateBatchRequest req, CancellationToken ct)
     {
         var tid = GetTenantId(); var uid = GetUserId();
@@ -234,7 +235,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpDelete("batches/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> DeleteBatch(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId(); var uid = GetUserId();
@@ -253,7 +254,7 @@ public class BonusesController : ControllerBase
     // ── Employee Bonuses ──────────────────────────────────────────────────────
 
     [HttpPost("batches/{batchId:guid}/employees")]
-    [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> AddEmployeeBonus(Guid batchId, [FromBody] AddEmployeeBonusRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -309,7 +310,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpPost("batches/{batchId:guid}/employees/bulk")]
-    [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> BulkAddEmployees(Guid batchId, [FromBody] BulkAddRequest req, CancellationToken ct)
     {
         var tid = GetTenantId(); var uid = GetUserId();
@@ -413,7 +414,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpPut("batches/{batchId:guid}/employees/{bonusId:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> UpdateEmployeeBonus(Guid batchId, Guid bonusId, [FromBody] UpdateEmployeeBonusRequest req, CancellationToken ct)
     {
         var tid = GetTenantId(); var uid = GetUserId();
@@ -445,7 +446,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpDelete("batches/{batchId:guid}/employees/{bonusId:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> RemoveEmployeeBonus(Guid batchId, Guid bonusId, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -462,7 +463,7 @@ public class BonusesController : ControllerBase
     // ── Batch Workflow ────────────────────────────────────────────────────────
 
     [HttpPatch("batches/{id:guid}/submit")]
-    [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> SubmitBatch(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -479,7 +480,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpPatch("batches/{id:guid}/approve")]
-    [Authorize(Roles = "Admin,Finance")]
+    [HasPermission("payroll.approve")]
     public async Task<IActionResult> ApproveBatch(Guid id, [FromBody] BatchApproveRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -524,7 +525,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpPatch("batches/{id:guid}/reject")]
-    [Authorize(Roles = "Admin,Finance")]
+    [HasPermission("payroll.approve")]
     public async Task<IActionResult> RejectBatch(Guid id, [FromBody] RejectRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -540,7 +541,7 @@ public class BonusesController : ControllerBase
     }
 
     [HttpPatch("batches/{id:guid}/mark-paid")]
-    [Authorize(Roles = "Admin,Finance")]
+    [HasPermission("payroll.approve")]
     public async Task<IActionResult> MarkBatchPaid(Guid id, [FromBody] MarkBatchPaidRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();

@@ -3,13 +3,17 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/tenant-admin")]
-[Authorize(Roles = "Admin")]
+// Tenant/platform config (subscription, feature flags, branding, localization, country rules) was
+// Admin-only. security.manage is Admin-exclusive among seeded roles → exact preservation. The
+// [AllowAnonymous] on GetLocalization still overrides this and stays public.
+[HasPermission("security.manage")]
 public class TenantAdminController : ControllerBase
 {
     private readonly ZayraDbContext _db;

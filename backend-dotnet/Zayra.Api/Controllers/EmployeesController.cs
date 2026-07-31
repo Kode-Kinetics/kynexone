@@ -13,6 +13,7 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Notifications;
@@ -292,7 +293,7 @@ public class EmployeesController : ControllerBase
         File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders)), "text/csv", "employees_import_template.csv");
 
     [HttpPost("import")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.bulk_import")]
     public async Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -1110,7 +1111,7 @@ public class EmployeesController : ControllerBase
     // ── Import preview (dry-run: validates without committing) ─────────────────
 
     [HttpPost("import-preview")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.bulk_import")]
     public async Task<IActionResult> ImportPreview([FromBody] ImportEmployeesRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -1313,7 +1314,7 @@ public class EmployeesController : ControllerBase
     // ── Manager assignment ────────────────────────────────────────────────────
 
     [HttpPut("{id:int}/manager")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> SetManager(
         int id,
         [FromBody] SetManagerRequest req,
@@ -1345,7 +1346,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("{id:int}/reporting-lines")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<ActionResult<ReportingLineDto>> AddReportingLine(
         int id,
         [FromBody] AddReportingLineRequest req,
@@ -1363,7 +1364,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpDelete("{id:int}/reporting-lines/{lineId:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> RemoveReportingLine(
         int id,
         Guid lineId,
@@ -1420,7 +1421,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<ActionResult<EmployeeDetailDto>> CreateEmployee(EmployeeCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         try
@@ -1454,7 +1455,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("drafts")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<ActionResult<EmployeeDraftDto>> CreateDraft(EmployeeDraftRequest request, CancellationToken cancellationToken)
     {
         var draft = ApplyDraft(new EmployeeDraft { TenantId = RequireTenant(), CreatedByUserId = GetUserId() }, request);
@@ -1466,7 +1467,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPut("drafts/{draftId:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<ActionResult<EmployeeDraftDto>> UpdateDraft(Guid draftId, EmployeeDraftRequest request, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
@@ -1481,7 +1482,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("drafts/{draftId:guid}/documents")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> AddDraftDocument(Guid draftId, EmployeeDocumentRequest request, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
@@ -1504,7 +1505,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("drafts/{draftId:guid}/documents/upload")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.documents")]
     [RequestSizeLimit(10_485_760)]
     public async Task<ActionResult<EmployeeDocumentDto>> UploadDraftDocument(Guid draftId, [FromForm] EmployeeDocumentUploadRequest request, CancellationToken cancellationToken)
     {
@@ -1568,7 +1569,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("drafts/{draftId:guid}/submit")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> SubmitDraft(Guid draftId, CancellationToken cancellationToken)
     {
         var draft = await FindDraft(draftId, cancellationToken);
@@ -1583,7 +1584,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("drafts/{draftId:guid}/approve")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<ActionResult<EmployeeDetailDto>> ApproveDraft(Guid draftId, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
@@ -1867,7 +1868,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPatch("{id:int}/status")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<ActionResult<EmployeeDetailDto>> ChangeStatus(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         try
@@ -1883,7 +1884,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("{id:int}/documents")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.documents")]
     [RequestSizeLimit(10_485_760)]
     public async Task<ActionResult<EmployeeDocumentDto>> UploadEmployeeDocument(int id, [FromForm] EmployeeDocumentUploadMetadata request, [FromForm] IFormFile file, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
@@ -1906,7 +1907,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPut("{id:int}/documents/{docId:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> UpdateEmployeeDocument(int id, Guid docId, [FromBody] UpdateDocumentMetadataRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var doc = await employeeManagement.UpdateDocumentAsync(RequireTenant(), id, docId, request, Context(), cancellationToken);
@@ -1914,7 +1915,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/verify")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> VerifyEmployeeDocument(int id, Guid docId, [FromBody] DocumentVerifyRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var doc = await employeeManagement.VerifyDocumentAsync(RequireTenant(), id, docId, request.Notes, Context(), cancellationToken);
@@ -1922,7 +1923,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/reject")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> RejectEmployeeDocument(int id, Guid docId, [FromBody] DocumentRejectRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var doc = await employeeManagement.RejectDocumentAsync(RequireTenant(), id, docId, request.Reason, Context(), cancellationToken);
@@ -1930,7 +1931,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpDelete("{id:int}/documents/{docId:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> ArchiveEmployeeDocument(int id, Guid docId, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         return await employeeManagement.ArchiveDocumentAsync(RequireTenant(), id, docId, Context(), cancellationToken) ? NoContent() : NotFound();
@@ -1948,7 +1949,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("{id:int}/activate")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<ActionResult<EmployeeDetailDto>> Activate(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         try
@@ -1962,7 +1963,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("{id:int}/terminate")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<ActionResult<EmployeeDetailDto>> Terminate(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var employee = await employeeManagement.TerminateAsync(RequireTenant(), id, request, Context(), cancellationToken);
@@ -2000,7 +2001,7 @@ public class EmployeesController : ControllerBase
     /// <summary>Multi-select bulk activation (§5.3) for the "Needs info" worklist: each employee passes
     /// the SAME guard; returns per-employee outcomes so a mixed batch never fails as a whole.</summary>
     [HttpPost("bulk-activate")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> BulkActivate([FromBody] BulkActivateRequest req, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
@@ -2045,7 +2046,7 @@ public class EmployeesController : ControllerBase
 
     /// <summary>Soft-deletes an employee record (audit trail preserved; hidden from all lists).</summary>
     [HttpDelete("{id:int}")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("employees.delete")]
     public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
@@ -2130,7 +2131,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("changes/{changeId:guid}/approve")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> ApproveChange(Guid changeId, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
@@ -2242,7 +2243,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("{id:int}/transfer")]
-    [Authorize(Roles = "Admin,HR Manager,Manager")]
+    [HasPermission("manager.approve")]
     public async Task<ActionResult<EmployeeTransferDto>> RequestTransfer(int id, EmployeeTransferCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         try
@@ -2267,17 +2268,17 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost("transfers/{transferId:guid}/approve-current-manager")]
-    [Authorize(Roles = "Admin,HR Manager,Manager")]
+    [HasPermission("manager.approve")]
     public Task<IActionResult> ApproveCurrentManager(Guid transferId, CancellationToken cancellationToken) =>
         AdvanceTransfer(transferId, "PendingCurrentManager", "PendingNewManager", x => x.CurrentManagerEmployeeId, x => x.CurrentManagerApprovedAtUtc = DateTime.UtcNow, cancellationToken);
 
     [HttpPost("transfers/{transferId:guid}/approve-new-manager")]
-    [Authorize(Roles = "Admin,HR Manager,Manager")]
+    [HasPermission("manager.approve")]
     public Task<IActionResult> ApproveNewManager(Guid transferId, CancellationToken cancellationToken) =>
         AdvanceTransfer(transferId, "PendingNewManager", "PendingHrApproval", x => x.NewManagerEmployeeId, x => x.NewManagerApprovedAtUtc = DateTime.UtcNow, cancellationToken);
 
     [HttpPost("transfers/{transferId:guid}/approve-hr")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> ApproveHrTransfer(Guid transferId, [FromServices] IHrmHierarchyService hierarchy, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();

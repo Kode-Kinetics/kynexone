@@ -181,17 +181,27 @@ public class AuthSeeder : IAuthSeeder
         ).ToList(), 2, true, cancellationToken);
 
         // Level 3 — HR Manager: operational HR management
+        // NOTE: the explicit payroll.* / loans.write grants below are RECONCILIATION for the
+        // [HasPermission] conversion, not new reach. HR Manager already reaches all PayrollController /
+        // GosiController operator+approve endpoints and Bonuses/Loans-type creation today via the
+        // role-name [Authorize(Roles="...HR Manager...")] gates; the bundle simply had no payroll/loan
+        // WRITE keys. Higher-tier run lifecycle (payroll.lock / payroll.run_delete) is deliberately
+        // NOT granted here, preserving HR Manager's current exclusion from lock/void/send-back/delete.
         await EnsureRole(tenantId, "HR Manager", "HR operations manager", permissions.Where(x =>
             x.Key.StartsWith("employees.") || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
-            x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read"
+            x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
+            "payroll.read" or "payroll.write" or "payroll.approve" or "loans.write"
         ).ToList(), 3, true, cancellationToken);
 
         // Level 4 — Payroll Manager: payroll + finance + employees
         await EnsureRole(tenantId, "Payroll Manager", "Manages payroll processing and WPS submissions", Ps(new[] {
             "dashboard.read", "employees.read", "employees.sensitive", "attendance.read", "leave.read",
             "overtime.read", "payroll.read", "payroll.write", "payroll.approve", "loans.read", "loans.approve",
+            // payroll.run_delete reconciles the method-level [Authorize(Roles="Admin,Payroll Manager")] on
+            // DELETE /payroll/runs/{id} into the effective-permission model (its current effective reach).
+            "payroll.run_delete",
             "approvals.read", "approvals.decide", "reports.read", "notifications.read",
             // Phase 2 GL + non-statutory rates (NOT statutory_override / author_predicates — higher trust).
             "finance.gl.read", "finance.gl.manage", "finance.gl.drivers.manage",
@@ -201,6 +211,8 @@ public class AuthSeeder : IAuthSeeder
         // Level 5 — HR Officer: HR operations specialist
         await EnsureRole(tenantId, "HR Officer", "HR operations specialist", Ps(new[] {
             "dashboard.read", "employees.read", "employees.write", "employees.documents", "employees.templates",
+            // employees.bulk_import reconciles HR Officer's existing role-name reach to POST /employees/import(-preview).
+            "employees.bulk_import",
             "organization.read", "approvals.read", "approvals.write", "notifications.read", "localization.read",
             "leave.read", "leave.write", "attendance.read", "overtime.read", "profile.read"
         }), 5, true, cancellationToken);
@@ -212,8 +224,10 @@ public class AuthSeeder : IAuthSeeder
         }), 6, true, cancellationToken);
 
         // Level 7 — Finance Approver: finance approvals
+        // payroll.lock reconciles the method-level [Authorize(Roles="...Finance Approver")] intent on the
+        // run lock/void/send-back endpoints (financial-controller tier) into the effective-permission model.
         await EnsureRole(tenantId, "Finance Approver", "Finance approver for loans, advances and payroll", Ps(new[] {
-            "dashboard.read", "employees.read", "payroll.read", "payroll.approve",
+            "dashboard.read", "employees.read", "payroll.read", "payroll.approve", "payroll.lock",
             "loans.read", "loans.approve", "approvals.read", "approvals.decide",
             "finance.gl.read", "payroll.rates.read"
         }), 7, true, cancellationToken);
@@ -225,8 +239,10 @@ public class AuthSeeder : IAuthSeeder
         }), 8, true, cancellationToken);
 
         // Level 9 — Manager: team management and approvals
+        // approvals.write reconciles Manager's existing role-name reach to POST /approval-requests and
+        // POST /approval-workflows/requests (starting an approval request) into the permission model.
         await EnsureRole(tenantId, "Manager", "People manager with team oversight and approval authority", Ps(new[] {
-            "dashboard.read", "employees.read", "approvals.read", "approvals.decide", "notifications.read",
+            "dashboard.read", "employees.read", "approvals.read", "approvals.write", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
             "attendance.read", "overtime.read", "overtime.approve", "profile.read"
         }), 9, true, cancellationToken);
@@ -327,6 +343,11 @@ public class AuthSeeder : IAuthSeeder
             ("payroll.approve", "Payroll", "Approve payroll runs"),
             ("payroll.export", "Payroll", "Export payroll and WPS files"),
             ("payroll.structure_manage", "Payroll", "Manage salary structures and components"),
+            // Payroll run state-machine (financial-controller tier) — added for the [HasPermission]
+            // conversion of the run lifecycle. Seeded into bundles below so today's role-name reach
+            // is preserved (Admin via backfill; payroll.lock→Finance Approver; run_delete→Payroll Manager).
+            ("payroll.lock", "Payroll", "Lock, void, or send back a payroll run (financial-controller tier)"),
+            ("payroll.run_delete", "Payroll", "Hard-delete a payroll run"),
             // Loans & Advances
             ("loans.read", "Loans", "Read loan and advance records"),
             ("loans.write", "Loans", "Create loan and advance applications"),

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Admin;
@@ -31,7 +32,7 @@ public class MasterDataController : ControllerBase
     }
 
     [HttpPost("types")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.write")]
     public async Task<IActionResult> CreateType([FromBody] MasterDataTypeRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -52,7 +53,7 @@ public class MasterDataController : ControllerBase
     }
 
     [HttpPut("types/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.write")]
     public async Task<IActionResult> UpdateType(Guid id, [FromBody] MasterDataTypeRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -69,7 +70,7 @@ public class MasterDataController : ControllerBase
     }
 
     [HttpDelete("types/{id:guid}")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("organization.delete")]
     public async Task<IActionResult> DeleteType(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -104,7 +105,7 @@ public class MasterDataController : ControllerBase
     }
 
     [HttpPost("types/{typeId:guid}/values")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.write")]
     public async Task<IActionResult> CreateValue(Guid typeId, [FromBody] MasterDataValueRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -126,7 +127,7 @@ public class MasterDataController : ControllerBase
     }
 
     [HttpPut("values/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.write")]
     public async Task<IActionResult> UpdateValue(Guid id, [FromBody] MasterDataValueRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -142,7 +143,7 @@ public class MasterDataController : ControllerBase
     }
 
     [HttpDelete("values/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.write")]
     public async Task<IActionResult> DeleteValue(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();

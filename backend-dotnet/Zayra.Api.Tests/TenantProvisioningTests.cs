@@ -191,13 +191,16 @@ public class TenantProvisioningTests
     [Fact]
     public void NonAdminGrantAttempt_Forbidden_ClassLevelAuthorizeAttribute()
     {
-        var classAttr = typeof(AccessController).GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
-            .Cast<AuthorizeAttribute>()
+        // Entity-grant endpoints are now gated by the security.manage PERMISSION ([HasPermission] at class
+        // level) rather than a hard-coded "Admin" role — a caller lacking security.manage gets 403 before
+        // the body runs, and a client custom role granted security.manage becomes able to call them.
+        var classAttr = typeof(AccessController).GetCustomAttributes(typeof(Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute), inherit: false)
+            .Cast<Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute>()
             .FirstOrDefault();
 
-        classAttr.Should().NotBeNull("AccessController must carry [Authorize] to block unauthenticated callers");
-        classAttr!.Roles.Should().Contain("Admin",
-            "only Admin can call entity-grant endpoints — non-admins get 403 before the method body runs");
+        classAttr.Should().NotBeNull("AccessController must carry [HasPermission] to gate entity-grant endpoints");
+        classAttr!.Permissions.Should().Contain("security.manage",
+            "entity-grant endpoints require the security.manage permission — callers without it get 403 before the method body runs");
 
         // Also verify the group-scope elevation endpoint doesn't relax the class restriction
         var elevateMethod = typeof(AccessController).GetMethod("SetGroupScope");

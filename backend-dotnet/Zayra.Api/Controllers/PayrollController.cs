@@ -9,6 +9,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
@@ -21,7 +22,11 @@ namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/payroll")]
-[Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
+// Mutations move to permission gates ([HasPermission] per action below); the controller-level gate
+// is relaxed to "authenticated" so a custom payroll role granted the right key actually gets in.
+// Reads keep their exact original role list (re-applied per GET method) — deferred to a later module.
+// WPS/payment/ERP-export mutations retain their in-body HasPermission("payroll.export") gate unchanged.
+[Authorize]
 public class PayrollController : ControllerBase
 {
     private readonly ZayraDbContext _db;
@@ -91,6 +96,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("salary-structures")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> SalaryStructures([FromQuery] Guid? companyId, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -102,6 +108,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("salary-structures/{id:guid}")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> GetSalaryStructure(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -113,6 +120,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("salary-structures")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> CreateSalaryStructure(SalaryStructureRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -136,6 +144,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPut("salary-structures/{id:guid}")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> UpdateSalaryStructure(Guid id, SalaryStructureRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -204,6 +213,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpDelete("salary-structures/{id:guid}")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> DeleteSalaryStructure(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -428,6 +438,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("employee-salary-structures")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> AssignEmployeeSalary(EmployeeSalaryStructureRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -463,6 +474,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("runs")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListRuns([FromQuery] Guid? companyId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
         var tenantId = GetTenantId();
@@ -475,6 +487,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("runs")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> CreateRun([FromBody] CreatePayrollRunRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -519,6 +532,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("runs/{id:guid}/process")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> Process(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -1079,7 +1093,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("runs/{id:guid}/lock")]
-    [Authorize(Roles = "Admin,Finance Controller,Finance Approver")]
+    [HasPermission("payroll.lock")]
     public async Task<IActionResult> Lock(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -1161,6 +1175,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("runs/{id:guid}/slips")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> Slips(Guid id, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken cancellationToken = default)
     {
         var tenantId = GetTenantId();
@@ -1187,6 +1202,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("runs/{id:guid}/validate")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> Validate(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -1271,7 +1287,7 @@ public class PayrollController : ControllerBase
     // Finance Controller/Approver finalises PendingFinanceReview → Approved (level 2).
     // Admin bypasses all levels.
     [HttpPost("runs/{id:guid}/approve")]
-    [Authorize(Roles = "Admin,HR Manager,Finance Approver,Finance Controller,Payroll Manager")]
+    [HasPermission("payroll.approve")]
     public async Task<IActionResult> Approve(Guid id, PayrollDecisionRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -1328,7 +1344,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("runs/{id:guid}/send-back")]
-    [Authorize(Roles = "Admin,Finance Controller,Finance Approver")]
+    [HasPermission("payroll.lock")]
     public async Task<IActionResult> SendBack(Guid id, PayrollDecisionRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -1355,7 +1371,7 @@ public class PayrollController : ControllerBase
     // designated financial-control role, not ordinary payroll processors.
 
     [HttpPost("runs/{id:guid}/void")]
-    [Authorize(Roles = "Admin,Finance Controller")]
+    [HasPermission("payroll.lock")]
     public async Task<IActionResult> VoidRun(Guid id, [FromBody] PayrollDecisionRequest req, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(req.Notes))
@@ -1389,7 +1405,7 @@ public class PayrollController : ControllerBase
     /// Use case: a run created for the wrong period (e.g. a typo'd year) can be removed cleanly.
     /// </summary>
     [HttpDelete("runs/{id:guid}")]
-    [Authorize(Roles = "Admin,Payroll Manager")]
+    [HasPermission("payroll.run_delete")]
     public async Task<IActionResult> DeleteRun(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -1415,7 +1431,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("runs/{id:guid}/gl-journal")]
-    [Authorize(Roles = "Admin,HR Manager,Finance Approver,Finance Controller,Payroll Manager")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager")]
     public async Task<IActionResult> GlJournal(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -1516,6 +1532,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("runs/{id:guid}/payslips/generate")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> GeneratePayslips(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2071,6 +2088,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("employee-salary-structures")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListEmployeeSalaryStructures([FromQuery] int? employeeId, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2092,6 +2110,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("payment-batches")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListPaymentBatches([FromQuery] Guid? runId, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2107,6 +2126,7 @@ public class PayrollController : ControllerBase
     /// others see a masked version (first 4 + last 4, middle asterisked).
     /// </summary>
     [HttpGet("payment-batches/{id:guid}/records")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> PaymentRecords(Guid id, CancellationToken cancellationToken)
     {
         var tenantId  = GetTenantId();
@@ -2124,6 +2144,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("runs/{id:guid}/payslips")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListPayslips(Guid id, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken cancellationToken = default)
     {
         var tenantId = GetTenantId();
@@ -2138,6 +2159,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("runs/{id:guid}/approvals")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListRunApprovals(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2146,6 +2168,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("groups")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListGroups(CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2154,6 +2177,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("groups")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> CreateGroup(PayrollGroupRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2167,6 +2191,7 @@ public class PayrollController : ControllerBase
 
     // H3: salary register is scoped — managers cannot see all employee salaries
     [HttpGet("reports/register")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> Register([FromQuery] Guid runId, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2211,6 +2236,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("reports/summary")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ReportSummary(CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2229,6 +2255,7 @@ public class PayrollController : ControllerBase
 
     /// <summary>Calculate EOSB/Gratuity for a single employee using tenant GCC settings.</summary>
     [HttpPost("eosb/calculate")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> CalculateEosb([FromBody] EosbCalculationRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2328,6 +2355,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("eosb/list")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListEosb([FromQuery] int? employeeId, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2338,6 +2366,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("ai-validation")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> AiValidation([FromQuery] Guid runId, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2671,6 +2700,7 @@ public class PayrollController : ControllerBase
 
     [HttpGet("structures/export")]
     [HttpGet("salary-structures/export")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ExportStructures(CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2719,6 +2749,7 @@ public class PayrollController : ControllerBase
 
     [HttpGet("structures/import-template")]
     [HttpGet("salary-structures/import-template")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public IActionResult StructuresImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=salary_structures_import_template.csv";
@@ -2727,6 +2758,7 @@ public class PayrollController : ControllerBase
 
     [HttpPost("structures/import")]
     [HttpPost("salary-structures/import")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> ImportStructures([FromBody] ImportSalaryStructuresRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -2974,6 +3006,7 @@ public class PayrollController : ControllerBase
     /// TotalCost = gross pay + employer statutory cost (the true cost to the company).
     /// </summary>
     [HttpGet("runs/{id:guid}/cost-center-allocation")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> CostCenterAllocation(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -3041,7 +3074,7 @@ public class PayrollController : ControllerBase
 
     /// <summary>Final settlement calculator: pro-rata salary + EOSB + leave encashment - notice deduction.</summary>
     [HttpPost("final-settlement")]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Manager")]
+    [HasPermission("payroll.approve")]
     public async Task<IActionResult> FinalSettlement([FromBody] FinalSettlementRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -3134,6 +3167,7 @@ public class PayrollController : ControllerBase
     // ── Payroll Command Center ────────────────────────────────────────────────────
 
     [HttpGet("companies")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListPayrollCompanies(CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -3147,6 +3181,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("overview")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> PayrollOverview([FromQuery] Guid? companyId, [FromQuery] int? year, [FromQuery] int? month, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -3246,6 +3281,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("readiness")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> PayrollReadiness([FromQuery] Guid? companyId, [FromQuery] int? year, [FromQuery] int? month, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -3315,6 +3351,7 @@ public class PayrollController : ControllerBase
         { "EmployeeCode", "SalaryStructureCode", "BasicSalary", "HousingAllowance", "TransportAllowance", "FoodAllowance", "MobileAllowance", "OtherAllowance", "FixedDeduction", "Currency", "EffectiveDate" };
 
     [HttpGet("employee-salaries")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListEmployeeSalaries([FromQuery] Guid? companyId, [FromQuery] string? departmentId, [FromQuery] bool activeOnly = true, CancellationToken cancellationToken = default)
     {
         var tenantId = GetTenantId();
@@ -3340,6 +3377,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("employee-salaries/export")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ExportEmployeeSalaries([FromQuery] Guid? companyId, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -3368,6 +3406,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpGet("employee-salaries/import-template")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public IActionResult EmployeeSalariesImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=employee_salaries_import_template.csv";
@@ -3375,6 +3414,7 @@ public class PayrollController : ControllerBase
     }
 
     [HttpPost("employee-salaries/import")]
+    [HasPermission("payroll.write")]
     public async Task<IActionResult> ImportEmployeeSalaries([FromBody] ImportSalaryStructuresRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
@@ -3497,7 +3537,7 @@ public class PayrollController : ControllerBase
     // id is the Payslip.Id (formal payslip record) — the same ID the payslips table returns.
     // The endpoint resolves the matching PayrollSlip row via RunId + EmployeeId.
     [HttpGet("slips/{id:guid}/pdf")]
-    [Authorize(Roles = "Admin,HR Manager,Finance Approver,Payroll Manager,Payroll Officer")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> DownloadSlipPdf(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();
@@ -3616,7 +3656,7 @@ public class PayrollController : ControllerBase
 
     // ── Bulk payslip PDF bundle (ZIP) ──────────────────────────────────────────
     [HttpGet("runs/{id:guid}/pdf-bundle")]
-    [Authorize(Roles = "Admin,HR Manager,Finance Approver,Payroll Manager,Payroll Officer")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> DownloadRunPdfBundle(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();

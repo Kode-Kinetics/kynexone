@@ -5,6 +5,7 @@ using System.Text.Json;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Finance;
@@ -40,7 +41,7 @@ public class LoansController : ControllerBase
     }
 
     [HttpPost("types")]
-    [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("loans.write")]
     public async Task<IActionResult> CreateLoanType([FromBody] LoanTypeRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
