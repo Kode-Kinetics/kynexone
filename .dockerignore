@@ -1,0 +1,18 @@
+# Keep the Docker build context small (the Dockerfile only needs backend-dotnet/Zayra.Api).
+# A bloated context inflates build memory/time on Render's free-tier builder.
+.git
+**/node_modules
+frontend
+kynexbridge
+.next
+**/.next
+.vercel
+**/.vercel
+**/bin
+**/obj
+database/*.sql
+docs
+*.md
+.claude
+e2e
+**/*.test.*
