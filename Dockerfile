@@ -16,6 +16,16 @@ WORKDIR /src
 COPY backend-dotnet/Zayra.Api/Zayra.Api.csproj ./
 RUN dotnet restore
 COPY backend-dotnet/Zayra.Api/ ./
+# ── DECISIVE OOM FIX: do not compile EF migrations into the RUNTIME image ──
+# The 38+ migration Designer.cs files embed ~280k lines of duplicate model snapshots — the bulk of
+# the compiler's memory. The RUNTIME app never applies migrations (Database__RunMigrationsOnStartup
+# is "false"; schema is applied by CI's `dotnet ef database update` — a SEPARATE build that keeps the
+# migrations — before the deploy hook fires). EF builds its runtime model from ZayraDbContext
+# .OnModelCreating, NOT from these snapshots, so dropping them here is safe and cuts peak build
+# memory from >8GB (Server GC) to ~2GB. NOTE: this makes the /health/ready pending-migration check a
+# no-op inside the image (it sees 0 migrations) — acceptable because CI applies migrations ahead of
+# deploy; the permanent fix is squashing the migrations (tracked) which restores that gate.
+RUN rm -rf Migrations
 RUN dotnet publish Zayra.Api.csproj -c Release -o /app/publish --no-restore \
     -p:RunAnalyzers=false -p:UseSharedCompilation=false -maxcpucount:1
 
