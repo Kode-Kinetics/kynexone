@@ -160,6 +160,32 @@ jobs:
         env:
           ConnectionStrings__Default: ${{ secrets.PROD_DATABASE_URL }}
 
+  # ── Build the runtime image in CI, so Render never builds it ──────────────────
+  # Render's free-tier builder OOMs (>8GB) compiling the app, so no deploy ever completes even
+  # though the image builds in ~30s locally under an 8GB ceiling. GitHub's runner has ample memory:
+  # build the exact runtime image here and push it to GHCR. Render is then pointed at this pre-built
+  # image (runtime: image) and only PULLS it — removing Render's builder from the deploy path for good.
+  build-image:
+    name: Build & push backend image (GHCR)
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-typecheck, secret-scan, dependency-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute lowercase image ref
+        run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')/backend" >> "$GITHUB_ENV"
+      - name: Log in to GHCR
+        run: echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+      - name: Build & push image
+        run: |
+          docker build -f ./Dockerfile -t "$IMAGE:latest" -t "$IMAGE:${{ github.sha }}" .
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+          echo "Pushed $IMAGE:${{ github.sha }} and :latest"
+
   # ── Deploy: trigger Render redeploy after tests + security gates + migrations pass (main only) ──
   deploy-backend:
     name: Deploy Backend (Render)
