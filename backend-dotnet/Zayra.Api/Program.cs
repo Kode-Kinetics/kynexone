@@ -272,6 +272,9 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Governance.ICompanyTaxPolicy
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeReadinessPolicyResolver, Zayra.Api.Infrastructure.Employees.EmployeeReadinessPolicyResolver>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeReadinessEvaluator, Zayra.Api.Infrastructure.Employees.EmployeeReadinessEvaluator>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard, Zayra.Api.Infrastructure.Employees.EmployeeActivationGuard>();
+// Duplicate-person detection — the ONE authoritative, server-side detector shared by the pre-create
+// check, the create commit backstop, and (via the preloaded-dictionary matcher) the bulk importer.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeDuplicateDetector, Zayra.Api.Infrastructure.Employees.EmployeeDuplicateDetector>();
 // Phase 2 rate resolvers: bounded statutory-override precedence + non-statutory company rate precedence.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IStatutoryRateResolver, Zayra.Api.Infrastructure.Payroll.StatutoryRateResolver>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ICompanyRatePolicyResolver, Zayra.Api.Infrastructure.Payroll.CompanyRatePolicyResolver>();

@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { AlertTriangle, ArrowRight, CheckCircle2, Download, FileUp, Upload } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, Download, FileUp, Upload, Users } from 'lucide-react';
 import { Modal } from './Modal';
 
 /**
@@ -48,6 +48,8 @@ export interface ImportResult {
   newBranches?: number;
   salariesHeld?: number;
   salariesForReview?: number;
+  /** Rows imported but flagged as a possible existing person (dup:strong / dup:possible). */
+  possibleDuplicates?: number;
 }
 
 /** Display metadata + singular/plural label for each typed gap deep-link. */
@@ -62,7 +64,16 @@ const GAP_META: Record<string, { one: string; many: string }> = {
   'org:grade': { one: 'grade unresolved', many: 'grades unresolved' },
   'org:position': { one: 'position unresolved', many: 'positions unresolved' },
   'org:establishment': { one: 'over budget', many: 'over budget' },
+  // Duplicate-person flags (accept-never-block): the row imported, but may be the same human as an
+  // existing record. Resolve each from the People list (confirm distinct / merge) — never auto-merged.
+  'dup:strong': { one: 'possible duplicate (ID match)', many: 'possible duplicates (ID match)' },
+  'dup:possible': { one: 'possible duplicate (name + DOB)', many: 'possible duplicates (name + DOB)' },
 };
+
+/** A typed gap is a possible-duplicate flag needing a human decision (distinct/merge). */
+function isDuplicateGap(type: string): boolean {
+  return type === 'dup:strong' || type === 'dup:possible';
+}
 
 function gapLabel(type: string, count: number): string {
   const meta = GAP_META[type];
@@ -102,6 +113,8 @@ function buildSummaryLine(result: ImportResult, agg: { counts: Map<string, numbe
   const newDepartments = result.newDepartments ?? (agg.distinct.get('org:department')?.size ?? 0);
   const newBranches = result.newBranches ?? (agg.distinct.get('org:branch')?.size ?? 0);
   const salariesHeld = result.salariesHeld ?? (agg.counts.get('pay:salaryHeld') ?? 0);
+  const possibleDuplicates = result.possibleDuplicates
+    ?? ((agg.counts.get('dup:strong') ?? 0) + (agg.counts.get('dup:possible') ?? 0));
 
   const parts: string[] = [`Imported ${imported}/${receivedTotal}`];
   if (result.skipped > 0) {
@@ -117,6 +130,7 @@ function buildSummaryLine(result: ImportResult, agg: { counts: Map<string, numbe
   if (newDepartments > 0) parts.push(`${newDepartments} new ${newDepartments === 1 ? 'department' : 'departments'}`);
   if (newBranches > 0) parts.push(`${newBranches} new ${newBranches === 1 ? 'branch' : 'branches'}`);
   if (salariesHeld > 0) parts.push(`${salariesHeld} ${salariesHeld === 1 ? 'salary held' : 'salaries held'}`);
+  if (possibleDuplicates > 0) parts.push(`${possibleDuplicates} possible ${possibleDuplicates === 1 ? 'duplicate' : 'duplicates'}`);
   return parts.join(' · ');
 }
 
@@ -619,12 +633,54 @@ export function ImportExportToolbar({
               </span>
               {result.skipped > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{result.skipped} skipped</span>}
               {incompleteCount > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-700 ring-1 ring-amber-400/25 dark:text-amber-300">{incompleteCount} inactive · needs info</span>}
+              {(result.possibleDuplicates ?? 0) > 0 && <span className="inline-flex items-center gap-1 rounded-md bg-fuchsia-500/10 px-2 py-1 font-semibold text-fuchsia-700 ring-1 ring-fuchsia-500/20 dark:text-fuchsia-300"><Users className="h-3.5 w-3.5" /> {result.possibleDuplicates} possible {result.possibleDuplicates === 1 ? 'duplicate' : 'duplicates'}</span>}
             </div>
 
-            {/* Per-gap deep-link chips: each jumps straight to the filtered "needs info" worklist. */}
+            {/* Possible-duplicate resolution deep-links — the important new never-silent-dup signal.
+                Each chip filters the People list to the flagged rows so the operator can confirm the
+                person is distinct or merge into the existing record. The dup TOTAL is server-
+                authoritative (`possibleDuplicates`); per-type counts come from the flagged rows, and
+                when a dup landed Active (not in the incomplete set) both filters are still offered so
+                every flagged row stays reachable. */}
             {(() => {
               const { counts } = aggregateGaps(result);
-              const entries = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+              const strong = counts.get('dup:strong') ?? 0;
+              const possible = counts.get('dup:possible') ?? 0;
+              const dupTotal = result.possibleDuplicates ?? (strong + possible);
+              if (dupTotal <= 0 || !onViewIncomplete) return null;
+              const showBoth = strong === 0 && possible === 0; // total known only from the server counter
+              const chips: Array<{ type: string; label: string; count: number }> = [];
+              if (strong > 0 || showBoth) chips.push({ type: 'dup:strong', label: 'ID match', count: strong });
+              if (possible > 0 || showBoth) chips.push({ type: 'dup:possible', label: 'name + DOB', count: possible });
+              return (
+                <div className="rounded-lg border border-fuchsia-200 bg-fuchsia-50/60 p-3 dark:border-fuchsia-500/30 dark:bg-fuchsia-500/[0.06]">
+                  <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-fuchsia-700 dark:text-fuchsia-300">
+                    <Users className="h-3.5 w-3.5" /> Possible duplicates · {dupTotal}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {chips.map(({ type, label, count }) => (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => { onViewIncomplete({ gapType: type, importBatchId: result.importBatchId }); setResult(null); }}
+                        className="inline-flex items-center gap-1 rounded-full bg-fuchsia-500/10 px-2 py-0.5 text-[11px] font-medium text-fuchsia-700 ring-1 ring-fuchsia-500/25 transition-colors hover:bg-fuchsia-500/20 dark:text-fuchsia-300"
+                        title={`Filter the People list to these possible ${label} duplicates`}
+                      >
+                        {label}
+                        {count > 0 && <span className="font-bold">{count}</span>}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-fuchsia-700/80 dark:text-fuchsia-300/80">Imported as-is — open each to confirm it&apos;s a distinct person or merge it into the existing record. Nothing was auto-merged.</p>
+                </div>
+              );
+            })()}
+
+            {/* Per-gap deep-link chips: each jumps straight to the filtered "needs info" worklist.
+                Duplicate flags are surfaced in their own block above, so they are excluded here. */}
+            {(() => {
+              const { counts } = aggregateGaps(result);
+              const entries = [...counts.entries()].filter(([type]) => !isDuplicateGap(type)).sort((a, b) => b[1] - a[1]);
               if (entries.length === 0 || !onViewIncomplete) return null;
               return (
                 <div>

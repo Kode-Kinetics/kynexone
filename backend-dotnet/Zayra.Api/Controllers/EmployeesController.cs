@@ -51,8 +51,9 @@ public class EmployeesController : ControllerBase
     private readonly ILogger<EmployeesController>? _logger;
     private readonly IEstablishmentGuard _establishmentGuard;
     private readonly IEmployeeActivationGuard _activationGuard;
+    private readonly IEmployeeDuplicateDetector _duplicateDetector;
 
-    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null)
+    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -68,6 +69,7 @@ public class EmployeesController : ControllerBase
         // registered guard in production; direct constructions in tests keep compiling AND enforcing.
         _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
         _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
+        _duplicateDetector = duplicateDetector ?? new EmployeeDuplicateDetector(db);
     }
 
     [HttpGet]
@@ -531,6 +533,28 @@ public class EmployeesController : ControllerBase
             await _db.Employees.Where(e => e.TenantId == tenantId).Select(e => e.EmployeeCode).ToListAsync(ct),
             StringComparer.OrdinalIgnoreCase);
 
+        // ── DUPLICATE-PERSON DETECTION preload (accept-never-block) ─────────────────────────────────
+        // Preloaded-dictionary path (N1): existing employees loaded ONCE into the matcher — never a DB
+        // query per row. Detection is tenant-wide across companies AND across THIS batch (each new row is
+        // registered so later rows see it; the earlier member of an intra-file pair is back-flagged). A
+        // dup NEVER drops the row and NEVER changes its status — it only adds an advisory dup:* gap.
+        var dupMatcher = new EmployeeDuplicateMatcher();
+        foreach (var e in await _db.Employees.AsNoTracking()
+            // IgnoreQueryFilters is intentional: duplicate detection is authoritative TENANT-WIDE across every
+            // company; a scoped caller's company filter must not hide a cross-company dup (masking protects PII).
+            .IgnoreQueryFilters()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted)
+            .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.EnglishName, e.ArabicName, e.CompanyId,
+                e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber })
+            .ToListAsync(ct))
+        {
+            dupMatcher.Register(DuplicateCandidateBuilder.Build(e.Id, null, e.EmployeeCode, e.FullName, e.EnglishName,
+                e.ArabicName, e.CompanyId, e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber));
+        }
+        // Importer's entity scope — masks a matched counterpart in a company the importer can't access so a
+        // persisted gap Detail never leaks cross-scope PII (S3).
+        var dupImporterScope = this.GetEntityScope();
+
         // Persist pending changes; convert a constraint violation (e.g. a duplicate
         // employee code slipping through) into a legible 422 rather than a raw 500.
         // The raw exception detail is logged server-side only — it is never returned
@@ -734,6 +758,35 @@ public class EmployeesController : ControllerBase
             if (resolved.SalaryDecision == ImportSalaryDecision.Hold) heldSalaryCodes.Add(finalCode);
             createdRowMeta.Add((employee, rowReadiness, rowHasPolicy, finalCode));
             created++;
+
+            // ── DUPLICATE-PERSON detection for this row (accept-never-block: flag only, never drop/merge) ──
+            var dupProbe = DuplicateCandidateBuilder.FromEmployee(employee, employeeId: null, batchKey: finalCode);
+            var dupMatches = dupMatcher.Match(dupProbe);
+            if (dupMatches.Count > 0)
+            {
+                var strongest = dupMatches[0]; // Match() returns strong-first
+                var gapType = strongest.MatchType == DuplicateMatchTypes.Strong ? "dup:strong" : "dup:possible";
+                var (detail, raw) = DupGapText(dupImporterScope, strongest.Counterpart, strongest.Signals);
+                // One dup gap per row (keeps the "N possible duplicates" count = flagged rows).
+                if (!gapsByCode[finalCode].Any(g => g.Type is "dup:strong" or "dup:possible"))
+                {
+                    gapsByCode[finalCode].Add(new ImportGap(gapType, "dup", detail, raw));
+                    warnings.Add($"Row {rowNum}: {detail}");
+                }
+                // Back-flag the earlier member of any INTRA-FILE pair so BOTH rows surface (S2).
+                foreach (var m in dupMatches)
+                {
+                    if (m.Counterpart.BatchKey is not string earlierKey) continue;                // only batch rows
+                    if (!gapsByCode.TryGetValue(earlierKey, out var earlierGaps)) continue;
+                    if (earlierGaps.Any(g => g.Type is "dup:strong" or "dup:possible")) continue;  // already flagged
+                    var earlierType = m.MatchType == DuplicateMatchTypes.Strong ? "dup:strong" : "dup:possible";
+                    var (bDetail, bRaw) = DupGapText(dupImporterScope, dupProbe, m.Signals); // earlier row points at THIS row
+                    earlierGaps.Add(new ImportGap(earlierType, "dup", bDetail, bRaw));
+                    var earlierRow = rowNumByCode.GetValueOrDefault(earlierKey, 0);
+                    warnings.Add($"Row {earlierRow}: {bDetail}");
+                }
+            }
+            dupMatcher.Register(dupProbe);
         }
         // First persist: when level slots were claimed and enforcement is on, serialize with the
         // same per-cell advisory locks the single-hire paths use and RE-VERIFY each claimed cell
@@ -1049,6 +1102,8 @@ public class EmployeesController : ControllerBase
         int salariesHeld = allGaps.Count(g => g.Type == "pay:salaryHeld");
         int newDepartments = allGaps.Where(g => g.Type == "org:department").Select(g => (g.RawValue ?? string.Empty).ToUpperInvariant()).Distinct().Count();
         int newBranches = allGaps.Where(g => g.Type == "org:branch").Select(g => (g.RawValue ?? string.Empty).ToUpperInvariant()).Distinct().Count();
+        // "N possible duplicates" — rows imported (never dropped) but flagged as a possible existing person.
+        int possibleDuplicates = allGaps.Count(g => g.Type is "dup:strong" or "dup:possible");
 
         var allErrors = errors.Take(30).ToList();
         var allWarnings = warnings.Concat(hierarchyWarnings).Take(30).ToList();
@@ -1068,6 +1123,7 @@ public class EmployeesController : ControllerBase
             newDepartments,
             newBranches,
             salariesHeld,
+            possibleDuplicates,
             hierarchyLinked,
             payrollProfilesCreated,
             importBatchId,
@@ -1275,6 +1331,23 @@ public class EmployeesController : ControllerBase
             .Select(e => e.EmployeeCode.ToUpperInvariant())
             .ToListAsync(ct);
         var existingCodes = new HashSet<string>(existingCodesList);
+        // Duplicate-person detection PREVIEW parity (§4d): the SAME preloaded matcher commit uses, so the
+        // dry-run flags the identical rows. Persists nothing — feeds the "most common gaps" strip + per-row
+        // warnings only. Register non-error rows in file order so intra-file matches surface as in commit.
+        var dupMatcher = new EmployeeDuplicateMatcher();
+        foreach (var e in await _db.Employees.AsNoTracking()
+            // IgnoreQueryFilters is intentional: duplicate detection is authoritative TENANT-WIDE across every
+            // company; a scoped caller's company filter must not hide a cross-company dup (masking protects PII).
+            .IgnoreQueryFilters()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted)
+            .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.EnglishName, e.ArabicName, e.CompanyId,
+                e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber })
+            .ToListAsync(ct))
+        {
+            dupMatcher.Register(DuplicateCandidateBuilder.Build(e.Id, null, e.EmployeeCode, e.FullName, e.EnglishName,
+                e.ArabicName, e.CompanyId, e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber));
+        }
+        var dupImporterScope = this.GetEntityScope();
         // Work emails already in the tenant — the email fallback the commit Pass 2 uses, so a "manager
         // known" test here matches commit's link outcome.
         var existingEmails = new HashSet<string>(await _db.Employees
@@ -1473,6 +1546,25 @@ public class EmployeesController : ControllerBase
                         rowWarnings.Add($"{name} imported as Draft — {estDecision.Detail} Assign within budget to activate.");
                     }
                 }
+
+                // ── DUPLICATE-PERSON detection (dry-run parity with commit) ──────────────────────────
+                var dupBatchKey = !string.IsNullOrWhiteSpace(code) ? code : $"__row{rowNum}";
+                var dupProbe = DuplicateCandidateBuilder.Build(
+                    null, dupBatchKey, code, name, name, row.GetValueOrDefault("ArabicName", string.Empty),
+                    resolved.CompanyId, nationality, ReadCsvDate(row, "DateOfBirth"),
+                    row.GetValueOrDefault("IqamaNumber", string.Empty), row.GetValueOrDefault("EmiratesId", string.Empty),
+                    row.GetValueOrDefault("Qid", string.Empty), row.GetValueOrDefault("CivilId", string.Empty),
+                    row.GetValueOrDefault("IdNumber", string.Empty), row.GetValueOrDefault("PassportNumber", string.Empty));
+                var dupMatches = dupMatcher.Match(dupProbe);
+                if (dupMatches.Count > 0)
+                {
+                    var strongest = dupMatches[0];
+                    var gapType = strongest.MatchType == DuplicateMatchTypes.Strong ? "dup:strong" : "dup:possible";
+                    RecordGaps(new[] { EmployeeReadinessEvaluator.ImportGapToItem(gapType, "dup") }, "recommended");
+                    var (detail, _) = DupGapText(dupImporterScope, strongest.Counterpart, strongest.Signals);
+                    rowWarnings.Add(detail);
+                }
+                dupMatcher.Register(dupProbe);
             }
 
             if (hasErrors) { status = "Error"; wouldSkip++; }
@@ -1676,7 +1768,80 @@ public class EmployeesController : ControllerBase
             return CreatedAtAction(nameof(Get), new { id = employee.Id }, employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        // Authoritative never-silent-dup backstop: a STRONG identity match with no explicit acknowledgement.
+        // Advisory 409 (never a hard block) — the modal re-surfaces the SAME masked match set the pre-check
+        // shows and the operator resolves (View existing / Merge / Create anyway → acknowledgeDuplicate).
+        catch (DuplicatePersonException ex)
+        {
+            var scope = this.GetEntityScope();
+            return Conflict(new { error = "possible_duplicate", matches = ex.Matches.Select(m => MaskMatch(m, scope)).ToList() });
+        }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// Advisory pre-create duplicate check the create modal calls before submit. ALWAYS 200 (never blocks) —
+    /// the create commit is the authoritative backstop (409 possible_duplicate). Detection is tenant-wide
+    /// across companies; each match is scope-masked (a match in a company the caller cannot access returns
+    /// canView=false with NO PII, only "another company"). POST (not GET) so sensitive identity values
+    /// never land in a URL.
+    /// </summary>
+    [HttpPost("duplicate-check")]
+    [HasPermission("employees.write")]
+    public async Task<ActionResult<DuplicateCheckResponse>> DuplicateCheck([FromBody] DuplicateCheckRequest req, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var identity = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var iv in req.IdentityValues ?? [])
+        {
+            var key = (iv.FieldKey ?? string.Empty).Trim();
+            var value = (iv.Value ?? string.Empty).Trim();
+            if (key.Length == 0 || value.Length == 0) continue;
+            identity[key] = value;
+        }
+        var probe = new DuplicateProbe(
+            EnglishName: req.EnglishName?.Trim(),
+            ArabicName: req.ArabicName?.Trim(),
+            DateOfBirth: req.DateOfBirth,
+            Nationality: req.Nationality?.Trim(),
+            CompanyId: req.CompanyId,
+            IdentityValues: identity,
+            ExcludeEmployeeId: req.ExcludeEmployeeId);
+
+        var matches = await _duplicateDetector.FindAsync(tenantId, probe, ct);
+        var scope = this.GetEntityScope();
+        var masked = matches.Select(m => MaskMatch(m, scope)).ToList();
+        return Ok(new DuplicateCheckResponse(
+            HasStrong: masked.Any(m => m.MatchType == DuplicateMatchTypes.Strong),
+            HasProbable: masked.Any(m => m.MatchType == DuplicateMatchTypes.Probable),
+            Matches: masked));
+    }
+
+    /// <summary>Builds the persisted dup:* gap Detail + RawValue, scope-masked (S3): a counterpart in a
+    /// company outside the importer's scope contributes NO code/name — only the no-PII "another company"
+    /// form — so a company-scoped HR user's worklist never leaks a cross-scope person.</summary>
+    private static (string Detail, string? Raw) DupGapText(
+        Zayra.Api.Application.Common.EntityScopeContext scope, DuplicateCandidate counterpart, IReadOnlyList<string> signals)
+    {
+        if (!scope.CanAccessCompany(counterpart.CompanyId))
+            return ("Possible existing employee in another company — contact a group administrator to resolve.", null);
+        var who = string.IsNullOrWhiteSpace(counterpart.EmployeeCode)
+            ? counterpart.FullName
+            : $"{counterpart.FullName} ({counterpart.EmployeeCode})";
+        var why = signals.Count > 0 ? $" — {string.Join("; ", signals)}" : string.Empty;
+        return ($"Possible existing employee: {who}{why}.", string.IsNullOrWhiteSpace(counterpart.EmployeeCode) ? null : counterpart.EmployeeCode);
+    }
+
+    /// <summary>Scope-mask a raw detector match: cross-company matches (outside the caller's entity scope)
+    /// return canView=false with code/name/branch stripped — never leak a person the caller cannot access.</summary>
+    private static DuplicateMatchDto MaskMatch(DuplicateMatch m, Zayra.Api.Application.Common.EntityScopeContext scope)
+    {
+        var canView = scope.CanAccessCompany(m.CompanyId);
+        return canView
+            ? new DuplicateMatchDto(m.EmployeeId, m.EmployeeCode, m.FullName, string.IsNullOrWhiteSpace(m.Branch) ? null : m.Branch,
+                m.CompanyId?.ToString(), m.Status, m.MatchType, m.Signals.ToList(), true)
+            : new DuplicateMatchDto(m.EmployeeId, string.Empty, "A matching record exists in another company", null,
+                null, string.Empty, m.MatchType, new[] { "Contact a group administrator" }, false);
     }
 
     [HttpPost("drafts")]
@@ -2287,61 +2452,16 @@ public class EmployeesController : ControllerBase
         employee.PrivacyStatus = "RetainedForStatutoryAudit";
         employee.RetentionUntilUtc = deletedAt.AddYears(7);
 
-        var pendingChanges = await _db.EmployeeChangeRequests
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.Status == "PendingApproval")
-            .ToListAsync(cancellationToken);
-        foreach (var change in pendingChanges)
-        {
-            change.Status = "Cancelled";
-            change.RejectionReason = "Employee record was deleted before approval.";
-            change.ApprovedAtUtc = deletedAt;
-        }
-
-        var pendingChangeIds = pendingChanges.Select(x => x.Id.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var pendingApprovals = await _db.ApprovalRequests
-            .Where(x => x.TenantId == tenantId
-                && x.Status == "Pending"
-                && (x.RequestedForEmployeeId == id
-                    || (x.EntityName == nameof(EmployeeChangeRequest) && pendingChangeIds.Contains(x.EntityId))))
-            .ToListAsync(cancellationToken);
-        foreach (var approval in pendingApprovals)
-        {
-            approval.Status = "Cancelled";
-            approval.CompletedAtUtc = deletedAt;
-        }
-
-        var approverUserId = employee.UserAccountId;
-        var cancelledApprovalIds = pendingApprovals.Select(x => x.Id).ToHashSet();
-        var assignedApprovals = await _db.ApprovalRequests
-            .Where(x => x.TenantId == tenantId
-                && x.Status == "Pending"
-                && !cancelledApprovalIds.Contains(x.Id)
-                && (x.CurrentApproverEmployeeId == id
-                    || (approverUserId != null && x.CurrentApproverUserId == approverUserId)))
-            .ToListAsync(cancellationToken);
-        foreach (var approval in assignedApprovals)
-        {
-            // Preserve unrelated approval accountability by routing orphaned approver work
-            // to the same HR Manager role queue used by approval routing fallbacks.
-            approval.CurrentApproverEmployeeId = null;
-            approval.CurrentApproverUserId = null;
-            approval.CurrentApproverName = string.Empty;
-            approval.CurrentApproverType = "Role";
-            approval.CurrentApproverRole = "HR Manager";
-            approval.CurrentQueue = "Role:HR Manager";
-            approval.EscalatedAtUtc = deletedAt;
-            approval.EscalatedToRole = "HR Manager";
-            approval.LastRoutedAtUtc = deletedAt;
-            approval.DueAtUtc = deletedAt.AddHours(Math.Clamp(approval.SlaHours, 1, 720));
-        }
+        var (cancelledApprovals, reroutedApprovals) = await CancelPendingApprovalWorkAsync(
+            tenantId, id, employee.UserAccountId, deletedAt, "Employee record was deleted before approval.", cancellationToken);
 
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employees.deleted", "Employee", id.ToString(), context, JsonSerializer.Serialize(new
         {
             employee.PrivacyStatus,
             employee.RetentionUntilUtc,
-            CancelledApprovalRequests = pendingApprovals.Count,
-            ReroutedApprovalRequests = assignedApprovals.Count,
+            CancelledApprovalRequests = cancelledApprovals,
+            ReroutedApprovalRequests = reroutedApprovals,
             ApproverDeletionFallback = "Pending approvals assigned to the deleted approver are rerouted to the HR Manager role queue; approvals for the deleted employee are cancelled."
         }), cancellationToken);
 
@@ -2353,6 +2473,214 @@ public class EmployeesController : ControllerBase
             _db, _audit, tenantId, id, "soft_deleted", deactivateSalaryStructure: true, context, cancellationToken);
 
         return NoContent();
+    }
+
+    /// <summary>
+    /// Shared soft-remove cascade primitive (used by Delete and duplicate-merge so the two never diverge):
+    /// cancels the employee's pending change-requests + their approval requests, and reroutes approvals the
+    /// (removed) employee still owns to the HR Manager role queue so unrelated accountability survives. Does
+    /// NOT SaveChanges/audit/deactivate-payroll — the caller orchestrates those so each keeps its own audit
+    /// content. Returns (cancelled, rerouted) counts.
+    /// </summary>
+    private async Task<(int Cancelled, int Rerouted)> CancelPendingApprovalWorkAsync(
+        Guid tenantId, int id, Guid? approverUserId, DateTime effectiveAt, string cancelReason, CancellationToken ct)
+    {
+        var pendingChanges = await _db.EmployeeChangeRequests
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.Status == "PendingApproval")
+            .ToListAsync(ct);
+        foreach (var change in pendingChanges)
+        {
+            change.Status = "Cancelled";
+            change.RejectionReason = cancelReason;
+            change.ApprovedAtUtc = effectiveAt;
+        }
+
+        var pendingChangeIds = pendingChanges.Select(x => x.Id.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var pendingApprovals = await _db.ApprovalRequests
+            .Where(x => x.TenantId == tenantId
+                && x.Status == "Pending"
+                && (x.RequestedForEmployeeId == id
+                    || (x.EntityName == nameof(EmployeeChangeRequest) && pendingChangeIds.Contains(x.EntityId))))
+            .ToListAsync(ct);
+        foreach (var approval in pendingApprovals)
+        {
+            approval.Status = "Cancelled";
+            approval.CompletedAtUtc = effectiveAt;
+        }
+
+        var cancelledApprovalIds = pendingApprovals.Select(x => x.Id).ToHashSet();
+        var assignedApprovals = await _db.ApprovalRequests
+            .Where(x => x.TenantId == tenantId
+                && x.Status == "Pending"
+                && !cancelledApprovalIds.Contains(x.Id)
+                && (x.CurrentApproverEmployeeId == id
+                    || (approverUserId != null && x.CurrentApproverUserId == approverUserId)))
+            .ToListAsync(ct);
+        foreach (var approval in assignedApprovals)
+        {
+            approval.CurrentApproverEmployeeId = null;
+            approval.CurrentApproverUserId = null;
+            approval.CurrentApproverName = string.Empty;
+            approval.CurrentApproverType = "Role";
+            approval.CurrentApproverRole = "HR Manager";
+            approval.CurrentQueue = "Role:HR Manager";
+            approval.EscalatedAtUtc = effectiveAt;
+            approval.EscalatedToRole = "HR Manager";
+            approval.LastRoutedAtUtc = effectiveAt;
+            approval.DueAtUtc = effectiveAt.AddHours(Math.Clamp(approval.SlaHours, 1, 720));
+        }
+
+        return (pendingApprovals.Count, assignedApprovals.Count);
+    }
+
+    /// <summary>
+    /// Lightweight duplicate resolution from a flagged row / create warning. NEVER auto-merges — a human
+    /// makes the call. "distinct" clears the dup:* flag(s) (both records survive; reason audited).
+    /// "merge" (first slice) folds this record (the duplicate) into <c>intoEmployeeId</c> (the survivor):
+    /// links via DuplicateOfEmployeeId + soft-removes exactly like Delete, preserving an audit link — NO
+    /// field-by-field record copy (a later pod adds that, keyed off the link). "unmerge" reverses a merge
+    /// (restores the record + link + best-effort payroll reactivation) so a mistaken twins-merge is
+    /// recoverable (S4). Both records must be in the caller's scope.
+    /// </summary>
+    [HttpPost("{id:int}/resolve-duplicate")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> ResolveDuplicate(int id, [FromBody] ResolveDuplicateRequest req, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
+        var resolution = (req.Resolution ?? string.Empty).Trim().ToLowerInvariant();
+        var context = Context();
+
+        if (resolution == "distinct")
+        {
+            var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+            if (employee is null) return NotFound();
+            if (string.IsNullOrWhiteSpace(req.Reason))
+                return BadRequest(new { message = "A reason is required to confirm this is a distinct person." });
+
+            var open = await _db.EmployeeImportGaps
+                .Where(g => g.TenantId == tenantId && g.EmployeeId == id && g.ResolvedAtUtc == null
+                            && (g.GapType == "dup:strong" || g.GapType == "dup:possible"))
+                .ToListAsync(ct);
+            var now = DateTime.UtcNow;
+            foreach (var g in open) g.ResolvedAtUtc = now;
+            await _db.SaveChangesAsync(ct);
+            // Recompute the readiness badge so clearing the last dup flag can lift NeedsAttention.
+            await RefreshReadinessByIdAsync(tenantId, id, ct);
+            await _audit.WriteAsync("employee.duplicate_confirmed_distinct", "Employee", id.ToString(), context,
+                JsonSerializer.Serialize(new { reason = req.Reason.Trim(), clearedGaps = open.Count }), ct);
+            return Ok(new { resolved = "distinct", clearedGaps = open.Count });
+        }
+
+        if (resolution == "merge")
+        {
+            if (req.IntoEmployeeId is not int intoId) return BadRequest(new { message = "intoEmployeeId is required for a merge." });
+            if (intoId == id) return BadRequest(new { message = "An employee cannot be merged into itself." });
+            if (string.IsNullOrWhiteSpace(req.Reason))
+                return BadRequest(new { message = "A reason is required to merge a duplicate record." });
+            if (!await CanAccessEmployeeAsync(intoId, ct)) return Forbid();
+
+            var duplicate = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+            if (duplicate is null) return NotFound();
+            var survivor = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == intoId && !x.IsDeleted, ct);
+            if (survivor is null) return BadRequest(new { message = "The survivor record was not found." });
+
+            var mergedAt = DateTime.UtcNow;
+            var mergedCode = duplicate.EmployeeCode;
+            duplicate.DuplicateOfEmployeeId = intoId;
+            duplicate.IsDeleted = true;
+            duplicate.DeletedAtUtc = mergedAt;
+            duplicate.DeletedBy = context.UserId;
+            duplicate.Status = "Inactive";
+            duplicate.PrivacyStatus = "MergedDuplicate";
+            duplicate.RetentionUntilUtc = mergedAt.AddYears(7);
+
+            var (cancelled, rerouted) = await CancelPendingApprovalWorkAsync(
+                tenantId, id, duplicate.UserAccountId, mergedAt, "Record merged into an existing employee as a duplicate.", ct);
+
+            // Resolve any open dup flags on the merged record.
+            var openGaps = await _db.EmployeeImportGaps
+                .Where(g => g.TenantId == tenantId && g.EmployeeId == id && g.ResolvedAtUtc == null
+                            && (g.GapType == "dup:strong" || g.GapType == "dup:possible"))
+                .ToListAsync(ct);
+            foreach (var g in openGaps) g.ResolvedAtUtc = mergedAt;
+
+            await _db.SaveChangesAsync(ct);
+            // Deactivate the merged record's payroll footprint (it is now IsDeleted, so EOSB/settlement
+            // calculators can no longer read its salary structure). Reversible via unmerge (best-effort).
+            await EmployeeManagementService.DeactivatePayrollFootprintAsync(
+                _db, _audit, tenantId, id, "merged_duplicate", deactivateSalaryStructure: true, context, ct);
+            // Full, reconstructable audit link (S4): both codes + signals, not just ids.
+            await _audit.WriteAsync("employee.merged_into_existing", "Employee", id.ToString(), context, JsonSerializer.Serialize(new
+            {
+                intoEmployeeId = intoId,
+                intoEmployeeCode = survivor.EmployeeCode,
+                mergedEmployeeCode = mergedCode,
+                reason = req.Reason!.Trim(),
+                cancelledApprovals = cancelled,
+                reroutedApprovals = rerouted,
+                clearedGaps = openGaps.Count,
+                reversible = "POST resolve-duplicate {resolution:'unmerge'} restores this record."
+            }), ct);
+            return Ok(new { resolved = "merge", intoEmployeeId = intoId });
+        }
+
+        if (resolution == "unmerge")
+        {
+            // Recovery path for a mistaken merge (twins wrongly merged). Reverses the link + restores the
+            // record; payroll reactivation is best-effort (re-marks WPS-eligible + reactivates the latest
+            // salary structure) — a deep field-level reconciliation is out of scope for this slice.
+            // IgnoreQueryFilters is intentional: the merged record is soft-deleted so the global !IsDeleted
+            // filter hides it — bypass to read it back (scope already enforced by CanAccessEmployeeAsync above).
+            var merged = await _db.Employees.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && x.IsDeleted && x.DuplicateOfEmployeeId != null, ct);
+            if (merged is null) return NotFound();
+            var intoId = merged.DuplicateOfEmployeeId;
+            merged.IsDeleted = false;
+            merged.DeletedAtUtc = null;
+            merged.DeletedBy = null;
+            merged.RetentionUntilUtc = null;
+            merged.PrivacyStatus = string.Empty;
+            merged.Status = "Draft";
+            merged.DuplicateOfEmployeeId = null;
+
+            var profiles = await _db.EmployeePayrollProfiles
+                .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted).ToListAsync(ct);
+            foreach (var p in profiles) { p.WpsEligible = true; p.UpdatedAtUtc = DateTime.UtcNow; p.UpdatedBy = context.UserId; }
+            var latestStructure = await _db.EmployeeSalaryStructures
+                .Where(x => x.TenantId == tenantId && x.EmployeeId == id)
+                .OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(ct);
+            if (latestStructure is not null) latestStructure.IsActive = true;
+
+            await _db.SaveChangesAsync(ct);
+            await RefreshReadinessByIdAsync(tenantId, id, ct);
+            await _audit.WriteAsync("employee.duplicate_merge_reversed", "Employee", id.ToString(), context,
+                JsonSerializer.Serialize(new { restoredFromMergeInto = intoId, reason = req.Reason?.Trim() }), ct);
+            return Ok(new { resolved = "unmerge", restored = id });
+        }
+
+        return BadRequest(new { message = "resolution must be 'distinct', 'merge', or 'unmerge'." });
+    }
+
+    /// <summary>Refresh one employee's denormalized readiness badge after a dup-flag change (fold via the
+    /// service's snapshot path). Best-effort — display only; the activation gate always recomputes live.</summary>
+    private async Task RefreshReadinessByIdAsync(Guid tenantId, int id, CancellationToken ct)
+    {
+        try
+        {
+            var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+            if (employee is null) return;
+            var snapshot = await _activationGuard.BuildSnapshotAsync(tenantId, id, ct);
+            if (snapshot is null) return;
+            var policy = await _activationGuard.ResolvePolicyAsync(tenantId, employee.CompanyId, employee.CountryCode, employee.Nationality, ct);
+            var readiness = _activationGuard.Evaluate(snapshot, policy);
+            readiness = await ImportGapHealer.HealAndMergeAsync(_db, employee, readiness, ct);
+            employee.ReadinessState = readiness.State;
+            employee.ActivationBlockersCount = readiness.Blocking.Count;
+            employee.ReadinessEvaluatedAtUtc = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+        }
+        catch { /* best-effort badge refresh */ }
     }
 
     [HttpPost("changes/{changeId:guid}/approve")]
@@ -3031,6 +3359,28 @@ public class EmployeesController : ControllerBase
 }
 
 public record EmployeeListItemDto(int Id, string EmployeeCode, string FullName, string ArabicName, string Department, string Designation, string Branch, int? ManagerEmployeeId, string Status, decimal ProfileCompletenessScore, DateOnly? VisaExpiryDate, DateOnly? PassportExpiryDate, string ReadinessState, int ActivationBlockersCount);
+
+// ── Duplicate-person detection DTOs (contract mirrors frontend api/employees.ts) ──────────────────
+public record DuplicateIdentityValueDto(string? FieldKey, string? Value);
+
+public record DuplicateCheckRequest(
+    string? EnglishName,
+    string? ArabicName,
+    DateOnly? DateOfBirth,
+    string? Nationality,
+    Guid? CompanyId,
+    IReadOnlyList<DuplicateIdentityValueDto>? IdentityValues,
+    int? ExcludeEmployeeId);
+
+/// <summary>Scope-masked match: when CanView is false (cross-company), code/name/branch/companyId are
+/// stripped and only the tier + a no-PII message survive.</summary>
+public record DuplicateMatchDto(
+    int EmployeeId, string EmployeeCode, string FullName, string? Branch, string? CompanyId,
+    string Status, string MatchType, IReadOnlyList<string> Signals, bool CanView);
+
+public record DuplicateCheckResponse(bool HasStrong, bool HasProbable, IReadOnlyList<DuplicateMatchDto> Matches);
+
+public record ResolveDuplicateRequest(string Resolution, int? IntoEmployeeId, string? Reason);
 
 /// <summary>Read-only Ex-Employees archive row. Directory + lifecycle metadata only — no salary,
 /// bank, or statutory-identity fields (parity with the People list's non-sensitive projection).</summary>

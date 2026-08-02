@@ -137,6 +137,78 @@ export interface EmployeeCreateRequest {
   payrollProfile?: EmployeePayrollProfileRequest;
   salaryBreakdown?: EmployeeSalaryBreakdownRequest;
   complianceRecords?: EmployeeComplianceRecordRequest[];
+  /**
+   * Explicit "create anyway" override for the duplicate-person backstop. When the server detects a
+   * STRONG identity match it refuses the create with 409 possible_duplicate; re-sending with this
+   * flag set records an audited override and proceeds. Never set silently — only in response to the
+   * operator dismissing the duplicate warning (never-silent-dup).
+   */
+  acknowledgeDuplicate?: boolean;
+}
+
+// ── Duplicate-person detection (create pre-check + flagged-row resolution) ─────────────────────
+/** One national-identity value the probe checks against stored records (fieldKey → typed column). */
+export interface DuplicateIdentityValue {
+  fieldKey: string;
+  value: string;
+}
+
+/**
+ * Body for the advisory pre-create duplicate check. POST (not GET) because identity values are
+ * sensitive and must not land in a URL. Detection is tenant-wide across companies; the response is
+ * scope-masked per match.
+ */
+export interface DuplicateCheckRequest {
+  englishName: string;
+  arabicName?: string;
+  dateOfBirth?: string;
+  nationality?: string;
+  companyId?: string;
+  identityValues: DuplicateIdentityValue[];
+  /** Exclude a known record (e.g. the employee being resolved) from its own match set. */
+  excludeEmployeeId?: number;
+}
+
+/**
+ * One candidate the server believes may be the same human. `canView` is false when the match lives
+ * in a company outside the caller's scope — code/name/branch are masked server-side in that case and
+ * the UI must show the no-PII "another company" message instead of any details.
+ */
+export interface DuplicateMatch {
+  employeeId: number;
+  employeeCode: string;
+  fullName: string;
+  branch?: string | null;
+  companyId?: string | null;
+  status: string;
+  /** "strong" (exact national-identity match) | "probable" (name + DOB, or passport-only). */
+  matchType: string;
+  /** Human-readable reasons, e.g. ["Iqama number match", "Same date of birth"]. */
+  signals: string[];
+  canView: boolean;
+}
+
+/** POST /api/employees/duplicate-check response — advisory, always 200, never blocks. */
+export interface DuplicateCheckResponse {
+  hasStrong: boolean;
+  hasProbable: boolean;
+  matches: DuplicateMatch[];
+}
+
+/** 409 body the authoritative create backstop returns for an unacknowledged STRONG match. */
+export interface PossibleDuplicateError {
+  error: 'possible_duplicate';
+  matches: DuplicateMatch[];
+}
+
+/** Body for POST /api/employees/{id}/resolve-duplicate (lightweight resolution). */
+export interface ResolveDuplicateRequest {
+  /** "distinct" clears the flag (both records survive); "merge" folds this record into a survivor. */
+  resolution: 'distinct' | 'merge';
+  /** Required for a merge — the surviving record this duplicate is folded into. */
+  intoEmployeeId?: number;
+  /** Why the operator confirmed distinct / chose to merge (audited). */
+  reason?: string;
 }
 
 export interface EmployeeEntity {
@@ -415,6 +487,12 @@ export interface EmployeeImportResult {
   newBranches?: number;
   salariesHeld?: number;
   salariesForReview?: number;
+  /**
+   * Rows imported but flagged as a possible existing person (dup:strong / dup:possible gap).
+   * Accept-never-block: they are created as-is, never dropped, never auto-merged — the operator
+   * resolves each from the People list (confirm distinct / merge).
+   */
+  possibleDuplicates?: number;
 }
 
 export interface EmployeeImportPreviewRow {
@@ -475,6 +553,19 @@ export function notActivatableFromError(err: unknown): EmployeeNotActivatable | 
   return null;
 }
 
+/**
+ * Returns the structured possible_duplicate 409 payload when the create backstop refuses an
+ * unacknowledged STRONG identity match, otherwise null. Use at the create catch site so the
+ * server-authoritative match set re-surfaces the same warning the advisory pre-check shows.
+ */
+export function possibleDuplicateFromError(err: unknown): PossibleDuplicateError | null {
+  const e = err as { response?: { status?: number; data?: { error?: string } } };
+  if (e?.response?.status === 409 && e.response.data?.error === 'possible_duplicate') {
+    return e.response.data as PossibleDuplicateError;
+  }
+  return null;
+}
+
 export const employeesApi = {
   list: (
     params: {
@@ -504,6 +595,20 @@ export const employeesApi = {
   get: (id: number) => client.get<EmployeeDetail>(`/api/employees/${id}`).then((r) => r.data),
 
   create: (data: EmployeeCreateRequest) => client.post<EmployeeDetail>('/api/employees', data).then((r) => r.data),
+
+  /**
+   * Advisory pre-create duplicate check the create modal calls before submit. Always returns 200
+   * (never blocks); the create commit is the authoritative backstop (409 possible_duplicate).
+   */
+  duplicateCheck: (body: DuplicateCheckRequest) =>
+    client.post<DuplicateCheckResponse>('/api/employees/duplicate-check', body).then((r) => r.data),
+
+  /**
+   * Resolve a flagged possible-duplicate: "distinct" clears the flag (both records survive, reason
+   * audited); "merge" folds this record into `intoEmployeeId` (soft-removed, audit link preserved).
+   */
+  resolveDuplicate: (id: number, body: ResolveDuplicateRequest) =>
+    client.post(`/api/employees/${id}/resolve-duplicate`, body).then((r) => r.data),
 
   /** Sends only the changed fields; sensitive fields (salary, passport, bank…) return 202 and go to an approval workflow. */
   update: (id: number, effectiveDate: string, changes: Record<string, unknown>) =>

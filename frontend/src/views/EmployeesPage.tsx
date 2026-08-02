@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, FileUp, History, Pencil, Plus, RefreshCw, Search, Send, UserRound, Users } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
-import { employeesApi, notActivatableFromError } from '../api/employees';
-import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable } from '../api/employees';
+import { employeesApi, notActivatableFromError, possibleDuplicateFromError } from '../api/employees';
+import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest } from '../api/employees';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
@@ -74,6 +74,8 @@ const GAP_FILTER_LABELS: Record<string, string> = {
   'org:grade': 'Grades unresolved',
   'org:position': 'Positions unresolved',
   'org:establishment': 'Over budget',
+  'dup:strong': 'Possible duplicates (ID match)',
+  'dup:possible': 'Possible duplicates (name + DOB)',
 };
 const tabs: { id: DetailTab; label: string }[] = [
   { id: 'personal', label: 'Personal Information' },
@@ -245,6 +247,19 @@ export function EmployeesPage() {
   const [establishmentBlock, setEstablishmentBlock] = useState<{ block: EstablishmentBlockedPayload; employeeName?: string; refocusId?: string } | null>(null);
   // Advisory-mode responses carry establishmentWarning on 2xx — dismissible amber banner, never a block.
   const [advisoryWarning, setAdvisoryWarning] = useState('');
+  // ── Duplicate-person detection ─────────────────────────────────────────────────────────────
+  // Create-modal warning: possible existing people the advisory pre-check (or the authoritative
+  // 409 backstop) matched. Non-empty ⇒ the create is paused until the operator picks View / Merge /
+  // Create anyway (never-silent-dup). Cross-scope matches arrive masked (canView=false).
+  const [duplicateWarning, setDuplicateWarning] = useState<DuplicateMatch[]>([]);
+  // Detail resolver: live merge targets for the open flagged record, plus the confirm/merge state.
+  const [dupMatches, setDupMatches] = useState<DuplicateMatch[]>([]);
+  const [dupResolving, setDupResolving] = useState(false);
+  const [dupReason, setDupReason] = useState('');
+  const [dupNotice, setDupNotice] = useState('');
+  // "Merge" from the create warning abandons the draft and opens the existing record for editing —
+  // this holds the id until its detail has loaded, then an effect opens the edit modal.
+  const [autoEditId, setAutoEditId] = useState<number | null>(null);
 
   const surfaceAdvisoryWarning = (payload: unknown) => {
     const w = (payload as { establishmentWarning?: string } | null | undefined)?.establishmentWarning;
@@ -464,6 +479,7 @@ export function EmployeesPage() {
 
   const openCreateEmployee = () => {
     complianceCacheRef.current = {}; // fresh draft — drop any remembered statutory values
+    setDuplicateWarning([]);
     const next = emptyEmployee();
     if (defaultCompany) {
       next.companyId = defaultCompany.id;
@@ -536,7 +552,9 @@ export function EmployeesPage() {
       return { ...current, complianceRecords };
     });
 
-  const saveEmployee = async () => {
+  // `acknowledgeDuplicate` = the operator clicked "Create anyway" on the duplicate warning; it skips
+  // the advisory pre-check and sends the audited override so the server proceeds past its 409 backstop.
+  const saveEmployee = async (acknowledgeDuplicate = false) => {
     setError('');
     setFormError('');
     // Create floor is name-only (server floor). Gender, IDs, and statutory fields are readiness
@@ -556,14 +574,41 @@ export function EmployeesPage() {
     }
     setSaving(true);
     try {
-      const created = await employeesApi.create(cleanPayload(form));
+      // Advisory pre-submit duplicate check (never-silent-dup). The server commit is authoritative
+      // (409 backstop below); a failure here — endpoint unavailable, network — must never block the
+      // create, so it falls through. Skipped once the operator has explicitly overridden.
+      if (!acknowledgeDuplicate) {
+        setDuplicateWarning([]);
+        try {
+          const dup = await employeesApi.duplicateCheck(buildDuplicateProbe(form));
+          if (dup.matches.length > 0) {
+            setDuplicateWarning(dup.matches);
+            setSaving(false);
+            return;
+          }
+        } catch {
+          // advisory check unavailable — proceed; the commit's 409 still catches strong matches
+        }
+      }
+      const payload = cleanPayload(form);
+      if (acknowledgeDuplicate) payload.acknowledgeDuplicate = true;
+      const created = await employeesApi.create(payload);
       surfaceAdvisoryWarning(created);
+      setDuplicateWarning([]);
       setFormOpen(false);
       setForm(emptyEmployee());
       setFormOriginal(emptyEmployee());
       await load();
       await openDetail(created.id);
     } catch (e: unknown) {
+      // Server-authoritative duplicate backstop: re-surface the match set as the same warning the
+      // pre-check shows, so the operator resolves it (never a silent create, never a hard block).
+      const dup = possibleDuplicateFromError(e);
+      if (dup) {
+        setDuplicateWarning(dup.matches);
+        setSaving(false);
+        return;
+      }
       const block = establishmentBlockFromError(e);
       if (block) {
         // Form stays open with its state — after a budget raise (or a department
@@ -605,6 +650,88 @@ export function EmployeesPage() {
     setEditOpen(true);
   };
 
+  // "Merge" from the create warning: once the existing record's detail has loaded, open it for
+  // editing so the operator augments that person instead of creating a second record.
+  useEffect(() => {
+    if (autoEditId && detail && detail.id === autoEditId) {
+      openEdit();
+      setAutoEditId(null);
+    }
+    // openEdit reads the freshly-loaded detail via selectedEmployee; safe to omit from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoEditId, detail]);
+
+  // ── Detail-panel duplicate resolver ──
+  // The open record carries a possible-duplicate flag when its readiness surfaces a dup:* item.
+  const dupFlag = useMemo(
+    () => (readiness?.recommended ?? []).find((i) => i.key === 'dup:strong' || i.key === 'dup:possible') ?? null,
+    [readiness],
+  );
+  // When flagged, fetch the live merge candidates (authoritative, scope-masked) for the open record.
+  useEffect(() => {
+    if (!detail || !dupFlag) { setDupMatches([]); return; }
+    let cancelled = false;
+    setDupReason('');
+    setDupNotice('');
+    const identityValues = (detail.complianceRecords ?? [])
+      .filter((r) => (r.fieldValue ?? '').trim())
+      .map((r) => ({ fieldKey: r.fieldKey, value: (r.fieldValue ?? '').trim() }));
+    employeesApi
+      .duplicateCheck({
+        englishName: detail.englishName || detail.fullName || '',
+        arabicName: detail.arabicName || undefined,
+        dateOfBirth: detail.dateOfBirth || undefined,
+        nationality: detail.nationality || undefined,
+        companyId: detail.companyId || undefined,
+        identityValues,
+        excludeEmployeeId: detail.id,
+      })
+      .then((res) => { if (!cancelled) setDupMatches(res.matches); })
+      .catch(() => { if (!cancelled) setDupMatches([]); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.id, dupFlag?.key]);
+
+  // Confirm the flagged record is a genuinely distinct person — clears the flag, records why (both
+  // records survive). Reason is required so the decision is auditable.
+  const confirmDistinct = async () => {
+    if (!selectedId) return;
+    if (!dupReason.trim()) { setDupNotice('Add a short reason before confirming.'); return; }
+    setDupResolving(true);
+    setDupNotice('');
+    try {
+      await employeesApi.resolveDuplicate(selectedId, { resolution: 'distinct', reason: dupReason.trim() });
+      setDupReason('');
+      setActionNotice('Confirmed as a distinct person — the duplicate flag was cleared.');
+      await openDetail(selectedId, true);
+      await load();
+    } catch (e: unknown) {
+      setDupNotice((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not update the flag. Try again.');
+    } finally {
+      setDupResolving(false);
+    }
+  };
+
+  // Merge this record into an existing one. First slice = link + soft-remove (server-side); this is
+  // workflow-destructive (pending approvals cancelled, payroll footprint deactivated), so it is
+  // gated behind an explicit confirm and offered only for STRONG (near-certain) matches.
+  const mergeInto = async (intoEmployeeId: number, targetLabel: string) => {
+    if (!selectedId) return;
+    if (!confirm(`Merge this record into ${targetLabel}? This record will be closed as a duplicate — its pending approvals are cancelled and its payroll footprint deactivated. History is kept and linked for audit.`)) return;
+    setDupResolving(true);
+    setDupNotice('');
+    try {
+      await employeesApi.resolveDuplicate(selectedId, { resolution: 'merge', intoEmployeeId, reason: dupReason.trim() || undefined });
+      setActionNotice('Record merged into the existing employee.');
+      await load();
+      await openDetail(intoEmployeeId);
+    } catch (e: unknown) {
+      setDupNotice((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not merge. Try again.');
+    } finally {
+      setDupResolving(false);
+    }
+  };
+
   const editChangedKeys = Object.keys(editForm).filter((k) => editForm[k] !== editOriginal[k]);
   const formChanged = JSON.stringify(form) !== JSON.stringify(formOriginal);
 
@@ -617,6 +744,24 @@ export function EmployeesPage() {
     if (formChanged && !confirm('Discard this employee draft?')) return;
     setFormOpen(false);
     setFormError('');
+    setDuplicateWarning([]);
+  };
+
+  // ── Duplicate warning actions (create path — no new record exists yet) ──
+  // "View existing" opens the matched record; "Merge" abandons the draft and opens that record for
+  // editing (augment the existing person instead of creating a second). Both discard the draft.
+  const viewExistingFromCreate = (employeeId: number) => {
+    setDuplicateWarning([]);
+    setFormOpen(false);
+    setFormError('');
+    openDetail(employeeId);
+  };
+  const mergeFromCreate = (employeeId: number) => {
+    setDuplicateWarning([]);
+    setFormOpen(false);
+    setFormError('');
+    setAutoEditId(employeeId);
+    openDetail(employeeId);
   };
 
   const saveEdit = async () => {
@@ -1076,6 +1221,64 @@ export function EmployeesPage() {
                   </div>
                 ) : null}
 
+                {/* Possible-duplicate resolver — shown when this record carries a dup:* flag. The
+                    operator confirms it is a distinct person (clears the flag, audited) or merges it
+                    into an existing record. Merge is offered only for STRONG (ID) matches. */}
+                {dupFlag && (
+                  <div className="rounded-lg border border-fuchsia-300 bg-fuchsia-50/60 p-3 dark:border-fuchsia-500/40 dark:bg-fuchsia-500/[0.06]">
+                    <p className="flex items-center gap-1.5 text-sm font-bold text-fuchsia-700 dark:text-fuchsia-300">
+                      <Users className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      {dupFlag.label || 'Possible duplicate'}
+                    </p>
+                    <p className="mt-1 text-xs text-fuchsia-700/90 dark:text-fuchsia-300/90">
+                      {dupFlag.reason || 'This record may be the same person as an existing employee. Confirm they are distinct, or merge this into the existing record.'}
+                    </p>
+                    {dupMatches.length > 0 && (
+                      <ul className="mt-2 space-y-1.5">
+                        {dupMatches.map((m) => (
+                          <li key={m.employeeId} className="rounded-lg border border-fuchsia-200/70 bg-white/60 px-2.5 py-2 text-xs dark:border-fuchsia-500/20 dark:bg-white/[0.03]">
+                            {m.canView ? (
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="font-semibold text-slate-800 dark:text-slate-100">
+                                    {m.fullName} <span className="text-slate-400">{m.employeeCode}</span>
+                                    {m.matchType === 'strong'
+                                      ? <span className="ml-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
+                                      : <span className="ml-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
+                                  </p>
+                                  <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
+                                </div>
+                                <div className="flex shrink-0 gap-1.5">
+                                  <button type="button" onClick={() => openDetail(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">View</button>
+                                  {m.matchType === 'strong' && (
+                                    <button type="button" disabled={dupResolving} onClick={() => mergeInto(m.employeeId, `${m.fullName} (${m.employeeCode})`)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">Merge into this</button>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-slate-500 dark:text-slate-400">A matching record exists in another company. Contact a group administrator.</p>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="mt-2.5 space-y-1.5">
+                      <input
+                        value={dupReason}
+                        onChange={(e) => setDupReason(e.target.value)}
+                        placeholder="Reason (required to confirm distinct)"
+                        className="input w-full text-xs"
+                      />
+                      {dupNotice && <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400">{dupNotice}</p>}
+                      <div className="flex justify-end">
+                        <button type="button" disabled={dupResolving} onClick={confirmDistinct} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
+                          {dupResolving ? 'Saving…' : 'Confirm distinct person'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {activeTab === 'personal' && (
                   <DetailGrid rows={[
                     ['English name', selectedEmployee.englishName],
@@ -1268,12 +1471,57 @@ export function EmployeesPage() {
       <Modal isOpen={formOpen} title="Add Employee" size="xl" onClose={closeCreateModal} footer={
         <>
           <button type="button" onClick={closeCreateModal} className="btn-secondary">Cancel</button>
-          <button type="button" onClick={saveEmployee} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving...' : 'Create Employee'}</button>
+          <button type="button" onClick={() => saveEmployee()} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving...' : 'Create Employee'}</button>
         </>
       }>
         <div className="space-y-3">
           {formError && (
             <p className="rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-600 ring-1 ring-red-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/20">{formError}</p>
+          )}
+
+          {/* Duplicate-person warning (advisory pre-check + authoritative 409 backstop share it).
+              Never silently creates a dup and never hard-blocks — the operator resolves it here. */}
+          {duplicateWarning.length > 0 && (
+            <div className="rounded-xl border border-fuchsia-300 bg-fuchsia-50/70 p-3 dark:border-fuchsia-500/40 dark:bg-fuchsia-500/[0.08]" role="alert">
+              <p className="flex items-center gap-1.5 text-sm font-bold text-fuchsia-700 dark:text-fuchsia-300">
+                <Users className="h-4 w-4 shrink-0" aria-hidden="true" />
+                Possible existing {duplicateWarning.length === 1 ? 'employee' : 'employees'}
+              </p>
+              <p className="mt-1 text-xs text-fuchsia-700/90 dark:text-fuchsia-300/90">
+                This person may already be in the system. Creating a second record corrupts payroll, GOSI and headcount — review before continuing.
+              </p>
+              <ul className="mt-2 space-y-1.5">
+                {duplicateWarning.map((m) => (
+                  <li key={m.employeeId} className="rounded-lg border border-fuchsia-200/70 bg-white/60 px-2.5 py-2 text-xs dark:border-fuchsia-500/20 dark:bg-white/[0.03]">
+                    {m.canView ? (
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-slate-800 dark:text-slate-100">
+                            {m.fullName} <span className="text-slate-400">{m.employeeCode}</span>
+                            {m.matchType === 'strong'
+                              ? <span className="ml-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
+                              : <span className="ml-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
+                          </p>
+                          <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
+                        </div>
+                        <div className="flex shrink-0 gap-1.5">
+                          <button type="button" onClick={() => viewExistingFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">View existing</button>
+                          <button type="button" onClick={() => mergeFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">Merge</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-slate-500 dark:text-slate-400">A matching record exists in another company. Contact a group administrator.</p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-2.5 flex items-center justify-end gap-3">
+                <button type="button" onClick={() => setDuplicateWarning([])} className="text-xs font-semibold text-slate-500 underline">Keep editing</button>
+                <button type="button" onClick={() => saveEmployee(true)} disabled={saving} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
+                  {saving ? 'Creating…' : 'Create anyway'}
+                </button>
+              </div>
+            </div>
           )}
           <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           <Section title="Master Profile">
@@ -1422,6 +1670,23 @@ export function EmployeesPage() {
       />
     </div>
   );
+}
+
+// Build the pre-create duplicate probe from the create form. Identity values are read from the
+// compliance records (fieldKey → value) — the SAME source the server mirrors onto the typed
+// identity columns — so the advisory check and the authoritative commit agree on what to match.
+function buildDuplicateProbe(form: EmployeeCreateRequest): DuplicateCheckRequest {
+  const identityValues = (form.complianceRecords ?? [])
+    .filter((r) => (r.fieldValue ?? '').trim())
+    .map((r) => ({ fieldKey: r.fieldKey, value: (r.fieldValue ?? '').trim() }));
+  return {
+    englishName: form.englishName.trim(),
+    arabicName: form.arabicName?.trim() || undefined,
+    dateOfBirth: form.dateOfBirth || undefined,
+    nationality: form.nationality?.trim() || undefined,
+    companyId: form.companyId || undefined,
+    identityValues,
+  };
 }
 
 function cleanPayload(form: EmployeeCreateRequest): EmployeeCreateRequest {

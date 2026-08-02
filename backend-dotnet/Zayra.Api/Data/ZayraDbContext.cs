@@ -662,6 +662,31 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.DepartmentId, x.DesignationId })
                   .HasDatabaseName("ix_employees_occupancy")
                   .HasFilter("NOT is_deleted AND status IN ('Active','Offboarded','Suspended')");
+            // ── Duplicate-person detection: tenant-scoped (across companies) STRONG lookup indexes on
+            // every stored national-identity column. Filtered on `<> ''` so blank rows (the default) never
+            // bloat the index — same precedent as ix_employees_tenant_work_email above. NON-UNIQUE by design
+            // (N2): a unique constraint would turn two same-identity rows into a SaveChanges throw, breaking
+            // never-block-batch — the importer must be able to LAND both and flag them. HasFilter is ignored
+            // by the InMemory provider (tests unaffected). Comparison folds format variance in code; the
+            // index serves the common exact-value point-lookup the detector issues.
+            entity.HasIndex(x => new { x.TenantId, x.IdNumber })
+                  .HasDatabaseName("ix_employees_dup_id_number").HasFilter("id_number <> ''");
+            entity.HasIndex(x => new { x.TenantId, x.IqamaNumber })
+                  .HasDatabaseName("ix_employees_dup_iqama").HasFilter("iqama_number <> ''");
+            entity.HasIndex(x => new { x.TenantId, x.EmiratesId })
+                  .HasDatabaseName("ix_employees_dup_emirates_id").HasFilter("emirates_id <> ''");
+            entity.HasIndex(x => new { x.TenantId, x.Qid })
+                  .HasDatabaseName("ix_employees_dup_qid").HasFilter("qid <> ''");
+            entity.HasIndex(x => new { x.TenantId, x.CivilId })
+                  .HasDatabaseName("ix_employees_dup_civil_id").HasFilter("civil_id <> ''");
+            entity.HasIndex(x => new { x.TenantId, x.PassportNumber })
+                  .HasDatabaseName("ix_employees_dup_passport").HasFilter("passport_number <> ''");
+            // PROBABLE (name+DOB) blocking: makes the exact-DOB candidate load sargable.
+            entity.HasIndex(x => new { x.TenantId, x.DateOfBirth })
+                  .HasDatabaseName("ix_employees_dup_dob");
+            // Reverse "what merged into me" lookup for the merge audit link.
+            entity.HasIndex(x => new { x.TenantId, x.DuplicateOfEmployeeId })
+                  .HasDatabaseName("ix_employees_duplicate_of").HasFilter("duplicate_of_employee_id IS NOT NULL");
         });
 
         modelBuilder.Entity<Position>(entity =>

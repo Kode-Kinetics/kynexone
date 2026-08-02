@@ -29,8 +29,9 @@ public class EmployeeManagementService : IEmployeeManagementService
     private readonly INotificationService _notifications;
     private readonly IEstablishmentGuard _establishmentGuard;
     private readonly IEmployeeActivationGuard _activationGuard;
+    private readonly IEmployeeDuplicateDetector _duplicateDetector;
 
-    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null)
+    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null)
     {
         _db = db;
         _audit = audit;
@@ -43,6 +44,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         // Readiness/activation gate — same optional-with-fallback pattern; self-composes its resolver
         // + evaluator from db so direct-construction test sites keep enforcing.
         _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
+        // Duplicate-person detector — same optional-with-fallback: DI supplies it in production; direct
+        // test constructions keep the never-silent-dup backstop ENFORCING (self-composes from db).
+        _duplicateDetector = duplicateDetector ?? new EmployeeDuplicateDetector(db);
     }
 
     public Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, int page, int pageSize, CancellationToken cancellationToken)
@@ -91,6 +95,19 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        // ── AUTHORITATIVE DUPLICATE BACKSTOP (never-silent-dup) ─────────────────────────────────────
+        // Runs FIRST — before GenerateEmployeeCode (which persists an EmployeeIdRule sequence bump), so a
+        // refusal never burns a code number or leaves an orphan rule write (M1). Identity values come from
+        // request.ComplianceRecords (the create modal binds id numbers there; the scalar columns are only
+        // populated later inside the persist lambda by ApplyKnownComplianceMirror, so reading employee.*
+        // here would find them blank). Only a STRONG match refuses (S1); probable is advisory (pre-check).
+        var duplicateMatches = await _duplicateDetector.FindAsync(tenantId,
+            BuildCreateProbe(request, excludeEmployeeId: null), cancellationToken);
+        var strongDuplicates = duplicateMatches.Where(m => m.MatchType == DuplicateMatchTypes.Strong).ToList();
+        if (strongDuplicates.Count > 0 && !request.AcknowledgeDuplicate)
+            throw new DuplicatePersonException(strongDuplicates);   // → controller maps to advisory 409
+        // Any detected-but-proceeding case is audited AFTER creation (with the real employee id) — never silent.
+
         var code = request.ManualEmployeeCode ? Clean(request.EmployeeCode) : await GenerateEmployeeCode(tenantId, request, context, cancellationToken);
         if (string.IsNullOrWhiteSpace(code)) throw new InvalidOperationException("Employee code is required.");
         if (await _db.Employees.AnyAsync(x => x.TenantId == tenantId && x.EmployeeCode == code && !x.IsDeleted, cancellationToken))
@@ -136,6 +153,20 @@ public class EmployeeManagementService : IEmployeeManagementService
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.created", "Employee", employee.Id.ToString(), context, null, cancellationToken);
+        // NEVER-SILENT-DUP: a create that proceeded despite a detected match is durably audited against the
+        // real employee id — an acknowledged STRONG override, or a probable (name+DOB / passport-only) match
+        // that (per S1) never hard-stops the create but must still leave a record.
+        if (duplicateMatches.Count > 0)
+        {
+            var action = strongDuplicates.Count > 0 ? "employee.duplicate_override_created" : "employee.created_with_possible_duplicate";
+            await _audit.WriteAsync(action, "Employee", employee.Id.ToString(), context,
+                JsonSerializer.Serialize(new
+                {
+                    matchedEmployeeIds = duplicateMatches.Select(m => m.EmployeeId),
+                    matchType = strongDuplicates.Count > 0 ? "strong" : "probable",
+                    signals = duplicateMatches.SelectMany(m => m.Signals).Distinct(),
+                }), cancellationToken);
+        }
         return (await GetAsync(tenantId, employee.Id, true, context, cancellationToken))!;
     }
 
@@ -939,6 +970,31 @@ public class EmployeeManagementService : IEmployeeManagementService
         await Task.CompletedTask;
     }
 
+    /// <summary>Assemble the duplicate-detection probe for a create/update from the request. Identity values
+    /// are taken from ComplianceRecords by fieldKey (the create modal binds id numbers there) plus the
+    /// top-level IdNumber vocabulary the detector understands (iqama_number/emirates_id/qid/civil_id/
+    /// passport_number/id_number) — the SAME keys ApplyKnownComplianceMirror uses.</summary>
+    internal static DuplicateProbe BuildCreateProbe(EmployeeCreateRequest request, int? excludeEmployeeId)
+    {
+        var identity = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rec in request.ComplianceRecords ?? [])
+        {
+            var key = Clean(rec.FieldKey).ToLowerInvariant();
+            var value = Clean(rec.FieldValue);
+            if (value.Length == 0) continue;
+            if (DuplicateIdentityFields.Map.ContainsKey(key) && !identity.ContainsKey(key))
+                identity[key] = value;
+        }
+        return new DuplicateProbe(
+            EnglishName: Clean(request.EnglishName),
+            ArabicName: Clean(request.ArabicName),
+            DateOfBirth: request.DateOfBirth,
+            Nationality: Clean(request.Nationality),
+            CompanyId: request.CompanyId,
+            IdentityValues: identity,
+            ExcludeEmployeeId: excludeEmployeeId);
+    }
+
     private static void ApplyKnownComplianceMirror(Employee employee, EmployeeComplianceRecord record)
     {
         // For the GCC-ID number records the create modal carries the expiry on the SAME record as the
@@ -962,6 +1018,13 @@ public class EmployeeManagementService : IEmployeeManagementService
                 if (record.ExpiryDate.HasValue) employee.IqamaExpiryDate = record.ExpiryDate;
                 break;
             case "iqama_expiry": employee.IqamaExpiryDate = record.ExpiryDate; break;
+            // Saudi host-national ID (Hawiyya, complianceFieldKey "id_number"). No first-class expiry
+            // scalar exists for it, so this is a plain value copy — but it MUST be mirrored, because
+            // IdNumber is what the duplicate detector's national-ID pass matches on (BuildCreateProbe →
+            // EmployeeDuplicateDetector). Without this a modal-created citizen's IdNumber stays "" and a
+            // repeat Hawiyya on the create path would slip through un-flagged.
+            case "id_number":
+            case "national_id": employee.IdNumber = record.FieldValue; break;
             case "muqeem_reference": employee.MuqeemNumber = record.FieldValue; break;
             case "gosi_reference": employee.GosiReference = record.FieldValue; break;
             case "qiwa_contract_reference": employee.QiwaContractNumber = record.FieldValue; break;

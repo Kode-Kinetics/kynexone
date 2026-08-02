@@ -349,6 +349,10 @@ public static class ImportGapHealer
         "pay:salaryHeld" => e.GradeId is not null && (e.Salary ?? 0m) > 0m,
         "link:manager" => e.ManagerEmployeeId is not null,
         "link:supervisor" => e.SupervisorEmployeeId is not null,
+        // dup:* need an explicit human decision (confirm distinct / merge) — never auto-heal. The resolve
+        // endpoint stamps ResolvedAtUtc directly. (The `_ => false` default already covers these; the
+        // explicit arms document that a duplicate flag clearing is a human action, not a field completion.)
+        "dup:strong" or "dup:possible" => false,
         // pay:salaryReview / org:establishment need a human decision — never auto-heal.
         _ => false,
     };

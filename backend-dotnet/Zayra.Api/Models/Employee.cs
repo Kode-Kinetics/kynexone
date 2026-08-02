@@ -163,4 +163,11 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public DateTime? RetentionUntilUtc { get; set; }
     public string PrivacyStatus { get; set; } = string.Empty;
     public DateTime? RedactedAtUtc { get; set; }
+
+    // ── Duplicate-person resolution (merge first slice) ────────────────────────
+    /// <summary>When this record was merged into an existing one as a confirmed duplicate, the surviving
+    /// employee's Id. The row itself is soft-removed (IsDeleted, PrivacyStatus="MergedDuplicate"); this link
+    /// preserves the audit trail and lets a later, fuller field-by-field merge key off it. Null = not merged.
+    /// Additive/nullable (migration-discipline: ships with its index in one migration).</summary>
+    public int? DuplicateOfEmployeeId { get; set; }
 }

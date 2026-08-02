@@ -129,6 +129,9 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
             ["link:supervisor"] = "Supervisor not linked",
             ["pay:salaryHeld"] = "Salary held (no grade)",
             ["pay:salaryReview"] = "Salary needs review",
+            // Duplicate-person flags (advisory, human-resolved — never auto-heal). Category "dup".
+            ["dup:strong"] = "Possible duplicate (ID match)",
+            ["dup:possible"] = "Possible duplicate (name+DOB)",
         };
 
     /// <summary>Map a persisted import gap type into an advisory (fail-open, recommended-gate) readiness item.</summary>

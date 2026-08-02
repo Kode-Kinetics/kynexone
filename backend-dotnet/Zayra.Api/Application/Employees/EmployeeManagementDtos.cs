@@ -41,7 +41,11 @@ public record EmployeeCreateRequest(
     EmployeePayrollProfileRequest? PayrollProfile,
     EmployeeSalaryBreakdownRequest? SalaryBreakdown,
     IReadOnlyCollection<EmployeeComplianceRecordRequest>? ComplianceRecords,
-    Guid? PositionId = null);
+    Guid? PositionId = null,
+    // Explicit "create anyway" override for the duplicate-person backstop. Default false → an
+    // unacknowledged STRONG national-identity match is refused with 409 possible_duplicate (never-silent-
+    // dup). Set only when the operator dismisses the warning; the create then records an audited override.
+    bool AcknowledgeDuplicate = false);
 
 public record EmployeePayrollProfileRequest(
     string? BankName,
