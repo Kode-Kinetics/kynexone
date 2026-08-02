@@ -5,8 +5,10 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Scope;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Data;
@@ -22,6 +24,7 @@ public class ZayraDbContext : DbContext
     private readonly IHttpContextAccessor? _httpContextAccessor;
     private readonly ILogger<ZayraDbContext>? _logger;
     private readonly IOptions<EntityScopeOptions>? _scopeOptions;
+    private readonly IOptions<JwtOptions>? _jwtOptions;
 
     /// <summary>
     /// Current request's tenant, resolved lazily from the ambient HttpContext.
@@ -37,6 +40,43 @@ public class ZayraDbContext : DbContext
             return null;
         }
     }
+
+    /// <summary>
+    /// True when the current context may LEGITIMATELY bypass the tenant read filter. Exactly three
+    /// bypass-eligible sources; every OTHER authenticated principal enforces its own tenant:
+    ///   (1) an explicit <see cref="SystemScopeContext"/> ambient flag — system work under a principal;
+    ///   (2) no authenticated principal at all — seeders, boot, background workers, and pre-auth
+    ///       login/refresh (the documented, historical bypass, now stated positively);
+    ///   (3) the platform super-admin — is_platform_admin + the platform audience — the by-design
+    ///       omnipotent cross-tenant actor that PlatformController depends on. This is dual-gated
+    ///       exactly like the PlatformAdmin authorization policy.
+    ///
+    /// A normal tenant/impersonation token (always carries tenant_id) is NOT system scope and is
+    /// filtered to its own tenant. A tenantless NON-platform authenticated principal (the "trap for
+    /// the next endpoint") is likewise NOT system scope: with no tenant_id it matches ZERO rows —
+    /// failing CLOSED — rather than the old fail-OPEN "see everything".
+    /// </summary>
+    private bool _isSystemScope
+    {
+        get
+        {
+            if (SystemScopeContext.IsActive) return true;
+            var user = _httpContextAccessor?.HttpContext?.User;
+            if (user?.Identity?.IsAuthenticated != true) return true; // pre-HTTP / system context
+            // Platform super-admin: short-circuit the is_platform_admin claim BEFORE dereferencing
+            // _jwtOptions so the many test contexts constructed without IOptions<JwtOptions> never NRE.
+            return user.HasClaim("is_platform_admin", "true")
+                && _jwtOptions?.Value.PlatformAudience is { } platformAudience
+                && user.HasClaim("aud", platformAudience);
+        }
+    }
+
+    /// <summary>
+    /// True when the request carries a concrete tenant_id claim. Used to guard the tenant-equality
+    /// sub-clause of every query filter so a tenantless (but authenticated, non-system) principal
+    /// matches zero rows instead of leaking null-TenantId or Guid.Empty rows.
+    /// </summary>
+    private bool _hasRequestTenant => _tenantId.HasValue;
 
     /// <summary>
     /// Current authenticated user ID. Resolved lazily so pool-reused contexts stamp the
@@ -82,12 +122,16 @@ public class ZayraDbContext : DbContext
         DbContextOptions<ZayraDbContext> options,
         IHttpContextAccessor? httpContextAccessor = null,
         ILogger<ZayraDbContext>? logger = null,
-        IOptions<EntityScopeOptions>? scopeOptions = null)
+        IOptions<EntityScopeOptions>? scopeOptions = null,
+        IOptions<JwtOptions>? jwtOptions = null)
         : base(options)
     {
         _logger = logger;
         _httpContextAccessor = httpContextAccessor;
         _scopeOptions = scopeOptions;
+        // Optional: DI (a singleton IOptions<JwtOptions>) supplies it in prod; test constructors
+        // that omit it fall back to "not platform" — safe because those contexts carry tenant_id.
+        _jwtOptions = jwtOptions;
     }
 
     /// <summary>
@@ -118,12 +162,17 @@ public class ZayraDbContext : DbContext
                 NormalizeDateTimeKinds(entry);
         }
         await EnforceCompanyScopeOnWritesAsync(cancellationToken);
+        EnforceTenantScopeOnWrites();
         return await base.SaveChangesAsync(cancellationToken);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnforceAuditLogAppendOnly();
+        // The tenant write guard is pure ChangeTracker inspection (no DB I/O), so it runs on the
+        // synchronous path too — closing the gap where SaveChanges() enforced no scope at all.
+        // (Audit/actor + company stamping remain async-only, a pre-existing divergence.)
+        EnforceTenantScopeOnWrites();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
@@ -267,6 +316,73 @@ public class ZayraDbContext : DbContext
             throw new InvalidOperationException(
                 $"company_scope_required: {entry.Metadata.ClrType.Name} in a multi-company tenant needs an " +
                 "explicit CompanyId (or an employee linkage to derive it from).");
+        }
+    }
+
+    /// <summary>
+    /// Write-side tenant guard — the mirror of <see cref="EnforceCompanyScopeOnWritesAsync"/> on
+    /// the TENANT axis. Pure ChangeTracker inspection (no DB I/O). In a USER context (authenticated
+    /// principal carrying a tenant_id):
+    ///   Added    → a missing/empty TenantId is STAMPED from the ambient tenant (no more Guid.Empty/
+    ///              null orphan rows); a foreign TenantId is REJECTED (cross_tenant_write_blocked).
+    ///   Modified → a row whose stored TenantId belongs to another tenant (e.g. loaded via
+    ///              IgnoreQueryFilters) is REJECTED; changing/nulling TenantId is REJECTED
+    ///              (tenant_reassignment_blocked, mirroring the company-reassignment block).
+    /// System contexts (seeders, boot, background, an explicit SystemScopeContext, and the platform
+    /// super-admin whose principal carries no tenant_id) are trusted and skipped — mirroring the
+    /// company guard's system-context skip so no legitimate cross-tenant/system write is affected.
+    /// </summary>
+    private void EnforceTenantScopeOnWrites()
+    {
+        if (SystemScopeContext.IsActive) return;
+        var user = _httpContextAccessor?.HttpContext?.User;
+        var ambientNullable = _tenantId;
+        // System / platform context (no principal, or an authenticated principal with no tenant_id
+        // such as the platform super-admin) — trusted by design, exactly like the company guard.
+        if (user?.Identity?.IsAuthenticated != true || ambientNullable is null) return;
+        var ambient = ambientNullable.Value;
+
+        foreach (var entry in ChangeTracker.Entries())
+        {
+            if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
+            if (entry.Entity is not (ITenantOwned or INullableTenantOwned)) continue;
+            if (entry.Metadata.FindProperty("TenantId") is null) continue;
+
+            if (entry.State == EntityState.Added)
+            {
+                var current = ResolveEntryTenantId(entry);
+                if (current is null || current.Value == Guid.Empty)
+                {
+                    // Stamp the ambient tenant onto the typed CLR property (EF tracks the change).
+                    switch (entry.Entity)
+                    {
+                        case ITenantOwned owned: owned.TenantId = ambient; break;
+                        case INullableTenantOwned nullable: nullable.TenantId = ambient; break;
+                    }
+                }
+                else if (current.Value != ambient)
+                {
+                    throw new UnauthorizedAccessException(
+                        $"cross_tenant_write_blocked: cannot create {entry.Metadata.ClrType.Name} in a tenant outside your own.");
+                }
+            }
+            else // Modified
+            {
+                var tenantProp = entry.Property("TenantId");
+                var original = (Guid?)tenantProp.OriginalValue;
+                var current = (Guid?)tenantProp.CurrentValue;
+
+                // Row is owned by another tenant (e.g. materialised via IgnoreQueryFilters) — the
+                // caller has no business mutating it. Guid.Empty (platform defaults) is not "owned".
+                if (original is { } orig && orig != Guid.Empty && orig != ambient)
+                    throw new UnauthorizedAccessException(
+                        $"cross_tenant_write_blocked: cannot modify a {entry.Metadata.ClrType.Name} owned by another tenant.");
+
+                // Reassigning (or nulling-out) the tenant is never allowed in a user context.
+                if (current != original)
+                    throw new InvalidOperationException(
+                        $"tenant_reassignment_blocked: {entry.Metadata.ClrType.Name} rows cannot change tenant outside a system context.");
+            }
         }
     }
 
@@ -3051,33 +3167,33 @@ public class ZayraDbContext : DbContext
 
         if (hasSoftDelete && isOperationalScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId))
                      && !EF.Property<bool>(e, "IsDeleted")
                      && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
                          && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
         else if (hasSoftDelete && isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId))
                      && !EF.Property<bool>(e, "IsDeleted")
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
                          || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
         else if (hasSoftDelete)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId))
                      && !EF.Property<bool>(e, "IsDeleted"));
         else if (isOperationalScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId))
                      && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
                          && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
         else if (isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId)
+                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId))
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
                          || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
         else
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => _tenantId == null || EF.Property<Guid>(e, "TenantId") == _tenantId);
+                e => _isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId));
     }
 
     private void SetTenantFilterNullable<TEntity>(ModelBuilder modelBuilder) where TEntity : class
@@ -3088,33 +3204,33 @@ public class ZayraDbContext : DbContext
 
         if (hasSoftDelete && isOperationalScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId))
                      && !EF.Property<bool>(e, "IsDeleted")
                      && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
                          && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
         else if (hasSoftDelete && isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId))
                      && !EF.Property<bool>(e, "IsDeleted")
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
                          || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
         else if (hasSoftDelete)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId))
                      && !EF.Property<bool>(e, "IsDeleted"));
         else if (isOperationalScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId))
                      && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
                          && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
         else if (isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId)
+                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId))
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
                          || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
         else
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => _tenantId == null || EF.Property<Guid?>(e, "TenantId") == _tenantId);
+                e => _isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId));
     }
 
     private static void ApplySnakeCaseColumns(ModelBuilder modelBuilder)

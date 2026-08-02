@@ -556,6 +556,13 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 app.UseAuthentication();
+// Per-route audience segregation (defence-in-depth): reject platform-audience tokens on tenant
+// /api/* routes so a platform token can never exercise the cross-tenant read bypass on tenant data.
+// Placed AFTER UseAuthentication (User is populated) and BEFORE UseAuthorization (runs first).
+// Platform-admin cross-tenant endpoints all live under /api/platform (allowlisted); impersonation
+// and break-glass carry the tenant audience and are never matched.
+app.Use((context, next) =>
+    Zayra.Api.Infrastructure.Http.AudienceRouteGuard.InvokeAsync(context, next, jwtOptions.PlatformAudience));
 app.UseAuthorization();
 app.MapControllers();
 app.MapGet("/health/live", () => Results.Ok(new

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Testcontainers.PostgreSql;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Employees;
@@ -57,6 +58,20 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString)
             .Options,
         accessor);
+
+    /// <summary>
+    /// Overload that also supplies IOptions&lt;JwtOptions&gt; so the DbContext can evaluate the
+    /// platform super-admin bypass branch (is_platform_admin + platform audience) — the branch that
+    /// PlatformController relies on and that the no-accessor PlatformTestBase path cannot exercise.
+    /// </summary>
+    public ZayraDbContext CreateDbWithAccessor(IHttpContextAccessor accessor, IOptions<JwtOptions> jwtOptions) => new(
+        new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(ConnectionString)
+            .Options,
+        accessor,
+        logger: null,
+        scopeOptions: null,
+        jwtOptions: jwtOptions);
 
     // Minimal tenant seed required for import tests (role resolver looks up "Employee" role)
     public static async Task<Guid> SeedMinimalTenant(ZayraDbContext db)
