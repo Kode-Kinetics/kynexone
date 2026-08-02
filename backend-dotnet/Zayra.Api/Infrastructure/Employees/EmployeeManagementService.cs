@@ -45,7 +45,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
     }
 
-    public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, int page, int pageSize, CancellationToken cancellationToken)
+    public Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, int page, int pageSize, CancellationToken cancellationToken)
+        => SearchAsync(tenantId, search, status, department, null, null, null, page, pageSize, cancellationToken);
+
+    public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, int page, int pageSize, CancellationToken cancellationToken)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -59,6 +62,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(x => x.Department == department);
+        // SERVER-SIDE readiness / import-gap filter — the whole dataset, so the deep-link works past page 1.
+        query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
 
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(x => x.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
@@ -995,6 +1000,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (snapshot is null) return;
         var policy = await _activationGuard.ResolvePolicyAsync(employee.TenantId.Value, employee.CompanyId, employee.CountryCode, employee.Nationality, ct);
         var readiness = _activationGuard.Evaluate(snapshot, policy);
+        // Durable advisory self-heal (import gaps): close ones now completed, keep still-open ones as a
+        // NeedsAttention signal — never touches Blocking, so activation stays unblocked.
+        readiness = await ImportGapHealer.HealAndMergeAsync(_db, employee, readiness, ct);
         employee.ReadinessState = readiness.State;
         employee.ActivationBlockersCount = readiness.Blocking.Count;
         employee.ReadinessEvaluatedAtUtc = DateTime.UtcNow;

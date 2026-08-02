@@ -314,7 +314,14 @@ public class SetupAssistantController : ControllerBase
             var config = await _db.TenantHrConfigs.FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
             if (config is null)
             {
-                config = new TenantHrConfig { TenantId = tenantId };
+                // Onboarding tenants default to ADVISORY establishment enforcement (budget warns, never
+                // blocks) so a fresh org skeleton can be populated without headcount budgets fighting the
+                // import. Existing tenants and the TenantHrConfig PUT path are untouched.
+                config = new TenantHrConfig
+                {
+                    TenantId = tenantId,
+                    EstablishmentEnforcementMode = Zayra.Api.Infrastructure.Organization.EstablishmentGuardService.ModeAdvisory,
+                };
                 _db.TenantHrConfigs.Add(config);
                 Bump("hrConfig", 1);
             }

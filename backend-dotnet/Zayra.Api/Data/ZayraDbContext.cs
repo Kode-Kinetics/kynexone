@@ -564,6 +564,7 @@ public class ZayraDbContext : DbContext
     public DbSet<UserRole> UserRoles => Set<UserRole>();
     public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
     public DbSet<MigrationImportBatch> MigrationImportBatches => Set<MigrationImportBatch>();
+    public DbSet<EmployeeImportGap> EmployeeImportGaps => Set<EmployeeImportGap>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
@@ -649,6 +650,11 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.Department });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.HasIndex(x => new { x.TenantId, x.PositionId });
+            // Manager-linking email fallback (bulk import) + future email joins. Non-unique, filtered:
+            // work_email is free text and may repeat/blank; the importer resolves code-first, email-fallback.
+            entity.HasIndex(x => new { x.TenantId, x.WorkEmail })
+                  .HasDatabaseName("ix_employees_tenant_work_email")
+                  .HasFilter("work_email <> ''");
             // Partial occupancy index for the establishment guard/matrix. The status literals
             // mirror EstablishmentOccupancy.OccupyingStatuses (EmployeeStatuses constants — the
             // employment-lifecycle vocabulary, not tenant business data). HasFilter is ignored by
@@ -1780,6 +1786,19 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.ExternalBatchId }).IsUnique().HasFilter("external_batch_id IS NOT NULL");
             entity.HasIndex(x => new { x.TenantId, x.PackageChecksum });
             entity.HasIndex(x => new { x.TenantId, x.Status, x.CreatedAtUtc });
+        });
+        modelBuilder.Entity<EmployeeImportGap>(entity =>
+        {
+            entity.ToTable("employee_import_gaps");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.GapType).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.GapCategory).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.Detail).HasMaxLength(500);
+            entity.Property(x => x.RawValue).HasMaxLength(200);
+            entity.HasIndex(x => new { x.TenantId, x.ImportBatchId });
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId });
+            // Server-side "needs info" / gap deep-link filter (open gaps by type).
+            entity.HasIndex(x => new { x.TenantId, x.GapType, x.ResolvedAtUtc });
         });
 
         modelBuilder.Entity<RolePermission>(entity =>

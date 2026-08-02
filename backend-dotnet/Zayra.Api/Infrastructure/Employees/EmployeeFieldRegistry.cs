@@ -385,7 +385,9 @@ public static class EmployeeFieldRegistry
         D("Grade", "Grade", "organization", "Grade", "lookup", binding: "org:gradeId");
         D("PositionCode", "Position", "organization", "PositionCode", "lookup", binding: "org:positionId");
         D("ManagerEmployeeCode", "Line manager", "organization", "ManagerEmployeeCode", "lookup", binding: "emp.ManagerEmployeeId(code)");
+        D("ManagerEmail", "Line manager email", "organization", "ManagerEmail", "text", binding: "emp.ManagerEmployeeId(email)");
         D("SupervisorEmployeeCode", "Supervisor", "organization", "SupervisorEmployeeCode", "lookup", binding: "emp.SupervisorEmployeeId(code)");
+        D("SupervisorEmail", "Supervisor email", "organization", "SupervisorEmail", "text", binding: "emp.SupervisorEmployeeId(email)");
         D("Status", "Status", "employment", "Status", "select", binding: "emp.Status");
         D("JoiningDate", "Joining date", "employment", "JoiningDate", "date", ar: true, binding: "emp.JoiningDate");
         D("ConfirmationDate", "Confirmation date", "employment", "ConfirmationDate", "date", binding: "emp.ConfirmationDate");

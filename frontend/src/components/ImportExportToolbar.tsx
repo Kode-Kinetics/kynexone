@@ -4,6 +4,23 @@ import { useRef, useState } from 'react';
 import { AlertTriangle, ArrowRight, CheckCircle2, Download, FileUp, Upload } from 'lucide-react';
 import { Modal } from './Modal';
 
+/**
+ * One typed org-skeleton / linkage gap on an imported (Draft) row. `type` is the deep-link key
+ * (e.g. "link:manager", "org:department", "pay:salaryHeld"); each gap is a People-list filter.
+ */
+export interface ImportGap {
+  type: string;
+  category?: string;
+  detail: string;
+}
+
+/** Filter payload the results view hands to the "needs info" worklist deep-link. */
+export interface ImportResultFilter {
+  readiness?: string;
+  gapType?: string;
+  importBatchId?: string;
+}
+
 export interface ImportResult {
   received: number;
   created: number;
@@ -17,7 +34,90 @@ export interface ImportResult {
   hierarchyLinked?: number;
   payrollProfilesCreated?: number;
   /** Rows created but not activatable (imported as Draft, need completion before going Active). */
-  createdIncomplete?: Array<{ employeeId: number; employeeCode: string; name: string; blockingCount: number }>;
+  createdIncomplete?: Array<{ employeeId: number; employeeCode: string; name: string; blockingCount: number; gaps?: ImportGap[] }>;
+  // ── Countable org-skeleton summary (accept-never-block). All optional; the summary line
+  //    degrades to created/skipped when the server omits them. ──
+  imported?: number;
+  receivedTotal?: number;
+  skippedNoName?: number;
+  skippedDupCode?: number;
+  incompleteDraft?: number;
+  managersUnresolved?: number;
+  supervisorsUnresolved?: number;
+  newDepartments?: number;
+  newBranches?: number;
+  salariesHeld?: number;
+  salariesForReview?: number;
+}
+
+/** Display metadata + singular/plural label for each typed gap deep-link. */
+const GAP_META: Record<string, { one: string; many: string }> = {
+  'link:manager': { one: 'manager unresolved', many: 'managers unresolved' },
+  'link:supervisor': { one: 'supervisor unresolved', many: 'supervisors unresolved' },
+  'pay:salaryHeld': { one: 'salary held', many: 'salaries held' },
+  'pay:salaryReview': { one: 'salary for review', many: 'salaries for review' },
+  'org:company': { one: 'company unassigned', many: 'companies unassigned' },
+  'org:department': { one: 'new department', many: 'new departments' },
+  'org:branch': { one: 'new branch', many: 'new branches' },
+  'org:grade': { one: 'grade unresolved', many: 'grades unresolved' },
+  'org:position': { one: 'position unresolved', many: 'positions unresolved' },
+  'org:establishment': { one: 'over budget', many: 'over budget' },
+};
+
+function gapLabel(type: string, count: number): string {
+  const meta = GAP_META[type];
+  if (meta) return count === 1 ? meta.one : meta.many;
+  return type; // unknown type — show the raw key rather than dropping it
+}
+
+/**
+ * Roll every created-incomplete row's typed gaps up into per-type occurrence counts and the
+ * distinct raw values seen (used to derive "N new departments" when the server omits the field).
+ */
+function aggregateGaps(result: ImportResult): { counts: Map<string, number>; distinct: Map<string, Set<string>> } {
+  const counts = new Map<string, number>();
+  const distinct = new Map<string, Set<string>>();
+  for (const row of result.createdIncomplete ?? []) {
+    for (const gap of row.gaps ?? []) {
+      counts.set(gap.type, (counts.get(gap.type) ?? 0) + 1);
+      if (!distinct.has(gap.type)) distinct.set(gap.type, new Set());
+      distinct.get(gap.type)!.add(gap.detail);
+    }
+  }
+  return { counts, distinct };
+}
+
+/**
+ * Build the countable one-line summary, e.g.
+ * "Imported 214/220 · 6 skipped (2 no-name, 4 dup-code) · 41 incomplete(Draft) · 12 managers
+ *  unresolved · 3 new departments · 2 new branches · 5 salaries held".
+ * Prefers the server's counters, falls back to created/skipped + gap aggregation so it stays
+ * accurate before the richer server fields land.
+ */
+function buildSummaryLine(result: ImportResult, agg: { counts: Map<string, number>; distinct: Map<string, Set<string>> }): string {
+  const imported = result.imported ?? result.created;
+  const receivedTotal = result.receivedTotal ?? result.received;
+  const incompleteDraft = result.incompleteDraft ?? (result.createdIncomplete?.length ?? 0);
+  const managersUnresolved = result.managersUnresolved ?? (agg.counts.get('link:manager') ?? 0);
+  const newDepartments = result.newDepartments ?? (agg.distinct.get('org:department')?.size ?? 0);
+  const newBranches = result.newBranches ?? (agg.distinct.get('org:branch')?.size ?? 0);
+  const salariesHeld = result.salariesHeld ?? (agg.counts.get('pay:salaryHeld') ?? 0);
+
+  const parts: string[] = [`Imported ${imported}/${receivedTotal}`];
+  if (result.skipped > 0) {
+    const noName = result.skippedNoName;
+    const dup = result.skippedDupCode;
+    const breakdown = noName !== undefined || dup !== undefined
+      ? ` (${noName ?? 0} no-name, ${dup ?? 0} dup-code)`
+      : '';
+    parts.push(`${result.skipped} skipped${breakdown}`);
+  }
+  if (incompleteDraft > 0) parts.push(`${incompleteDraft} incomplete(Draft)`);
+  if (managersUnresolved > 0) parts.push(`${managersUnresolved} managers unresolved`);
+  if (newDepartments > 0) parts.push(`${newDepartments} new ${newDepartments === 1 ? 'department' : 'departments'}`);
+  if (newBranches > 0) parts.push(`${newBranches} new ${newBranches === 1 ? 'branch' : 'branches'}`);
+  if (salariesHeld > 0) parts.push(`${salariesHeld} ${salariesHeld === 1 ? 'salary held' : 'salaries held'}`);
+  return parts.join(' · ');
 }
 
 /** One projected row from a pre-commit dry-run. */
@@ -90,8 +190,11 @@ export interface ImportExportToolbarProps {
    * instead of the 5-second toast. Importers that omit this keep the original toast flow.
    */
   onPreview?: (csvContent: string) => Promise<ImportPreview>;
-  /** Opt-in: deep-link from the results view to the "needs info" worklist. */
-  onViewIncomplete?: () => void;
+  /**
+   * Opt-in: deep-link from the results view to the "needs info" worklist. An optional filter
+   * narrows the worklist to a specific typed gap (e.g. link:manager) within this import batch.
+   */
+  onViewIncomplete?: (filter?: ImportResultFilter) => void;
 }
 
 interface Toast {
@@ -303,14 +406,19 @@ export function ImportExportToolbar({
     downloadCsv([header.join(','), ...lines].join('\n'), 'import-preview.csv');
   };
 
+  // Full audit CSV: every error, every warning, every created-incomplete row, and one row per
+  // typed gap (so the download is the complete accept-never-block ledger, not just the toasts).
   const downloadResultReport = () => {
     if (!result) return;
-    const rows: string[] = [['Type', 'Detail'].join(',')];
-    (result.errors ?? []).forEach((m) => rows.push([csvCell('Error'), csvCell(m)].join(',')));
-    (result.warnings ?? []).forEach((m) => rows.push([csvCell('Warning'), csvCell(m)].join(',')));
-    (result.createdIncomplete ?? []).forEach((c) =>
-      rows.push([csvCell('Created (incomplete)'), csvCell(`${c.name} (${c.employeeCode}) — ${c.blockingCount} to activate`)].join(',')),
-    );
+    const rows: string[] = [['Type', 'EmployeeCode', 'Detail'].join(',')];
+    (result.errors ?? []).forEach((m) => rows.push([csvCell('Error'), csvCell(''), csvCell(m)].join(',')));
+    (result.warnings ?? []).forEach((m) => rows.push([csvCell('Warning'), csvCell(''), csvCell(m)].join(',')));
+    (result.createdIncomplete ?? []).forEach((c) => {
+      rows.push([csvCell('Created (incomplete)'), csvCell(c.employeeCode), csvCell(`${c.name} — ${c.blockingCount} to activate`)].join(','));
+      (c.gaps ?? []).forEach((g) =>
+        rows.push([csvCell(`Gap ${g.type}`), csvCell(c.employeeCode), csvCell(g.detail)].join(',')),
+      );
+    });
     downloadCsv(rows.join('\n'), 'import-results.csv');
   };
 
@@ -486,7 +594,11 @@ export function ImportExportToolbar({
                 Download report
               </button>
               {onViewIncomplete && incompleteCount > 0 && (
-                <button type="button" className="btn-primary" onClick={() => { onViewIncomplete(); setResult(null); }}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => { onViewIncomplete({ readiness: 'NotReady', importBatchId: result.importBatchId }); setResult(null); }}
+                >
                   View the {incompleteCount} incomplete
                   <ArrowRight className="h-3.5 w-3.5" />
                 </button>
@@ -496,13 +608,44 @@ export function ImportExportToolbar({
           }
         >
           <div className="space-y-3">
+            {/* Countable one-line summary — the accept-never-block ledger at a glance. */}
+            <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 dark:bg-white/[0.04] dark:text-slate-200">
+              {buildSummaryLine(result, aggregateGaps(result))}
+            </p>
+
             <div className="flex flex-wrap gap-2 text-xs">
               <span className="inline-flex items-center gap-1 rounded-md bg-emeraldZ/10 px-2 py-1 font-semibold text-emerald-700 ring-1 ring-emeraldZ/20 dark:text-emerald-300">
-                <CheckCircle2 className="h-3.5 w-3.5" /> {result.created} created
+                <CheckCircle2 className="h-3.5 w-3.5" /> {result.imported ?? result.created} created
               </span>
               {result.skipped > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{result.skipped} skipped</span>}
               {incompleteCount > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-700 ring-1 ring-amber-400/25 dark:text-amber-300">{incompleteCount} inactive · needs info</span>}
             </div>
+
+            {/* Per-gap deep-link chips: each jumps straight to the filtered "needs info" worklist. */}
+            {(() => {
+              const { counts } = aggregateGaps(result);
+              const entries = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+              if (entries.length === 0 || !onViewIncomplete) return null;
+              return (
+                <div>
+                  <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-400">Jump to a gap</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {entries.map(([type, count]) => (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => { onViewIncomplete({ gapType: type, importBatchId: result.importBatchId }); setResult(null); }}
+                        className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-400/25 transition-colors hover:bg-amber-400/25 dark:text-amber-300"
+                        title={`Filter the People list to these ${gapLabel(type, count)}`}
+                      >
+                        {gapLabel(type, count)}
+                        <span className="font-bold">{count}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {incompleteCount > 0 && (
               <p className="text-xs text-slate-500 dark:text-slate-400">

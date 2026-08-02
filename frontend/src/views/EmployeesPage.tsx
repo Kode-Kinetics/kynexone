@@ -62,6 +62,19 @@ const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'P
 // employees from this list, so filtering by it would always return empty. (Former staff live in the
 // Ex-Employees tab.) The full statusOptions list is still used by the status-change selector.
 const activeStatusFilterOptions: StatusFilter[] = statusOptions.filter((s) => s !== 'Terminated');
+// Human labels for the typed import gaps the results view can deep-link the People list into.
+const GAP_FILTER_LABELS: Record<string, string> = {
+  'link:manager': 'Managers unresolved',
+  'link:supervisor': 'Supervisors unresolved',
+  'pay:salaryHeld': 'Salaries held',
+  'pay:salaryReview': 'Salaries for review',
+  'org:company': 'Company unassigned',
+  'org:department': 'New departments',
+  'org:branch': 'New branches',
+  'org:grade': 'Grades unresolved',
+  'org:position': 'Positions unresolved',
+  'org:establishment': 'Over budget',
+};
 const tabs: { id: DetailTab; label: string }[] = [
   { id: 'personal', label: 'Personal Information' },
   { id: 'employment', label: 'Employment Information' },
@@ -170,9 +183,13 @@ export function EmployeesPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<StatusFilter>('');
-  // Client-side readiness refinement over the loaded page (the list endpoint has no server-side
-  // readiness filter). "Needs info" = the Blocked worklist the import results view deep-links into.
-  const [readinessFilter, setReadinessFilter] = useState<'' | 'Blocked' | 'Ready'>('');
+  // Server-side readiness worklist filter (paginates correctly across ALL pages, not just the
+  // loaded page). "Needs info" = the worklist the import results view deep-links into.
+  const [readinessFilter, setReadinessFilter] = useState<'' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready'>('');
+  // Per-gap deep-link from the import results view: narrow the worklist to one typed gap
+  // (e.g. link:manager) within a specific import batch. Both are server-side filters.
+  const [gapTypeFilter, setGapTypeFilter] = useState('');
+  const [importBatchFilter, setImportBatchFilter] = useState('');
   const [view, setView] = useState<'current' | 'ex'>('current');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -247,7 +264,15 @@ export function EmployeesPage() {
     setLoading(true);
     setError('');
     try {
-      const res = await employeesApi.list({ search, status, page, pageSize });
+      const res = await employeesApi.list({
+        search,
+        status,
+        page,
+        pageSize,
+        readiness: readinessFilter || undefined,
+        gapType: gapTypeFilter || undefined,
+        importBatchId: importBatchFilter || undefined,
+      });
       setEmployees(res.items);
       setTotal(res.total);
     } catch {
@@ -255,7 +280,7 @@ export function EmployeesPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, status]);
+  }, [page, search, status, readinessFilter, gapTypeFilter, importBatchFilter]);
 
   const loadLookups = useCallback(async () => {
     const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes, managerRes] = await Promise.all([
@@ -288,7 +313,7 @@ export function EmployeesPage() {
         }
       });
   }, []);
-  useEffect(() => { setPage(1); }, [search, status]);
+  useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter]);
   useEffect(() => {
     const searchFromUrl = searchParams?.get('search') ?? null;
     if (searchFromUrl !== null && searchFromUrl !== search) {
@@ -804,10 +829,10 @@ export function EmployeesPage() {
 
   const atEmployeeLimit = usage !== null && usage.maxEmployees > 0 && usage.activeEmployees >= usage.maxEmployees;
 
-  // "Needs info" refinement runs over the loaded page (the list endpoint has no readiness param).
-  const visibleEmployees = readinessFilter
-    ? employees.filter((e) => (readinessFilter === 'Blocked' ? e.readinessState === 'Blocked' : e.readinessState !== 'Blocked'))
-    : employees;
+  // Readiness / gap filtering is now SERVER-SIDE (see load()), so `total`/pagination match the
+  // filtered set across all pages — the post-import deep-link no longer breaks past page 1.
+  const importFilterActive = gapTypeFilter !== '' || importBatchFilter !== '';
+  const clearImportFilter = () => { setGapTypeFilter(''); setImportBatchFilter(''); setReadinessFilter(''); };
 
   // Activate-button gating. The readiness gate fires only on first-time activations from a
   // non-occupying status — mandated Suspended→Active / Offboarded→Active reinstatements are NOT
@@ -860,7 +885,13 @@ export function EmployeesPage() {
                 onDownloadTemplate={employeesImportExport.template}
                 onImport={async (csv) => { const r = await employeesApi.import(csv); await load(); return r; }}
                 onPreview={(csv) => employeesApi.importPreview(csv)}
-                onViewIncomplete={() => { setSearch(''); setStatus(''); setReadinessFilter('Blocked'); }}
+                onViewIncomplete={(filter) => {
+                  setSearch('');
+                  setStatus('');
+                  setReadinessFilter((filter?.readiness as '' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready') ?? '');
+                  setGapTypeFilter(filter?.gapType ?? '');
+                  setImportBatchFilter(filter?.importBatchId ?? '');
+                }}
               />
               <div className="relative group">
                 <button
@@ -905,9 +936,11 @@ export function EmployeesPage() {
             <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className="select sm:w-56" aria-label="Status filter">
               {activeStatusFilterOptions.map((item) => <option key={item || 'all'} value={item}>{item || 'All statuses'}</option>)}
             </select>
-            <select value={readinessFilter} onChange={(e) => setReadinessFilter(e.target.value as '' | 'Blocked' | 'Ready')} className="select sm:w-44" aria-label="Readiness filter">
+            <select value={readinessFilter} onChange={(e) => setReadinessFilter(e.target.value as '' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready')} className="select sm:w-44" aria-label="Readiness filter">
               <option value="">All readiness</option>
-              <option value="Blocked">Needs info</option>
+              <option value="NotReady">Needs info</option>
+              <option value="Blocked">Blocked only</option>
+              <option value="NeedsAttention">Needs attention</option>
               <option value="Ready">Ready</option>
             </select>
             <button type="button" onClick={refreshAll} className="btn-secondary">
@@ -915,6 +948,16 @@ export function EmployeesPage() {
               Refresh
             </button>
           </div>
+
+          {importFilterActive && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-sapphire/30 bg-sapphire/5 px-3 py-2 text-xs text-slate-600 dark:border-sapphire/40 dark:bg-sapphire/10 dark:text-slate-300">
+              <span className="flex items-center gap-1.5">
+                <FileUp className="h-3.5 w-3.5 shrink-0 text-sapphire" />
+                Showing this import batch{gapTypeFilter ? ` · ${GAP_FILTER_LABELS[gapTypeFilter] ?? gapTypeFilter}` : ''} — <strong>{total}</strong> {total === 1 ? 'employee' : 'employees'} across all pages.
+              </span>
+              <button type="button" onClick={clearImportFilter} className="shrink-0 font-semibold text-sapphire underline">Clear</button>
+            </div>
+          )}
 
           <div className="surface overflow-hidden">
             <div className="overflow-x-auto">
@@ -928,8 +971,8 @@ export function EmployeesPage() {
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                   {loading && <EmptyRow label="Loading live employees..." />}
-                  {!loading && visibleEmployees.length === 0 && <EmptyRow label={readinessFilter ? 'No employees match this readiness filter on this page.' : 'No employees found'} />}
-                  {!loading && visibleEmployees.map((employee) => (
+                  {!loading && employees.length === 0 && <EmptyRow label={(readinessFilter || importFilterActive) ? 'No employees match this filter.' : 'No employees found'} />}
+                  {!loading && employees.map((employee) => (
                     <tr key={employee.id} onClick={() => openDetail(employee.id)} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">

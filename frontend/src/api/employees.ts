@@ -365,14 +365,31 @@ export interface EmployeeNotActivatable extends ReadinessView {
   message: string;
 }
 
+/**
+ * One typed org-skeleton / linkage gap persisted against an imported (Draft) row.
+ * `type` is the deep-link key (e.g. "link:manager", "org:department", "pay:salaryHeld");
+ * `category` ∈ org | link | pay | readiness. Each gap is a People-list filter + deep-link.
+ */
+export interface EmployeeImportGap {
+  type: string;
+  category: string;
+  detail: string;
+}
+
 export interface EmployeeImportCreatedIncomplete {
   employeeId: number;
   employeeCode: string;
   name: string;
   blockingCount: number;
+  /** Typed gaps that landed this row as Draft (accept-never-block). Optional for back-compat. */
+  gaps?: EmployeeImportGap[];
 }
 
-/** POST /api/employees/import response (leniency + persistent results). */
+/**
+ * POST /api/employees/import response (leniency + persistent results).
+ * The `imported`/`receivedTotal`/split-skip/gap counters are the accept-never-block countable
+ * summary; all are optional so the toolbar degrades gracefully to the legacy created/skipped shape.
+ */
 export interface EmployeeImportResult {
   received: number;
   created: number;
@@ -383,6 +400,21 @@ export interface EmployeeImportResult {
   errors: string[];
   warnings: string[];
   createdIncomplete: EmployeeImportCreatedIncomplete[];
+  // ── Countable org-skeleton summary (accept-never-block) — all optional ──
+  imported?: number;
+  receivedTotal?: number;
+  /** Total rows dropped (only the lawful drops: no-name + duplicate EmployeeCode). */
+  skippedNoName?: number;
+  skippedDupCode?: number;
+  /** Rows imported as Draft (incomplete) — mirrors createdIncomplete.length. */
+  incompleteDraft?: number;
+  managersUnresolved?: number;
+  supervisorsUnresolved?: number;
+  /** Distinct unresolved department / branch names the operator now needs to create. */
+  newDepartments?: number;
+  newBranches?: number;
+  salariesHeld?: number;
+  salariesForReview?: number;
 }
 
 export interface EmployeeImportPreviewRow {
@@ -444,7 +476,21 @@ export function notActivatableFromError(err: unknown): EmployeeNotActivatable | 
 }
 
 export const employeesApi = {
-  list: (params: { search?: string; status?: string; department?: string; page?: number; pageSize?: number } = {}) =>
+  list: (
+    params: {
+      search?: string;
+      status?: string;
+      department?: string;
+      // Server-side readiness worklist filter (the "Needs info" deep-link). `readiness` ∈
+      // Blocked | NeedsAttention | NotReady | Ready. `gapType`/`importBatchId` narrow to a
+      // specific typed gap from a specific import batch (e.g. link:manager from batch X).
+      readiness?: string;
+      gapType?: string;
+      importBatchId?: string;
+      page?: number;
+      pageSize?: number;
+    } = {},
+  ) =>
     client.get<PagedResult<EmployeeListItem>>('/api/employees', {
       params: { page: 1, pageSize: 25, ...params },
     }).then((r) => r.data),

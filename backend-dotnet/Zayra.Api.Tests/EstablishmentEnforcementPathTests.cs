@@ -115,14 +115,15 @@ public class EstablishmentEnforcementPathTests
     // ── (4) CSV import: row-level errors + cumulative intra-batch counting (AC9) ──
 
     [Fact]
-    public async Task Import_ThreeManagersAgainstTwoSlots_ImportsTwo_FailsRowFour_WithCountsAndAudit()
+    public async Task Import_ThreeManagersAgainstTwoSlots_ImportsAll_OverBudgetRowLandsDraft_WithAudit()
     {
+        // ACCEPT-NEVER-BLOCK: even in Enforced mode, an over-budget row is NEVER dropped on import — it is
+        // downgraded to Draft (Draft never occupies a seat, so it cannot breach the budget) + an
+        // org:establishment gap + a warning. The demand-signal audit still fires.
         await using var db = CreateDb();
         var fx = await SeedOrg(db, managerBudget: 2);
         var controller = CreateController(db, fx.TenantId);
 
-        // Status=Active is explicit: these rows are meant to OCCUPY manager seats so the establishment
-        // budget check fires (blank status now lands Draft, which never consumes a seat — §7).
         const string csv =
             "EmployeeCode,FullName,Department,Designation,Status,JoiningDate\n" +
             "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01\n" +
@@ -132,18 +133,49 @@ public class EstablishmentEnforcementPathTests
         var result = await controller.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
         var payload = JsonSerializer.Serialize(((OkObjectResult)result).Value);
 
-        payload.Should().Contain("\"created\":2").And.Contain("\"skipped\":1");
+        payload.Should().Contain("\"created\":3").And.Contain("\"skipped\":0");
         payload.Should().Contain("Row 4").And.Contain("has 2 of 2 budgeted Manager(s)")
-            .And.Contain("no Manager slot is available for assignment", "row error names level, budgeted and current (AC9)");
-        (await db.Employees.CountAsync(e => e.TenantId == fx.TenantId)).Should().Be(2, "file order wins — first two fit");
+            .And.Contain("imported as Draft", "the over-budget row is accepted as Draft, not dropped");
+        (await db.Employees.CountAsync(e => e.TenantId == fx.TenantId)).Should().Be(3, "every person imports; file order decides who lands Active");
+
+        var m3 = await db.Employees.SingleAsync(e => e.TenantId == fx.TenantId && e.EmployeeCode == "M3");
+        m3.Status.Should().Be("Draft", "the over-budget row is downgraded, not skipped");
+        (await db.EmployeeImportGaps.AnyAsync(g => g.TenantId == fx.TenantId && g.EmployeeId == m3.Id && g.GapType == "org:establishment"))
+            .Should().BeTrue();
 
         var blockAudit = await db.AuditLogs.SingleAsync(a => a.TenantId == fx.TenantId && a.Action == "establishment.assignment_blocked");
         blockAudit.Metadata.Should().Contain("\"path\":\"import\"").And.Contain("\"rowNumber\":4")
-            .And.Contain("\"levelNameEn\":\"Manager\"", "bulk rejections are the highest-volume demand signal — they must audit too");
+            .And.Contain("\"levelNameEn\":\"Manager\"", "bulk over-budget rows are the highest-volume demand signal — they must audit too");
     }
 
     [Fact]
-    public async Task Import_IsDeterministicOnRerun_AndNonOccupyingRowsNeverConsumeSlots()
+    public async Task ImportPreview_OverBudgetRow_ProjectsDraft_MatchingCommit()
+    {
+        // Dry-run↔commit parity (Issue 2): the establishment budget downgrade the commit performs must
+        // also appear in preview. An over-budget Manager row in Enforced mode is projected Draft (never
+        // "would skip"), with the same over-budget detail commit surfaces — no row diverges.
+        await using var db = CreateDb();
+        var fx = await SeedOrg(db, managerBudget: 1);
+        var controller = CreateController(db, fx.TenantId);
+
+        const string csv =
+            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate\n" +
+            "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01\n" +
+            "M2,Mgr Two,Operations,Operations Manager,Active,2026-01-01\n";
+
+        var preview = ((OkObjectResult)await controller.ImportPreview(
+            new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None)).Value!;
+        var json = JsonSerializer.Serialize(preview);
+
+        // Both rows import (never skipped); the second is over budget → projected Draft, not Active.
+        json.Should().Contain("\"wouldCreate\":2").And.Contain("\"wouldSkip\":0");
+        json.Should().Contain("\"wouldCreateActive\":1").And.Contain("\"wouldCreateDraft\":1");
+        json.Should().Contain("has 1 of 1 budgeted Manager(s)",
+            "preview surfaces the over-budget detail exactly as commit does");
+    }
+
+    [Fact]
+    public async Task Import_IsDeterministicOnRerun_OverBudgetLandsDraft_DupCodesDropOnRerun()
     {
         await using var db = CreateDb();
         var fx = await SeedOrg(db, managerBudget: 1);
@@ -157,11 +189,13 @@ public class EstablishmentEnforcementPathTests
 
         var first = JsonSerializer.Serialize(((OkObjectResult)await controller.Import(
             new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None)).Value);
-        first.Should().Contain("\"created\":2", "Terminated row consumes no seat; A1 takes the single slot; A2 fails");
+        // A1 takes the single Active slot; A2 is over budget → imported as Draft (never dropped). All 3 import.
+        first.Should().Contain("\"created\":3").And.Contain("\"skipped\":0");
         first.Should().Contain("Row 4").And.Contain("has 1 of 1 budgeted Manager(s)");
+        (await db.Employees.SingleAsync(e => e.TenantId == fx.TenantId && e.EmployeeCode == "A2")).Status
+            .Should().Be("Draft");
 
-        // Re-run: A1's seat is now genuinely occupied; the same rows fail for the same reason
-        // (duplicate codes skip first, then the budget row error is unchanged) — deterministic.
+        // Re-run: every code already exists → the ONLY lawful drop (duplicate code) fires — deterministic.
         var second = JsonSerializer.Serialize(((OkObjectResult)await controller.Import(
             new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None)).Value);
         second.Should().Contain("\"created\":0").And.Contain("already exists");

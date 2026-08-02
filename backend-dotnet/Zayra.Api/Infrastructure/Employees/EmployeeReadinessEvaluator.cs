@@ -96,6 +96,53 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
         return new EmployeeReadiness(state, score, blocking, payBlocking, recommended, present, expiring);
     }
 
+    /// <summary>
+    /// Fold advisory org-skeleton / payroll import gaps into a computed readiness WITHOUT touching the
+    /// activation gate. Blocking (and therefore ActivationBlockersCount / IsBlocked) is left untouched, so
+    /// an employee whose ONLY gaps are advisory still passes EnsureActivatableAsync. A Ready employee with
+    /// advisory gaps becomes NeedsAttention and its score is lowered proportionally; a Blocked one stays
+    /// Blocked. Used at import (to stamp NeedsAttention) and by the stamp paths (to keep the signal durable
+    /// until the operator completes the org skeleton).
+    /// </summary>
+    public static EmployeeReadiness MergeAdvisoryGaps(EmployeeReadiness r, IReadOnlyList<ReadinessItem> advisory)
+    {
+        if (advisory is null || advisory.Count == 0) return r;
+        var recommended = r.Recommended.Concat(advisory).ToList();
+        var state = r.Blocking.Count > 0 ? "Blocked" : "NeedsAttention";
+        var total = r.Present.Count + r.Blocking.Count + r.PayBlocking.Count + recommended.Count;
+        decimal score = total == 0 ? 100m : System.Math.Round(100m * r.Present.Count / total, 1);
+        if (r.Blocking.Count > 0 || r.PayBlocking.Count > 0) score = System.Math.Min(score, 55m);
+        return r with { State = state, Score = score, Recommended = recommended };
+    }
+
+    private static readonly IReadOnlyDictionary<string, string> ImportGapLabels =
+        new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
+        {
+            ["org:company"] = "Company not resolved",
+            ["org:branch"] = "Branch not resolved",
+            ["org:department"] = "Department not resolved",
+            ["org:designation"] = "Designation not resolved",
+            ["org:grade"] = "Grade not resolved",
+            ["org:position"] = "Position not assigned",
+            ["org:establishment"] = "Over establishment budget",
+            ["link:manager"] = "Manager not linked",
+            ["link:supervisor"] = "Supervisor not linked",
+            ["pay:salaryHeld"] = "Salary held (no grade)",
+            ["pay:salaryReview"] = "Salary needs review",
+        };
+
+    /// <summary>Map a persisted import gap type into an advisory (fail-open, recommended-gate) readiness item.</summary>
+    public static ReadinessItem ImportGapToItem(string gapType, string category) => new(
+        Key: gapType,
+        Label: ImportGapLabels.GetValueOrDefault(gapType, gapType),
+        Category: category,
+        Reason: "recommended",
+        Jurisdiction: null,
+        Gate: "recommended",
+        FixKind: category == "org" ? "org" : (category == "pay" ? "pay" : "field"),
+        FixTarget: null,
+        DocumentType: null);
+
     public async Task<EmployeeReadiness> EnsureActivatableAsync(
         EmployeeReadinessSnapshot emp, ResolvedReadinessPolicy policy, RequestContext ctx, CancellationToken ct)
     {

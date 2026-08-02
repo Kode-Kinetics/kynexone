@@ -466,8 +466,10 @@ public class HrmHierarchyTests
     }
 
     [Fact]
-    public async Task Import_TwoPass_SkipsCircularManagerWithError()
+    public async Task Import_TwoPass_SelfManager_ImportsPersonWithWarningNotError()
     {
+        // ACCEPT-NEVER-BLOCK: a self-manager reference never drops the row and is no longer an ERROR — the
+        // person imports; the manager link is skipped with a WARNING + a link:manager gap.
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         await SeedTenantAsync(db, tenantId, "test-circular");
@@ -480,9 +482,15 @@ public class HrmHierarchyTests
         var result = await controller.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(result);
-        var data = ok.Value!;
-        var errors = (System.Collections.IEnumerable)data.GetType().GetProperty("errors")!.GetValue(data)!;
-        Assert.NotEmpty(errors);
+        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+        Assert.Contains("\"created\":1", json);
+        Assert.Contains("\"skipped\":0", json);
+        Assert.Contains("\"managersUnresolved\":1", json);
+        Assert.Contains("own manager", json);
+
+        var emp = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-A");
+        Assert.Null(emp.ManagerEmployeeId);
+        Assert.True(await db.EmployeeImportGaps.AnyAsync(g => g.TenantId == tenantId && g.EmployeeId == emp.Id && g.GapType == "link:manager"));
     }
 
     [Fact]

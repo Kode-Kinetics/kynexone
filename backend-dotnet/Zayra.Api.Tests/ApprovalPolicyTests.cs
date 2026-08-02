@@ -318,14 +318,20 @@ public class ApprovalPolicyTests
         var ok = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(result);
         var data = ok.Value!;
         var wouldCreate = (int)data.GetType().GetProperty("wouldCreate")!.GetValue(data)!;
+        var wouldSkip = (int)data.GetType().GetProperty("wouldSkip")!.GetValue(data)!;
         var rows = (System.Collections.IEnumerable)data.GetType().GetProperty("rows")!.GetValue(data)!;
-        // Circular detection should flag at least one row as Error
         var rowList = rows.Cast<object>().ToList();
-        Assert.True(rowList.Any(r =>
+        // ACCEPT-NEVER-BLOCK + preview↔commit parity: circular manager is NO LONGER a preview Error (commit
+        // does not drop those rows — it imports both people and skips the link). Both rows WillCreate, and
+        // the circular is surfaced as a WARNING, not a row Error.
+        Assert.Equal(2, wouldCreate);
+        Assert.Equal(0, wouldSkip);
+        Assert.DoesNotContain(rowList, r => (string)r.GetType().GetProperty("status")!.GetValue(r)! == "Error");
+        Assert.Contains(rowList, r =>
         {
-            var status = (string)r.GetType().GetProperty("status")!.GetValue(r)!;
-            return status == "Error";
-        }));
+            var warns = (System.Collections.IEnumerable)r.GetType().GetProperty("warnings")!.GetValue(r)!;
+            return warns.Cast<string>().Any(w => w.Contains("circular hierarchy"));
+        });
     }
 
     [Fact]

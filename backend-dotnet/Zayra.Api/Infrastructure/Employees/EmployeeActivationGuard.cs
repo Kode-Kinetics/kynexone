@@ -91,6 +91,9 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
         if (snapshot is null) return;
         var policy = await _resolver.ResolveAsync(employee.TenantId.Value, employee.CompanyId, employee.CountryCode, employee.Nationality, ct);
         var readiness = _evaluator.Evaluate(snapshot, policy);
+        // Durable advisory self-heal: close import gaps the operator has since completed, fold still-open
+        // ones back in so the NeedsAttention signal survives this edit (activation stays unblocked).
+        readiness = await ImportGapHealer.HealAndMergeAsync(_db, employee, readiness, ct);
         employee.ReadinessState = readiness.State;
         employee.ActivationBlockersCount = readiness.Blocking.Count;
         employee.ReadinessEvaluatedAtUtc = System.DateTime.UtcNow;

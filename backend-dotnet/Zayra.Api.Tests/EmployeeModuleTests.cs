@@ -453,8 +453,10 @@ public class EmployeeModuleTests
     }
 
     [Fact]
-    public async Task EmployeeImport_WithSalaryButNoGrade_SkipsBeforeCreatingEmployee()
+    public async Task EmployeeImport_WithSalaryButNoGrade_ImportsPersonAndHoldsSalary()
     {
+        // ACCEPT-NEVER-BLOCK: salary supplied without a valid grade no longer drops the row. The person
+        // imports (Draft) with a pay:salaryHeld gap; the salary structure is withheld until a grade is set.
         await using var db = CreateDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
         var ctrl = CreateController(db, tenantId);
@@ -467,14 +469,22 @@ public class EmployeeModuleTests
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
-        Assert.Contains("\"created\":0", json);
-        Assert.Contains("requires a valid grade", json);
-        Assert.False(await db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-NOGRADE-001"));
+        Assert.Contains("\"created\":1", json);
+        Assert.Contains("\"skipped\":0", json);
+        Assert.Contains("\"salariesHeld\":1", json);
+        Assert.Contains("salary held", json);
+
+        var emp = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-NOGRADE-001");
+        Assert.Null(emp.Salary); // salary held — no structure applied
+        Assert.False(await db.EmployeeSalaryStructures.AnyAsync(s => s.TenantId == tenantId && s.EmployeeId == emp.Id));
+        Assert.True(await db.EmployeeImportGaps.AnyAsync(g => g.TenantId == tenantId && g.EmployeeId == emp.Id && g.GapType == "pay:salaryHeld"));
     }
 
     [Fact]
-    public async Task EmployeeImport_WithSalaryOutsideGradeRange_SkipsBeforeCreatingEmployee()
+    public async Task EmployeeImport_WithSalaryOutsideGradeRange_ImportsPersonAndMarksForReview()
     {
+        // ACCEPT-NEVER-BLOCK: an out-of-band salary no longer drops the row. The person imports with the
+        // salary kept and a pay:salaryReview gap.
         await using var db = CreateDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
         await SeedGrade(db, tenantId, "G1", 1_000m, 4_000m);
@@ -488,9 +498,13 @@ public class EmployeeModuleTests
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
-        Assert.Contains("\"created\":0", json);
-        Assert.Contains("outside grade G1 range", json);
-        Assert.False(await db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-RANGE-001"));
+        Assert.Contains("\"created\":1", json);
+        Assert.Contains("\"skipped\":0", json);
+        Assert.Contains("marked for review", json);
+
+        var emp = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-RANGE-001");
+        Assert.Equal(5000m, emp.Salary); // salary kept, flagged
+        Assert.True(await db.EmployeeImportGaps.AnyAsync(g => g.TenantId == tenantId && g.EmployeeId == emp.Id && g.GapType == "pay:salaryReview"));
     }
 
     // ── Regression: an OPTIONAL org reference (CostCenter/Branch) that doesn't resolve must

@@ -72,14 +72,14 @@ public class EmployeesController : ControllerBase
 
     [HttpGet]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Manager,Auditor")]
-    public async Task<ActionResult<PagedResult<EmployeeListItemDto>>> Search([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? department, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
+    public async Task<ActionResult<PagedResult<EmployeeListItemDto>>> Search([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? department, [FromQuery] string? readiness = null, [FromQuery] Guid? importBatchId = null, [FromQuery] string? gapType = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
         var tenantId = RequireTenant();
         var entityScope = this.GetEntityScope();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
 
         if (scope.IsUnrestricted && entityScope.IsGroupLevel)
-            return Ok(await employeeManagement.SearchAsync(tenantId, search, status, department, page, pageSize, cancellationToken));
+            return Ok(await employeeManagement.SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, page, pageSize, cancellationToken));
 
         // Restricted scope: query directly and apply AllowedEmployeeIds and/or entity scope filter.
         // Exclude former employees (terminal statuses) — they belong to the Ex-Employees archive.
@@ -95,6 +95,9 @@ public class EmployeesController : ControllerBase
             query = query.Where(e => e.FullName.Contains(search) || e.EmployeeCode.Contains(search) || (e.WorkEmail != null && e.WorkEmail.Contains(search)));
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(e => e.Status == status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(e => e.Department == department);
+        // SERVER-SIDE readiness / import-gap filter (fixes the page-local "Needs info" deep-link). Must be
+        // applied in BOTH scope branches or a scoped user's post-import cleanup link breaks past page 1.
+        query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(e => e.FullName).Skip((page - 1) * pageSize).Take(pageSize)
             .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, e.Branch ?? string.Empty, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate, e.ReadinessState, e.ActivationBlockersCount))
@@ -453,102 +456,40 @@ public class EmployeesController : ControllerBase
             : int.MaxValue;
         int activeSeatsConsumed = 0;
 
-        var companiesByName = await _db.Companies
-            .AsNoTracking()
-            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
-            .ToDictionaryAsync(c => c.LegalNameEn.ToUpperInvariant(), ct);
-        var defaultCompany = companiesByName.Values.OrderBy(c => c.CreatedAtUtc).FirstOrDefault();
-        var branchesByCode = (await _db.Branches
-            .AsNoTracking()
-            .Where(b => b.TenantId == tenantId && b.IsActive && !b.IsDeleted)
-            .ToListAsync(ct))
-            .GroupBy(b => (b.CompanyId, Code: b.Code.ToUpperInvariant()))
-            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).First());
-        var branchesByCompany = branchesByCode.Values
-            .GroupBy(b => b.CompanyId)
-            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).ToList());
-        var costCentersByCode = (await _db.CostCenters
-            .AsNoTracking()
-            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
-            .ToListAsync(ct))
-            .GroupBy(c => (c.CompanyId, Code: c.Code.ToUpperInvariant()))
-            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).First());
-
-        // Pre-load department and designation lookups for FK resolution
-        var deptByCode = await _db.Departments
-            .AsNoTracking()
-            .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .ToDictionaryAsync(d => d.Code.ToUpperInvariant(), d => d.Id, ct);
-        var deptByName = await _db.Departments
-            .AsNoTracking()
-            .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .ToDictionaryAsync(d => d.NameEn.ToLowerInvariant(), d => d.Id, ct);
-        var desigByTitle = await _db.Designations
-            .AsNoTracking()
-            .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .ToDictionaryAsync(d => d.TitleEn.ToLowerInvariant(), d => new { d.Id, d.GradeId, d.TitleEn }, ct);
-        var gradeByCode = await _db.Grades
-            .AsNoTracking()
-            .Where(g => g.TenantId == tenantId && !g.IsDeleted)
-            .ToDictionaryAsync(g => g.Code.ToUpperInvariant(), g => g, ct);
-        var gradeByName = await _db.Grades
-            .AsNoTracking()
-            .Where(g => g.TenantId == tenantId && !g.IsDeleted)
-            .ToDictionaryAsync(g => g.Name.ToLowerInvariant(), g => g, ct);
-        var positionsByCode = await _db.Positions
-            .Where(p => p.TenantId == tenantId && !p.IsDeleted)
-            .ToDictionaryAsync(p => p.Code.ToUpperInvariant(), ct);
+        // SHARED master-data lookups — the SAME loader ImportPreview uses, so dry-run resolution == commit.
+        var lookups = await EmployeeImportRowResolver.LoadImportLookupsAsync(_db, tenantId, ct);
+        var defaultCompany = lookups.DefaultCompany;
 
         // ── Establishment matrix preloads (per-level budget row check, spec §5.2) ─────
         // Same cumulative intra-batch pattern as claimedPositionCodes: file order wins — first
-        // rows fit, later rows fail deterministically with counts. Occupancy uses the SAME shared
-        // predicate as the panel/guard (absolute counts via IgnoreQueryFilters).
-        var establishmentMode = await _establishmentGuard.GetEnforcementModeAsync(tenantId, ct);
-        var levelBudgets = await _db.DepartmentStaffingBudgets.IgnoreQueryFilters().AsNoTracking()
-            .Where(b => b.TenantId == tenantId && !b.IsDeleted)
-            .ToDictionaryAsync(b => (b.DepartmentId, b.StaffingLevelId), b => b.BudgetedHeadcount, ct);
-        var levelByDesignation = new Dictionary<Guid, Guid>();
-        var levelNamesById = new Dictionary<Guid, (string Code, string NameEn, string NameAr)>();
-        var currentByCell = new Dictionary<(Guid Dept, Guid Level), int>();
-        var deptNameById = new Dictionary<Guid, string>();
-        if (levelBudgets.Count > 0 && establishmentMode != EstablishmentGuardService.ModeOff)
-        {
-            // IgnoreQueryFilters is intentional: establishment budget lookups/counts must be absolute (independent of the caller's company scope) so import checks equal the guard's; explicit TenantId (+ !IsDeleted where applicable) filters are applied inline.
-            levelByDesignation = await _db.Designations.IgnoreQueryFilters().AsNoTracking()
-                .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.StaffingLevelId != null)
-                .ToDictionaryAsync(d => d.Id, d => d.StaffingLevelId!.Value, ct);
-            levelNamesById = await _db.StaffingLevels.IgnoreQueryFilters().AsNoTracking()
-                .Where(l => l.TenantId == tenantId && !l.IsDeleted)
-                .ToDictionaryAsync(l => l.Id, l => (l.Code, l.NameEn, l.NameAr), ct);
-            deptNameById = await _db.Departments.IgnoreQueryFilters().AsNoTracking()
-                .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-                .ToDictionaryAsync(d => d.Id, d => d.NameEn, ct);
-            var occupying = await Zayra.Api.Application.Organization.EstablishmentOccupancy
-                // IgnoreQueryFilters is intentional: establishment budget lookups/counts must be absolute (independent of the caller's company scope) so import checks equal the guard's; explicit TenantId (+ !IsDeleted where applicable) filters are applied inline.
-                .Occupying(_db.Employees.IgnoreQueryFilters().AsNoTracking(), tenantId)
-                .Where(e => e.DesignationId != null)
-                .Select(e => new { e.DepartmentId, e.Department, e.DesignationId })
-                .ToListAsync(ct);
-            var deptIdByName = deptNameById.ToLookup(kv => kv.Value, kv => kv.Key)
-                .ToDictionary(g => g.Key, g => g.First());
-            foreach (var e in occupying)
-            {
-                if (!levelByDesignation.TryGetValue(e.DesignationId!.Value, out var lvl)) continue;
-                var deptId = e.DepartmentId
-                    ?? (e.Department is { Length: > 0 } dn && deptIdByName.TryGetValue(dn, out var byName) ? byName : (Guid?)null);
-                if (deptId is null) continue;
-                var cell = (deptId.Value, lvl);
-                currentByCell[cell] = currentByCell.GetValueOrDefault(cell) + 1;
-            }
-        }
+        // rows fit, later rows fail deterministically with counts. Loaded via the SHARED evaluator
+        // ImportPreview also uses, so dry-run establishment projection == commit landing.
+        var establishmentContext = await EmployeeImportEstablishmentEvaluator.LoadAsync(_db, _establishmentGuard, tenantId, ct);
+        var establishmentMode = establishmentContext.Mode;
+        var levelBudgets = establishmentContext.LevelBudgets;
+        var levelByDesignation = establishmentContext.LevelByDesignation;
+        var levelNamesById = establishmentContext.LevelNamesById;
+        var deptNameById = establishmentContext.DeptNameById;
         var claimedLevelSlots = new Dictionary<(Guid Dept, Guid Level), int>();
         var establishmentBlockedRows = new List<(int RowNum, Guid DeptId, Guid LevelId, int Budgeted, int Current)>();
 
         int created = 0, skipped = 0;
+        // THE LAW: a row is dropped ONLY for (a) no name or (b) a duplicate EmployeeCode. Split the two
+        // lawful reasons so the summary can prove no other drop happened (accept-never-block assertion).
+        int skippedNoName = 0, skippedDupCode = 0;
         var errors = new List<string>();
         // Non-fatal notices: the row IS imported, but an optional reference could not be resolved.
         var warnings = new List<string>();
         var rowNum = 1;
+        // Per-created-row org-skeleton/payroll gaps (typed), keyed by the row's FINAL employee code
+        // (auto-generated included) — persisted as EmployeeImportGap after Id assignment; Pass 2 appends
+        // link:manager/supervisor gaps to the same map before persistence.
+        var gapsByCode = new Dictionary<string, List<ImportGap>>(StringComparer.OrdinalIgnoreCase);
+        var rowNumByCode = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        // Rows whose salary is HELD (no valid grade): Pass 1b must skip the salary-structure insert.
+        var heldSalaryCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Final advisory re-stamp inputs: base readiness per created row (merged with all gaps at the end).
+        var createdRowMeta = new List<(Employee Emp, EmployeeReadiness Readiness, bool HasPolicy, string FinalCode)>();
 
         // ── Readiness (§7): import stays name-only lenient but NEVER silently lands Active. Policy is
         // resolved once per (company, country, nationality) and cached; each row is evaluated with the
@@ -556,7 +497,6 @@ public class EmployeesController : ControllerBase
         // activate-blockers ⇒ downgraded to Draft + warning (row still created).
         var readinessPolicyCache = new Dictionary<string, ResolvedReadinessPolicy>();
         var importBatchId = Guid.NewGuid();
-        var incompleteCreated = new List<(Employee Emp, int BlockingCount)>();
 
         async Task<(string Landing, EmployeeReadiness Readiness, bool HasPolicy)> ResolveRowLandingAsync(
             Dictionary<string, string> row, Guid? companyId, Guid? deptId, Guid? desigId, DateTime jd, string csvStatus)
@@ -582,6 +522,14 @@ public class EmployeesController : ControllerBase
         var batchCodes = new Dictionary<string, Employee>(StringComparer.OrdinalIgnoreCase);
         var batchPayroll = new Dictionary<string, (Employee emp, Dictionary<string, string> rowData)>(StringComparer.OrdinalIgnoreCase);
         var claimedPositionCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Existing employee codes (case-insensitive), loaded once so the existing-DB dup check uses the SAME
+        // case-folding as the in-file batch dedup (batchCodes, OrdinalIgnoreCase) and as ImportPreview — a code
+        // differing only in case from an existing one is a duplicate in BOTH dry-run and commit (previously
+        // commit's DB check was case-sensitive and would create it, diverging from preview). The unique
+        // (TenantId, EmployeeCode) index still backstops any cross-scope edge as a legible 422.
+        var existingCodes = new HashSet<string>(
+            await _db.Employees.Where(e => e.TenantId == tenantId).Select(e => e.EmployeeCode).ToListAsync(ct),
+            StringComparer.OrdinalIgnoreCase);
 
         // Persist pending changes; convert a constraint violation (e.g. a duplicate
         // employee code slipping through) into a legible 422 rather than a raw 500.
@@ -611,139 +559,40 @@ public class EmployeesController : ControllerBase
         {
             rowNum++;
             var name = row.GetValueOrDefault("FullName", string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(name)) { skipped++; errors.Add($"Row {rowNum}: missing FullName; row skipped."); continue; }
+            if (string.IsNullOrWhiteSpace(name)) { skipped++; skippedNoName++; errors.Add($"Row {rowNum}: missing FullName; row skipped."); continue; }
             var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
             if (!string.IsNullOrWhiteSpace(code))
             {
                 // A second row in this same file with an already-added code would both pass the
                 // DB check and violate the unique (TenantId, EmployeeCode) index at SaveChanges.
                 if (batchCodes.ContainsKey(code))
-                { skipped++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' is duplicated within the import file; row skipped."); continue; }
-                if (await _db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == code, ct))
-                { skipped++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' already exists."); continue; }
+                { skipped++; skippedDupCode++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' is duplicated within the import file; row skipped."); continue; }
+                if (existingCodes.Contains(code))
+                { skipped++; skippedDupCode++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' already exists."); continue; }
             }
 
             DateTime.TryParse(row.GetValueOrDefault("JoiningDate", string.Empty), out var jdRaw);
             var jd = DateTime.SpecifyKind(jdRaw == default ? DateTime.UtcNow : jdRaw, DateTimeKind.Utc);
             var statusVal = row.GetValueOrDefault("Status", string.Empty).Trim();
-            var companyNameRaw = row.GetValueOrDefault("CompanyLegalName", string.Empty).Trim();
-            var branchCodeRaw = row.GetValueOrDefault("BranchCode", string.Empty).Trim().ToUpperInvariant();
-            var costCenterCodeRaw = row.GetValueOrDefault("CostCenterCode", string.Empty).Trim().ToUpperInvariant();
-            var resolvedCompany = !string.IsNullOrWhiteSpace(companyNameRaw)
-                ? companiesByName.GetValueOrDefault(companyNameRaw.ToUpperInvariant())
-                : defaultCompany;
-            if (!string.IsNullOrWhiteSpace(companyNameRaw) && resolvedCompany is null)
-            {
-                skipped++;
-                errors.Add($"Row {rowNum}: CompanyLegalName '{companyNameRaw}' not found.");
-                continue;
-            }
-            var resolvedBranch = resolvedCompany is not null
-                ? !string.IsNullOrWhiteSpace(branchCodeRaw)
-                    ? branchesByCode.GetValueOrDefault((resolvedCompany.Id, branchCodeRaw))
-                    : branchesByCompany.GetValueOrDefault(resolvedCompany.Id)?.FirstOrDefault()
-                : null;
-            if (!string.IsNullOrWhiteSpace(branchCodeRaw) && resolvedBranch is null)
-            {
-                // Branch is an OPTIONAL reference — a blank BranchCode is already allowed through as null,
-                // so an unrecognized one must not be more fatal than an absent one. Import the employee
-                // with no branch and surface a warning instead of skipping the whole row. This unblocks
-                // imports into freshly-created companies that have no org scaffolding seeded yet.
-                warnings.Add(resolvedCompany is null
-                    ? $"Row {rowNum}: BranchCode '{branchCodeRaw}' supplied but no company could be resolved — imported without a branch."
-                    : $"Row {rowNum}: BranchCode '{branchCodeRaw}' not found for company '{resolvedCompany.LegalNameEn}' — imported without a branch.");
-            }
-            var resolvedCostCenter = resolvedCompany is not null && !string.IsNullOrWhiteSpace(costCenterCodeRaw)
-                ? costCentersByCode.GetValueOrDefault((resolvedCompany.Id, costCenterCodeRaw))
-                : null;
-            if (!string.IsNullOrWhiteSpace(costCenterCodeRaw) && resolvedCostCenter is null)
-            {
-                // Cost center is an OPTIONAL reference (blank is already allowed). An unrecognized code
-                // no longer skips the row — import with no cost center and warn. Auto-creating cost
-                // centers from an employee file is deliberately NOT done here: a typo would silently
-                // pollute financial master data. Operators create cost centers first, then re-import.
-                warnings.Add(resolvedCompany is null
-                    ? $"Row {rowNum}: CostCenterCode '{costCenterCodeRaw}' supplied but no company could be resolved — imported without a cost center."
-                    : $"Row {rowNum}: CostCenterCode '{costCenterCodeRaw}' not found for company '{resolvedCompany.LegalNameEn}' — imported without a cost center.");
-            }
             var deptNameRaw = row.GetValueOrDefault("Department", string.Empty).Trim();
-            var deptCodeRaw = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim().ToUpperInvariant();
-
-            Guid? resolvedDeptId = null;
-            if (!string.IsNullOrEmpty(deptCodeRaw) && deptByCode.TryGetValue(deptCodeRaw, out var dId1))
-                resolvedDeptId = dId1;
-            else if (!string.IsNullOrEmpty(deptNameRaw) && deptByName.TryGetValue(deptNameRaw.ToLowerInvariant(), out var dId2))
-                resolvedDeptId = dId2;
-
             var desigTitleRaw = row.GetValueOrDefault("Designation", string.Empty).Trim();
-            Guid? resolvedDesigId = null;
-            Guid? designationGradeId = null;
-            if (!string.IsNullOrEmpty(desigTitleRaw) && desigByTitle.TryGetValue(desigTitleRaw.ToLowerInvariant(), out var designation))
-            {
-                resolvedDesigId = designation.Id;
-                designationGradeId = designation.GradeId;
-            }
 
-            var gradeRaw = row.GetValueOrDefault("Grade", string.Empty).Trim();
-            Grade? resolvedGrade = null;
-            if (!string.IsNullOrWhiteSpace(gradeRaw))
-            {
-                if (!gradeByCode.TryGetValue(gradeRaw.ToUpperInvariant(), out resolvedGrade))
-                    gradeByName.TryGetValue(gradeRaw.ToLowerInvariant(), out resolvedGrade);
-                if (resolvedGrade is null)
-                {
-                    skipped++;
-                    errors.Add($"Row {rowNum}: Grade '{gradeRaw}' not found.");
-                    continue;
-                }
-            }
-            if (designationGradeId is not null && resolvedGrade is not null && designationGradeId != resolvedGrade.Id)
-            {
-                skipped++;
-                errors.Add($"Row {rowNum}: Designation '{desigTitleRaw}' is not eligible for grade '{resolvedGrade.Code}'.");
-                continue;
-            }
-            var finalGradeId = resolvedGrade?.Id ?? designationGradeId;
-            var finalGrade = resolvedGrade ?? (finalGradeId is not null ? gradeByCode.Values.FirstOrDefault(g => g.Id == finalGradeId) : null);
-            var finalGradeCode = finalGrade?.Code ?? string.Empty;
-            var positionCodeRaw = row.GetValueOrDefault("PositionCode", string.Empty).Trim().ToUpperInvariant();
-            Position? position = null;
-            if (!string.IsNullOrWhiteSpace(positionCodeRaw))
-            {
-                if (!positionsByCode.TryGetValue(positionCodeRaw, out position))
-                {
-                    skipped++; errors.Add($"Row {rowNum}: PositionCode '{positionCodeRaw}' not found."); continue;
-                }
-                if (position.Status is PositionStatuses.Frozen or PositionStatuses.Closed || position.IncumbentEmployeeId is not null || !claimedPositionCodes.Add(positionCodeRaw))
-                {
-                    skipped++; errors.Add($"Row {rowNum}: PositionCode '{positionCodeRaw}' is not available for assignment."); continue;
-                }
-                if ((position.CompanyId is not null && position.CompanyId != resolvedCompany?.Id) ||
-                    (position.BranchId is not null && position.BranchId != resolvedBranch?.Id) ||
-                    (position.DepartmentId is not null && position.DepartmentId != resolvedDeptId) ||
-                    (position.DesignationId is not null && position.DesignationId != resolvedDesigId) ||
-                    (position.GradeId is not null && position.GradeId != finalGradeId))
-                {
-                    skipped++; errors.Add($"Row {rowNum}: PositionCode '{positionCodeRaw}' is not eligible for the supplied organization, designation, or grade."); continue;
-                }
-            }
-            var grossSalary = GrossSalaryFromRow(row);
-            if (grossSalary > 0 && finalGrade is null)
-            {
-                skipped++;
-                errors.Add($"Row {rowNum}: Salary package requires a valid grade so salary eligibility can be enforced.");
-                continue;
-            }
-            if (finalGrade is not null && grossSalary > 0 && ((finalGrade.MinSalary > 0 && grossSalary < finalGrade.MinSalary) || (finalGrade.MaxSalary > 0 && grossSalary > finalGrade.MaxSalary)))
-            {
-                skipped++;
-                errors.Add($"Row {rowNum}: Salary package {grossSalary:N2} is outside grade {finalGrade.Code} range {finalGrade.MinSalary:N2}-{finalGrade.MaxSalary:N2}.");
-                continue;
-            }
+            // ── ACCEPT-NEVER-BLOCK resolution (SHARED with ImportPreview) ─────────────────────────
+            // The single source of truth for every org/grade/position/salary decision. It NEVER drops:
+            // unknown company → default (or null); unknown grade → null; ineligible designation → dropped
+            // designation link; bad/occupied/ineligible position → null; salary w/o grade → HELD; salary
+            // out of band → REVIEW. Each failure is a typed gap + a warning; the person still imports.
+            var resolved = EmployeeImportRowResolver.ResolveRow(row, lookups, claimedPositionCodes);
+            var resolvedDeptId = resolved.DepartmentId;
+            var resolvedDesigId = resolved.DesignationId;
+            var finalGradeId = resolved.GradeId;
+            var finalGradeCode = resolved.FinalGradeCode;
+            var grossSalary = resolved.GrossSalary;
+            foreach (var w in resolved.Warnings) warnings.Add($"Row {rowNum}: {w}");
 
             // ── Readiness landing decision (§7): blank ⇒ Draft; Active + activate-blockers ⇒ Draft + warning ──
             var (rowStatus, rowReadiness, rowHasPolicy) = await ResolveRowLandingAsync(
-                row, resolvedCompany?.Id, resolvedDeptId, resolvedDesigId, jd, statusVal);
+                row, resolved.CompanyId, resolvedDeptId, resolvedDesigId, jd, statusVal);
             if (!string.IsNullOrWhiteSpace(statusVal)
                 && string.Equals(statusVal, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
                 && rowStatus == EmployeeStatuses.Draft)
@@ -764,35 +613,27 @@ public class EmployeesController : ControllerBase
             }
 
             // ── Establishment matrix row check (row-level errors, spec §5.2 / AC9) ────
-            // Applies only when the row lands in a MAPPED level of a department that HAS a budget
-            // row AND the row's status occupies a seat (non-occupying imports never consume).
-            if (resolvedDeptId is not null && resolvedDesigId is not null
-                && Zayra.Api.Application.Organization.EstablishmentOccupancy.IsOccupyingStatus(rowStatus)
-                && levelByDesignation.TryGetValue(resolvedDesigId.Value, out var rowLevelId)
-                && levelBudgets.TryGetValue((resolvedDeptId.Value, rowLevelId), out var rowBudget))
+            // SHARED with ImportPreview via EmployeeImportEstablishmentEvaluator so the over-budget
+            // downgrade decision and its warning/gap text are byte-identical dry-run↔commit. The
+            // evaluator owns the cumulative claimedLevelSlots mutation (advisory rows consume; enforced
+            // rows downgrade to Draft below and stay non-occupying, so they never claim a slot → the
+            // in-transaction re-verify cannot trip on them).
+            var estDecision = EmployeeImportEstablishmentEvaluator.Evaluate(
+                resolvedDeptId, resolvedDesigId, rowStatus, establishmentContext, claimedLevelSlots, deptNameRaw);
+            if (estDecision.OverBudget)
             {
-                var cell = (resolvedDeptId.Value, rowLevelId);
-                var cellCurrent = currentByCell.GetValueOrDefault(cell);
-                var cellClaimed = claimedLevelSlots.GetValueOrDefault(cell);
-                if (cellCurrent + cellClaimed + 1 > rowBudget)
+                establishmentBlockedRows.Add((rowNum, estDecision.DeptId, estDecision.LevelId, estDecision.Budgeted, estDecision.Current));
+                // ACCEPT-NEVER-BLOCK: an over-budget row is NEVER dropped. Both modes emit an
+                // org:establishment gap so the row lands NeedsAttention with a deep-link.
+                resolved.Gaps.Add(new ImportGap("org:establishment", "org", estDecision.Detail, estDecision.DeptDisplay));
+                if (estDecision.Advisory)
                 {
-                    var levelName = levelNamesById.TryGetValue(rowLevelId, out var ln) ? ln.NameEn : "budgeted-level";
-                    var deptDisplay = deptNameById.GetValueOrDefault(resolvedDeptId.Value, deptNameRaw);
-                    var message = $"Row {rowNum}: Department '{deptDisplay}' has {cellCurrent + cellClaimed} of {rowBudget} budgeted {levelName}(s); no {levelName} slot is available for assignment.";
-                    establishmentBlockedRows.Add((rowNum, resolvedDeptId.Value, rowLevelId, rowBudget, cellCurrent + cellClaimed));
-                    if (establishmentMode == EstablishmentGuardService.ModeAdvisory)
-                    {
-                        warnings.Add(message);
-                        claimedLevelSlots[cell] = cellClaimed + 1; // advisory rows still consume
-                    }
-                    else
-                    {
-                        skipped++; errors.Add(message); continue;
-                    }
+                    warnings.Add($"Row {rowNum}: {estDecision.Detail}");
                 }
                 else
                 {
-                    claimedLevelSlots[cell] = cellClaimed + 1;
+                    rowStatus = EmployeeStatuses.Draft;
+                    warnings.Add($"Row {rowNum}: {name} imported as Draft — {estDecision.Detail} Assign within budget to activate.");
                 }
             }
 
@@ -800,9 +641,9 @@ public class EmployeesController : ControllerBase
             var employee = new Employee
             {
                 TenantId = tenantId,
-                CompanyId = resolvedCompany?.Id,
-                BranchId = resolvedBranch?.Id,
-                CostCenterId = resolvedCostCenter?.Id,
+                CompanyId = resolved.CompanyId,
+                BranchId = resolved.BranchId,
+                CostCenterId = resolved.CostCenterId,
                 EmployeeCode = finalCode,
                 FullName = name,
                 EnglishName = name,
@@ -821,7 +662,7 @@ public class EmployeesController : ControllerBase
                 Designation = desigTitleRaw,
                 DesignationId = resolvedDesigId,
                 GradeId = finalGradeId,
-                PositionId = position?.Id,
+                PositionId = resolved.PositionId,
                 Grade = finalGradeCode,
                 JobTitle = row.GetValueOrDefault("JobTitle", desigTitleRaw),
                 EmploymentType = row.GetValueOrDefault("EmploymentType", "Full-time"),
@@ -836,8 +677,8 @@ public class EmployeesController : ControllerBase
                 ProbationStartDate = ReadCsvDate(row, "ProbationStartDate"),
                 ProbationEndDate = ReadCsvDate(row, "ProbationEndDate"),
                 NoticePeriodDays = ReadCsvInt(row, "NoticePeriodDays"),
-                Branch = resolvedBranch?.NameEn ?? string.Empty,
-                CostCenter = resolvedCostCenter?.Code ?? string.Empty,
+                Branch = resolved.BranchNameEn,
+                CostCenter = resolved.CostCenterCode,
                 WorkLocation = row.GetValueOrDefault("WorkLocation", string.Empty).Trim(),
                 ShiftPolicyCode = row.GetValueOrDefault("ShiftPolicyCode", string.Empty).Trim(),
                 LeavePolicyCode = row.GetValueOrDefault("LeavePolicyCode", string.Empty).Trim(),
@@ -886,7 +727,12 @@ public class EmployeesController : ControllerBase
             _db.Employees.Add(employee);
             batchCodes[finalCode] = employee;
             batchPayroll[finalCode] = (employee, row);
-            if (rowReadiness.IsBlocked) incompleteCreated.Add((employee, rowReadiness.Blocking.Count));
+            // Track this row's typed gaps against its FINAL code (auto-generated included) for persistence,
+            // the summary, and the advisory readiness re-stamp; Pass 2 appends link:manager/supervisor gaps.
+            gapsByCode[finalCode] = new List<ImportGap>(resolved.Gaps);
+            rowNumByCode[finalCode] = rowNum;
+            if (resolved.SalaryDecision == ImportSalaryDecision.Hold) heldSalaryCodes.Add(finalCode);
+            createdRowMeta.Add((employee, rowReadiness, rowHasPolicy, finalCode));
             created++;
         }
         // First persist: when level slots were claimed and enforcement is on, serialize with the
@@ -977,7 +823,7 @@ public class EmployeesController : ControllerBase
 
         // ── Pass 1b: payroll profiles + salary structures ────────────────────────
         int payrollProfilesCreated = 0;
-        foreach (var (_, (emp, rowData)) in batchPayroll)
+        foreach (var (payrollCode, (emp, rowData)) in batchPayroll)
         {
             var ibanRaw = rowData.GetValueOrDefault("IBAN", string.Empty).Trim();
             if (!string.IsNullOrWhiteSpace(ibanRaw) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanRaw))
@@ -1004,7 +850,7 @@ public class EmployeesController : ControllerBase
             _ = decimal.TryParse(rowData.GetValueOrDefault("FixedDeduction", string.Empty), out var fixedDeduction);
             var gross = basicSalary + housing + transport + food + mobile + other;
 
-            var grade = emp.GradeId is not null ? gradeByCode.Values.FirstOrDefault(g => g.Id == emp.GradeId) : null;
+            var grade = emp.GradeId is not null ? lookups.GradeById.GetValueOrDefault(emp.GradeId.Value) : null;
 
             bool hasPayroll = !string.IsNullOrEmpty(ibanRaw) || !string.IsNullOrEmpty(bankNameRaw) ||
                               !string.IsNullOrEmpty(molIdRaw) || !string.IsNullOrEmpty(socialInsuranceRaw) || gross > 0;
@@ -1021,7 +867,9 @@ public class EmployeesController : ControllerBase
                 MolId = molIdRaw, WpsEligible = true, EosbEligible = true, CreatedBy = GetUserId()
             });
 
-            if (gross > 0)
+            // Salary HELD (no valid grade): person is imported, but the salary structure is withheld until a
+            // grade is assigned (pay:salaryHeld gap already recorded). Everything else on the profile stands.
+            if (gross > 0 && !heldSalaryCodes.Contains(payrollCode))
             {
                 var structure = await ResolveImportSalaryStructureAsync(tenantId, emp.CompanyId, grade, structureCodeRaw, currency, ct);
                 _db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
@@ -1043,59 +891,83 @@ public class EmployeesController : ControllerBase
         if (payrollProfilesCreated > 0 && await PersistAsync() is { } payrollSaveError)
             return payrollSaveError;
 
-        // ── Pass 2: resolve manager/supervisor codes → IDs ────────────────────────
+        // ── Pass 2: resolve manager/supervisor refs → IDs (CODE first, EMAIL fallback) ────────────
+        // Iterates the rows CREATED in Pass 1 keyed by their FINAL employee code (auto-generated included),
+        // so an auto-coded row now links its manager too. Manager/supervisor NOT found is a WARNING + a
+        // link:* gap — NEVER an error, and never a row drop (the person already imported in Pass 1).
         int hierarchyLinked = 0;
-        var hierarchyErrors = new List<string>();
-        rowNum = 1;
-        // Re-load all tenant employees (includes just-created ones)
-        var allByCode = await _db.Employees
+        int managersUnresolved = 0;
+        var hierarchyWarnings = new List<string>();
+        var allEmployees = await _db.Employees
             .Where(e => e.TenantId == tenantId && !e.IsDeleted)
-            .ToDictionaryAsync(e => e.EmployeeCode.ToUpperInvariant(), ct);
+            .ToListAsync(ct);
+        var allByCode = allEmployees
+            .GroupBy(e => e.EmployeeCode.ToUpperInvariant())
+            .ToDictionary(g => g.Key, g => g.First());
+        var allById = allEmployees.ToDictionary(e => e.Id);
+        var allByEmail = allEmployees
+            .Where(e => !string.IsNullOrWhiteSpace(e.WorkEmail))
+            .GroupBy(e => e.WorkEmail.Trim().ToUpperInvariant())
+            .ToDictionary(g => g.Key, g => g.First());
 
-        foreach (var row in rows)
+        Employee? ResolveRef(string? codeRef, string? emailRef)
         {
-            rowNum++;
-            var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(code) || !batchCodes.TryGetValue(code, out var emp)) continue; // skipped or auto-generated in pass 1
+            if (!string.IsNullOrWhiteSpace(codeRef) && allByCode.TryGetValue(codeRef.Trim().ToUpperInvariant(), out var byCode))
+                return byCode;
+            if (!string.IsNullOrWhiteSpace(emailRef) && allByEmail.TryGetValue(emailRef.Trim().ToUpperInvariant(), out var byEmail))
+                return byEmail;
+            return null;
+        }
 
+        foreach (var (finalCode, (emp, row)) in batchPayroll)
+        {
+            var rn = rowNumByCode.GetValueOrDefault(finalCode, 0);
             var mgrCode = row.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim();
-            var supCode  = row.GetValueOrDefault("SupervisorEmployeeCode", string.Empty).Trim();
-
+            var mgrEmail = row.GetValueOrDefault("ManagerEmail", string.Empty).Trim();
+            var supCode = row.GetValueOrDefault("SupervisorEmployeeCode", string.Empty).Trim();
+            var supEmail = row.GetValueOrDefault("SupervisorEmail", string.Empty).Trim();
+            var gaps = gapsByCode.TryGetValue(finalCode, out var gl) ? gl : (gapsByCode[finalCode] = new List<ImportGap>());
             bool changed = false;
 
-            if (!string.IsNullOrEmpty(mgrCode))
+            if (!string.IsNullOrEmpty(mgrCode) || !string.IsNullOrEmpty(mgrEmail))
             {
-                if (!allByCode.TryGetValue(mgrCode.ToUpperInvariant(), out var mgr))
-                    hierarchyErrors.Add($"Row {rowNum}: ManagerEmployeeCode '{mgrCode}' not found — hierarchy skipped.");
+                var mgrLabel = !string.IsNullOrEmpty(mgrCode) ? mgrCode : mgrEmail;
+                var mgr = ResolveRef(mgrCode, mgrEmail);
+                if (mgr is null)
+                {
+                    managersUnresolved++;
+                    hierarchyWarnings.Add($"Row {rn}: Manager '{mgrLabel}' not found — imported without a manager link.");
+                    gaps.Add(new ImportGap("link:manager", "link", $"Manager '{mgrLabel}' not found — not linked.", mgrLabel));
+                }
                 else if (mgr.Id == emp.Id)
-                    hierarchyErrors.Add($"Row {rowNum}: Employee cannot be their own manager — hierarchy skipped.");
+                {
+                    managersUnresolved++;
+                    hierarchyWarnings.Add($"Row {rn}: Employee cannot be their own manager — manager link skipped.");
+                    gaps.Add(new ImportGap("link:manager", "link", "Employee cannot be their own manager — not linked.", mgrLabel));
+                }
                 else
                 {
-                    // Validate no circular chain would be created
                     bool circular = false;
                     var visited = new HashSet<int> { emp.Id };
                     var cursor = (int?)mgr.Id;
                     for (int depth = 0; cursor.HasValue && depth < 50; depth++)
                     {
-                        if (visited.Contains(cursor.Value)) { circular = true; break; }
-                        visited.Add(cursor.Value);
-                        cursor = allByCode.Values.FirstOrDefault(e => e.Id == cursor.Value)?.ManagerEmployeeId;
+                        if (!visited.Add(cursor.Value)) { circular = true; break; }
+                        cursor = allById.GetValueOrDefault(cursor.Value)?.ManagerEmployeeId;
                     }
-
                     if (circular)
-                        hierarchyErrors.Add($"Row {rowNum}: Setting '{mgrCode}' as manager of '{code}' would create a circular hierarchy — skipped.");
+                    {
+                        managersUnresolved++;
+                        hierarchyWarnings.Add($"Row {rn}: Setting '{mgrLabel}' as manager of '{finalCode}' would create a circular hierarchy — manager link skipped.");
+                        gaps.Add(new ImportGap("link:manager", "link", $"Setting '{mgrLabel}' as manager would create a circular hierarchy — not linked.", mgrLabel));
+                    }
                     else
                     {
                         emp.ManagerEmployeeId = mgr.Id;
                         _db.ReportingLines.Add(new ReportingLine
                         {
-                            TenantId = tenantId,
-                            EmployeeId = emp.Id,
-                            ManagerEmployeeId = mgr.Id,
-                            RelationshipType = "SolidLine",
-                            EffectiveFrom = emp.JoiningDate,
-                            IsPrimary = true,
-                            IsActive = true
+                            TenantId = tenantId, EmployeeId = emp.Id, ManagerEmployeeId = mgr.Id,
+                            RelationshipType = "SolidLine", EffectiveFrom = emp.JoiningDate, IsPrimary = true, IsActive = true
                         });
                         changed = true;
                         hierarchyLinked++;
@@ -1103,22 +975,22 @@ public class EmployeesController : ControllerBase
                 }
             }
 
-            if (!string.IsNullOrEmpty(supCode))
+            if (!string.IsNullOrEmpty(supCode) || !string.IsNullOrEmpty(supEmail))
             {
-                if (!allByCode.TryGetValue(supCode.ToUpperInvariant(), out var sup))
-                    hierarchyErrors.Add($"Row {rowNum}: SupervisorEmployeeCode '{supCode}' not found — skipped.");
+                var supLabel = !string.IsNullOrEmpty(supCode) ? supCode : supEmail;
+                var sup = ResolveRef(supCode, supEmail);
+                if (sup is null)
+                {
+                    hierarchyWarnings.Add($"Row {rn}: Supervisor '{supLabel}' not found — imported without a supervisor link.");
+                    gaps.Add(new ImportGap("link:supervisor", "link", $"Supervisor '{supLabel}' not found — not linked.", supLabel));
+                }
                 else if (sup.Id != emp.Id)
                 {
                     emp.SupervisorEmployeeId = sup.Id;
                     _db.ReportingLines.Add(new ReportingLine
                     {
-                        TenantId = tenantId,
-                        EmployeeId = emp.Id,
-                        ManagerEmployeeId = sup.Id,
-                        RelationshipType = "DottedLine",
-                        EffectiveFrom = emp.JoiningDate,
-                        IsPrimary = false,
-                        IsActive = true
+                        TenantId = tenantId, EmployeeId = emp.Id, ManagerEmployeeId = sup.Id,
+                        RelationshipType = "DottedLine", EffectiveFrom = emp.JoiningDate, IsPrimary = false, IsActive = true
                     });
                     changed = true;
                 }
@@ -1126,23 +998,81 @@ public class EmployeesController : ControllerBase
 
             if (changed) _db.Employees.Update(emp);
         }
-        if ((hierarchyLinked > 0 || hierarchyErrors.Count > 0) && await PersistAsync() is { } hierarchySaveError)
-            return hierarchySaveError;
 
-        var allErrors = errors.Concat(hierarchyErrors).Take(30).ToList();
-        var allWarnings = warnings.Take(30).ToList();
-        // Rows created but not activatable (imported as Draft, need completion before they can go Active).
-        var createdIncomplete = incompleteCreated
-            .Select(x => new { employeeId = x.Emp.Id, employeeCode = x.Emp.EmployeeCode, name = x.Emp.FullName, blockingCount = x.BlockingCount })
+        // ── Advisory readiness re-stamp (Part E): fold ALL of a row's gaps (Pass 1 org/pay + Pass 2 link)
+        // into its readiness so it lands NeedsAttention with a lowered score — WITHOUT touching Blocking /
+        // ActivationBlockersCount, so activation stays unblocked. Blocked rows stay Blocked.
+        foreach (var (emp, readiness, hasPolicy, finalCode) in createdRowMeta)
+        {
+            var gaps = gapsByCode.GetValueOrDefault(finalCode) ?? new List<ImportGap>();
+            if (gaps.Count == 0) continue;
+            var advisory = gaps.Select(g => EmployeeReadinessEvaluator.ImportGapToItem(g.Type, g.Category)).ToList();
+            var merged = EmployeeReadinessEvaluator.MergeAdvisoryGaps(readiness, advisory);
+            emp.ReadinessState = merged.State;
+            emp.ProfileCompletenessScore = (hasPolicy || advisory.Count > 0) ? merged.Score : 0m;
+            // ActivationBlockersCount unchanged (stamped at creation) — advisory gaps never block activation.
+        }
+
+        // ── Persist per-row typed gaps tagged with the importBatchId (Part D2). ────────────────────
+        static string? Trunc(string? s, int max) => s is null ? null : (s.Length <= max ? s : s[..max]);
+        var gapEntities = new List<EmployeeImportGap>();
+        foreach (var (finalCode, gaps) in gapsByCode)
+        {
+            if (gaps.Count == 0 || !batchCodes.TryGetValue(finalCode, out var gEmp)) continue;
+            var rn = rowNumByCode.GetValueOrDefault(finalCode, 0);
+            foreach (var g in gaps)
+                gapEntities.Add(new EmployeeImportGap
+                {
+                    TenantId = tenantId, CompanyId = gEmp.CompanyId, ImportBatchId = importBatchId,
+                    EmployeeId = gEmp.Id, RowNumber = rn,
+                    GapType = g.Type, GapCategory = g.Category,
+                    Detail = Trunc(g.Detail, 500) ?? string.Empty, RawValue = Trunc(g.RawValue, 200),
+                });
+        }
+        if (gapEntities.Count > 0) _db.EmployeeImportGaps.AddRange(gapEntities);
+
+        // Single final persist covering Pass 2 links, the advisory re-stamp, and the gap rows.
+        if (await PersistAsync() is { } finalSaveError) return finalSaveError;
+
+        // ── Countable summary (Part D3/D4) ─────────────────────────────────────────────────────
+        var createdIncomplete = createdRowMeta
+            .Select(m => new { m.Emp, m.Readiness, Gaps = gapsByCode.GetValueOrDefault(m.FinalCode) ?? new List<ImportGap>() })
+            .Where(x => x.Gaps.Count > 0 || x.Readiness.IsBlocked)
+            .Select(x => new
+            {
+                employeeId = x.Emp.Id, employeeCode = x.Emp.EmployeeCode, name = x.Emp.FullName,
+                blockingCount = x.Readiness.Blocking.Count,
+                gaps = x.Gaps.Select(g => new { type = g.Type, category = g.Category, detail = g.Detail }).ToList(),
+            })
             .ToList();
+        var allGaps = gapsByCode.Values.SelectMany(g => g).ToList();
+        int salariesHeld = allGaps.Count(g => g.Type == "pay:salaryHeld");
+        int newDepartments = allGaps.Where(g => g.Type == "org:department").Select(g => (g.RawValue ?? string.Empty).ToUpperInvariant()).Distinct().Count();
+        int newBranches = allGaps.Where(g => g.Type == "org:branch").Select(g => (g.RawValue ?? string.Empty).ToUpperInvariant()).Distinct().Count();
+
+        var allErrors = errors.Take(30).ToList();
+        var allWarnings = warnings.Concat(hierarchyWarnings).Take(30).ToList();
         if (createdIncomplete.Count > 0)
             await _audit.WriteAsync("employee.import_created_incomplete", "Employee", importBatchId.ToString(), Context(),
-                JsonSerializer.Serialize(new { importBatchId, createdIncompleteCount = createdIncomplete.Count }), ct);
+                JsonSerializer.Serialize(new { importBatchId, createdIncompleteCount = createdIncomplete.Count, managersUnresolved, salariesHeld }), ct);
         return Ok(new
         {
-            received = rows.Count, created, skipped, hierarchyLinked, payrollProfilesCreated,
+            received = rows.Count,
+            imported = created,
+            created,
+            skipped,
+            skippedNoName,
+            skippedDupCode,
+            incompleteDraft = createdIncomplete.Count,
+            managersUnresolved,
+            newDepartments,
+            newBranches,
+            salariesHeld,
+            hierarchyLinked,
+            payrollProfilesCreated,
             importBatchId,
-            errors = allErrors, warnings = allWarnings,
+            errors = allErrors,
+            warnings = allWarnings,
             createdIncomplete,
         });
     }
@@ -1331,36 +1261,41 @@ public class EmployeesController : ControllerBase
             .CountAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.Status == EmployeeStatuses.Active, ct);
         int remaining = sub is not null && sub.MaxEmployees > 0 ? sub.MaxEmployees - currentCount : int.MaxValue;
 
-        var deptByCode = await _db.Departments.AsNoTracking().Where(d => d.TenantId == tenantId && d.IsActive)
-            .ToDictionaryAsync(d => d.Code.ToUpperInvariant(), ct);
-        var deptByName = await _db.Departments.AsNoTracking().Where(d => d.TenantId == tenantId && d.IsActive)
-            .ToDictionaryAsync(d => d.NameEn.ToUpperInvariant(), ct);
-        var desigByTitle = await _db.Designations.AsNoTracking().Where(d => d.TenantId == tenantId && d.IsActive)
-            .ToDictionaryAsync(d => d.TitleEn.ToUpperInvariant(), ct);
+        // SHARED master-data lookups — the SAME loader Import (commit) uses → dry-run resolution == commit.
+        var lookups = await EmployeeImportRowResolver.LoadImportLookupsAsync(_db, tenantId, ct);
+        // Cumulative in-file position claims (file order wins) — mirrors commit exactly.
+        var claimedPositionCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // SHARED establishment preloads — the SAME loader Import (commit) uses, so the over-budget
+        // downgrade PROJECTED here == the commit landing. Cumulative claims mirror commit (file order wins).
+        var establishmentContext = await EmployeeImportEstablishmentEvaluator.LoadAsync(_db, _establishmentGuard, tenantId, ct);
+        var claimedLevelSlots = new Dictionary<(Guid Dept, Guid Level), int>();
+
         var existingCodesList = await _db.Employees
             .Where(e => e.TenantId == tenantId && !e.IsDeleted)
             .Select(e => e.EmployeeCode.ToUpperInvariant())
             .ToListAsync(ct);
         var existingCodes = new HashSet<string>(existingCodesList);
-
-        // Resolve the row's company exactly as commit does (P1-2: preview↔commit policy fidelity). The
-        // commit path resolves policy with the ROW's company, so a company-scoped compliance profile /
-        // GCC setting (e.g. WPS upgrading IBAN pay→activate) applies — preview must resolve the same
-        // company or its Active/Draft counts can mislead the operator who clicks Confirm.
-        var companiesByName = await _db.Companies.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
-            .ToDictionaryAsync(c => c.LegalNameEn.ToUpperInvariant(), c => new { c.Id, c.CountryCode, c.CreatedAtUtc }, ct);
-        var defaultCompany = companiesByName.Values.OrderBy(c => c.CreatedAtUtc).FirstOrDefault();
+        // Work emails already in the tenant — the email fallback the commit Pass 2 uses, so a "manager
+        // known" test here matches commit's link outcome.
+        var existingEmails = new HashSet<string>(await _db.Employees
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.WorkEmail != "")
+            .Select(e => e.WorkEmail.ToUpper())
+            .ToListAsync(ct), StringComparer.OrdinalIgnoreCase);
+        var seenEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Pre-pass: collect all batch code→managerCode so circular detection works even when
-        // both employee and manager are new in the same import batch.
+        // both employee and manager are new in the same import batch. Also index batch emails so the
+        // manager email-fallback is recognized in preview.
         var batchManagerMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var batchEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var r in rows)
         {
             var c = r.GetValueOrDefault("EmployeeCode", string.Empty).Trim().ToUpperInvariant();
             var m = r.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim().ToUpperInvariant();
             if (!string.IsNullOrEmpty(c) && !string.IsNullOrEmpty(m))
                 batchManagerMap[c] = m;
+            var em = r.GetValueOrDefault("WorkEmail", string.Empty).Trim();
+            if (!string.IsNullOrEmpty(em)) batchEmails.Add(em);
         }
 
         var previewRows = new List<object>();
@@ -1390,34 +1325,46 @@ public class EmployeesController : ControllerBase
             var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
             var name = row.GetValueOrDefault("FullName", string.Empty).Trim();
             var mgrCode = row.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim();
+            var mgrEmail = row.GetValueOrDefault("ManagerEmail", string.Empty).Trim();
             var supCode = row.GetValueOrDefault("SupervisorEmployeeCode", string.Empty).Trim();
+            var supEmail = row.GetValueOrDefault("SupervisorEmail", string.Empty).Trim();
+            var email = row.GetValueOrDefault("WorkEmail", string.Empty).Trim();
 
             var rowWarnings = new List<string>();
             var rowErrors = new List<string>();
             string status;
 
+            // The two lawful drops are the only preview ERRORS (⇒ wouldSkip), so dry-run skips == commit
+            // skips: (a) missing FullName, (b) duplicate EmployeeCode. Self/circular manager are WARNINGS —
+            // commit does NOT drop those rows (Pass 1 created the person; Pass 2 only skips the link).
+            if (string.IsNullOrWhiteSpace(name))
+            { rowErrors.Add("Missing FullName"); }
             if (!string.IsNullOrEmpty(code) && (existingCodes.Contains(code.ToUpperInvariant()) || seen.Contains(code.ToUpperInvariant())))
             { rowErrors.Add($"Duplicate EmployeeCode '{code}'"); }
 
-            if (!string.IsNullOrEmpty(mgrCode))
+            // ── SHARED accept-never-block resolution (IDENTICAL to commit) → org/grade/position/salary gaps.
+            var resolved = EmployeeImportRowResolver.ResolveRow(row, lookups, claimedPositionCodes);
+            rowWarnings.AddRange(resolved.Warnings);
+
+            if (!string.IsNullOrEmpty(mgrCode) || !string.IsNullOrEmpty(mgrEmail))
             {
                 var mgrUpper = mgrCode.ToUpperInvariant();
-                var codeUpper = code.ToUpperInvariant();
-
-                if (!string.IsNullOrEmpty(code) && mgrCode.Equals(code, StringComparison.OrdinalIgnoreCase))
+                var mgrLabel = !string.IsNullOrEmpty(mgrCode) ? mgrCode : mgrEmail;
+                if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(mgrCode) && mgrCode.Equals(code, StringComparison.OrdinalIgnoreCase))
                 {
-                    rowErrors.Add("Employee cannot be their own manager");
+                    rowWarnings.Add("Employee cannot be their own manager — manager link will be skipped");
                 }
                 else
                 {
-                    bool mgrKnown = existingCodes.Contains(mgrUpper) || seen.Contains(mgrUpper) || batchManagerMap.ContainsKey(mgrUpper);
+                    bool mgrKnown = (!string.IsNullOrEmpty(mgrCode) && (existingCodes.Contains(mgrUpper) || seen.Contains(mgrUpper) || batchManagerMap.ContainsKey(mgrUpper)))
+                                 || (!string.IsNullOrEmpty(mgrEmail) && (existingEmails.Contains(mgrEmail) || seenEmails.Contains(mgrEmail) || batchEmails.Contains(mgrEmail)));
                     if (!mgrKnown)
-                        rowWarnings.Add($"ManagerEmployeeCode '{mgrCode}' not found — hierarchy will be skipped");
+                        rowWarnings.Add($"Manager '{mgrLabel}' not found — manager link will be skipped");
 
-                    if (!string.IsNullOrEmpty(code))
+                    if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(mgrCode))
                     {
                         // Circular check using the full batch map — detects A→B→A even when both are new
-                        var visited2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { codeUpper };
+                        var visited2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { code.ToUpperInvariant() };
                         var cursor2 = mgrUpper;
                         bool circular2 = false;
                         for (int d = 0; d < 50; d++)
@@ -1426,24 +1373,19 @@ public class EmployeesController : ControllerBase
                             if (batchManagerMap.TryGetValue(cursor2, out var next)) cursor2 = next;
                             else break;
                         }
-                        if (circular2) rowErrors.Add($"Setting '{mgrCode}' as manager would create a circular hierarchy");
+                        if (circular2) rowWarnings.Add($"Setting '{mgrLabel}' as manager would create a circular hierarchy — manager link will be skipped");
                     }
                 }
             }
 
-            if (!string.IsNullOrEmpty(supCode) && !existingCodes.Contains(supCode.ToUpperInvariant()) && !seen.Contains(supCode.ToUpperInvariant()))
-                rowWarnings.Add($"SupervisorEmployeeCode '{supCode}' not found — will be skipped");
-
-            var deptColCode = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim().ToUpperInvariant();
-            var deptColName = row.GetValueOrDefault("Department", string.Empty).Trim().ToUpperInvariant();
-            if (!string.IsNullOrEmpty(deptColCode) && !deptByCode.ContainsKey(deptColCode))
-                rowWarnings.Add($"DepartmentCode '{deptColCode}' not found — will be unlinked");
-            else if (!string.IsNullOrEmpty(deptColName) && !deptByName.ContainsKey(deptColName) && string.IsNullOrEmpty(deptColCode))
-                rowWarnings.Add($"Department '{row.GetValueOrDefault("Department", "")}' not found — will be unlinked");
-
-            var desigCol = row.GetValueOrDefault("Designation", string.Empty).Trim().ToUpperInvariant();
-            if (!string.IsNullOrEmpty(desigCol) && !desigByTitle.ContainsKey(desigCol))
-                rowWarnings.Add($"Designation '{row.GetValueOrDefault("Designation", "")}' not found — will be unlinked");
+            if (!string.IsNullOrEmpty(supCode) || !string.IsNullOrEmpty(supEmail))
+            {
+                var supLabel = !string.IsNullOrEmpty(supCode) ? supCode : supEmail;
+                bool supKnown = (!string.IsNullOrEmpty(supCode) && (existingCodes.Contains(supCode.ToUpperInvariant()) || seen.Contains(supCode.ToUpperInvariant())))
+                             || (!string.IsNullOrEmpty(supEmail) && (existingEmails.Contains(supEmail) || seenEmails.Contains(supEmail) || batchEmails.Contains(supEmail)));
+                if (!supKnown)
+                    rowWarnings.Add($"Supervisor '{supLabel}' not found — supervisor link will be skipped");
+            }
 
             var ibanPreview = row.GetValueOrDefault("IBAN", string.Empty).Trim();
             // Use the real ISO 13616 mod-97 check (not just structure) so a bad checksum is caught in
@@ -1466,14 +1408,13 @@ public class EmployeesController : ControllerBase
                 var nationality = row.GetValueOrDefault("Nationality", string.Empty).Trim();
                 // Resolve the row's company (P1-2) — same rule as commit's ResolveRowLandingAsync — so a
                 // company-scoped policy applies here exactly as it will at commit; cache key mirrors commit.
-                var companyNameRaw = row.GetValueOrDefault("CompanyLegalName", string.Empty).Trim();
-                var rowCompany = !string.IsNullOrWhiteSpace(companyNameRaw)
-                    ? companiesByName.GetValueOrDefault(companyNameRaw.ToUpperInvariant())
-                    : defaultCompany;
-                var key = $"{rowCompany?.Id}|{country.ToUpperInvariant()}|{Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(nationality)}";
+                // The row's resolved company is the SAME the shared resolver used (default when unknown), so
+                // a company-scoped policy applies here exactly as it will at commit.
+                var rowCompanyId = resolved.CompanyId;
+                var key = $"{rowCompanyId}|{country.ToUpperInvariant()}|{Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(nationality)}";
                 if (!previewPolicyCache.TryGetValue(key, out var policy))
                 {
-                    policy = await _activationGuard.ResolvePolicyAsync(tenantId, rowCompany?.Id, country, nationality, ct);
+                    policy = await _activationGuard.ResolvePolicyAsync(tenantId, rowCompanyId, country, nationality, ct);
                     previewPolicyCache[key] = policy;
                 }
                 // Country-aware column validation (§4): warn on values in columns that don't apply to this
@@ -1483,12 +1424,14 @@ public class EmployeesController : ControllerBase
                     ?? new Zayra.Api.Infrastructure.CountryPack.DefaultIdentityDocumentFormat();
                 rowWarnings.AddRange(CountryAwareRowWarnings(row, policy.CountryCode, nationality, fmt));
                 DateTime.TryParse(row.GetValueOrDefault("JoiningDate", string.Empty), out var pjd);
-                var snap = ImportReadinessSnapshot(row, null, null, pjd == default ? DateTime.UtcNow : pjd);
+                var snap = ImportReadinessSnapshot(row, resolved.DepartmentId, resolved.DesignationId, pjd == default ? DateTime.UtcNow : pjd);
                 var readiness = _activationGuard.Evaluate(snap, policy);
                 projBlocking = readiness.Blocking.Select(b => b.Label).ToList();
                 projRecommended = readiness.Recommended.Select(b => b.Label).ToList();
                 RecordGaps(readiness.Blocking, "blocking");
                 RecordGaps(readiness.Recommended, "recommended");
+                // Advisory org-skeleton / payroll import gaps also feed the "most common gaps" strip (Part E3).
+                RecordGaps(resolved.Gaps.Select(g => EmployeeReadinessEvaluator.ImportGapToItem(g.Type, g.Category)), "recommended");
                 projectedStatus = string.IsNullOrWhiteSpace(csvStatus)
                     ? EmployeeStatuses.Draft
                     : string.Equals(csvStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
@@ -1508,6 +1451,28 @@ public class EmployeesController : ControllerBase
                         rowWarnings.Add($"Active seat limit reached ({sub?.MaxEmployees}) — imported as inactive until an active seat is available.");
                     }
                 }
+
+                // Establishment budget projection (§5.2 / AC9) — SHARED evaluator, byte-identical to commit.
+                // Runs AFTER the seat gate so it sees the final landing status (commit does the same). An
+                // over-budget row is NEVER skipped: Advisory consumes+warns; Enforced downgrades to Draft with
+                // an org:establishment gap. This is the parity fix — preview now matches commit's landing.
+                var estDecision = EmployeeImportEstablishmentEvaluator.Evaluate(
+                    resolved.DepartmentId, resolved.DesignationId, projectedStatus, establishmentContext,
+                    claimedLevelSlots, row.GetValueOrDefault("Department", string.Empty).Trim());
+                if (estDecision.OverBudget)
+                {
+                    // Feed the org:establishment gap into the "most common gaps" strip, exactly as commit persists it.
+                    RecordGaps(new[] { EmployeeReadinessEvaluator.ImportGapToItem("org:establishment", "org") }, "recommended");
+                    if (estDecision.Advisory)
+                    {
+                        rowWarnings.Add(estDecision.Detail);
+                    }
+                    else
+                    {
+                        projectedStatus = EmployeeStatuses.Draft;
+                        rowWarnings.Add($"{name} imported as Draft — {estDecision.Detail} Assign within budget to activate.");
+                    }
+                }
             }
 
             if (hasErrors) { status = "Error"; wouldSkip++; }
@@ -1518,6 +1483,7 @@ public class EmployeesController : ControllerBase
                 if (string.Equals(projectedStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)) wouldCreateActive++;
                 else if (string.Equals(projectedStatus, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)) wouldCreateDraft++;
                 if (!string.IsNullOrWhiteSpace(code)) seen.Add(code.ToUpperInvariant());
+                if (!string.IsNullOrWhiteSpace(email)) seenEmails.Add(email);
             }
 
             previewRows.Add(new
