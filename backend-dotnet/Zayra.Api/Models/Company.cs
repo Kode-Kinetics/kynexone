@@ -23,6 +23,15 @@ public class Company : ITenantOwned
     public string GosiEmployerId { get; set; } = string.Empty;
     public string QiwaEstablishmentId { get; set; } = string.Empty;
     public string DefaultCurrency { get; set; } = "USD";
+    // Company email domain (e.g. "acme.sa") used to auto-derive employee work emails. Empty = not set;
+    // employees then fall back to manual work-email entry (never blocks create/import). Format-validated
+    // (host domain, lowercased) at the company-form boundary; sets the HR string only — no mailbox is
+    // provisioned. See WorkEmailPatterns for how the local part is formed.
+    public string EmailDomain { get; set; } = string.Empty;
+    // How the local part of a derived work email is formed from the employee name (data, not hard-coded):
+    // first.last | flast | first | first_last. Default first.last. Per-company (subsumes per-tenant in a
+    // Group tenant). Vocabulary lives in WorkEmailPatterns.
+    public string WorkEmailPattern { get; set; } = WorkEmailPatterns.FirstLast;
     public bool IsActive { get; set; } = true;
     // Company lifecycle under group governance: Active | Draft | PendingActivation.
     // Draft is produced by the GroupDraftPlatformApproval creation mode and becomes

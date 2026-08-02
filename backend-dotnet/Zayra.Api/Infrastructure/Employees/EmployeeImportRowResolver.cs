@@ -52,6 +52,14 @@ public sealed class ResolvedImportRow
     public Guid? PositionId { get; set; }
     public decimal GrossSalary { get; set; }
     public ImportSalaryDecision SalaryDecision { get; set; } = ImportSalaryDecision.Apply;
+    // ── Work email (auto-derive / validate; accept-never-block) ──────────────────────────────────
+    // The employing company's email domain (empty ⇒ edge-7 manual). The controller owns final uniqueness
+    // (cumulative claim set), so the resolver produces a CANDIDATE local part (blank when derivation
+    // isn't possible) and/or keeps the PROVIDED value; the resolver never queries the DB.
+    public string WorkEmailDomain { get; set; } = string.Empty;
+    public string WorkEmailPattern { get; set; } = Models.WorkEmailPatterns.FirstLast;
+    public string WorkEmailLocalPart { get; set; } = string.Empty; // derived candidate (blank if none)
+    public string WorkEmailProvided { get; set; } = string.Empty;  // value the row supplied (kept as-is)
     public List<ImportGap> Gaps { get; } = new();
     public List<string> Warnings { get; } = new();
 }
@@ -157,6 +165,49 @@ public static class EmployeeImportRowResolver
                 : $"CompanyLegalName '{companyNameRaw}' not found and no company exists to default to — imported without a company.");
         }
         r.CompanyId = company?.Id;
+
+        // ── Work email (auto-derive when blank / validate against company domain; accept-never-block) ──
+        var workEmailRaw = V("WorkEmail");
+        var emailDomain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
+        var emailPattern = Models.WorkEmailPatterns.Normalize(company?.WorkEmailPattern);
+        r.WorkEmailDomain = emailDomain;
+        r.WorkEmailPattern = emailPattern;
+        if (string.IsNullOrWhiteSpace(emailDomain))
+        {
+            // EDGE 7: company has no email domain → derivation isn't configured for this company; keep any
+            // provided value and NEVER block. A blank work email is a normal profile-completeness item (the
+            // readiness/completeness signal already surfaces it), so we deliberately do NOT flood every row
+            // of a non-derivation tenant with a per-row import gap.
+            r.WorkEmailProvided = workEmailRaw;
+        }
+        else if (string.IsNullOrWhiteSpace(workEmailRaw))
+        {
+            // Blank + domain present → derive a candidate local part from the name; controller finalizes uniqueness.
+            var local = WorkEmailDeriver.BuildLocalPart(V("FullName"), V("ArabicName"), emailPattern);
+            if (!string.IsNullOrEmpty(local))
+                r.WorkEmailLocalPart = local;
+            else
+            {
+                // No romanizable (Latin) name (e.g. Arabic-only) — cannot derive an ASCII local part.
+                r.Gaps.Add(new ImportGap("email:needs-info", "readiness", "Work email not derived — name has no romanizable form; enter it manually.", null));
+                r.Warnings.Add("Work email not derived — name has no romanizable (Latin) form; enter it manually.");
+            }
+        }
+        else
+        {
+            // Provided + domain present → validate against the company domain (req 6). Mismatch/malformed → FLAG, keep value.
+            r.WorkEmailProvided = workEmailRaw;
+            var (matches, providedDomain) = WorkEmailDeriver.ValidateAgainstDomain(workEmailRaw, emailDomain);
+            if (!matches)
+            {
+                r.Gaps.Add(new ImportGap("email:domain-mismatch", "readiness",
+                    providedDomain is null
+                        ? $"Work email '{workEmailRaw}' is missing a domain — expected '@{emailDomain}'."
+                        : $"Work email domain '@{providedDomain}' does not match the company domain '@{emailDomain}'.",
+                    workEmailRaw));
+                r.Warnings.Add($"Work email '{workEmailRaw}' does not match the company domain '@{emailDomain}' — imported as-is and flagged.");
+            }
+        }
 
         // ── Branch: optional; unknown → null + gap + warning.
         var branchCodeRaw = V("BranchCode").ToUpperInvariant();
@@ -328,17 +379,31 @@ public static class ImportGapHealer
         catch { return readiness; }
         if (open.Count == 0) return readiness;
 
+        // Load the employing company's email domain once, only when an email gap is present, so
+        // email:domain-mismatch can self-heal once the address is edited to match the domain.
+        string? companyDomain = null;
+        if (open.Any(g => g.GapType.StartsWith("email:", StringComparison.OrdinalIgnoreCase)) && employee.CompanyId is Guid cid)
+        {
+            try
+            {
+                companyDomain = ((await db.Companies.AsNoTracking()
+                    .Where(c => c.TenantId == employee.TenantId!.Value && c.Id == cid)
+                    .Select(c => c.EmailDomain).FirstOrDefaultAsync(ct)) ?? string.Empty).Trim().ToLowerInvariant();
+            }
+            catch { /* best-effort: leave null → email:domain-mismatch stays human-resolved */ }
+        }
+
         var now = DateTime.UtcNow;
         var stillOpen = new List<ReadinessItem>();
         foreach (var g in open)
         {
-            if (IsHealed(g.GapType, employee)) g.ResolvedAtUtc = now;
+            if (IsHealed(g.GapType, employee, companyDomain)) g.ResolvedAtUtc = now;
             else stillOpen.Add(EmployeeReadinessEvaluator.ImportGapToItem(g.GapType, g.GapCategory));
         }
         return EmployeeReadinessEvaluator.MergeAdvisoryGaps(readiness, stillOpen);
     }
 
-    private static bool IsHealed(string gapType, Employee e) => gapType switch
+    private static bool IsHealed(string gapType, Employee e, string? companyDomain) => gapType switch
     {
         "org:company" => e.CompanyId is not null,
         "org:branch" => e.BranchId is not null,
@@ -347,6 +412,14 @@ public static class ImportGapHealer
         "org:grade" => e.GradeId is not null,
         "org:position" => e.PositionId is not null,
         "pay:salaryHeld" => e.GradeId is not null && (e.Salary ?? 0m) > 0m,
+        // Work-email gaps: needs-info clears once any work email is present; domain-mismatch clears once the
+        // address is edited to end with the company domain (self-heal parity with the org gaps). A duplicate
+        // needs a human/re-derive decision — never auto-heals.
+        "email:needs-info" => !string.IsNullOrWhiteSpace(e.WorkEmail),
+        "email:domain-mismatch" => !string.IsNullOrWhiteSpace(companyDomain)
+            && !string.IsNullOrWhiteSpace(e.WorkEmail)
+            && e.WorkEmail.Trim().EndsWith("@" + companyDomain, StringComparison.OrdinalIgnoreCase),
+        "email:duplicate" => false,
         "link:manager" => e.ManagerEmployeeId is not null,
         "link:supervisor" => e.SupervisorEmployeeId is not null,
         // dup:* need an explicit human decision (confirm distinct / merge) — never auto-heal. The resolve

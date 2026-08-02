@@ -552,6 +552,18 @@ public class EmployeesController : ControllerBase
             await _db.Employees.Where(e => e.TenantId == tenantId).Select(e => e.EmployeeCode).ToListAsync(ct),
             StringComparer.OrdinalIgnoreCase);
 
+        // ── WORK-EMAIL derivation/uniqueness (accept-never-block) ─────────────────────────────────────
+        // Existing tenant work emails keyed by the LOGIN normalization (AuthService.Normalize) + a cumulative
+        // in-batch claim set (file order wins), so a DERIVED collision auto-suffixes deterministically against
+        // both DB and earlier rows. IgnoreQueryFilters ⇒ tenant-wide (company-agnostic) — matches the login
+        // uniqueness boundary and catches cross-company same-domain collisions in a Group tenant.
+        var existingEmailNorm = new HashSet<string>(
+            (await _db.Employees.AsNoTracking().IgnoreQueryFilters()
+                .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.WorkEmail != "")
+                .Select(e => e.WorkEmail).ToListAsync(ct)).Select(AuthService.Normalize),
+            StringComparer.Ordinal);
+        var claimedEmailNorm = new HashSet<string>(StringComparer.Ordinal);
+
         // ── DUPLICATE-PERSON DETECTION preload (accept-never-block) ─────────────────────────────────
         // Preloaded-dictionary path (N1): existing employees loaded ONCE into the matcher — never a DB
         // query per row. Detection is tenant-wide across companies AND across THIS batch (each new row is
@@ -681,6 +693,34 @@ public class EmployeesController : ControllerBase
             }
 
             var finalCode = string.IsNullOrWhiteSpace(code) ? await GenerateEmployeeCode(tenantId, ct) : code;
+
+            // ── WORK EMAIL: derive-when-blank (auto-suffix on collision) / keep-and-flag-when-provided ──
+            // Derived values are made unique against DB ∪ this batch; a PROVIDED value is never silently
+            // rewritten — a collision is flagged (email:duplicate) and the row still imports. Domain-mismatch
+            // on a provided value was already flagged by the shared resolver.
+            string workEmail;
+            if (!string.IsNullOrEmpty(resolved.WorkEmailLocalPart))
+            {
+                workEmail = WorkEmailDeriver.Uniqueify(resolved.WorkEmailLocalPart, resolved.WorkEmailDomain,
+                    addr => existingEmailNorm.Contains(AuthService.Normalize(addr)) || claimedEmailNorm.Contains(AuthService.Normalize(addr)));
+                claimedEmailNorm.Add(AuthService.Normalize(workEmail));
+            }
+            else
+            {
+                workEmail = resolved.WorkEmailProvided;
+                if (!string.IsNullOrWhiteSpace(workEmail))
+                {
+                    var norm = AuthService.Normalize(workEmail);
+                    if (existingEmailNorm.Contains(norm) || claimedEmailNorm.Contains(norm))
+                    {
+                        resolved.Gaps.Add(new ImportGap("email:duplicate", "readiness",
+                            $"Work email '{workEmail}' is already used by another employee in this tenant.", workEmail));
+                        warnings.Add($"Row {rowNum}: Work email '{workEmail}' is already in use — imported as-is and flagged.");
+                    }
+                    else claimedEmailNorm.Add(norm);
+                }
+            }
+
             var employee = new Employee
             {
                 TenantId = tenantId,
@@ -693,7 +733,7 @@ public class EmployeesController : ControllerBase
                 ArabicName = row.GetValueOrDefault("ArabicName", string.Empty),
                 PreferredName = row.GetValueOrDefault("PreferredName", string.Empty),
                 PersonalEmail = row.GetValueOrDefault("PersonalEmail", string.Empty),
-                WorkEmail = row.GetValueOrDefault("WorkEmail", string.Empty),
+                WorkEmail = workEmail,
                 Phone = row.GetValueOrDefault("Phone", string.Empty),
                 Gender = row.GetValueOrDefault("Gender", string.Empty),
                 DateOfBirth = ReadCsvDate(row, "DateOfBirth"),
@@ -1374,6 +1414,16 @@ public class EmployeesController : ControllerBase
             .Select(e => e.WorkEmail.ToUpper())
             .ToListAsync(ct), StringComparer.OrdinalIgnoreCase);
         var seenEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Work-email derivation collision sets (login-normalized), mirroring commit so the derived address +
+        // email:duplicate flag projected here == the commit landing (dry-run == commit).
+        // IgnoreQueryFilters is intentional: work-email uniqueness is tenant-wide (company-agnostic), matching
+        // the User login boundary — a company-scoped caller must still collide against every company's rows.
+        var existingEmailNorm = new HashSet<string>(
+            (await _db.Employees.AsNoTracking().IgnoreQueryFilters()
+                .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.WorkEmail != "")
+                .Select(e => e.WorkEmail).ToListAsync(ct)).Select(AuthService.Normalize),
+            StringComparer.Ordinal);
+        var claimedEmailNorm = new HashSet<string>(StringComparer.Ordinal);
 
         // Pre-pass: collect all batch code→managerCode so circular detection works even when
         // both employee and manager are new in the same import batch. Also index batch emails so the
@@ -1523,7 +1573,26 @@ public class EmployeesController : ControllerBase
                 RecordGaps(readiness.Blocking, "blocking");
                 RecordGaps(readiness.Recommended, "recommended");
                 // Advisory org-skeleton / payroll import gaps also feed the "most common gaps" strip (Part E3).
+                // (email:needs-info / email:domain-mismatch are already in resolved.Gaps + resolved.Warnings.)
                 RecordGaps(resolved.Gaps.Select(g => EmployeeReadinessEvaluator.ImportGapToItem(g.Type, g.Category)), "recommended");
+
+                // Work-email derive/duplicate projection (mirrors commit → dry-run == commit).
+                if (!string.IsNullOrEmpty(resolved.WorkEmailLocalPart))
+                {
+                    var derived = WorkEmailDeriver.Uniqueify(resolved.WorkEmailLocalPart, resolved.WorkEmailDomain,
+                        addr => existingEmailNorm.Contains(AuthService.Normalize(addr)) || claimedEmailNorm.Contains(AuthService.Normalize(addr)));
+                    claimedEmailNorm.Add(AuthService.Normalize(derived));
+                }
+                else if (!string.IsNullOrWhiteSpace(resolved.WorkEmailProvided))
+                {
+                    var norm = AuthService.Normalize(resolved.WorkEmailProvided);
+                    if (existingEmailNorm.Contains(norm) || claimedEmailNorm.Contains(norm))
+                    {
+                        RecordGaps(new[] { EmployeeReadinessEvaluator.ImportGapToItem("email:duplicate", "readiness") }, "recommended");
+                        rowWarnings.Add($"Work email '{resolved.WorkEmailProvided}' is already in use — imported as-is and flagged.");
+                    }
+                    else claimedEmailNorm.Add(norm);
+                }
                 projectedStatus = string.IsNullOrWhiteSpace(csvStatus)
                     ? EmployeeStatuses.Draft
                     : string.Equals(csvStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
@@ -1795,6 +1864,9 @@ public class EmployeesController : ControllerBase
             var scope = this.GetEntityScope();
             return Conflict(new { error = "possible_duplicate", matches = ex.Matches.Select(m => MaskMatch(m, scope)).ToList() });
         }
+        // User-SUPPLIED work-email collision — the one deliberate stop (never silently duplicate the login
+        // identity). Advisory: the modal offers the suggested next-free address. Auto-derived never hits this.
+        catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -1834,6 +1906,55 @@ public class EmployeesController : ControllerBase
             HasStrong: masked.Any(m => m.MatchType == DuplicateMatchTypes.Strong),
             HasProbable: masked.Any(m => m.MatchType == DuplicateMatchTypes.Probable),
             Matches: masked));
+    }
+
+    /// <summary>
+    /// Work-email preview the create/edit modal calls to mirror the SERVER's authoritative derivation
+    /// byte-for-byte (same WorkEmailDeriver the commit uses). POST (not GET) so the name never lands in a URL.
+    /// ALWAYS 200. Returns the locked <c>domain</c>, the resolved <c>localPart</c> + full <c>workEmail</c>,
+    /// whether it is <c>unique</c>, a <c>suggestion</c> (next-free address on collision), and a <c>status</c>:
+    ///   derived            — auto-derived from the name (unique; localPart may carry an auto-suffix),
+    ///   user               — the supplied local part is available,
+    ///   conflict           — the supplied local part collides (not unique; use suggestion),
+    ///   manual-no-domain   — company has no email domain (edge-7 manual entry),
+    ///   manual-arabic-only — no romanizable name (e.g. Arabic-only) → manual entry.
+    /// </summary>
+    [HttpPost("derive-work-email")]
+    [HasPermission("employees.write")]
+    public async Task<ActionResult<DeriveWorkEmailResponse>> DeriveWorkEmail([FromBody] DeriveWorkEmailRequest req, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var company = req.CompanyId is Guid cid
+            ? await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == cid && !c.IsDeleted)
+                .Select(c => new { c.EmailDomain, c.WorkEmailPattern }).FirstOrDefaultAsync(ct)
+            : null;
+        var domain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
+        var pattern = WorkEmailPatterns.Normalize(company?.WorkEmailPattern);
+
+        // Edge-7: no company domain → manual entry (never blocks).
+        if (string.IsNullOrWhiteSpace(domain))
+            return Ok(new DeriveWorkEmailResponse(domain, pattern, string.Empty, string.Empty, true, null, "manual-no-domain"));
+
+        var providedLocal = (req.LocalPart ?? string.Empty).Trim();
+        var userSupplied = providedLocal.Length > 0;
+        var local = userSupplied
+            ? WorkEmailDeriver.ExtractLocalPart(providedLocal)           // in case they typed a full address
+            : WorkEmailDeriver.BuildLocalPart(req.EnglishName, req.ArabicName, pattern);
+        if (string.IsNullOrEmpty(local))
+            return Ok(new DeriveWorkEmailResponse(domain, pattern, string.Empty, string.Empty, true, null, "manual-arabic-only"));
+
+        var taken = await LoadTenantWorkEmailNormalizedSetAsync(tenantId, req.ExcludeEmployeeId, ct);
+        bool IsTaken(string addr) => taken.Contains(AuthService.Normalize(addr));
+        var assembled = WorkEmailDeriver.Assemble(local, domain);
+        if (!IsTaken(assembled))
+            return Ok(new DeriveWorkEmailResponse(domain, pattern, local, assembled, true, null, userSupplied ? "user" : "derived"));
+
+        var suggestion = WorkEmailDeriver.Uniqueify(local, domain, IsTaken);
+        return userSupplied
+            // Keep the user's local part but flag not-unique + suggest the next-free address (they adjust).
+            ? Ok(new DeriveWorkEmailResponse(domain, pattern, local, assembled, false, suggestion, "conflict"))
+            // Auto-derived → return the suffixed unique address directly (req 4).
+            : Ok(new DeriveWorkEmailResponse(domain, pattern, WorkEmailDeriver.ExtractLocalPart(suggestion), suggestion, true, suggestion, "derived"));
     }
 
     /// <summary>Builds the persisted dup:* gap Detail + RawValue, scope-masked (S3): a counterpart in a
@@ -2181,6 +2302,8 @@ public class EmployeesController : ControllerBase
         // the immediate branch even when mixed with sensitive fields).
         var priorDeptId = employee.DepartmentId;
         var priorDesigId = employee.DesignationId;
+        // Before ApplyChanges overwrites it — needed for the work-email login-identity rename guard.
+        var priorWorkEmail = employee.WorkEmail;
         try
         {
             if (sensitive.Count > 0)
@@ -2197,6 +2320,7 @@ public class EmployeesController : ControllerBase
                 {
                     ApplyChanges(employee, immediateChanges);
                     await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken);
+                    await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
                     employee.UpdatedAtUtc = DateTime.UtcNow;
                     await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
                 }
@@ -2254,6 +2378,7 @@ public class EmployeesController : ControllerBase
 
             ApplyChanges(employee, request.Changes);
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken);
+            await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
             employee.UpdatedAtUtc = DateTime.UtcNow;
             await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
             if (employee.DepartmentId != priorDeptId || employee.DesignationId != priorDesigId)
@@ -2273,6 +2398,7 @@ public class EmployeesController : ControllerBase
             return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
@@ -3564,6 +3690,77 @@ public class EmployeesController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Server-authoritative work-email handling for the PATCH edit path — mirrors the create/update service
+    /// so the domain "lock" is enforced at the authoritative layer, not just the UI (B3). No-op unless
+    /// "workEmail" is among the applied changes. When the employing company has a domain: extract the local
+    /// part and RE-ASSEMBLE on the company domain (a foreign/stale domain is coerced, never persisted) and a
+    /// collision throws WorkEmailConflictException (never silently duplicate). Then the login-identity rename
+    /// guard keeps a linked User in sync and blocks a rename that would collide with another login (R1). Sets
+    /// the STRING only — no mailbox is provisioned.
+    /// </summary>
+    private async Task ApplyWorkEmailPatchAsync(Employee employee, IEnumerable<string> changedKeys, string priorWorkEmail, CancellationToken ct)
+    {
+        if (!changedKeys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase))) return;
+        var tenantId = employee.TenantId!.Value;
+        var company = employee.CompanyId is Guid cid
+            ? await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == cid && !c.IsDeleted)
+                .Select(c => new { c.EmailDomain, c.WorkEmailPattern }).FirstOrDefaultAsync(ct)
+            : null;
+        var domain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
+
+        if (!string.IsNullOrWhiteSpace(domain))
+        {
+            var pattern = WorkEmailPatterns.Normalize(company!.WorkEmailPattern);
+            var taken = await LoadTenantWorkEmailNormalizedSetAsync(tenantId, employee.Id, ct);
+            bool IsTaken(string addr) => taken.Contains(AuthService.Normalize(addr));
+            var resolved = WorkEmailDeriver.Resolve(employee.WorkEmail, employee.EnglishName, employee.ArabicName,
+                domain, pattern, IsTaken, out var outcome, out var coercedFrom);
+            if (outcome != "manual") employee.WorkEmail = resolved;
+            if (outcome == "derived")
+                await _audit.WriteAsync("employee.work_email_derived", "Employee", employee.Id.ToString(), Context(),
+                    System.Text.Json.JsonSerializer.Serialize(new { pattern, domain, workEmail = resolved, source = "name" }), ct);
+            if (coercedFrom is not null)
+                await _audit.WriteAsync("employee.work_email_domain_coerced", "Employee", employee.Id.ToString(), Context(),
+                    System.Text.Json.JsonSerializer.Serialize(new { provided = coercedFrom, coercedTo = resolved }), ct);
+        }
+
+        // Login-identity rename guard (same rule as the service).
+        if (employee.UserAccountId is Guid uid)
+        {
+            var newNorm = AuthService.Normalize(employee.WorkEmail);
+            var oldNorm = AuthService.Normalize(priorWorkEmail);
+            if (!string.IsNullOrWhiteSpace(employee.WorkEmail) && !string.Equals(newNorm, oldNorm, StringComparison.Ordinal))
+            {
+                var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == uid && u.TenantId == tenantId, ct);
+                if (user is not null && !string.Equals(user.NormalizedEmail, newNorm, StringComparison.Ordinal))
+                {
+                    var clash = await _db.Users.AnyAsync(u => u.TenantId == tenantId && u.Id != uid && u.NormalizedEmail == newNorm, ct);
+                    if (clash)
+                        throw new InvalidOperationException(
+                            $"Cannot rename work email to '{employee.WorkEmail}': another login already uses that address. Resolve the conflicting account first.");
+                    var oldEmail = user.Email;
+                    user.Email = employee.WorkEmail.Trim().ToLowerInvariant();
+                    user.NormalizedEmail = newNorm;
+                    await _audit.WriteAsync("employee.work_email_renamed", "Employee", employee.Id.ToString(), Context(),
+                        System.Text.Json.JsonSerializer.Serialize(new { oldEmail, newEmail = user.Email, note = "HR string + login identity synced; no mailbox provisioned." }), ct);
+                }
+            }
+        }
+    }
+
+    /// <summary>Tenant work-email collision set keyed by the login normalization (AuthService.Normalize),
+    /// company-agnostic and IgnoreQueryFilters (matches the User login boundary), excluding self.</summary>
+    private async Task<HashSet<string>> LoadTenantWorkEmailNormalizedSetAsync(Guid tenantId, int? excludeEmployeeId, CancellationToken ct)
+    {
+        var emails = await _db.Employees.AsNoTracking().IgnoreQueryFilters()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.WorkEmail != ""
+                        && (excludeEmployeeId == null || e.Id != excludeEmployeeId))
+            .Select(e => e.WorkEmail)
+            .ToListAsync(ct);
+        return emails.Select(AuthService.Normalize).ToHashSet(StringComparer.Ordinal);
+    }
+
     private void ApplyChanges(Employee employee, Dictionary<string, JsonElement> changes)
     {
         foreach (var (field, value) in changes)
@@ -3684,6 +3881,15 @@ public record DuplicateMatchDto(
     string Status, string MatchType, IReadOnlyList<string> Signals, bool CanView);
 
 public record DuplicateCheckResponse(bool HasStrong, bool HasProbable, IReadOnlyList<DuplicateMatchDto> Matches);
+
+/// <summary>Modal work-email preview request. LocalPart (optional) is what the user typed in the editable
+/// local-part field; when blank the server derives from the name. CompanyId is the EMPLOYING company whose
+/// domain is used (multi-company req 5). ExcludeEmployeeId skips self on edit.</summary>
+public record DeriveWorkEmailRequest(
+    string? EnglishName, string? ArabicName, Guid? CompanyId, string? LocalPart, int? ExcludeEmployeeId);
+
+public record DeriveWorkEmailResponse(
+    string Domain, string Pattern, string LocalPart, string WorkEmail, bool Unique, string? Suggestion, string Status);
 
 public record ResolveDuplicateRequest(string Resolution, int? IntoEmployeeId, string? Reason);
 

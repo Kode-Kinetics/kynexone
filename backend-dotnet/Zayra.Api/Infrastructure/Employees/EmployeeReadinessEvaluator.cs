@@ -129,6 +129,10 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
             ["link:supervisor"] = "Supervisor not linked",
             ["pay:salaryHeld"] = "Salary held (no grade)",
             ["pay:salaryReview"] = "Salary needs review",
+            // Work-email auto-derivation gaps (advisory, fail-open — never block activation).
+            ["email:needs-info"] = "Work email needs manual entry",
+            ["email:domain-mismatch"] = "Work email domain mismatch",
+            ["email:duplicate"] = "Work email already in use",
             // Duplicate-person flags (advisory, human-resolved — never auto-heal). Category "dup".
             ["dup:strong"] = "Possible duplicate (ID match)",
             ["dup:possible"] = "Possible duplicate (name+DOB)",

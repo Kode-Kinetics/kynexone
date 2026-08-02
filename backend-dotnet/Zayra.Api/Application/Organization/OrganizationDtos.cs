@@ -17,7 +17,10 @@ public record CompanyDto(
     string QiwaEstablishmentId,
     string DefaultCurrency,
     bool IsActive,
-    string ApprovalStatus = CompanyApprovalStatuses.Active);
+    string ApprovalStatus = CompanyApprovalStatuses.Active,
+    // Work-email auto-derivation config (empty EmailDomain ⇒ manual work-email entry for this company).
+    string EmailDomain = "",
+    string WorkEmailPattern = WorkEmailPatterns.FirstLast);
 
 public record CompanyRequest(
     [Required, MaxLength(180)] string LegalNameEn,
@@ -31,6 +34,11 @@ public record CompanyRequest(
     [MaxLength(80)] string? GosiEmployerId,
     [MaxLength(80)] string? QiwaEstablishmentId,
     [Required, MaxLength(3)] string DefaultCurrency,
+    // Auto-derive work-email config (captured at company create/edit in BOTH Setup and Platform).
+    // EmailDomain is format-validated server-side; empty is allowed (manual-entry fallback). Pattern is
+    // one of WorkEmailPatterns (coerced to first.last if unrecognized).
+    [MaxLength(255)] string? EmailDomain = null,
+    [MaxLength(20)] string? WorkEmailPattern = null,
     bool IsActive = true);
 
 public record BranchDto(
@@ -165,7 +173,9 @@ public static class OrganizationMappings
         company.QiwaEstablishmentId,
         company.DefaultCurrency,
         company.IsActive,
-        company.ApprovalStatus);
+        company.ApprovalStatus,
+        company.EmailDomain,
+        company.WorkEmailPattern);
 
     public static BranchDto ToDto(this Branch branch) => new(
         branch.Id,

@@ -34,6 +34,23 @@ export function toImportResult(d: RawImportCommit): { received: number; created:
 
 // ─── Company ────────────────────────────────────────────────────────────────
 
+/**
+ * Company work-email address pattern (how an employee's local-part is derived from their name).
+ * The SELECTION is stored data per company (not hard-coded); this constant is only the closed
+ * vocabulary the server's WorkEmailPatterns enum accepts. Keep in lock-step with the backend.
+ */
+export const WORK_EMAIL_PATTERNS = ['first.last', 'flast', 'first', 'first_last'] as const;
+export type WorkEmailPattern = (typeof WORK_EMAIL_PATTERNS)[number];
+export const DEFAULT_WORK_EMAIL_PATTERN: WorkEmailPattern = 'first.last';
+
+/** Human labels for the pattern <select> — shows an example so the operator picks with intent. */
+export const WORK_EMAIL_PATTERN_LABELS: Record<WorkEmailPattern, string> = {
+  'first.last': 'first.last  (john.smith)',
+  flast: 'flast  (jsmith)',
+  first: 'first  (john)',
+  first_last: 'first_last  (john_smith)',
+};
+
 export interface CompanyDto {
   id: string;
   legalNameEn: string;
@@ -47,6 +64,11 @@ export interface CompanyDto {
   gosiEmployerId: string;
   qiwaEstablishmentId: string;
   defaultCurrency: string;
+  // Work-email auto-derivation config (see WorkEmailField / derive-work-email). `emailDomain` is the
+  // right-hand side employees inherit (e.g. "acme.sa"); empty => no domain set => manual-entry
+  // fallback. `workEmailPattern` picks how the local-part is formed from the name.
+  emailDomain: string;
+  workEmailPattern: string;
   isActive: boolean;
   approvalStatus: 'Active' | 'Draft' | 'PendingActivation';
 }
@@ -63,7 +85,23 @@ export interface CompanyRequest {
   gosiEmployerId?: string;
   qiwaEstablishmentId?: string;
   defaultCurrency: string;
+  /** e.g. "acme.sa" — server lower-cases + format-validates; blank is allowed (manual fallback). */
+  emailDomain?: string;
+  /** One of WORK_EMAIL_PATTERNS; server coerces anything invalid back to the default. */
+  workEmailPattern?: string;
   isActive: boolean;
+}
+
+/**
+ * Advisory client-side domain check that MIRRORS the server regex (the server stays authoritative).
+ * Empty is valid (edge-7 manual fallback). Non-empty must be a bare host like "acme.sa" — no scheme,
+ * no path, no "@", labels 1-63 chars, a real TLD.
+ */
+export function isValidEmailDomain(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (v === '') return true;
+  if (v.length > 253) return false;
+  return /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(v);
 }
 
 export const companiesApi = {

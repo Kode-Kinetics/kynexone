@@ -68,6 +68,11 @@ const GAP_META: Record<string, { one: string; many: string }> = {
   // existing record. Resolve each from the People list (confirm distinct / merge) — never auto-merged.
   'dup:strong': { one: 'possible duplicate (ID match)', many: 'possible duplicates (ID match)' },
   'dup:possible': { one: 'possible duplicate (name + DOB)', many: 'possible duplicates (name + DOB)' },
+  // Work-email derivation flags (accept-never-block): the row imported, the work email just needs a
+  // human touch — a provided address whose domain differs from the company's, or none derivable.
+  'email:domain-mismatch': { one: 'work email domain mismatch', many: 'work email domain mismatches' },
+  'email:needs-info': { one: 'work email needs manual entry', many: 'work emails need manual entry' },
+  'email:duplicate': { one: 'work email already in use', many: 'work emails already in use' },
 };
 
 /** A typed gap is a possible-duplicate flag needing a human decision (distinct/merge). */

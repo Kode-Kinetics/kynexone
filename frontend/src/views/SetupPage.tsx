@@ -15,6 +15,10 @@ import {
   designationsApi,
   gradesApi,
   costCentersApi,
+  WORK_EMAIL_PATTERNS,
+  WORK_EMAIL_PATTERN_LABELS,
+  DEFAULT_WORK_EMAIL_PATTERN,
+  isValidEmailDomain,
 } from '../api/organization';
 import { countryPacksApi, statutoryRulesApi } from '../api/countryPacks';
 import type { CountryPackOption, StatutorySummary } from '../api/countryPacks';
@@ -142,13 +146,19 @@ function CompaniesTab() {
   const openNew = () => { setEditing(null); setForm(emptyCompany()); setError(''); setModalOpen(true); };
   const openEdit = (c: CompanyDto) => {
     setEditing(c);
-    setForm({ legalNameEn: c.legalNameEn, legalNameAr: c.legalNameAr, tradeName: c.tradeName, countryCode: c.countryCode, jurisdiction: c.jurisdiction, registrationNumber: c.registrationNumber, taxNumber: c.taxNumber, wpsEmployerId: c.wpsEmployerId, gosiEmployerId: c.gosiEmployerId, qiwaEstablishmentId: c.qiwaEstablishmentId, defaultCurrency: c.defaultCurrency, isActive: c.isActive });
+    setForm({ legalNameEn: c.legalNameEn, legalNameAr: c.legalNameAr, tradeName: c.tradeName, countryCode: c.countryCode, jurisdiction: c.jurisdiction, registrationNumber: c.registrationNumber, taxNumber: c.taxNumber, wpsEmployerId: c.wpsEmployerId, gosiEmployerId: c.gosiEmployerId, qiwaEstablishmentId: c.qiwaEstablishmentId, defaultCurrency: c.defaultCurrency, emailDomain: c.emailDomain ?? '', workEmailPattern: c.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN, isActive: c.isActive });
     setError('');
     setModalOpen(true);
   };
 
   const handleSave = async () => {
     if (!form.legalNameEn.trim()) { setError('Legal name (English) is required'); return; }
+    // Advisory client-side domain-format check mirroring the server regex (server stays authoritative).
+    // Blank is allowed — employees then fall back to manual work-email entry.
+    if (!isValidEmailDomain(form.emailDomain ?? '')) {
+      setError('Email domain looks invalid. Use a bare domain like "acme.sa" (no "@", scheme, or path), or leave it blank.');
+      return;
+    }
     setSaving(true); setError('');
     try {
       if (editing) await companiesApi.update(editing.id, form);
@@ -359,6 +369,34 @@ function CompaniesTab() {
           </FormField>
           <FormField label="GOSI Employer ID">
             <input type="text" value={form.gosiEmployerId ?? ''} onChange={(e) => f('gosiEmployerId', e.target.value)} className="input w-full" />
+          </FormField>
+          <FormField label="Work Email Domain">
+            <div className="flex items-stretch overflow-hidden rounded-lg border border-slate-200 focus-within:border-sapphire dark:border-white/10">
+              <span className="grid place-items-center bg-slate-50 px-2.5 text-sm font-medium text-slate-400 dark:bg-white/[0.04] dark:text-slate-500">@</span>
+              <input
+                type="text"
+                value={form.emailDomain ?? ''}
+                onChange={(e) => f('emailDomain', e.target.value.trim().toLowerCase())}
+                className="w-full border-0 bg-transparent px-2.5 py-2 text-sm outline-none focus:ring-0"
+                placeholder="acme.sa"
+                inputMode="url"
+                spellCheck={false}
+                autoCapitalize="none"
+              />
+            </div>
+            <p className={`mt-1 text-xs ${form.emailDomain && !isValidEmailDomain(form.emailDomain) ? 'text-rose-500' : 'text-slate-400'}`}>
+              {form.emailDomain && !isValidEmailDomain(form.emailDomain)
+                ? 'Enter a bare domain like "acme.sa" — no "@", scheme, or path.'
+                : 'New employees get {name}@this-domain automatically. Leave blank to enter work emails manually.'}
+            </p>
+          </FormField>
+          <FormField label="Work Email Pattern">
+            <select value={form.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN} onChange={(e) => f('workEmailPattern', e.target.value)} className="select w-full" disabled={!form.emailDomain}>
+              {WORK_EMAIL_PATTERNS.map((p) => (
+                <option key={p} value={p}>{WORK_EMAIL_PATTERN_LABELS[p]}</option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-slate-400">How each employee&apos;s name becomes the local-part before the @.</p>
           </FormField>
         </div>
       </Modal>
@@ -2108,7 +2146,9 @@ function FormError({ error }: { error: string }) {
 const emptyCompany = (): CompanyRequest => ({
   legalNameEn: '', legalNameAr: '', tradeName: '', countryCode: '', jurisdiction: '',
   registrationNumber: '', taxNumber: '', wpsEmployerId: '', gosiEmployerId: '',
-  qiwaEstablishmentId: '', defaultCurrency: '', isActive: true,
+  qiwaEstablishmentId: '', defaultCurrency: '',
+  emailDomain: '', workEmailPattern: DEFAULT_WORK_EMAIL_PATTERN,
+  isActive: true,
 });
 
 const emptyBranch = (companyId: string): BranchRequest => ({

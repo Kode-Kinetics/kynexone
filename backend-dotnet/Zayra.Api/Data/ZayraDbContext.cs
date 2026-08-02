@@ -1009,6 +1009,11 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.RegistrationNumber });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.Property(x => x.Jurisdiction).HasMaxLength(30);
+            // Work-email auto-derivation config. snake_case columns (email_domain, work_email_pattern)
+            // are produced by ApplySnakeCaseColumns; non-null with a safe default so the additive
+            // migration backfills existing tenants without a 42703 (migration-discipline rule).
+            entity.Property(x => x.EmailDomain).HasMaxLength(255);
+            entity.Property(x => x.WorkEmailPattern).HasMaxLength(20).HasDefaultValue(WorkEmailPatterns.FirstLast);
         });
 
         modelBuilder.Entity<Branch>(entity =>

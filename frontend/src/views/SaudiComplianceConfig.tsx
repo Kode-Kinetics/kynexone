@@ -23,6 +23,8 @@ function toRequest(c: CompanyDto, patch: Partial<CompanyRequest>): CompanyReques
     gosiEmployerId: c.gosiEmployerId,
     qiwaEstablishmentId: c.qiwaEstablishmentId,
     defaultCurrency: c.defaultCurrency,
+    emailDomain: c.emailDomain,
+    workEmailPattern: c.workEmailPattern,
     isActive: c.isActive,
     ...patch,
   };

@@ -120,6 +120,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         // Employees must always resolve to a legal entity: operational company scoping
         // treats null CompanyId as invisible to scoped users, so default it here.
         employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
+        // AUTO-DERIVE WORK EMAIL (server-authoritative) — runs AFTER CompanyId is finalized so it uses the
+        // EMPLOYING company's domain (multi-company req). Sets employee.WorkEmail; may throw
+        // WorkEmailConflictException for a user-supplied duplicate (the one deliberate stop). Audited post-persist.
+        var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail: string.Empty, isUpdate: false, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         // Reject a bad IBAN BEFORE persisting anything (position/salary already validate pre-save), so a
         // create never leaves a half-saved Draft when the bank details fail the checksum. UpsertPayrollProfile
@@ -153,6 +157,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.created", "Employee", employee.Id.ToString(), context, null, cancellationToken);
+        await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         // NEVER-SILENT-DUP: a create that proceeded despite a detected match is durably audited against the
         // real employee id — an acknowledged STRONG override, or a probable (name+DOB / passport-only) match
         // that (per S1) never hard-stops the create but must still leave a record.
@@ -175,6 +180,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
         var priorPositionId = employee.PositionId;
+        // Capture BEFORE ApplyEmployee overwrites WorkEmail — needed for the login-identity rename guard.
+        var priorWorkEmail = employee.WorkEmail;
         TrackChange(employee, "Department", employee.Department, request.DepartmentId?.ToString() ?? employee.Department, request.JoiningDate, "Department update", context);
         TrackChange(employee, "Designation", employee.Designation, request.DesignationId?.ToString() ?? employee.Designation, request.JoiningDate, "Designation update", context);
         TrackChange(employee, "Manager", employee.ManagerEmployeeId?.ToString() ?? "", request.ReportingManagerEmployeeId?.ToString() ?? "", request.JoiningDate, "Manager update", context);
@@ -183,6 +190,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         var priorDepartmentId = employee.DepartmentId;
         var priorDesignationId = employee.DesignationId;
         await ApplyEmployee(employee, request, tenantId, cancellationToken);
+        // AUTO-DERIVE / VALIDATE WORK EMAIL against the (possibly reassigned) EMPLOYING company's domain, and
+        // run the login-identity rename guard (keeps a linked User in sync; blocks a rename that would collide
+        // with another login). Throws before any persist on a user-supplied duplicate / rename collision.
+        var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = context.UserId;
@@ -213,6 +224,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.updated", "Employee", id.ToString(), context, null, cancellationToken);
+        await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         return await GetAsync(tenantId, id, true, context, cancellationToken);
     }
 
@@ -665,6 +677,115 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.LeavePolicyCode = Clean(request.LeavePolicyCode);
         employee.AttendancePolicyCode = Clean(request.AttendancePolicyCode);
         employee.CountryCode = request.ComplianceRecords?.FirstOrDefault()?.CountryCode ?? employee.CountryCode;
+    }
+
+    /// <summary>Carries what happened during work-email resolution so the caller can audit it AFTER the
+    /// employee (and any User rename) is persisted with a real Id.</summary>
+    private sealed class WorkEmailAudit
+    {
+        public string? DerivedJson;   // → employee.work_email_derived
+        public string? CoercedJson;   // → employee.work_email_domain_coerced
+        public string? RenamedJson;   // → employee.work_email_renamed (login identity kept in sync)
+    }
+
+    /// <summary>
+    /// SERVER-AUTHORITATIVE work-email resolution shared by create and update. The modal preview endpoint
+    /// mirrors this exactly (both go through WorkEmailDeriver). Behaviour:
+    ///  - Company has NO email domain (edge-7) → keep whatever was provided (may be blank), NEVER block;
+    ///    a blank surfaces naturally as needs-info via CalculateCompleteness.
+    ///  - Domain present + WorkEmail blank → derive the local part from the name per the company pattern
+    ///    (Arabic-only / unromanizable name → local part "" → left blank for manual entry, never blocked),
+    ///    then auto-suffix on collision (derived values NEVER hard-stop).
+    ///  - Domain present + WorkEmail provided → the domain is server-authoritative: extract the local part
+    ///    and RE-ASSEMBLE on the company domain (a foreign/stale domain is coerced, never persisted), then
+    ///    a collision throws WorkEmailConflictException (the one deliberate stop — never silently duplicate).
+    ///  - Login-identity rename guard (update only): if the employee has a linked User and the normalized
+    ///    address actually changed, keep User.Email/NormalizedEmail in sync in the SAME transaction (no
+    ///    desync / duplicate-account on re-provision) and block a rename that would collide with another
+    ///    login. Sets the STRING only — no mailbox is provisioned.
+    /// Collision keys use AuthService.Normalize (Trim + UpperInvariant), the SAME transform the unique
+    /// User.(TenantId, NormalizedEmail) index uses, so two addresses differing only by case are one login.
+    /// </summary>
+    private async Task<WorkEmailAudit> ResolveWorkEmailAsync(
+        Employee employee, EmployeeCreateRequest request, Guid tenantId, string priorWorkEmail, bool isUpdate, CancellationToken ct)
+    {
+        var audit = new WorkEmailAudit();
+        var company = employee.CompanyId is Guid cid
+            ? await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.Id == cid && !c.IsDeleted)
+                .Select(c => new { c.EmailDomain, c.WorkEmailPattern })
+                .FirstOrDefaultAsync(ct)
+            : null;
+        var domain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
+
+        if (!string.IsNullOrWhiteSpace(domain))
+        {
+            var pattern = WorkEmailPatterns.Normalize(company!.WorkEmailPattern);
+            var taken = await LoadTenantWorkEmailSetAsync(tenantId, isUpdate ? employee.Id : (int?)null, ct);
+            bool IsTaken(string addr) => taken.Contains(Zayra.Api.Infrastructure.Auth.AuthService.Normalize(addr));
+            // Shared authoritative resolution (same code the PATCH edit + preview endpoint use).
+            var resolvedEmail = WorkEmailDeriver.Resolve(
+                Clean(request.WorkEmail), employee.EnglishName, employee.ArabicName, domain, pattern, IsTaken,
+                out var outcome, out var coercedFrom);
+            if (outcome != "manual") employee.WorkEmail = resolvedEmail; // "manual" → leave blank for manual entry
+            if (outcome == "derived")
+                audit.DerivedJson = JsonSerializer.Serialize(new { pattern, domain, workEmail = resolvedEmail, source = "name" });
+            if (coercedFrom is not null)
+                audit.CoercedJson = JsonSerializer.Serialize(new { provided = coercedFrom, coercedTo = resolvedEmail });
+        }
+        // edge-7 (no domain): employee.WorkEmail keeps the request value (Clean'd in ApplyEmployee); never block.
+
+        // ── Login-identity rename guard (req 8 / R1) ──────────────────────────────────────────────
+        if (isUpdate && employee.UserAccountId is Guid uid)
+        {
+            var newNorm = Zayra.Api.Infrastructure.Auth.AuthService.Normalize(employee.WorkEmail);
+            var oldNorm = Zayra.Api.Infrastructure.Auth.AuthService.Normalize(priorWorkEmail);
+            if (!string.IsNullOrWhiteSpace(employee.WorkEmail) && !string.Equals(newNorm, oldNorm, StringComparison.Ordinal))
+            {
+                var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == uid && u.TenantId == tenantId, ct);
+                if (user is not null && !string.Equals(user.NormalizedEmail, newNorm, StringComparison.Ordinal))
+                {
+                    var clash = await _db.Users.AnyAsync(u => u.TenantId == tenantId && u.Id != uid && u.NormalizedEmail == newNorm, ct);
+                    if (clash)
+                        throw new InvalidOperationException(
+                            $"Cannot rename work email to '{employee.WorkEmail}': another login already uses that address. Resolve the conflicting account first.");
+                    var oldEmail = user.Email;
+                    user.Email = employee.WorkEmail.Trim().ToLowerInvariant();
+                    user.NormalizedEmail = newNorm;
+                    audit.RenamedJson = JsonSerializer.Serialize(new
+                    {
+                        oldEmail, newEmail = user.Email,
+                        note = "HR string + login identity synced; no mailbox provisioned."
+                    });
+                }
+            }
+        }
+        return audit;
+    }
+
+    /// <summary>Tenant work-email collision set, keyed by the LOGIN normalization (AuthService.Normalize),
+    /// tenant-scoped and company-AGNOSTIC (catches cross-company same-domain collisions in a Group tenant,
+    /// matching the User login boundary). IgnoreQueryFilters so a company-scoped caller still collides
+    /// against every company's rows. Excludes self on update.</summary>
+    private async Task<HashSet<string>> LoadTenantWorkEmailSetAsync(Guid tenantId, int? excludeEmployeeId, CancellationToken ct)
+    {
+        var emails = await _db.Employees.AsNoTracking().IgnoreQueryFilters()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.WorkEmail != ""
+                        && (excludeEmployeeId == null || e.Id != excludeEmployeeId))
+            .Select(e => e.WorkEmail)
+            .ToListAsync(ct);
+        return emails.Select(Zayra.Api.Infrastructure.Auth.AuthService.Normalize).ToHashSet(StringComparer.Ordinal);
+    }
+
+    private async Task WriteWorkEmailAuditsAsync(Employee employee, WorkEmailAudit audit, RequestContext context, CancellationToken ct)
+    {
+        var id = employee.Id.ToString();
+        if (audit.DerivedJson is not null)
+            await _audit.WriteAsync("employee.work_email_derived", "Employee", id, context, audit.DerivedJson, ct);
+        if (audit.CoercedJson is not null)
+            await _audit.WriteAsync("employee.work_email_domain_coerced", "Employee", id, context, audit.CoercedJson, ct);
+        if (audit.RenamedJson is not null)
+            await _audit.WriteAsync("employee.work_email_renamed", "Employee", id, context, audit.RenamedJson, ct);
     }
 
     private async Task<string> GenerateEmployeeCode(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken)

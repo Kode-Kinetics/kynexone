@@ -1,10 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Download, FileUp, History, Pencil, Plus, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
+import { AlertTriangle, Download, FileUp, History, Lock, Pencil, Plus, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
-import { employeesApi, notActivatableFromError, possibleDuplicateFromError } from '../api/employees';
-import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter } from '../api/employees';
+import { employeesApi, notActivatableFromError, possibleDuplicateFromError, deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
+import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter, DeriveWorkEmailResponse } from '../api/employees';
 import { useAuth } from '../contexts/AuthContext';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
@@ -27,7 +27,7 @@ const employeesImportExport = {
 import { establishmentBlockFromError } from '../api/establishment';
 import type { EstablishmentBlockedPayload } from '../api/establishment';
 import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedModal';
-import { branchesApi, companiesApi, costCentersApi, departmentsApi, designationsApi, gradesApi } from '../api/organization';
+import { branchesApi, companiesApi, costCentersApi, departmentsApi, designationsApi, gradesApi, DEFAULT_WORK_EMAIL_PATTERN } from '../api/organization';
 import type { BranchDto, CompanyDto, CostCenterDto, DepartmentDto, DesignationDto, GradeDto, GradePayScaleComponentDto } from '../api/organization';
 import { Avatar } from '../components/Avatar';
 import { TransliterateButton } from '../components/TransliterateButton';
@@ -77,6 +77,9 @@ const GAP_FILTER_LABELS: Record<string, string> = {
   'org:establishment': 'Over budget',
   'dup:strong': 'Possible duplicates (ID match)',
   'dup:possible': 'Possible duplicates (name + DOB)',
+  'email:domain-mismatch': 'Work email domain mismatch',
+  'email:needs-info': 'Work email needs manual entry',
+  'email:duplicate': 'Work email already in use',
 };
 // Human labels for the per-item bulk-action outcome reason codes the server returns.
 const BULK_REASON_LABELS: Record<string, string> = {
@@ -1678,7 +1681,29 @@ export function EmployeesPage() {
                 )}
               </legend>
               <div className="grid gap-2.5 sm:grid-cols-2 2xl:grid-cols-3">
-                {editFields.filter((f) => f.section === section).map((f) => (
+                {editFields.filter((f) => f.section === section).map((f) => {
+                  // Work email is the [editable local-part]@[locked company domain] widget, same as
+                  // the create modal — but with autoDerive OFF (never overwrite an existing address)
+                  // and self excluded from the uniqueness check.
+                  if (f.key === 'workEmail') {
+                    const editCompany = companies.find((c) => c.id === selectedEmployee?.companyId);
+                    return (
+                      <WorkEmailField
+                        key={f.key}
+                        label={f.label}
+                        value={editForm[f.key] ?? ''}
+                        onChange={(v) => setEditForm((p) => ({ ...p, [f.key]: v }))}
+                        englishName={editForm['englishName'] ?? selectedEmployee?.englishName ?? ''}
+                        arabicName={editForm['arabicName'] ?? selectedEmployee?.arabicName}
+                        companyId={selectedEmployee?.companyId}
+                        domain={editCompany?.emailDomain ?? ''}
+                        pattern={editCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
+                        excludeEmployeeId={selectedId ?? undefined}
+                        originalValue={editOriginal[f.key] ?? ''}
+                      />
+                    );
+                  }
+                  return (
                   <label key={f.key} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                     <span className="flex items-center gap-1.5">
                       {f.label}
@@ -1694,7 +1719,8 @@ export function EmployeesPage() {
                       <input id={`edit-field-${f.key}`} type={f.type ?? 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
                     )}
                   </label>
-                ))}
+                  );
+                })}
               </div>
             </fieldset>
             ))}
@@ -1772,7 +1798,19 @@ export function EmployeesPage() {
             <Input label="Date of birth" value={form.dateOfBirth ?? ''} onChange={(v) => setField('dateOfBirth', v)} type="date" info="Used for statutory records and — for some jurisdictions — required before the employee can be activated." infoKey="employees.date_of_birth" />
             <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={MARITAL_STATUS_OPTIONS} />
             <Input label="Personal email" value={form.personalEmail ?? ''} onChange={(v) => setField('personalEmail', v)} type="email" />
-            <Input label="Work email" value={form.workEmail ?? ''} onChange={(v) => setField('workEmail', v)} type="email" info="Company email address. Also used to link this employee to their login account for self-service (ESS)." infoKey="employees.work_email" />
+            <WorkEmailField
+              label="Work email"
+              value={form.workEmail ?? ''}
+              onChange={(v) => setField('workEmail', v)}
+              englishName={form.englishName}
+              arabicName={form.arabicName}
+              companyId={form.companyId}
+              domain={selectedFormCompany?.emailDomain ?? ''}
+              pattern={selectedFormCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
+              autoDerive
+              info="Auto-built from the name + the company's email domain. Edit only the part before the @ — the domain is locked to the company. Also links this employee to their self-service (ESS) login."
+              infoKey="employees.work_email"
+            />
             <Input label="Mobile number" value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
           </Section>
 
@@ -2030,6 +2068,212 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <legend className="mb-2 px-1 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</legend>
       <div className="grid gap-2.5 sm:grid-cols-2">{children}</div>
     </fieldset>
+  );
+}
+
+// Split a stored work email into its local-part + domain. Blank domain => nothing after the @.
+function splitEmail(value: string): { local: string; domain: string } {
+  const at = (value ?? '').indexOf('@');
+  if (at < 0) return { local: value ?? '', domain: '' };
+  return { local: value.slice(0, at), domain: value.slice(at + 1) };
+}
+
+/**
+ * WorkEmailField — the employee work-email widget. The address is {local-part}@{company domain}; the
+ * user only ever edits the LOCAL-PART and the domain is a locked, read-only chip (never editable
+ * here — it is owned by Setup → Companies). Behaviour:
+ *   • Locked-domain mode (company HAS a domain): editable local-part + "@domain" chip. On create
+ *     (`autoDerive`) the local-part is auto-derived from the name and, via the server preview, shown
+ *     with any tenant-uniqueness suffix (john.smith → john.smith2). The user can override it.
+ *   • Manual mode (company has NO domain, edge-7): a full free-text email input + a needs-info hint.
+ *     Never blocks create/import.
+ * The server (derive-work-email) is authoritative; this only PREVIEWS it. If the endpoint is
+ * unavailable it degrades to a local best-effort derivation (no uniqueness suffix) and the commit
+ * still reconciles. Auto-derive never overwrites a value the user has touched.
+ */
+function WorkEmailField({
+  label, value, onChange, englishName, arabicName, companyId, domain, pattern,
+  autoDerive = false, excludeEmployeeId, originalValue, info, infoKey,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  englishName: string;
+  arabicName?: string;
+  companyId?: string;
+  domain: string;
+  pattern: string;
+  autoDerive?: boolean;
+  excludeEmployeeId?: number;
+  originalValue?: string;
+  info?: string;
+  infoKey?: string;
+}) {
+  const cleanDomain = (domain ?? '').trim().toLowerCase();
+  const manualMode = cleanDomain === '';
+  const { local: localPart } = splitEmail(value);
+  const [touched, setTouched] = useState(false);
+  const [preview, setPreview] = useState<Pick<DeriveWorkEmailResponse, 'status' | 'unique' | 'suggestion'> | null>(null);
+  const [checking, setChecking] = useState(false);
+  // Guards a redundant re-derive after auto-fill writes the value back (which changes `localPart`).
+  const autoKeyRef = useRef('');
+
+  // Reset touched whenever the widget is (re)mounted for a fresh record — handled by React key on the
+  // create modal; edit remounts per selected employee. No explicit reset needed here.
+
+  // Keep a touched local-part re-domained to the CURRENT company when the company/domain changes
+  // (multi-company: use the employing company's domain). Untouched values are re-derived below instead.
+  useEffect(() => {
+    if (manualMode || !touched) return;
+    const parts = splitEmail(value);
+    if (parts.local && parts.domain.toLowerCase() !== cleanDomain) {
+      onChange(assembleWorkEmail(parts.local, cleanDomain));
+    }
+    // Only react to the domain flip; value/onChange are read fresh from the closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cleanDomain]);
+
+  // Debounced preview: auto-derive (untouched) or uniqueness-check (touched), server-authoritative
+  // with a local fallback. Never blocks; advisory only.
+  useEffect(() => {
+    if (manualMode) { setPreview({ status: 'manual-no-domain', unique: true, suggestion: '' }); return; }
+    const wantAutoFill = autoDerive && !touched;
+    if (!wantAutoFill && !localPart.trim()) { setPreview(null); return; }        // touched + cleared → nothing to check
+    if (wantAutoFill && !englishName.trim()) { setPreview(null); return; }        // no name yet → nothing to derive
+    const autoKey = `${englishName}|${arabicName ?? ''}|${companyId ?? ''}|${cleanDomain}|${pattern}`;
+    if (wantAutoFill && autoKey === autoKeyRef.current) return;                   // already derived for this input
+    if (wantAutoFill) autoKeyRef.current = autoKey;
+
+    let cancelled = false;
+    setChecking(true);
+    const handle = setTimeout(async () => {
+      let res: DeriveWorkEmailResponse;
+      try {
+        res = await employeesApi.deriveWorkEmail({
+          englishName, arabicName, companyId,
+          localPart: wantAutoFill ? undefined : localPart,
+          excludeEmployeeId,
+        });
+      } catch {
+        // Endpoint unavailable → local best-effort mirror (no tenant-uniqueness suffix).
+        const local = wantAutoFill ? deriveWorkEmailLocalPart(englishName, pattern) : localPart;
+        res = {
+          domain: cleanDomain, pattern, localPart: local,
+          workEmail: assembleWorkEmail(local, cleanDomain),
+          unique: true, suggestion: local,
+          status: local ? 'derived' : 'manual-arabic-only',
+        };
+      }
+      if (cancelled) return;
+      setChecking(false);
+      setPreview({ status: res.status, unique: res.unique, suggestion: res.suggestion });
+      if (wantAutoFill) {
+        const next = res.workEmail || assembleWorkEmail(res.suggestion || res.localPart, cleanDomain);
+        if (next && next !== value) onChange(next);
+      }
+    }, 300);
+    return () => { cancelled = true; setChecking(false); clearTimeout(handle); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [englishName, arabicName, companyId, cleanDomain, pattern, localPart, touched, autoDerive, manualMode, excludeEmployeeId]);
+
+  const handleLocalChange = (raw: string) => {
+    setTouched(true);
+    // Local-part only: drop whitespace and any stray "@" the user might paste.
+    const next = raw.replace(/\s+/g, '').replace(/@.*$/, '');
+    onChange(next ? assembleWorkEmail(next, cleanDomain) : '');
+  };
+
+  const changedFromOriginal = originalValue !== undefined && (value ?? '') !== (originalValue ?? '');
+  const naturalBase = !manualMode ? deriveWorkEmailLocalPart(englishName, pattern) : '';
+  const wasSuffixed = autoDerive && !touched && !!naturalBase && !!localPart
+    && localPart !== naturalBase && localPart.startsWith(naturalBase);
+  const conflict = !manualMode && preview !== null && (preview.status === 'conflict' || preview.unique === false);
+  const arabicOnly = !manualMode && preview?.status === 'manual-arabic-only';
+
+  return (
+    <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
+      <span className="flex min-w-0 items-center gap-1.5 leading-snug">
+        {label}
+        {info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}
+        {changedFromOriginal && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
+      </span>
+
+      {manualMode ? (
+        <>
+          <input
+            type="email"
+            value={value}
+            onChange={(e) => { setTouched(true); onChange(e.target.value); }}
+            placeholder="name@company.com"
+            className="input mt-1.5 w-full"
+            spellCheck={false}
+            autoCapitalize="none"
+          />
+          <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+            {companyId
+              ? 'This company has no work-email domain set — enter the full address manually, or add a domain in Setup → Companies to auto-fill it.'
+              : 'Select a company to auto-build the work email from its domain, or enter the full address manually.'}
+          </p>
+        </>
+      ) : (
+        <>
+          <span className={`mt-1.5 flex items-stretch overflow-hidden rounded-lg border ${conflict ? 'border-rose-300 dark:border-rose-500/40' : 'border-slate-200 focus-within:border-sapphire dark:border-white/10'}`}>
+            <input
+              type="text"
+              value={localPart}
+              onChange={(e) => handleLocalChange(e.target.value)}
+              placeholder="john.smith"
+              className="w-full border-0 bg-transparent px-2.5 py-2 text-sm outline-none focus:ring-0"
+              spellCheck={false}
+              autoCapitalize="none"
+              aria-label={`${label} local part`}
+            />
+            <span
+              className="flex select-none items-center gap-1 whitespace-nowrap bg-slate-100 px-2.5 text-sm font-medium text-slate-500 dark:bg-white/[0.06] dark:text-slate-400"
+              title="Domain is locked to the company. Change it in Setup → Companies."
+            >
+              <Lock className="h-3 w-3 opacity-60" aria-hidden="true" />@{cleanDomain}
+            </span>
+          </span>
+
+          {conflict ? (
+            <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400">
+              <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span>{localPart}@{cleanDomain} is already used by another employee.</span>
+              {preview?.suggestion && preview.suggestion !== localPart && (
+                <button
+                  type="button"
+                  onClick={() => handleLocalChange(preview.suggestion)}
+                  className="font-semibold text-sapphire underline underline-offset-2"
+                >
+                  Use {preview.suggestion}
+                </button>
+              )}
+            </p>
+          ) : arabicOnly ? (
+            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+              Couldn&apos;t derive a Latin local-part from the name — type the part before the @ manually.
+            </p>
+          ) : wasSuffixed ? (
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Auto-adjusted to keep it unique — {naturalBase}@{cleanDomain} was already taken. Edit if you prefer.
+            </p>
+          ) : checking ? (
+            <p className="mt-1 text-xs text-slate-400">Checking availability…</p>
+          ) : (
+            <p className="mt-1 text-xs text-slate-400">
+              Editable name only — the @{cleanDomain} domain is locked to the company.
+            </p>
+          )}
+        </>
+      )}
+
+      {changedFromOriginal && originalValue && (
+        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          This address is also the self-service (ESS) sign-in identity. Changing it updates the HR record only — it does not rename an existing mailbox or login automatically.
+        </p>
+      )}
+    </label>
   );
 }
 

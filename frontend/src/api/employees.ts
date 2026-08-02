@@ -211,6 +211,82 @@ export interface ResolveDuplicateRequest {
   reason?: string;
 }
 
+// ── Work-email auto-derivation (create/edit modal preview mirrors the authoritative server) ──────
+// The employee WorkEmail is {local-part}@{employing-company.emailDomain}. The USER only ever edits
+// the local-part; the domain is locked to the company. Derivation + the tenant-wide uniqueness suffix
+// are computed SERVER-SIDE (POST /api/employees/derive-work-email) so the modal preview is byte-
+// identical to what the create/import commit will persist. The commit is always authoritative — this
+// endpoint is advisory preview only and must never block.
+
+/** POST /api/employees/derive-work-email body. Omit `localPart` to let the server derive it from the
+ *  name; pass it to check a local-part the user typed. `excludeEmployeeId` skips self on edit. */
+export interface DeriveWorkEmailRequest {
+  englishName: string;
+  arabicName?: string;
+  companyId?: string;
+  /** When present, the server validates/uniquifies THIS local-part instead of deriving from the name. */
+  localPart?: string;
+  excludeEmployeeId?: number;
+}
+
+/**
+ * derive-work-email response. `status` drives the modal's hint + fallback:
+ *   - "derived"            → domain present, a Latin local-part was formed (locked-domain widget).
+ *   - "conflict"           → the user-typed local-part collides in the tenant; `suggestion` is free.
+ *   - "manual-no-domain"   → company has no emailDomain (edge-7) → unlock a full manual email input.
+ *   - "manual-arabic-only" → name has no ASCII token (e.g. pure Arabic) → type the local-part manually.
+ */
+export interface DeriveWorkEmailResponse {
+  domain: string;
+  pattern: string;
+  localPart: string;
+  workEmail: string;
+  /** False when the derived/typed address already exists in the tenant (case-insensitive login key). */
+  unique: boolean;
+  /** The next free local-part when there was a collision (e.g. "john.smith2"); else same as localPart. */
+  suggestion: string;
+  status: 'derived' | 'conflict' | 'manual-no-domain' | 'manual-arabic-only';
+}
+
+/**
+ * OFFLINE FALLBACK ONLY — a best-effort client mirror of the server's BuildLocalPart, used only when
+ * the derive endpoint is unavailable (404 during phased rollout, or a network blip) so the preview
+ * still shows something. It CANNOT check tenant uniqueness (no DB), so it never suffixes — the commit
+ * remains authoritative and will suffix/flag. Mirrors the server's ASCII-only tokenisation (accented
+ * Latin is folded; non-Latin scripts drop out → manual entry).
+ */
+export function deriveWorkEmailLocalPart(englishName: string, pattern: string): string {
+  const normalized = (englishName ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // strip combining diacritics: José → Jose
+    .toLowerCase();
+  // ASCII-only tokens, formed BEFORE first/last selection so a leading non-Latin token can't win.
+  const tokens = normalized
+    .split(/\s+/)
+    .map((t) => t.replace(/[^a-z0-9]/g, ''))
+    .filter(Boolean);
+  if (tokens.length === 0) return ''; // no Latin token → manual-arabic-only
+  const first = tokens[0];
+  const last = tokens.length > 1 ? tokens[tokens.length - 1] : first;
+  let local: string;
+  switch (pattern) {
+    case 'flast': local = `${first.charAt(0)}${last}`; break;
+    case 'first': local = first; break;
+    case 'first_last': local = `${first}_${last}`; break;
+    case 'first.last':
+    default: local = `${first}.${last}`; break;
+  }
+  // Collapse/trim the pattern separators and drop stray chars, matching the server's final sanitise.
+  return local.replace(/[^a-z0-9._]/g, '').replace(/([._])\1+/g, '$1').replace(/^[._]+|[._]+$/g, '');
+}
+
+/** Assemble the full address exactly as the server does (domain always lower-cased + trimmed). */
+export function assembleWorkEmail(localPart: string, domain: string): string {
+  const l = (localPart ?? '').trim();
+  const d = (domain ?? '').trim().toLowerCase();
+  return l && d ? `${l}@${d}` : '';
+}
+
 export interface EmployeeEntity {
   id: number;
   tenantId?: string;
@@ -664,6 +740,15 @@ export const employeesApi = {
    */
   duplicateCheck: (body: DuplicateCheckRequest) =>
     client.post<DuplicateCheckResponse>('/api/employees/duplicate-check', body).then((r) => r.data),
+
+  /**
+   * Advisory work-email preview the create/edit modal calls (debounced). Server-authoritative:
+   * it applies the employing company's domain + pattern, derives the local-part, and suffixes on a
+   * tenant-wide (case-insensitive) collision — so the preview mirrors the eventual commit exactly.
+   * Never blocks; callers fall back to deriveWorkEmailLocalPart() if it is unavailable.
+   */
+  deriveWorkEmail: (body: DeriveWorkEmailRequest) =>
+    client.post<DeriveWorkEmailResponse>('/api/employees/derive-work-email', body).then((r) => r.data),
 
   /**
    * Resolve a flagged possible-duplicate: "distinct" clears the flag (both records survive, reason

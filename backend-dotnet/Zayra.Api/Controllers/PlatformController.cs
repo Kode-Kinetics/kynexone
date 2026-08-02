@@ -1040,6 +1040,9 @@ public class PlatformController : ControllerBase
         if (tenant is null) return NotFound(new { message = "Tenant not found." });
         if (!Application.Common.CountryCodeStandard.IsValidOrEmpty(req.CountryCode))
             return BadRequest(new { message = $"Unrecognized country code '{req.CountryCode}'." });
+        // Same domain rule as the tenant setup path (shared validator, not a divergent copy).
+        if (!Zayra.Api.Infrastructure.Organization.OrganizationSetupService.IsValidEmailDomainOrEmpty(req.EmailDomain))
+            return BadRequest(new { message = $"Invalid email domain '{req.EmailDomain}'. Use a domain like 'acme.sa'." });
 
         var sub = await _db.TenantSubscriptions.AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
         // SYSTEM CONTEXT: tenant scope intentionally bypassed; explicit TenantId predicate.
@@ -1060,6 +1063,10 @@ public class PlatformController : ControllerBase
             RegistrationNumber = req.RegistrationNumber,
             TaxNumber = req.TaxNumber ?? string.Empty,
             DefaultCurrency = req.DefaultCurrency,
+            // Work-email auto-derivation config — this path hand-maps CompanyRequest (does NOT call the
+            // shared Apply), so the two new fields must be set explicitly or they silently would not persist.
+            EmailDomain = (req.EmailDomain ?? string.Empty).Trim().ToLowerInvariant(),
+            WorkEmailPattern = WorkEmailPatterns.Normalize(req.WorkEmailPattern),
             IsActive = true,
             ApprovalStatus = CompanyApprovalStatuses.Active,
         };

@@ -37,6 +37,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     public async Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken, bool asDraft = false)
     {
         ValidateCountryCode(request.CountryCode);
+        ValidateEmailDomain(request.EmailDomain);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, null, cancellationToken);
         var company = new Company { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(company, request);
@@ -57,6 +58,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         var company = await _db.Companies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (company is null) return null;
         ValidateCountryCode(request.CountryCode);
+        ValidateEmailDomain(request.EmailDomain);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, id, cancellationToken);
         Apply(company, request);
         company.UpdatedAtUtc = DateTime.UtcNow;
@@ -77,6 +79,30 @@ public class OrganizationSetupService : IOrganizationSetupService
             throw new InvalidOperationException(
                 $"Unrecognized country code '{countryCode}'. Use an ISO 3166-1 code (e.g. SA, AE, IN, GB).");
     }
+
+    /// <summary>
+    /// Company.EmailDomain auto-derives employee work emails, so a malformed value would produce broken
+    /// addresses. Empty is ALLOWED (edge-7 manual-entry fallback — never forced); a non-empty value must be
+    /// a valid host domain (labels of a-z/0-9/hyphen, a TLD of 2+ letters, ≤253 chars). Compared lowercased.
+    /// </summary>
+    private static void ValidateEmailDomain(string? emailDomain)
+    {
+        if (!IsValidEmailDomainOrEmpty(emailDomain))
+            throw new InvalidOperationException(
+                $"Invalid email domain '{emailDomain}'. Use a domain like 'acme.sa' (letters, digits, hyphens; a valid TLD).");
+    }
+
+    /// <summary>Shared domain validator so the Platform company-create path (which hand-maps CompanyRequest)
+    /// enforces the SAME rule as the tenant setup path instead of a divergent copy. Empty ⇒ valid.</summary>
+    public static bool IsValidEmailDomainOrEmpty(string? emailDomain)
+    {
+        var value = (emailDomain ?? string.Empty).Trim().ToLowerInvariant();
+        return value.Length == 0 || EmailDomainPattern.IsMatch(value);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex EmailDomainPattern = new(
+        @"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$",
+        System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     public async Task<PagedResult<BranchDto>> GetBranchesAsync(Guid tenantId, Guid? companyId, int page, int pageSize, CancellationToken cancellationToken)
     {
@@ -329,6 +355,11 @@ public class OrganizationSetupService : IOrganizationSetupService
         company.GosiEmployerId = Clean(request.GosiEmployerId);
         company.QiwaEstablishmentId = Clean(request.QiwaEstablishmentId);
         company.DefaultCurrency = Clean(request.DefaultCurrency).ToUpperInvariant();
+        // Work-email auto-derivation config. EmailDomain is validated by ValidateEmailDomain (empty allowed —
+        // the manual-entry fallback); the pattern is coerced to a recognized value (never rejected). Domain is
+        // lowercased so derivation/collision keys are canonical.
+        company.EmailDomain = Clean(request.EmailDomain).ToLowerInvariant();
+        company.WorkEmailPattern = WorkEmailPatterns.Normalize(request.WorkEmailPattern);
         company.IsActive = request.IsActive;
     }
 
