@@ -59,6 +59,7 @@ import { Modal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { useAuth } from '../contexts/AuthContext';
 
 type Tab = 'aiSetup' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
@@ -99,6 +100,12 @@ function InfoRow({ label, value, detail }: { label: string; value: string; detai
 
 function CompaniesTab() {
   const { currencyCode } = useTenantSettings();
+  const { hasPermission } = useAuth();
+  // Company mutations require organization write access. organization.read-only viewers
+  // (e.g. HR Officer, Compliance Officer, Recruiter, HR Assistant, Auditor) reach this
+  // tab via the /companies redirect and get the same read-only list they had before,
+  // with no inert (always-403) action controls.
+  const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
   const [items, setItems] = useState<CompanyDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -110,6 +117,7 @@ function CompaniesTab() {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [toggling, setToggling] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -147,7 +155,19 @@ function CompaniesTab() {
       else await companiesApi.create(form);
       setModalOpen(false);
       load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
+    } catch (err: unknown) {
+      // Preserve the actionable create-guardrail messaging previously owned by the
+      // standalone /companies CreateCompanyModal (account-type / plan-limit / platform-
+      // controlled). Only meaningful on create; edit paths never emit these codes.
+      const resp = (err as { response?: { data?: { error?: string; message?: string } } })?.response?.data;
+      if (resp?.error === 'account_type_single_company')
+        setError('This account is a single-company account. Ask your platform administrator to enable the Group account type.');
+      else if (resp?.error === 'company_limit_reached')
+        setError('Your plan’s company limit is reached. Contact your account manager to upgrade.');
+      else if (resp?.error === 'company_creation_platform_controlled')
+        setError('Company creation for this account is managed by the platform. Contact your account manager.');
+      else setError(resp?.message ?? 'Failed to save. Please try again.');
+    }
     finally { setSaving(false); }
   };
 
@@ -159,23 +179,38 @@ function CompaniesTab() {
     finally { setDeleting(null); }
   };
 
+  // Suspend / reactivate — merged from the standalone /companies page so no capability
+  // is lost when that route folds into Setup. Reproduces the last-active-company guard.
+  const toggleStatus = async (c: CompanyDto) => {
+    const action = c.isActive ? 'Suspend' : 'Reactivate';
+    if (!confirm(`${action} ${c.tradeName || c.legalNameEn}?`)) return;
+    setToggling(c.id);
+    try { await companiesApi.setStatus(c.id, !c.isActive); load(); }
+    catch (e: unknown) {
+      const err = (e as { response?: { data?: { error?: string } } })?.response?.data;
+      if (err?.error === 'last_active_company')
+        alert('Cannot deactivate the only active company — activate another company first.');
+      else notifyApiError(e);
+    } finally { setToggling(null); }
+  };
+
   return (
     <>
       <TableShell
         columns={['Legal Name', 'Trade Name', 'Country', 'Currency', 'Status']}
-        onAdd={openNew}
+        onAdd={canWrite ? openNew : undefined}
         addLabel="Add Company"
         loading={loading}
         empty={items.length === 0}
         emptyLabel="No companies yet"
-        actions={
+        actions={canWrite ? (
           <ImportExportToolbar
             entityName="Companies"
             onExport={async () => { const csv = await companiesApi.export(); downloadCsv(csv, 'companies.csv'); }}
             onDownloadTemplate={async () => { const csv = await companiesApi.importTemplate(); downloadCsv(csv, 'companies-template.csv'); }}
             onImport={async (csv) => { const r = await companiesApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
-        }
+        ) : undefined}
       >
         {items.map((c) => (
           <tr key={c.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -187,16 +222,31 @@ function CompaniesTab() {
             </td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{c.defaultCurrency}</td>
             <td className="px-4 py-3">
-              <ActiveBadge active={c.isActive} />
+              {/* Preserve the standalone page's Draft-awareness and "Suspended" wording,
+                  which the plain ActiveBadge (Active/Inactive) did not convey. */}
+              {c.approvalStatus === 'Draft' ? (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-500/[0.12] dark:text-amber-300">Draft — awaiting platform approval</span>
+              ) : c.isActive ? (
+                <ActiveBadge active />
+              ) : (
+                <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-white/[0.08] dark:text-slate-300">Suspended</span>
+              )}
             </td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
-                <button type="button" onClick={() => openEdit(c)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                <button type="button" onClick={() => loadStatutorySummary(c.id)} className="btn-secondary h-7 px-2 text-xs" title="View statutory pack profile"><Globe className="h-3 w-3" /></button>
-                <button type="button" onClick={() => deleteCompany(c.id)} disabled={deleting === c.id} aria-label="Delete company" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
+              {canWrite && (
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
+                  <button type="button" onClick={() => openEdit(c)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
+                  {c.approvalStatus !== 'Draft' && (
+                    <button type="button" onClick={() => toggleStatus(c)} disabled={toggling === c.id} className="btn-secondary h-7 px-2 text-xs">
+                      {c.isActive ? 'Suspend' : 'Reactivate'}
+                    </button>
+                  )}
+                  <button type="button" onClick={() => loadStatutorySummary(c.id)} className="btn-secondary h-7 px-2 text-xs" title="View statutory pack profile"><Globe className="h-3 w-3" /></button>
+                  <button type="button" onClick={() => deleteCompany(c.id)} disabled={deleting === c.id} aria-label="Delete company" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
             </td>
           </tr>
         ))}
@@ -1961,8 +2011,11 @@ function TableShell({
   columns, onAdd, addLabel, loading, empty, emptyLabel, filter, actions, children,
 }: {
   columns: string[];
-  onAdd: () => void;
-  addLabel: string;
+  // Optional so read-only surfaces (e.g. organization.read viewers on the Companies
+  // tab) can render the list without an inert Add button. All write-capable callers
+  // still pass onAdd, so their behaviour is unchanged.
+  onAdd?: () => void;
+  addLabel?: string;
   loading: boolean;
   empty: boolean;
   emptyLabel: string;
@@ -1976,10 +2029,12 @@ function TableShell({
         <div className="flex items-center gap-2">{filter}</div>
         <div className="flex items-center gap-2">
           {actions}
-          <button type="button" onClick={onAdd} className="btn-primary">
-            <Plus className="h-4 w-4" />
-            {addLabel}
-          </button>
+          {onAdd && (
+            <button type="button" onClick={onAdd} className="btn-primary">
+              <Plus className="h-4 w-4" />
+              {addLabel}
+            </button>
+          )}
         </div>
       </div>
       <div className="surface overflow-hidden">
@@ -2085,8 +2140,17 @@ export function SetupPage() {
   // Deep-link support (e.g. the blocked-assignment popup's "Edit staffing budget"
   // opens /setup?tab=establishment&department=…&level=… in a new tab).
   const searchParams = useSearchParams();
+  const { hasPermission } = useAuth();
+  // organization.read-only viewers (folded in from the retired /companies route) may
+  // reach Setup, but only to view the Companies list — every other tab configures
+  // master data and requires write access. Restrict the tab surface accordingly so
+  // read-only entrants never see (or deep-link into) config tabs they cannot use.
+  const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
+  const visibleTabs = canWrite ? tabs : tabs.filter((t) => t.id === 'companies');
   const tabParam = searchParams?.get('tab');
-  const initialTab: Tab = tabs.some((x) => x.id === tabParam) ? (tabParam as Tab) : 'companies';
+  const initialTab: Tab = visibleTabs.some((x) => x.id === tabParam)
+    ? (tabParam as Tab)
+    : (visibleTabs[0]?.id ?? 'companies');
   const focusDepartmentId = searchParams?.get('department') ?? undefined;
   const focusLevelId = searchParams?.get('level') ?? undefined;
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
@@ -2111,7 +2175,7 @@ export function SetupPage() {
 
       {/* Tab bar — wrapping pill tabs */}
       <div className="flex flex-wrap gap-1.5">
-        {tabs.map(({ id, label, icon: Icon }) => (
+        {visibleTabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"

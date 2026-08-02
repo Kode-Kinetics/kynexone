@@ -1,5 +1,4 @@
 import {
-  AlertOctagon,
   Building2,
   BarChart3,
   MessageSquareText,
@@ -15,10 +14,8 @@ import {
   Network,
   Settings2,
   ShieldCheck,
-  SlidersHorizontal,
   TimerReset,
   UserCircle2,
-  UserPlus,
   UserMinus,
   UserRoundCog,
   UsersRound,
@@ -55,11 +52,8 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Payslip Templates', icon: FileText, path: '/payroll/templates', requiredPermissions: ['payroll.read'], requiredFeatureKey: 'payslip_template_designer' },
       { label: 'Loans & Advances', icon: Landmark, path: '/loans', requiredPermissions: ['loans.read', 'loans.write'] },
       { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },
-      { label: 'Onboarding', icon: UserPlus, path: '/recruitment/onboarding', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },
       { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.read', 'employees.write'] },
       { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: ['performance.read', 'performance.write'], requiredFeatureKey: 'performance' },
-      { label: 'Calibration', icon: SlidersHorizontal, path: '/performance/calibration', requiredPermissions: ['performance.read', 'performance.write'], requiredFeatureKey: 'performance' },
-      { label: 'PIP & Probation', icon: AlertOctagon, path: '/performance/pip', requiredPermissions: ['performance.read', 'performance.write'], requiredFeatureKey: 'performance' },
       { label: 'Compliance', icon: ShieldCheck, path: '/compliance', requiredPermissions: ['compliance.read', 'compliance.write'], requiredFeatureKey: 'compliance' },
     ],
   },
@@ -73,7 +67,6 @@ export const navigationGroups: NavGroup[] = [
   {
     label: 'Administration',
     items: [
-      { label: 'Companies', icon: Building2, path: '/companies', requiredPermissions: ['organization.read'] },
       { label: 'Compliance Profiles', icon: ShieldCheck, path: '/compliance-profiles', requiredPermissions: ['compliance.read'] },
       { label: 'Tax Policies', icon: Landmark, path: '/tax-policies', requiredPermissions: ['payroll.read'] },
       { label: 'Request Center', icon: Headphones, path: '/hr-requests', requiredPermissions: ['approvals.read', 'approvals.write', 'approvals.decide', 'ess.read'] },
