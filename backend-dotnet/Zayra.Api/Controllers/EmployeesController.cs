@@ -94,7 +94,15 @@ public class EmployeesController : ControllerBase
             query = query.Where(e => e.CompanyId.HasValue && accessibleIds.Contains(e.CompanyId.Value));
         }
         if (!string.IsNullOrWhiteSpace(search))
-            query = query.Where(e => e.FullName.Contains(search) || e.EmployeeCode.Contains(search) || (e.WorkEmail != null && e.WorkEmail.Contains(search)));
+        {
+            // Predicate MUST match the group-level list (EmployeeManagementService.SearchAsync) AND the
+            // bulk resolver (ResolveTargetIdsAsync) column-for-column, otherwise a scoped user's
+            // "select all matching + search" resolves a broader set than this list shows.
+            var term = search.Trim();
+            query = query.Where(e => e.EmployeeCode.Contains(term) || e.FullName.Contains(term)
+                || e.EnglishName.Contains(term) || e.ArabicName.Contains(term)
+                || (e.WorkEmail != null && e.WorkEmail.Contains(term)));
+        }
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(e => e.Status == status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(e => e.Department == department);
         // SERVER-SIDE readiness / import-gap filter (fixes the page-local "Needs info" deep-link). Must be
@@ -219,6 +227,27 @@ public class EmployeesController : ControllerBase
             exportQuery = exportQuery.Where(e => e.CompanyId.HasValue && accessibleIds.Contains(e.CompanyId.Value));
         }
         var emps = await exportQuery.OrderBy(e => e.EmployeeCode).ToListAsync(ct);
+        var csv = await BuildEmployeesCsvAsync(emps, tenantId, ct);
+        // Export audit: actor, row count, and company-scope dimension — no PII values.
+        await _audit.WriteAsync("employees.exported", "Employee", "bulk", Context(),
+            JsonSerializer.Serialize(new
+            {
+                rowCount = emps.Count,
+                groupScope = entityScope.IsGroupLevel,
+                companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
+                exportType = "employees_csv",
+            }), ct);
+        return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_{DateTime.UtcNow:yyyyMMdd}.csv");
+    }
+
+    /// <summary>
+    /// Builds the employee CSV (registry-ordered columns + payroll/salary/compliance joins) for a resolved
+    /// set of employees. Extracted from <see cref="Export"/> so the People-list export and the bulk
+    /// "export selected" path emit byte-identical output from ONE builder — a column can never drift between
+    /// the two surfaces. Loads only the given rows' related data (never an unfiltered tenant scan).
+    /// </summary>
+    private async Task<string> BuildEmployeesCsvAsync(IReadOnlyList<Employee> emps, Guid tenantId, CancellationToken ct)
+    {
         var empIds = emps.Select(e => e.Id).ToList();
         var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
             .Where(p => p.TenantId == tenantId && empIds.Contains(p.EmployeeId) && !p.IsDeleted)
@@ -342,17 +371,7 @@ public class EmployeesController : ControllerBase
             };
             return (IReadOnlyList<object?>)headers.Select(h => v.GetValueOrDefault(h)).ToList();
         });
-        var csv = Csv.Build(headers, rows);
-        // Export audit: actor, row count, and company-scope dimension — no PII values.
-        await _audit.WriteAsync("employees.exported", "Employee", "bulk", Context(),
-            JsonSerializer.Serialize(new
-            {
-                rowCount = emps.Count,
-                groupScope = entityScope.IsGroupLevel,
-                companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
-                exportType = "employees_csv",
-            }), ct);
-        return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_{DateTime.UtcNow:yyyyMMdd}.csv");
+        return Csv.Build(headers, rows);
     }
 
     /// <summary>Downloadable blank template — the shareable "data format" to fill and import.</summary>
@@ -2389,17 +2408,22 @@ public class EmployeesController : ControllerBase
     }
 
     /// <summary>Multi-select bulk activation (§5.3) for the "Needs info" worklist: each employee passes
-    /// the SAME guard; returns per-employee outcomes so a mixed batch never fails as a whole.</summary>
+    /// the SAME guard; returns per-employee outcomes so a mixed batch never fails as a whole.
+    /// SUPERSEDED by <see cref="BulkAction"/> (POST /bulk) — kept for back-compat. Scope is resolved
+    /// ONCE (was an N+1) and the change-tracker is reset per row so a guard-rejected row can never leak
+    /// its rolled-back mutation into the next row's SaveChanges.</summary>
     [HttpPost("bulk-activate")]
     [HasPermission("employees.approve")]
     public async Task<IActionResult> BulkActivate([FromBody] BulkActivateRequest req, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         var activated = new List<int>();
         var blocked = new List<object>();
         foreach (var id in (req.EmployeeIds ?? System.Array.Empty<int>()).Distinct())
         {
-            if (!await CanAccessEmployeeAsync(id, cancellationToken)) { blocked.Add(new { id, error = "forbidden" }); continue; }
+            _db.ChangeTracker.Clear();
+            if (!scope.CanAccessEmployee(id)) { blocked.Add(new { id, error = "forbidden" }); continue; }
             try
             {
                 var dto = await employeeManagement.ActivateAsync(tenantId, id,
@@ -2410,16 +2434,286 @@ public class EmployeesController : ControllerBase
             }
             catch (EmployeeActivationBlockedException ex)
             {
+                _db.ChangeTracker.Clear();
                 await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken);
                 blocked.Add(new { id, blocking = ex.Readiness.Blocking.Select(ReadinessItemDto) });
             }
-            catch (EstablishmentBudgetExceededException) { blocked.Add(new { id, error = "establishment_budget_exceeded" }); }
-            catch (InvalidOperationException ex) { blocked.Add(new { id, error = ex.Message }); }
+            catch (EstablishmentBudgetExceededException) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = "establishment_budget_exceeded" }); }
+            catch (InvalidOperationException ex) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = ex.Message }); }
         }
+        _db.ChangeTracker.Clear();
         return Ok(new { activated, blocked });
     }
 
     public record BulkActivateRequest(int[] EmployeeIds, string? Reason);
+
+    // ── Unified bulk-action endpoint (multi-select on the People list) ─────────────────────────────
+    // ONE authoritative entrypoint for the four list-level bulk actions. Per-action permission is
+    // checked in-code (four different permissions behind one route); the target id set is resolved
+    // SERVER-SIDE from either an explicit id list or a filter predicate — a client can never widen
+    // beyond its tenant + data-scope + company boundary, and "select all matching" always means the
+    // whole filtered set across pages, never just the visible page. Each row is processed
+    // independently (no outer transaction) so one failure never rolls back the others, and every row
+    // resets the change-tracker so a guard-rejected mutation can never be flushed by a later row.
+    private const int BulkActionMaxIds = 5000;
+    private static readonly string[] BulkExportRoles = { "Admin", "HR Manager", "HR Officer", "Payroll Officer", "Auditor" };
+    private static readonly HashSet<string> BulkDeactivateTargets = new(StringComparer.OrdinalIgnoreCase) { "Suspended", "Inactive" };
+
+    public sealed record BulkSelectAllFilter(string? Search, string? Status, string? Readiness, Guid? ImportBatchId, string? GapType);
+    public sealed record BulkActionRequest(
+        string? Action,
+        string? SelectionMode,          // "ids" | "allMatching" — EXPLICIT; never inferred from field-absence
+        int[]? EmployeeIds,
+        BulkSelectAllFilter? Filter,
+        string? Reason,
+        string? TargetStatus,
+        int? ExpectedCount);            // required for destructive allMatching — server reconciles vs what the user saw
+    public sealed record BulkItemOutcome(
+        int EmployeeId, string EmployeeCode, string FullName,
+        string Outcome,                 // "succeeded" | "skipped" | "failed"
+        string? Reason,                 // machine code: already_active, incomplete, forbidden, establishment_budget_exceeded, ...
+        IReadOnlyList<object>? Blocking);// ReadinessItemDto[] for floor-skips (drives the checklist UI)
+    public sealed record BulkActionResult(
+        string Action, int Requested, int Succeeded, int Skipped, int Failed,
+        IReadOnlyList<BulkItemOutcome> Items, string Summary);
+
+    [HttpPost("bulk")]
+    public async Task<IActionResult> BulkAction([FromBody] BulkActionRequest req, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var action = (req.Action ?? string.Empty).Trim().ToLowerInvariant();
+        if (action is not ("activate" or "deactivate" or "delete" or "export"))
+            return BadRequest(new { error = "unknown_action", message = $"Unknown bulk action '{req.Action}'." });
+
+        // Per-action permission — checked BEFORE any row work (403 on missing).
+        bool permitted = action switch
+        {
+            "activate" => User.HasPermission("employees.approve"),
+            "deactivate" => User.HasPermission("employees.write"),
+            "delete" => User.HasPermission("employees.delete"),
+            "export" => BulkExportRoles.Any(r => User.IsInRole(r)),
+            _ => false,
+        };
+        if (!permitted) return Forbid();
+
+        // Selection mode is an EXPLICIT discriminator — never inferred from which field is populated,
+        // so a stale/empty predicate can never silently resolve to "the whole active tenant".
+        var mode = (req.SelectionMode ?? string.Empty).Trim().ToLowerInvariant();
+        bool idsMode = mode == "ids";
+        bool allMatchingMode = mode == "allmatching";
+        if (!idsMode && !allMatchingMode)
+            return BadRequest(new { error = "invalid_selection", message = "selectionMode must be 'ids' or 'allMatching'." });
+        var hasIds = req.EmployeeIds is { Length: > 0 };
+        if (idsMode && !hasIds)
+            return BadRequest(new { error = "invalid_selection", message = "employeeIds is required for selectionMode 'ids'." });
+        if (idsMode && req.Filter is not null)
+            return BadRequest(new { error = "invalid_selection", message = "Provide employeeIds OR filter, not both." });
+        if (allMatchingMode && hasIds)
+            return BadRequest(new { error = "invalid_selection", message = "Provide employeeIds OR filter, not both." });
+
+        var reason = req.Reason?.Trim();
+        if ((action == "deactivate" || action == "delete") && string.IsNullOrWhiteSpace(reason))
+            return BadRequest(new { error = "reason_required", message = "A reason is required for this action." });
+
+        var targetStatus = string.IsNullOrWhiteSpace(req.TargetStatus) ? "Suspended" : req.TargetStatus.Trim();
+        if (action == "deactivate" && !BulkDeactivateTargets.Contains(targetStatus))
+            return BadRequest(new { error = "invalid_target_status", message = "Bulk deactivate target must be Suspended or Inactive (bulk deactivate is never a terminate)." });
+
+        if (idsMode && req.EmployeeIds!.Distinct().Count() > BulkActionMaxIds)
+            return BadRequest(new { error = "too_many", message = $"Select at most {BulkActionMaxIds} employees per bulk action." });
+
+        // Resolve scope ONCE for the whole call.
+        var entityScope = this.GetEntityScope();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+
+        // Authoritative, server-side id resolution — the same active-population query for BOTH modes,
+        // constrained by data-scope + company boundary. Nothing outside this set is ever acted on.
+        var targetIds = await ResolveTargetIdsAsync(req, idsMode, tenantId, scope, entityScope, cancellationToken);
+        if (targetIds.Count > BulkActionMaxIds)
+            return BadRequest(new { error = "too_many", message = $"This filter matches {targetIds.Count} employees — narrow it to at most {BulkActionMaxIds} before a bulk action." });
+
+        // Destructive select-all-matching must reconcile against what the user saw (TOCTOU / filter drift):
+        // a silent whole-tenant hit becomes a caught 409 instead.
+        if (allMatchingMode && (action == "delete" || action == "deactivate"))
+        {
+            if (req.ExpectedCount is null)
+                return BadRequest(new { error = "expected_count_required", message = "expectedCount is required for a destructive select-all-matching action." });
+            if (req.ExpectedCount.Value != targetIds.Count)
+                return Conflict(new { error = "selection_changed", expected = req.ExpectedCount.Value, actual = targetIds.Count, message = "The set of matching employees changed since you selected them — review and try again." });
+        }
+
+        var items = new List<BulkItemOutcome>();
+
+        // id-set mode: any requested id that did NOT survive the server-side population/scope filter is
+        // reported as skipped:forbidden — never silently dropped, never acted on (closes the IDOR/BOLA hole).
+        if (idsMode)
+        {
+            var resolvedSet = targetIds.ToHashSet();
+            foreach (var dropped in req.EmployeeIds!.Distinct().Where(x => !resolvedSet.Contains(x)))
+                items.Add(new BulkItemOutcome(dropped, string.Empty, string.Empty, "skipped", "forbidden", null));
+        }
+
+        if (action == "export")
+        {
+            var emps = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && targetIds.Contains(e.Id))
+                .OrderBy(e => e.EmployeeCode).ToListAsync(cancellationToken);
+            var csv = await BuildEmployeesCsvAsync(emps, tenantId, cancellationToken);
+            await _audit.WriteAsync("employees.exported", "Employee", "bulk", Context(), JsonSerializer.Serialize(new
+            {
+                rowCount = emps.Count,
+                mode = "selected",
+                selectionType = idsMode ? "idset" : "allMatching",
+                groupScope = entityScope.IsGroupLevel,
+                companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
+            }), cancellationToken);
+            return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_selected_{DateTime.UtcNow:yyyyMMdd}.csv");
+        }
+
+        int succeeded = 0, failed = 0;
+        int skipped = items.Count; // forbidden drops already counted
+        var incompleteLabels = new List<string>();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+
+        foreach (var id in targetIds)
+        {
+            // Reset per row: a prior row's guard-rejected (rolled-back-but-still-tracked) mutation must
+            // never be flushed by this row's SaveChanges. A tx rollback does NOT clear the ChangeTracker.
+            _db.ChangeTracker.Clear();
+            var snap = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && e.Id == id)
+                .Select(e => new { e.EmployeeCode, e.FullName, e.Status })
+                .FirstOrDefaultAsync(cancellationToken);
+            if (snap is null) { items.Add(new(id, string.Empty, string.Empty, "failed", "not_found", null)); failed++; continue; }
+            var code = snap.EmployeeCode; var name = snap.FullName;
+            try
+            {
+                switch (action)
+                {
+                    case "activate":
+                        if (string.Equals(snap.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase))
+                        { items.Add(new(id, code, name, "skipped", "already_active", null)); skipped++; break; }
+                        await employeeManagement.ActivateAsync(tenantId, id,
+                            new EmployeeStatusChangeRequest("Active", today, reason ?? "Bulk activation"), Context(), cancellationToken);
+                        items.Add(new(id, code, name, "succeeded", null, null)); succeeded++;
+                        break;
+                    case "deactivate":
+                        if (string.Equals(snap.Status, targetStatus, StringComparison.OrdinalIgnoreCase))
+                        { items.Add(new(id, code, name, "skipped", "already_in_target_status", null)); skipped++; break; }
+                        await employeeManagement.ChangeStatusAsync(tenantId, id,
+                            new EmployeeStatusChangeRequest(targetStatus, today, reason!), Context(), cancellationToken);
+                        items.Add(new(id, code, name, "succeeded", null, null)); succeeded++;
+                        break;
+                    case "delete":
+                        var tracked = await _db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == id && !e.IsDeleted, cancellationToken);
+                        if (tracked is null) { items.Add(new(id, code, name, "skipped", "already_deleted", null)); skipped++; break; }
+                        await SoftDeleteEmployeeAsync(tenantId, tracked, reason, Context(), cancellationToken);
+                        items.Add(new(id, code, name, "succeeded", null, null)); succeeded++;
+                        break;
+                }
+            }
+            catch (EmployeeActivationBlockedException ex)
+            {
+                // FLOOR-AWARE: a blocked activation is SKIPPED, never force-activated. The gate throws
+                // before any mutation, but clear anyway before the per-row audit for uniformity.
+                _db.ChangeTracker.Clear();
+                await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken);
+                items.Add(new(id, code, name, "skipped", "incomplete", ex.Readiness.Blocking.Select(ReadinessItemDto).ToList()));
+                incompleteLabels.AddRange(ex.Readiness.Blocking.Select(b => b.Label));
+                skipped++;
+            }
+            catch (EstablishmentBudgetExceededException)
+            {
+                _db.ChangeTracker.Clear(); // discard this row's tracked-but-rolled-back mutation
+                items.Add(new(id, code, name, "skipped", "establishment_budget_exceeded", null));
+                skipped++;
+            }
+            catch (InvalidOperationException ex)
+            {
+                _db.ChangeTracker.Clear();
+                items.Add(new(id, code, name, "failed", ex.Message, null));
+                failed++;
+            }
+        }
+        // Ensure the batch audit's SaveChanges cannot flush a failed last row's residual mutation.
+        _db.ChangeTracker.Clear();
+
+        var requested = idsMode ? req.EmployeeIds!.Distinct().Count() : targetIds.Count;
+        await _audit.WriteAsync("employees.bulk_action", "Employee", "bulk", Context(), JsonSerializer.Serialize(new
+        {
+            action,
+            selectionType = idsMode ? "idset" : "allMatching",
+            requested,
+            succeeded,
+            skipped,
+            failed,
+            targetStatus = action == "deactivate" ? targetStatus : null,
+            reason,
+            groupScope = entityScope.IsGroupLevel,
+            companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
+            expectedCount = req.ExpectedCount,
+            resolvedCount = targetIds.Count,
+            ids = targetIds, // resolved set (already capped) — a single audit row is self-sufficient for forensics
+        }), cancellationToken);
+
+        return Ok(new BulkActionResult(action, requested, succeeded, skipped, failed, items,
+            BuildBulkSummary(action, succeeded, skipped, failed, incompleteLabels)));
+    }
+
+    /// <summary>
+    /// Resolves the authoritative target id set SERVER-SIDE for both selection modes. Starts from the
+    /// EXACT active-People-list population (mirrors <see cref="Search"/>: not deleted, not a former-employee
+    /// status), constrained by the caller's data scope AND company boundary, then narrows by the explicit
+    /// id list (id-set mode) or the filter predicate (all-matching mode). Ids outside this set never
+    /// survive — an id-set caller cannot reach an out-of-scope, other-company, or former-employee row.
+    /// </summary>
+    private async Task<List<int>> ResolveTargetIdsAsync(BulkActionRequest req, bool idsMode, Guid tenantId, DataScope scope, EntityScopeContext entityScope, CancellationToken ct)
+    {
+        var query = _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && !ExitEmployeeStatuses.Exit.Contains(e.Status));
+        if (!scope.IsUnrestricted)
+            query = query.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
+        if (!entityScope.IsGroupLevel)
+        {
+            var accessibleIds = entityScope.AccessibleCompanyIds;
+            query = query.Where(e => e.CompanyId.HasValue && accessibleIds.Contains(e.CompanyId.Value));
+        }
+
+        if (idsMode)
+        {
+            var requested = req.EmployeeIds!.Distinct().ToList();
+            query = query.Where(e => requested.Contains(e.Id));
+        }
+        else
+        {
+            var f = req.Filter ?? new BulkSelectAllFilter(null, null, null, null, null);
+            if (!string.IsNullOrWhiteSpace(f.Search))
+            {
+                var term = f.Search.Trim();
+                query = query.Where(e => e.EmployeeCode.Contains(term) || e.FullName.Contains(term)
+                    || e.EnglishName.Contains(term) || e.ArabicName.Contains(term)
+                    || (e.WorkEmail != null && e.WorkEmail.Contains(term)));
+            }
+            if (!string.IsNullOrWhiteSpace(f.Status)) query = query.Where(e => e.Status == f.Status);
+            query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, f.Readiness, f.ImportBatchId, f.GapType);
+        }
+
+        return await query.Select(e => e.Id).ToListAsync(ct);
+    }
+
+    /// <summary>The required human summary: e.g. "12 activated, 3 skipped (incomplete: Iqama, GOSI reference), 1 failed".</summary>
+    private static string BuildBulkSummary(string action, int succeeded, int skipped, int failed, IReadOnlyList<string> incompleteLabels)
+    {
+        var verb = action switch { "activate" => "activated", "deactivate" => "deactivated", "delete" => "deleted", _ => "processed" };
+        var parts = new List<string> { $"{succeeded} {verb}" };
+        if (skipped > 0)
+        {
+            var distinct = incompleteLabels.Where(l => !string.IsNullOrWhiteSpace(l)).Distinct().ToList();
+            parts.Add(distinct.Count > 0 ? $"{skipped} skipped (incomplete: {string.Join(", ", distinct)})" : $"{skipped} skipped");
+        }
+        if (failed > 0) parts.Add($"{failed} failed");
+        return string.Join(", ", parts);
+    }
 
     private static object ReadinessItemDto(Zayra.Api.Infrastructure.Employees.ReadinessItem i) => new
     {
@@ -2442,8 +2736,20 @@ public class EmployeesController : ControllerBase
         var tenantId = RequireTenant();
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return NotFound();
+        await SoftDeleteEmployeeAsync(tenantId, employee, reason: null, Context(), cancellationToken);
+        return NoContent();
+    }
 
-        var context = Context();
+    /// <summary>
+    /// Shared soft-remove primitive (used by the single Delete endpoint AND the bulk-action loop so the two
+    /// never diverge): flags the record deleted → Ex-Employees archive, cancels + reroutes pending approval
+    /// work, audits <c>employees.deleted</c> (with the caller's reason), and runs the exit payroll cascade.
+    /// The employee MUST be a tracked entity (this method mutates it and SaveChanges). Idempotency: the
+    /// caller is responsible for skipping rows that are already <c>IsDeleted</c>.
+    /// </summary>
+    private async Task SoftDeleteEmployeeAsync(Guid tenantId, Employee employee, string? reason, RequestContext context, CancellationToken cancellationToken)
+    {
+        var id = employee.Id;
         var deletedAt = DateTime.UtcNow;
         employee.IsDeleted = true;
         employee.DeletedAtUtc = deletedAt;
@@ -2460,6 +2766,7 @@ public class EmployeesController : ControllerBase
         {
             employee.PrivacyStatus,
             employee.RetentionUntilUtc,
+            Reason = reason,
             CancelledApprovalRequests = cancelledApprovals,
             ReroutedApprovalRequests = reroutedApprovals,
             ApproverDeletionFallback = "Pending approvals assigned to the deleted approver are rerouted to the HR Manager role queue; approvals for the deleted employee are cancelled."
@@ -2471,8 +2778,6 @@ public class EmployeesController : ControllerBase
         // read the row for this employee. Idempotent — a no-op if the employee was already terminated.
         await EmployeeManagementService.DeactivatePayrollFootprintAsync(
             _db, _audit, tenantId, id, "soft_deleted", deactivateSalaryStructure: true, context, cancellationToken);
-
-        return NoContent();
     }
 
     /// <summary>

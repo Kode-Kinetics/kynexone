@@ -540,6 +540,68 @@ export interface BulkActivateResult {
   blocked: Array<{ id: number; blocking?: ReadinessItem[]; error?: string }>;
 }
 
+// ── Unified bulk multi-select action (People list) ─────────────────────────────────────────────
+/** Which action the bulk endpoint runs. Payroll bulk ops are a SEPARATE later phase — not here. */
+export type BulkAction = 'activate' | 'deactivate' | 'delete' | 'export';
+
+/**
+ * Server-side "select all matching the current filter" predicate. Mirrors the ACTIVE People-list
+ * filters exactly (search + status + readiness + import-gap deep-link) so the resolved set the
+ * server acts on is the same set the operator saw across all pages — never just the visible page,
+ * never an unfiltered tenant dump. There is deliberately no `department` field (the list UI has no
+ * department filter — a predicate the UI never populates would only invite drift).
+ */
+export interface BulkSelectAllFilter {
+  search?: string;
+  status?: string;
+  readiness?: string;
+  importBatchId?: string;
+  gapType?: string;
+}
+
+/**
+ * POST /api/employees/bulk body. `selectionMode` is an EXPLICIT discriminator (never inferred):
+ *  - "ids"         → act on `employeeIds` (page-level picks). Ids outside the caller's scope are
+ *                    reported skipped:forbidden, never acted on.
+ *  - "allMatching" → act on the whole server-resolved filtered set. For destructive actions
+ *                    (delete/deactivate) `expectedCount` (the total the user saw) is REQUIRED and the
+ *                    server returns 409 selection_changed if the resolved count differs.
+ */
+export interface BulkActionRequest {
+  action: BulkAction;
+  selectionMode: 'ids' | 'allMatching';
+  employeeIds?: number[];
+  filter?: BulkSelectAllFilter;
+  reason?: string;
+  /** Deactivate only — allow-list {Suspended, Inactive}; defaults to Suspended server-side. */
+  targetStatus?: string;
+  /** Required for a destructive select-all-matching action; the server reconciles it vs the live count. */
+  expectedCount?: number;
+}
+
+/** One per-employee outcome from a bulk action (never a whole-batch pass/fail). */
+export interface BulkItemOutcome {
+  employeeId: number;
+  employeeCode: string;
+  fullName: string;
+  outcome: 'succeeded' | 'skipped' | 'failed';
+  /** Machine code: already_active, incomplete, forbidden, establishment_budget_exceeded, not_found, … */
+  reason?: string | null;
+  /** Readiness checklist items for a floor-skip (reason === "incomplete") — drives the inline checklist. */
+  blocking?: ReadinessItem[] | null;
+}
+
+export interface BulkActionResult {
+  action: BulkAction;
+  requested: number;
+  succeeded: number;
+  skipped: number;
+  failed: number;
+  items: BulkItemOutcome[];
+  /** The human summary, e.g. "12 activated, 3 skipped (incomplete: Iqama, GOSI reference), 1 failed". */
+  summary: string;
+}
+
 /**
  * Returns the structured employee_not_activatable 422 payload when the error is the
  * readiness gate's 422, otherwise null. Use at every Activate / ChangeStatus catch site so
@@ -637,6 +699,19 @@ export const employeesApi = {
   /** Multi-select activation for the "Needs info" worklist; each id passes the same gate. */
   bulkActivate: (employeeIds: number[], reason?: string) =>
     client.post<BulkActivateResult>('/api/employees/bulk-activate', { employeeIds, reason }).then((r) => r.data),
+
+  /**
+   * Unified People-list bulk action (activate / deactivate / delete). Server is authoritative: it
+   * re-resolves the target set within the caller's tenant + data + company scope and returns a
+   * per-item summary — floor-blocked activations are SKIPPED (never force-activated), one row's
+   * failure never rolls back the others.
+   */
+  bulk: (body: BulkActionRequest) =>
+    client.post<BulkActionResult>('/api/employees/bulk', body).then((r) => r.data),
+
+  /** Export-selected variant of the same endpoint — returns CSV text (respects filters/selection). */
+  bulkExport: (body: BulkActionRequest) =>
+    client.post<string>('/api/employees/bulk', body, { responseType: 'text' }).then((r) => r.data),
 
   terminate: (id: number, data: Omit<EmployeeStatusChangeRequest, 'status'>) =>
     client.post<EmployeeDetail>(`/api/employees/${id}/terminate`, { ...data, status: 'Terminated' }).then((r) => r.data),

@@ -1,10 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, FileUp, History, Pencil, Plus, RefreshCw, Search, Send, UserRound, Users } from 'lucide-react';
+import { AlertTriangle, Download, FileUp, History, Pencil, Plus, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { employeesApi, notActivatableFromError, possibleDuplicateFromError } from '../api/employees';
-import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest } from '../api/employees';
+import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter } from '../api/employees';
+import { useAuth } from '../contexts/AuthContext';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
@@ -77,6 +78,18 @@ const GAP_FILTER_LABELS: Record<string, string> = {
   'dup:strong': 'Possible duplicates (ID match)',
   'dup:possible': 'Possible duplicates (name + DOB)',
 };
+// Human labels for the per-item bulk-action outcome reason codes the server returns.
+const BULK_REASON_LABELS: Record<string, string> = {
+  already_active: 'Already active',
+  already_in_target_status: 'Already in that status',
+  already_deleted: 'Already archived',
+  incomplete: 'Incomplete — required details missing',
+  forbidden: 'Outside your access scope',
+  establishment_budget_exceeded: 'Over establishment budget',
+  not_found: 'Record not found',
+};
+const bulkReasonLabel = (reason?: string | null) => (reason ? BULK_REASON_LABELS[reason] ?? reason : 'Skipped');
+
 const tabs: { id: DetailTab; label: string }[] = [
   { id: 'personal', label: 'Personal Information' },
   { id: 'employment', label: 'Employment Information' },
@@ -179,6 +192,7 @@ interface EmployeeUsageData {
 export function EmployeesPage() {
   const searchParams = useSearchParams();
   const { currencyCode } = useTenantSettings();
+  const { hasPermission, hasRole } = useAuth();
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -193,6 +207,20 @@ export function EmployeesPage() {
   const [gapTypeFilter, setGapTypeFilter] = useState('');
   const [importBatchFilter, setImportBatchFilter] = useState('');
   const [view, setView] = useState<'current' | 'ex'>('current');
+  // ── Bulk multi-select ──────────────────────────────────────────────────────────────────────
+  // `selectedIds` = page-level picks (persist across pages while the filter is unchanged).
+  // `selectAllMatching` = act on the ENTIRE server-resolved filtered set across all pages, not just
+  // the visible rows. The two are mutually exclusive from the operator's point of view (turning on
+  // "all matching" supersedes the per-row picks; touching a row collapses back to explicit picks).
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [selectAllMatching, setSelectAllMatching] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<BulkActionResult | null>(null);
+  // Confirm capture for the destructive actions (reason required; deactivate also picks a target status).
+  const [bulkConfirm, setBulkConfirm] = useState<'deactivate' | 'delete' | null>(null);
+  const [bulkReason, setBulkReason] = useState('');
+  const [bulkTargetStatus, setBulkTargetStatus] = useState<'Suspended' | 'Inactive'>('Suspended');
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
@@ -329,6 +357,123 @@ export function EmployeesPage() {
       });
   }, []);
   useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter]);
+
+  // ── Bulk selection: derived state + handlers ────────────────────────────────────────────────
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setSelectAllMatching(false);
+    setBulkConfirm(null);
+  }, []);
+
+  // A stale "select all matching" flag (or a leftover page pick) must never carry across a FILTER
+  // change or a tab switch — otherwise a bulk action could resolve against a different set than the
+  // operator sees. Page navigation deliberately does NOT clear (cross-page picking is allowed).
+  useEffect(() => { clearSelection(); setBulkResult(null); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, view, clearSelection]);
+
+  const pageIds = useMemo(() => employees.map((e) => e.id), [employees]);
+  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
+  const somePageSelected = pageIds.some((id) => selectedIds.has(id));
+  const selectionCount = selectAllMatching ? total : selectedIds.size;
+  const hasSelection = selectionCount > 0;
+  const canOfferSelectAllMatching = allPageSelected && !selectAllMatching && total > selectedIds.size;
+
+  const canBulkActivate = hasPermission('employees.approve');
+  const canBulkDeactivate = hasPermission('employees.write');
+  const canBulkDelete = hasPermission('employees.delete');
+  const canBulkExport = ['Admin', 'HR Manager', 'HR Officer', 'Payroll Officer', 'Auditor'].some((r) => hasRole(r));
+
+  // Header select-all checkbox drives "select all on THIS page" (tri-state).
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = !selectAllMatching && !allPageSelected && somePageSelected;
+  }, [selectAllMatching, allPageSelected, somePageSelected]);
+
+  const toggleHeader = () => {
+    if (selectAllMatching || allPageSelected) { clearSelection(); return; }
+    setSelectAllMatching(false);
+    setSelectedIds((prev) => { const next = new Set(prev); pageIds.forEach((id) => next.add(id)); return next; });
+  };
+
+  const toggleRow = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (selectAllMatching) {
+        // Was "all matching": collapse to the visible page as an explicit selection, minus this row.
+        pageIds.forEach((pid) => next.add(pid));
+        next.delete(id);
+      } else if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+    setSelectAllMatching(false);
+  };
+
+  const currentBulkFilter = useCallback((): BulkSelectAllFilter => ({
+    search: search || undefined,
+    status: status || undefined,
+    readiness: readinessFilter || undefined,
+    importBatchId: importBatchFilter || undefined,
+    gapType: gapTypeFilter || undefined,
+  }), [search, status, readinessFilter, gapTypeFilter, importBatchFilter]);
+
+  const buildBulkBody = useCallback((action: BulkActionRequest['action']): BulkActionRequest =>
+    selectAllMatching
+      ? { action, selectionMode: 'allMatching', filter: currentBulkFilter() }
+      : { action, selectionMode: 'ids', employeeIds: [...selectedIds] },
+  [selectAllMatching, selectedIds, currentBulkFilter]);
+
+  const runBulkMutation = async (action: 'activate' | 'deactivate' | 'delete') => {
+    setBulkBusy(true);
+    setError('');
+    setBulkResult(null);
+    try {
+      const body = buildBulkBody(action);
+      if (action === 'deactivate') { body.targetStatus = bulkTargetStatus; body.reason = bulkReason.trim(); }
+      if (action === 'delete') body.reason = bulkReason.trim();
+      // Destructive select-all-matching reconciles against the count the operator saw (server 409s on drift).
+      if (selectAllMatching && (action === 'delete' || action === 'deactivate')) body.expectedCount = total;
+      const res = await employeesApi.bulk(body);
+      setBulkResult(res);
+      setActionNotice(res.summary);
+      clearSelection();
+      await load();
+    } catch (e: unknown) {
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      const data = (e as { response?: { data?: { error?: string; message?: string; expected?: number; actual?: number } } })?.response?.data;
+      if (status === 409 && data?.error === 'selection_changed') {
+        setError(`The set of matching employees changed (now ${data.actual}, you selected ${data.expected}). The list has been refreshed — review and try again.`);
+        await load();
+      } else {
+        setError(data?.message ?? 'The bulk action could not be completed.');
+      }
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleBulkAction = (action: 'activate' | 'deactivate' | 'delete' | 'export') => {
+    if (action === 'export') { void runBulkExport(); return; }
+    if (action === 'activate') { void runBulkMutation('activate'); return; }
+    // Destructive: capture a reason (and target status) first.
+    setBulkReason('');
+    setBulkTargetStatus('Suspended');
+    setBulkConfirm(action);
+  };
+
+  const runBulkExport = async () => {
+    setBulkBusy(true);
+    setError('');
+    try {
+      const csv = await employeesApi.bulkExport(buildBulkBody('export'));
+      downloadCsv(csv, 'employees-selected.csv');
+    } catch {
+      setError('Could not export the selected employees.');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
   useEffect(() => {
     const searchFromUrl = searchParams?.get('search') ?? null;
     if (searchFromUrl !== null && searchFromUrl !== search) {
@@ -1104,11 +1249,88 @@ export function EmployeesPage() {
             </div>
           )}
 
+          {hasSelection && (
+            <div className="flex flex-col gap-2 rounded-lg border border-sapphire/40 bg-sapphire/5 px-3 py-2.5 text-sm dark:border-sapphire/50 dark:bg-sapphire/10 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="font-semibold text-slate-800 dark:text-slate-100">
+                  {selectionCount} selected{selectAllMatching ? ' (all matching this filter)' : ''}
+                </span>
+                {canOfferSelectAllMatching && (
+                  <button type="button" onClick={() => setSelectAllMatching(true)} className="text-xs font-semibold text-sapphire underline">
+                    Select all {total} matching this filter
+                  </button>
+                )}
+                <button type="button" onClick={clearSelection} className="text-xs font-semibold text-slate-500 underline">Clear selection</button>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {canBulkActivate && (
+                  <button type="button" onClick={() => handleBulkAction('activate')} disabled={bulkBusy} className="btn-secondary h-8 px-2.5 text-xs disabled:opacity-50">
+                    <UserCheck className="h-3.5 w-3.5" /> Activate
+                  </button>
+                )}
+                {canBulkDeactivate && (
+                  <button type="button" onClick={() => handleBulkAction('deactivate')} disabled={bulkBusy} className="btn-secondary h-8 px-2.5 text-xs disabled:opacity-50">
+                    <UserX className="h-3.5 w-3.5" /> Deactivate
+                  </button>
+                )}
+                {canBulkExport && (
+                  <button type="button" onClick={() => handleBulkAction('export')} disabled={bulkBusy} className="btn-secondary h-8 px-2.5 text-xs disabled:opacity-50">
+                    <Download className="h-3.5 w-3.5" /> Export selected
+                  </button>
+                )}
+                {canBulkDelete && (
+                  <button type="button" onClick={() => handleBulkAction('delete')} disabled={bulkBusy} className="h-8 rounded-lg border border-red-300 px-2.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-500/40 dark:text-red-400 dark:hover:bg-red-500/10">
+                    <span className="inline-flex items-center gap-1.5"><Trash2 className="h-3.5 w-3.5" /> Delete</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {bulkResult && (
+            <div className="rounded-lg border border-slate-200 bg-white/70 p-3 text-sm dark:border-white/10 dark:bg-white/[0.03]">
+              <div className="mb-1.5 flex items-start justify-between gap-3">
+                <p className="font-semibold text-slate-900 dark:text-white">{bulkResult.summary}</p>
+                <button type="button" onClick={() => setBulkResult(null)} className="shrink-0 text-slate-400 hover:text-slate-600" aria-label="Dismiss result">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              {bulkResult.items.some((i) => i.outcome !== 'succeeded') && (
+                <ul className="mt-1 space-y-1.5">
+                  {bulkResult.items.filter((i) => i.outcome !== 'succeeded').map((item) => (
+                    <li key={item.employeeId} className="rounded-md border border-slate-100 bg-slate-50 px-2.5 py-1.5 text-xs dark:border-white/[0.06] dark:bg-white/[0.03]">
+                      <div className="flex flex-wrap items-center gap-x-2">
+                        <span className={`font-semibold uppercase ${item.outcome === 'failed' ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`}>{item.outcome}</span>
+                        <span className="text-slate-700 dark:text-slate-200">{item.fullName || `#${item.employeeId}`}</span>
+                        {item.employeeCode && <span className="text-slate-400">{item.employeeCode}</span>}
+                        <span className="text-slate-500 dark:text-slate-400">— {bulkReasonLabel(item.reason)}</span>
+                      </div>
+                      {item.blocking && item.blocking.length > 0 && (
+                        <p className="mt-0.5 text-slate-500 dark:text-slate-400">Missing: {item.blocking.map((b) => b.label).join(', ')}</p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
           <div className="surface overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full min-w-[820px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
+                    <th className="w-10 px-4 py-3 text-left">
+                      <input
+                        ref={selectAllRef}
+                        type="checkbox"
+                        checked={selectAllMatching || allPageSelected}
+                        onChange={toggleHeader}
+                        disabled={loading || employees.length === 0}
+                        className="h-4 w-4 accent-sapphire align-middle disabled:opacity-40"
+                        aria-label="Select all on this page"
+                      />
+                    </th>
                     {['Employee', 'Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
                       <th key={head} className="px-4 py-3 text-left text-xs font-bold uppercase text-slate-400">{head}</th>
                     ))}
@@ -1117,8 +1339,19 @@ export function EmployeesPage() {
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                   {loading && <EmptyRow label="Loading live employees..." />}
                   {!loading && employees.length === 0 && <EmptyRow label={(readinessFilter || importFilterActive) ? 'No employees match this filter.' : 'No employees found'} />}
-                  {!loading && employees.map((employee) => (
-                    <tr key={employee.id} onClick={() => openDetail(employee.id)} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03]">
+                  {!loading && employees.map((employee) => {
+                    const rowSelected = selectAllMatching || selectedIds.has(employee.id);
+                    return (
+                    <tr key={employee.id} onClick={() => openDetail(employee.id)} className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}>
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={rowSelected}
+                          onChange={() => toggleRow(employee.id)}
+                          className="h-4 w-4 accent-sapphire align-middle"
+                          aria-label={`Select ${employee.fullName}`}
+                        />
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           <Avatar name={employee.fullName} size="sm" />
@@ -1142,7 +1375,8 @@ export function EmployeesPage() {
                         />
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1657,6 +1891,54 @@ export function EmployeesPage() {
         </div>
       </Modal>
 
+      {/* Bulk deactivate / delete confirmation — captures the required reason (and, for deactivate,
+          the reversible target status). Activate needs no confirm (it is floor-gated + non-destructive). */}
+      <Modal
+        isOpen={bulkConfirm !== null}
+        title={bulkConfirm === 'delete' ? 'Delete selected employees' : 'Deactivate selected employees'}
+        size="md"
+        onClose={() => setBulkConfirm(null)}
+        footer={
+          <>
+            <button type="button" onClick={() => setBulkConfirm(null)} className="btn-secondary">Cancel</button>
+            <button
+              type="button"
+              onClick={() => { if (bulkConfirm) void runBulkMutation(bulkConfirm); }}
+              disabled={bulkBusy || !bulkReason.trim()}
+              className={`${bulkConfirm === 'delete' ? 'rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700' : 'btn-primary'} disabled:opacity-50`}
+            >
+              {bulkBusy ? 'Working…' : bulkConfirm === 'delete' ? `Delete ${selectionCount}` : `Deactivate ${selectionCount}`}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            {bulkConfirm === 'delete'
+              ? `${selectionCount} employee${selectionCount === 1 ? '' : 's'} will be moved to the Ex-Employees archive. History is kept for statutory audit — this is not a permanent erase. Records already archived are skipped.`
+              : `${selectionCount} employee${selectionCount === 1 ? '' : 's'} will be moved to a reversible non-active status. Records already in that status are skipped.`}
+          </p>
+          {bulkConfirm === 'deactivate' && (
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+              <span>Target status</span>
+              <select value={bulkTargetStatus} onChange={(e) => setBulkTargetStatus(e.target.value as 'Suspended' | 'Inactive')} className="select mt-1.5 w-full">
+                <option value="Suspended">Suspended (reversible hold)</option>
+                <option value="Inactive">Inactive</option>
+              </select>
+            </label>
+          )}
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+            <span>Reason <span className="text-red-500">*</span></span>
+            <input value={bulkReason} onChange={(e) => setBulkReason(e.target.value)} className="input mt-1.5 w-full" placeholder="Required — recorded on every affected record" />
+          </label>
+          {selectAllMatching && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              This applies to all {total} employees matching the current filter across every page.
+            </p>
+          )}
+        </div>
+      </Modal>
+
       {/* Blocked-assignment popup (server-authoritative ESTABLISHMENT_BUDGET_EXCEEDED 409). */}
       <EstablishmentBlockedModal
         block={establishmentBlock?.block ?? null}
@@ -1739,7 +2021,7 @@ function statusTone(status: string): { label: string; tone: 'emerald' | 'blue' |
 }
 
 function EmptyRow({ label }: { label: string }) {
-  return <tr><td colSpan={6} className="py-16 text-center text-sm text-slate-400">{label}</td></tr>;
+  return <tr><td colSpan={7} className="py-16 text-center text-sm text-slate-400">{label}</td></tr>;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
