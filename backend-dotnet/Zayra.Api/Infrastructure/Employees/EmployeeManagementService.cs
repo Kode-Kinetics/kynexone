@@ -936,21 +936,47 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     private static void ApplyKnownComplianceMirror(Employee employee, EmployeeComplianceRecord record)
     {
+        // For the GCC-ID number records the create modal carries the expiry on the SAME record as the
+        // number (fieldKey = *_number / emirates_id / qid / civil_id, `.ExpiryDate`). Mirror that expiry
+        // to the first-class scalar the readiness pay-gate reads (Δ19/Δ20) — but ONLY when the record
+        // actually carries one, so a number-only edit never wipes an expiry set by a separate record.
         switch (record.FieldKey.ToLowerInvariant())
         {
-            case "passport_number": employee.PassportNumber = record.FieldValue; break;
+            case "passport_number":
+                employee.PassportNumber = record.FieldValue;
+                if (record.ExpiryDate.HasValue) employee.PassportExpiryDate = record.ExpiryDate;
+                break;
             case "passport_expiry": employee.PassportExpiryDate = record.ExpiryDate; break;
-            case "visa_number": employee.VisaNumber = record.FieldValue; break;
+            case "visa_number":
+                employee.VisaNumber = record.FieldValue;
+                if (record.ExpiryDate.HasValue) employee.VisaExpiryDate = record.ExpiryDate;
+                break;
             case "visa_expiry": employee.VisaExpiryDate = record.ExpiryDate; break;
-            case "iqama_number": employee.IqamaNumber = record.FieldValue; break;
+            case "iqama_number":
+                employee.IqamaNumber = record.FieldValue;
+                if (record.ExpiryDate.HasValue) employee.IqamaExpiryDate = record.ExpiryDate;
+                break;
+            case "iqama_expiry": employee.IqamaExpiryDate = record.ExpiryDate; break;
             case "muqeem_reference": employee.MuqeemNumber = record.FieldValue; break;
             case "gosi_reference": employee.GosiReference = record.FieldValue; break;
             case "qiwa_contract_reference": employee.QiwaContractNumber = record.FieldValue; break;
-            case "emirates_id": employee.EmiratesId = record.FieldValue; break;
+            case "emirates_id":
+                employee.EmiratesId = record.FieldValue;
+                if (record.ExpiryDate.HasValue) employee.EmiratesIdExpiryDate = record.ExpiryDate;
+                break;
+            case "emirates_id_expiry": employee.EmiratesIdExpiryDate = record.ExpiryDate; break;
             case "labor_card_number": employee.LaborCardNumber = record.FieldValue; break;
             case "visa_file_number": employee.VisaFileNumber = record.FieldValue; break;
-            case "qid": employee.Qid = record.FieldValue; break;
-            case "civil_id": employee.CivilId = record.FieldValue; break;
+            case "qid":
+                employee.Qid = record.FieldValue;
+                if (record.ExpiryDate.HasValue) employee.QidExpiryDate = record.ExpiryDate;
+                break;
+            case "qid_expiry": employee.QidExpiryDate = record.ExpiryDate; break;
+            case "civil_id":
+                employee.CivilId = record.FieldValue;
+                if (record.ExpiryDate.HasValue) employee.CivilIdExpiryDate = record.ExpiryDate;
+                break;
+            case "civil_id_expiry": employee.CivilIdExpiryDate = record.ExpiryDate; break;
             case "residency_number": employee.ResidencyNumber = record.FieldValue; break;
             case "work_permit": employee.WorkPermitNumber = record.FieldValue; break;
             case "sponsor": employee.SponsorName = record.FieldValue; break;

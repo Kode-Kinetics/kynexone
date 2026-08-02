@@ -405,6 +405,24 @@ builder.Services.AddKeyedSingleton<Zayra.Api.Application.CountryPack.ICountryPac
 builder.Services.AddKeyedSingleton<Zayra.Api.Application.CountryPack.ICountryPackDescriptor,
     Zayra.Api.Infrastructure.CountryPack.Qatar.QatarDescriptor>(Zayra.Api.Application.CountryPack.CountryCodes.Qatar);
 
+// Identity-document FORMAT packs — the third leg (catalog=shape, floor=requiredness, pack=format).
+// Non-keyed default imposes no constraint; each GCC state keyed by ISO-3 (resolver maps ISO-2→ISO-3).
+// Singletons — pure static regex tables, no DB dependency.
+builder.Services.AddSingleton<Zayra.Api.Application.CountryPack.IIdentityDocumentFormat,
+    Zayra.Api.Infrastructure.CountryPack.DefaultIdentityDocumentFormat>();
+builder.Services.AddKeyedSingleton<Zayra.Api.Application.CountryPack.IIdentityDocumentFormat,
+    Zayra.Api.Infrastructure.CountryPack.KsaIdentityDocumentFormat>(Zayra.Api.Application.CountryPack.CountryCodes.Saudi);
+builder.Services.AddKeyedSingleton<Zayra.Api.Application.CountryPack.IIdentityDocumentFormat,
+    Zayra.Api.Infrastructure.CountryPack.UaeIdentityDocumentFormat>(Zayra.Api.Application.CountryPack.CountryCodes.UAE);
+builder.Services.AddKeyedSingleton<Zayra.Api.Application.CountryPack.IIdentityDocumentFormat,
+    Zayra.Api.Infrastructure.CountryPack.QatarIdentityDocumentFormat>(Zayra.Api.Application.CountryPack.CountryCodes.Qatar);
+builder.Services.AddKeyedSingleton<Zayra.Api.Application.CountryPack.IIdentityDocumentFormat,
+    Zayra.Api.Infrastructure.CountryPack.KuwaitIdentityDocumentFormat>(Zayra.Api.Application.CountryPack.CountryCodes.Kuwait);
+builder.Services.AddKeyedSingleton<Zayra.Api.Application.CountryPack.IIdentityDocumentFormat,
+    Zayra.Api.Infrastructure.CountryPack.OmanIdentityDocumentFormat>(Zayra.Api.Application.CountryPack.CountryCodes.Oman);
+builder.Services.AddKeyedSingleton<Zayra.Api.Application.CountryPack.IIdentityDocumentFormat,
+    Zayra.Api.Infrastructure.CountryPack.BahrainIdentityDocumentFormat>(Zayra.Api.Application.CountryPack.CountryCodes.Bahrain);
+
 builder.Services.AddScoped<Zayra.Api.Application.CountryPack.ICountryPackResolver,
     Zayra.Api.Infrastructure.CountryPack.CountryPackResolver>();
 

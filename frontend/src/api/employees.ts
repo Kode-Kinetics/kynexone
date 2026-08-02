@@ -196,15 +196,19 @@ export interface EmployeeEntity {
   visaExpiryDate?: string;
   visaFileNumber: string;
   iqamaNumber: string;
+  iqamaExpiryDate?: string;
   muqeemNumber: string;
   gosiReference: string;
   qiwaContractNumber: string;
   emiratesId: string;
+  emiratesIdExpiryDate?: string;
   laborCardNumber: string;
   qid: string;
+  qidExpiryDate?: string;
   workPermitNumber: string;
   workPermitIssueDate?: string;
   civilId: string;
+  civilIdExpiryDate?: string;
   residencyNumber: string;
   residencyIssueDate?: string;
   profileCompletenessScore: number;
@@ -393,6 +397,18 @@ export interface EmployeeImportPreviewRow {
   warnings: string[];
 }
 
+/** One aggregated missing/incorrect-field summary across all previewed rows. */
+export interface EmployeeImportFieldGap {
+  /** Field/checklist key (e.g. "iqamaNumber") when the server supplies it. */
+  field?: string;
+  /** Human label shown in the popup (e.g. "Iqama (residence permit)"). */
+  label: string;
+  /** "activate" | "pay" | "recommended" — which readiness tier the gap sits in. */
+  gate?: string;
+  /** How many previewed rows are missing/incorrect for this field. */
+  rowCount: number;
+}
+
 /** POST /api/employees/import-preview response (dry-run, persists nothing). */
 export interface EmployeeImportPreview {
   received: number;
@@ -401,6 +417,12 @@ export interface EmployeeImportPreview {
   wouldCreateActive: number;
   wouldCreateDraft: number;
   rows: EmployeeImportPreviewRow[];
+  /**
+   * Optional per-field roll-up of the missing/incorrect details across all rows ("ideally which
+   * fields", per the owner's spec). When the server omits it, the toolbar derives the same summary
+   * from each row's blocking/recommended lists, so the popup always shows a "most common gaps" strip.
+   */
+  fieldGaps?: EmployeeImportFieldGap[];
 }
 
 export interface BulkActivateResult {

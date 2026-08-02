@@ -4,9 +4,12 @@ namespace Zayra.Api.Application.CountryPack;
 
 public static class CountryCodes
 {
-    public const string Saudi = "SAU";
-    public const string Qatar = "QAT";
-    public const string UAE   = "ARE";
+    public const string Saudi   = "SAU";
+    public const string Qatar   = "QAT";
+    public const string UAE     = "ARE";
+    public const string Kuwait  = "KWT";
+    public const string Oman    = "OMN";
+    public const string Bahrain = "BHR";
 }
 
 public static class Jurisdictions

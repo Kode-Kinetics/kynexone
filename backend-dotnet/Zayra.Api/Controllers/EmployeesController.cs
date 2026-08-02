@@ -191,28 +191,12 @@ public class EmployeesController : ControllerBase
     }
 
     // ── Configurable export / import / shareable template ────────────────────────
-    private static readonly string[] EmployeeCsvHeaders =
-        {
-            "EmployeeCode", "CompanyLegalName", "BranchCode", "CostCenterCode", "WorkLocation",
-            "FullName", "ArabicName", "PreferredName", "WorkEmail", "PersonalEmail", "Phone", "Gender",
-            "DateOfBirth", "Nationality", "MaritalStatus", "CountryCode",
-            "Department", "DepartmentCode", "Designation", "JobTitle", "EmploymentType", "ContractType",
-            "Grade", "PositionCode", "Status", "JoiningDate", "ConfirmationDate", "ProbationStartDate",
-            "ProbationEndDate", "NoticePeriodDays", "ShiftPolicyCode", "LeavePolicyCode", "AttendancePolicyCode",
-            // Hierarchy columns — resolved in Pass 2
-            "ManagerEmployeeCode", "SupervisorEmployeeCode",
-            // Payroll columns — creates EmployeePayrollProfile + EmployeeSalaryStructure on import
-            "SalaryStructureCode", "BasicSalary", "HousingAllowance", "TransportAllowance", "FoodAllowance",
-            "MobileAllowance", "OtherAllowance", "FixedDeduction", "Currency", "PayrollGroup",
-            "PaymentMethod", "IBAN", "AccountNumber", "BankName", "BankRoutingCode", "MolId",
-            // GCC/statutory identity columns stored on the employee master record.
-            "PassportNumber", "PassportIssueDate", "PassportExpiryDate", "VisaNumber", "VisaIssueDate",
-            "VisaExpiryDate", "IqamaNumber", "MuqeemNumber", "GosiReference", "EmiratesId", "LaborCardNumber",
-            "VisaFileNumber", "Qid", "CivilId", "ResidencyNumber", "ResidencyIssueDate", "WorkPermitNumber",
-            "WorkPermitIssueDate", "SponsorName", "SaudiOrNonSaudi", "IdType", "IdNumber", "OccupationCode",
-            "EstablishmentId", "WorkLocationId", "ContractReference", "WorkPermitReference", "QiwaEmployeeReference",
-            "QiwaSyncStatus"
-        };
+    // The CSV column set is DERIVED from EmployeeFieldRegistry (the single source of truth §3.2) — the
+    // template, the export header, and the importer header-validation all read this ONE ordered list, so
+    // a column can never exist on one surface and be missing from another. Adding a field to the catalog
+    // adds it to every CSV surface automatically; there is no hand-maintained header array to drift.
+    private static IReadOnlyList<string> EmployeeCsvHeaders =>
+        Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.CsvHeaders;
 
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
@@ -247,33 +231,113 @@ public class EmployeesController : ControllerBase
         var positionCodes = await _db.Positions.AsNoTracking()
             .Where(p => p.TenantId == tenantId && !p.IsDeleted)
             .ToDictionaryAsync(p => p.Id, p => p.Code, ct);
+        var headers = EmployeeCsvHeaders;
         var rows = emps.Select(e =>
         {
             profiles.TryGetValue(e.Id, out var profile);
             salaries.TryGetValue(e.Id, out var salary);
             var structureCode = salary is not null && structures.TryGetValue(salary.SalaryStructureId, out var structure) ? structure.Code : string.Empty;
-            return (IReadOnlyList<object?>)new object?[]
-        {
-            e.EmployeeCode, string.Empty, string.Empty, e.CostCenter, e.WorkLocation,
-            e.FullName, e.ArabicName, e.PreferredName, e.WorkEmail, e.PersonalEmail, e.Phone, e.Gender,
-            e.DateOfBirth, e.Nationality, e.MaritalStatus, e.CountryCode,
-            e.Department, string.Empty, e.Designation, e.JobTitle, e.EmploymentType, e.ContractType,
-            e.Grade, e.PositionId is not null && positionCodes.TryGetValue(e.PositionId.Value, out var positionCode) ? positionCode : string.Empty, e.Status, e.JoiningDate.ToString("yyyy-MM-dd"),
-            e.ConfirmationDate, e.ProbationStartDate, e.ProbationEndDate, e.NoticePeriodDays, e.ShiftPolicyCode, e.LeavePolicyCode, e.AttendancePolicyCode,
-            string.Empty, string.Empty,
-            structureCode, salary?.BasicSalary, salary?.HousingAllowance, salary?.TransportAllowance,
-            salary?.FoodAllowance, salary?.MobileAllowance, salary?.OtherAllowance, salary?.FixedDeduction,
-            salary?.Currency ?? profile?.SalaryCurrency, profile?.PayrollGroup, profile?.PaymentMethod,
-            profile?.Iban, profile?.AccountNumber, profile?.BankName, profile?.BankRoutingCode, profile?.MolId,
-            e.PassportNumber, e.PassportIssueDate, e.PassportExpiryDate, e.VisaNumber, e.VisaIssueDate,
-            e.VisaExpiryDate, e.IqamaNumber, e.MuqeemNumber, e.GosiReference, e.EmiratesId, e.LaborCardNumber,
-            e.VisaFileNumber, e.Qid, e.CivilId, e.ResidencyNumber, e.ResidencyIssueDate, e.WorkPermitNumber,
-            e.WorkPermitIssueDate, e.SponsorName, e.SaudiOrNonSaudi, e.IdType, e.IdNumber, e.OccupationCode,
-            e.EstablishmentId, e.WorkLocationId, e.ContractReference, e.WorkPermitReference, e.QiwaEmployeeReference,
-            e.QiwaSyncStatus
-        };
+            var positionCode = e.PositionId is not null && positionCodes.TryGetValue(e.PositionId.Value, out var pc) ? pc : string.Empty;
+            // Value map keyed by CSV header — the row is projected in registry order below, so a header
+            // added/reordered in the catalog can never misalign the export (replaces the old positional
+            // object[] that had to be kept in lock-step with the header array by hand).
+            static string Iso(DateOnly? d) => d?.ToString("yyyy-MM-dd") ?? string.Empty;
+            var v = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["EmployeeCode"] = e.EmployeeCode,
+                ["CompanyLegalName"] = string.Empty,
+                ["BranchCode"] = string.Empty,
+                ["CostCenterCode"] = e.CostCenter,
+                ["WorkLocation"] = e.WorkLocation,
+                ["FullName"] = e.FullName,
+                ["ArabicName"] = e.ArabicName,
+                ["PreferredName"] = e.PreferredName,
+                ["WorkEmail"] = e.WorkEmail,
+                ["PersonalEmail"] = e.PersonalEmail,
+                ["Phone"] = e.Phone,
+                ["Gender"] = e.Gender,
+                ["DateOfBirth"] = Iso(e.DateOfBirth),
+                ["Nationality"] = e.Nationality,
+                ["MaritalStatus"] = e.MaritalStatus,
+                ["CountryCode"] = e.CountryCode,
+                ["EmergencyContactName"] = e.EmergencyContactName,
+                ["EmergencyContactPhone"] = e.EmergencyContactPhone,
+                ["Department"] = e.Department,
+                ["DepartmentCode"] = string.Empty,
+                ["Designation"] = e.Designation,
+                ["JobTitle"] = e.JobTitle,
+                ["EmploymentType"] = e.EmploymentType,
+                ["ContractType"] = e.ContractType,
+                ["Grade"] = e.Grade,
+                ["PositionCode"] = positionCode,
+                ["ManagerEmployeeCode"] = string.Empty,
+                ["SupervisorEmployeeCode"] = string.Empty,
+                ["Status"] = e.Status,
+                ["JoiningDate"] = e.JoiningDate.ToString("yyyy-MM-dd"),
+                ["ConfirmationDate"] = Iso(e.ConfirmationDate),
+                ["ProbationStartDate"] = Iso(e.ProbationStartDate),
+                ["ProbationEndDate"] = Iso(e.ProbationEndDate),
+                ["ContractStartDate"] = Iso(e.ContractStartDate),
+                ["ContractEndDate"] = Iso(e.ContractEndDate),
+                ["NoticePeriodDays"] = e.NoticePeriodDays,
+                ["ShiftPolicyCode"] = e.ShiftPolicyCode,
+                ["LeavePolicyCode"] = e.LeavePolicyCode,
+                ["AttendancePolicyCode"] = e.AttendancePolicyCode,
+                ["SalaryStructureCode"] = structureCode,
+                ["BasicSalary"] = salary?.BasicSalary,
+                ["HousingAllowance"] = salary?.HousingAllowance,
+                ["TransportAllowance"] = salary?.TransportAllowance,
+                ["FoodAllowance"] = salary?.FoodAllowance,
+                ["MobileAllowance"] = salary?.MobileAllowance,
+                ["OtherAllowance"] = salary?.OtherAllowance,
+                ["FixedDeduction"] = salary?.FixedDeduction,
+                ["Currency"] = salary?.Currency ?? profile?.SalaryCurrency,
+                ["PayrollGroup"] = profile?.PayrollGroup,
+                ["PaymentMethod"] = profile?.PaymentMethod,
+                ["IBAN"] = profile?.Iban,
+                ["AccountNumber"] = profile?.AccountNumber,
+                ["BankName"] = profile?.BankName,
+                ["BankRoutingCode"] = profile?.BankRoutingCode,
+                ["MolId"] = profile?.MolId,
+                ["SocialInsuranceReference"] = profile?.SocialInsuranceReference,
+                ["PassportNumber"] = e.PassportNumber,
+                ["PassportIssueDate"] = Iso(e.PassportIssueDate),
+                ["PassportExpiryDate"] = Iso(e.PassportExpiryDate),
+                ["VisaNumber"] = e.VisaNumber,
+                ["VisaIssueDate"] = Iso(e.VisaIssueDate),
+                ["VisaExpiryDate"] = Iso(e.VisaExpiryDate),
+                ["VisaFileNumber"] = e.VisaFileNumber,
+                ["IqamaNumber"] = e.IqamaNumber,
+                ["IqamaExpiry"] = Iso(e.IqamaExpiryDate),
+                ["MuqeemNumber"] = e.MuqeemNumber,
+                ["GosiReference"] = e.GosiReference,
+                ["QiwaContractNumber"] = e.QiwaContractNumber,
+                ["EmiratesId"] = e.EmiratesId,
+                ["EmiratesIdExpiry"] = Iso(e.EmiratesIdExpiryDate),
+                ["LaborCardNumber"] = e.LaborCardNumber,
+                ["Qid"] = e.Qid,
+                ["QidExpiry"] = Iso(e.QidExpiryDate),
+                ["CivilId"] = e.CivilId,
+                ["CivilIdExpiry"] = Iso(e.CivilIdExpiryDate),
+                ["WorkPermitNumber"] = e.WorkPermitNumber,
+                ["WorkPermitIssueDate"] = Iso(e.WorkPermitIssueDate),
+                ["ResidencyNumber"] = e.ResidencyNumber,
+                ["ResidencyIssueDate"] = Iso(e.ResidencyIssueDate),
+                ["IdNumber"] = e.IdNumber,
+                ["SponsorName"] = e.SponsorName,
+                ["SaudiOrNonSaudi"] = e.SaudiOrNonSaudi,
+                ["IdType"] = e.IdType,
+                ["OccupationCode"] = e.OccupationCode,
+                ["EstablishmentId"] = e.EstablishmentId,
+                ["WorkLocationId"] = e.WorkLocationId,
+                ["ContractReference"] = e.ContractReference,
+                ["WorkPermitReference"] = e.WorkPermitReference,
+                ["QiwaEmployeeReference"] = e.QiwaEmployeeReference,
+                ["QiwaSyncStatus"] = e.QiwaSyncStatus,
+            };
+            return (IReadOnlyList<object?>)headers.Select(h => v.GetValueOrDefault(h)).ToList();
         });
-        var csv = Csv.Build(EmployeeCsvHeaders, rows);
+        var csv = Csv.Build(headers, rows);
         // Export audit: actor, row count, and company-scope dimension — no PII values.
         await _audit.WriteAsync("employees.exported", "Employee", "bulk", Context(),
             JsonSerializer.Serialize(new
@@ -292,6 +356,82 @@ public class EmployeesController : ControllerBase
     public IActionResult ImportTemplate() =>
         File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders)), "text/csv", "employees_import_template.csv");
 
+    /// <summary>
+    /// The Employee Field RESOLVER (§3.1/§3.3) — the ONE backend source of truth for the create/edit modal
+    /// and the CSV template, resolved on TWO axes: COUNTRY (the employing legal entity) × NATIONALITY (the
+    /// person, national vs expat). Joins the field CATALOG (shape/label/binding) ⋈ the readiness FLOOR/policy
+    /// (visible/required/gate — via the SAME proven merge pipeline the activation gate uses) ⋈ the country
+    /// pack (identity-document FORMAT regex). A Saudi national never receives an Iqama descriptor; a UAE hire
+    /// never an Iqama; each field carries its correct local English name (Emirates ID, QID, Bahrain CPR, …).
+    /// `required`/`gate` are ADVISORY UX only — the authoritative gate stays server-side EnsureActivatable at
+    /// Save→Activate; this never becomes a client create-gate. Explicit countryCode wins, else the company's
+    /// country; nationality defaults to non-GCC-expat treatment when blank (fail-safe).
+    /// </summary>
+    [HttpGet("field-catalog")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
+    public async Task<IActionResult> FieldCatalog(
+        [FromQuery] Guid? companyId, [FromQuery] string? countryCode, [FromQuery] string? nationality,
+        CancellationToken ct = default,
+        [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
+    {
+        var tenantId = RequireTenant();
+        var iso = (countryCode ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(iso) && companyId is Guid cid)
+            iso = await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.Id == cid)
+                .Select(c => c.CountryCode).FirstOrDefaultAsync(ct) ?? string.Empty;
+        var iso2 = (Zayra.Api.Application.Common.CountryCodeStandard.NormalizeToIso2(iso) ?? iso).Trim().ToUpperInvariant();
+
+        // Requiredness/gate from the merged policy (floor ∪ tenant ∪ company ∪ gcc-setting, strictest-wins).
+        var policy = await _activationGuard.ResolvePolicyAsync(tenantId, companyId, iso2, nationality, ct);
+        var reqByKey = policy.Items.ToDictionary(i => i.Key, i => i, StringComparer.OrdinalIgnoreCase);
+        // Identity-document FORMAT from the country pack (conservative regex + hint; null ⇒ no constraint).
+        Zayra.Api.Application.CountryPack.IIdentityDocumentFormat fmt =
+            countryPacks?.ResolveIdentityDocumentFormat(iso2, string.Empty)
+            ?? new Zayra.Api.Infrastructure.CountryPack.DefaultIdentityDocumentFormat();
+
+        static string CamelKey(string k) => k.Length > 0 ? char.ToLowerInvariant(k[0]) + k[1..] : k;
+        var descriptors = Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.CatalogFor(iso2, nationality)
+            .Select(d =>
+            {
+                reqByKey.TryGetValue(d.Key, out var req);
+                var (pattern, hint) = fmt.GetFormat(d.Key);
+                return new
+                {
+                    key = CamelKey(d.Key),
+                    registryKey = d.Key,
+                    label = Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.LabelFor(d, iso2),
+                    section = d.Section,
+                    inputType = d.InputType,
+                    sensitive = d.Sensitive,
+                    csvHeader = d.CsvHeader,
+                    activationRelevant = d.ActivationRelevant,
+                    countries = d.Countries,
+                    binding = d.Binding,
+                    applicability = d.Applicability.ToString(),
+                    visible = true,                                   // CatalogFor already filtered to visible-for-(country,nationality)
+                    required = req is not null && req.FailClosed,      // advisory only — server EnsureActivatable is authoritative
+                    gate = req?.Gate,                                 // "activate" | "pay" | null
+                    pattern,
+                    patternHint = hint,
+                    complianceFieldKey = d.ComplianceFieldKey,
+                    // Value/expiry edit-keys the modal binds a statutory field to (FE EmployeeComplianceField).
+                    entityKey = d.ComplianceFieldKey is null ? null : CamelKey(d.Key),
+                    expiryEntityKey = d.ExpiryKey is null ? null : CamelKey(d.ExpiryKey),
+                };
+            })
+            .ToList();
+
+        return Ok(new
+        {
+            countryCode = iso2,
+            nationality = policy.Nationality,
+            tier = policy.Tier,
+            disclaimer = policy.Disclaimer,
+            fields = descriptors,
+        });
+    }
+
     [HttpPost("import")]
     [HasPermission("employees.bulk_import")]
     public async Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct)
@@ -304,21 +444,14 @@ public class EmployeesController : ControllerBase
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
 
-        if (sub is not null && sub.MaxEmployees > 0)
-        {
-            var current = await _db.Employees.CountAsync(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted, ct);
-            var available = sub.MaxEmployees - current;
-            if (rows.Count > available)
-                return UnprocessableEntity(new
-                {
-                    error = "employee_limit_reached",
-                    message = $"Import would exceed your employee limit ({current} active / {sub.MaxEmployees} max). You have {available} seat(s) remaining — remove {rows.Count - available} row(s) and retry.",
-                    current,
-                    limit = sub.MaxEmployees,
-                    available,
-                    rowsInFile = rows.Count
-                });
-        }
+        // Active-seat budget (P1-4): MaxEmployees caps ACTIVE employees, so only rows that will land Active
+        // consume a seat. Draft/incomplete rows import freely (they occupy no seat until completed+activated),
+        // matching the "imported inactive until complete" model — the whole file is NOT rejected upfront.
+        // A complete row that would land Active with no seat left is downgraded to Draft + warning below.
+        int activeSeatsBudget = sub is not null && sub.MaxEmployees > 0
+            ? Math.Max(0, sub.MaxEmployees - await _db.Employees.CountAsync(e => e.TenantId == tenantId && e.Status == EmployeeStatuses.Active && !e.IsDeleted, ct))
+            : int.MaxValue;
+        int activeSeatsConsumed = 0;
 
         var companiesByName = await _db.Companies
             .AsNoTracking()
@@ -617,6 +750,19 @@ public class EmployeesController : ControllerBase
                 warnings.Add($"Row {rowNum}: {name} imported as Draft — cannot be Active until: "
                              + $"{string.Join(", ", rowReadiness.Blocking.Select(b => b.Label))}. Fix in the People list.");
 
+            // ── Active-seat budget (P1-4) ─────────────────────────────────────────────
+            // MaxEmployees caps ACTIVE seats. A complete row that would land Active but has no seat left is
+            // imported as Draft (inactive) instead of rejecting the whole file — Draft rows consume no seat.
+            if (rowStatus == EmployeeStatuses.Active)
+            {
+                if (activeSeatsConsumed < activeSeatsBudget) activeSeatsConsumed++;
+                else
+                {
+                    rowStatus = EmployeeStatuses.Draft;
+                    warnings.Add($"Row {rowNum}: {name} imported as Draft — active seat limit reached ({sub?.MaxEmployees}); activate once an active seat is available.");
+                }
+            }
+
             // ── Establishment matrix row check (row-level errors, spec §5.2 / AC9) ────
             // Applies only when the row lands in a MAPPED level of a department that HAS a budget
             // row AND the row's status occupies a seat (non-occupying imports never consume).
@@ -725,6 +871,17 @@ public class EmployeesController : ControllerBase
                 WorkPermitReference = row.GetValueOrDefault("WorkPermitReference", string.Empty).Trim(),
                 QiwaEmployeeReference = row.GetValueOrDefault("QiwaEmployeeReference", string.Empty).Trim(),
                 QiwaSyncStatus = row.GetValueOrDefault("QiwaSyncStatus", string.Empty).Trim(),
+                // Parity columns (registry-driven): emergency contact, contract window, GCC-ID expiries
+                // (first-class scalars the readiness pay-gate reads), Qiwa contract number.
+                EmergencyContactName = row.GetValueOrDefault("EmergencyContactName", string.Empty).Trim(),
+                EmergencyContactPhone = row.GetValueOrDefault("EmergencyContactPhone", string.Empty).Trim(),
+                ContractStartDate = ReadCsvDate(row, "ContractStartDate"),
+                ContractEndDate = ReadCsvDate(row, "ContractEndDate"),
+                IqamaExpiryDate = ReadCsvDate(row, "IqamaExpiry"),
+                EmiratesIdExpiryDate = ReadCsvDate(row, "EmiratesIdExpiry"),
+                QidExpiryDate = ReadCsvDate(row, "QidExpiry"),
+                CivilIdExpiryDate = ReadCsvDate(row, "CivilIdExpiry"),
+                QiwaContractNumber = row.GetValueOrDefault("QiwaContractNumber", string.Empty).Trim(),
             };
             _db.Employees.Add(employee);
             batchCodes[finalCode] = employee;
@@ -831,6 +988,7 @@ public class EmployeesController : ControllerBase
             var routingRaw = rowData.GetValueOrDefault("BankRoutingCode", string.Empty).Trim();
             var payrollGroupRaw = rowData.GetValueOrDefault("PayrollGroup", string.Empty).Trim();
             var paymentMethodRaw = rowData.GetValueOrDefault("PaymentMethod", string.Empty).Trim();
+            var socialInsuranceRaw = rowData.GetValueOrDefault("SocialInsuranceReference", string.Empty).Trim();
             var structureCodeRaw = rowData.GetValueOrDefault("SalaryStructureCode", string.Empty).Trim();
             var currencyRaw = rowData.GetValueOrDefault("Currency", string.Empty).Trim();
             var tenantCurrency = await _db.ResolveTenantCurrencyAsync(tenantId, ct);
@@ -849,7 +1007,7 @@ public class EmployeesController : ControllerBase
             var grade = emp.GradeId is not null ? gradeByCode.Values.FirstOrDefault(g => g.Id == emp.GradeId) : null;
 
             bool hasPayroll = !string.IsNullOrEmpty(ibanRaw) || !string.IsNullOrEmpty(bankNameRaw) ||
-                              !string.IsNullOrEmpty(molIdRaw) || gross > 0;
+                              !string.IsNullOrEmpty(molIdRaw) || !string.IsNullOrEmpty(socialInsuranceRaw) || gross > 0;
             if (!hasPayroll) continue;
 
             _db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
@@ -859,6 +1017,7 @@ public class EmployeesController : ControllerBase
                 AccountNumber = accountRaw, BankRoutingCode = routingRaw,
                 PaymentMethod = string.IsNullOrWhiteSpace(paymentMethodRaw) ? "BankTransfer" : paymentMethodRaw,
                 PayrollGroup = payrollGroupRaw, SalaryStructureReference = structureCodeRaw,
+                SocialInsuranceReference = socialInsuranceRaw,
                 MolId = molIdRaw, WpsEligible = true, EosbEligible = true, CreatedBy = GetUserId()
             });
 
@@ -1039,6 +1198,10 @@ public class EmployeesController : ControllerBase
             PassportNumber = V("PassportNumber"),
             PassportExpiryDate = ReadCsvDate(row, "PassportExpiryDate"),
             IqamaNumber = V("IqamaNumber"),
+            IqamaExpiryDate = ReadCsvDate(row, "IqamaExpiry"),
+            EmiratesIdExpiryDate = ReadCsvDate(row, "EmiratesIdExpiry"),
+            QidExpiryDate = ReadCsvDate(row, "QidExpiry"),
+            CivilIdExpiryDate = ReadCsvDate(row, "CivilIdExpiry"),
             GosiReference = V("GosiReference"),
             EmiratesId = V("EmiratesId"),
             Qid = V("Qid"),
@@ -1049,10 +1212,12 @@ public class EmployeesController : ControllerBase
             WorkPermitNumber = V("WorkPermitNumber"),
             MuqeemNumber = V("MuqeemNumber"),
             LaborCardNumber = V("LaborCardNumber"),
+            QiwaContractNumber = V("QiwaContractNumber"),
             BankIban = V("IBAN"),
             MolId = V("MolId"),
             BankRoutingCode = V("BankRoutingCode"),
             PaymentMethod = V("PaymentMethod"),
+            SocialInsuranceReference = V("SocialInsuranceReference"),
             HasSalary = GrossSalaryFromRow(row) > 0m,
         };
     }
@@ -1110,9 +1275,52 @@ public class EmployeesController : ControllerBase
 
     // ── Import preview (dry-run: validates without committing) ─────────────────
 
+    /// <summary>The identity CSV columns whose applicability is COUNTRY- or NATIONALITY-conditional — the
+    /// set the import preview warns on when populated for a row they don't apply to (a Saudi national's row
+    /// carrying an Iqama value). Blank conditional columns are NEVER an error. Computed once from the catalog.</summary>
+    private static readonly IReadOnlyList<Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.EmployeeFieldDescriptor> ConditionalIdentityColumns =
+        Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.Catalog
+            .Where(d => d.CsvHeader is not null && d.Section == "identity"
+                && (d.Countries is not null || d.Applicability != Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.FieldApplicability.All))
+            .ToList();
+
+    /// <summary>Country-aware, per-row CSV warnings (§4): a populated cell for a column that is not
+    /// applicable to the row's (country, nationality) → warning (never persisted to the wrong typed column);
+    /// a populated identity value that fails the country pack FORMAT regex → warning with the hint. Blank
+    /// irrelevant columns produce nothing. Warnings only — the file is never rejected on these.</summary>
+    private static List<string> CountryAwareRowWarnings(
+        Dictionary<string, string> row, string iso2, string? nationality,
+        Zayra.Api.Application.CountryPack.IIdentityDocumentFormat fmt)
+    {
+        var warnings = new List<string>();
+        if (string.IsNullOrWhiteSpace(iso2)) return warnings;
+        var visible = Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.CatalogFor(iso2, nationality)
+            .Where(d => d.CsvHeader is not null)
+            .Select(d => d.CsvHeader!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var natLabel = string.IsNullOrWhiteSpace(nationality) ? "this nationality" : nationality!.Trim();
+
+        foreach (var d in ConditionalIdentityColumns)
+        {
+            var val = row.GetValueOrDefault(d.CsvHeader!, string.Empty).Trim();
+            if (val.Length == 0) continue;                       // blank irrelevant column is fine
+            if (!visible.Contains(d.CsvHeader!))
+            {
+                warnings.Add($"{d.CsvHeader} '{val}' is not applicable to {natLabel} in {iso2} — it will be ignored, not imported.");
+                continue;
+            }
+            var (pattern, hint) = fmt.GetFormat(d.Key);          // format check only for the applicable/visible columns
+            if (pattern is not null && !System.Text.RegularExpressions.Regex.IsMatch(val, pattern))
+                warnings.Add($"{d.CsvHeader} '{val}' does not match the expected format ({hint}) — stored as-is but should be corrected.");
+        }
+        return warnings;
+    }
+
     [HttpPost("import-preview")]
     [HasPermission("employees.bulk_import")]
-    public async Task<IActionResult> ImportPreview([FromBody] ImportEmployeesRequest req, CancellationToken ct)
+    public async Task<IActionResult> ImportPreview([FromBody] ImportEmployeesRequest req,
+        CancellationToken ct = default,
+        [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
     {
         var tenantId = RequireTenant();
         var rows = Csv.Parse(req.CsvContent ?? string.Empty);
@@ -1135,6 +1343,15 @@ public class EmployeesController : ControllerBase
             .ToListAsync(ct);
         var existingCodes = new HashSet<string>(existingCodesList);
 
+        // Resolve the row's company exactly as commit does (P1-2: preview↔commit policy fidelity). The
+        // commit path resolves policy with the ROW's company, so a company-scoped compliance profile /
+        // GCC setting (e.g. WPS upgrading IBAN pay→activate) applies — preview must resolve the same
+        // company or its Active/Draft counts can mislead the operator who clicks Confirm.
+        var companiesByName = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .ToDictionaryAsync(c => c.LegalNameEn.ToUpperInvariant(), c => new { c.Id, c.CountryCode, c.CreatedAtUtc }, ct);
+        var defaultCompany = companiesByName.Values.OrderBy(c => c.CreatedAtUtc).FirstOrDefault();
+
         // Pre-pass: collect all batch code→managerCode so circular detection works even when
         // both employee and manager are new in the same import batch.
         var batchManagerMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1149,9 +1366,22 @@ public class EmployeesController : ControllerBase
         var previewRows = new List<object>();
         var seen = new HashSet<string>();
         int wouldCreate = 0, wouldSkip = 0, wouldCreateActive = 0, wouldCreateDraft = 0;
+        int activeSeatsProjected = 0; // Active-landing rows counted against the active-seat budget (P1-4).
         // Dry-run readiness projection (§7.1): per non-error row, the landing state it WOULD get
-        // (Active vs Draft) + why. Persists nothing. Tenant-default policy per (country, nationality).
+        // (Active vs Draft) + why. Persists nothing. Policy per (company, country, nationality).
         var previewPolicyCache = new Dictionary<string, ResolvedReadinessPolicy>();
+        // Per-field aggregation across rows ("ideally which fields" — owner's ask). Keyed by readiness
+        // field key so the modal can render a "most common missing fields" strip. gate/label come off the
+        // readiness item; rowCount is how many rows are missing it.
+        var fieldGapAgg = new Dictionary<string, (string Label, string Gate, string Kind, int Count)>(StringComparer.OrdinalIgnoreCase);
+        void RecordGaps(IEnumerable<ReadinessItem> items, string kind)
+        {
+            foreach (var it in items)
+            {
+                var cur = fieldGapAgg.GetValueOrDefault(it.Key);
+                fieldGapAgg[it.Key] = (it.Label, it.Gate, kind, cur.Count + 1);
+            }
+        }
 
         int rowNum = 1;
         foreach (var row in rows)
@@ -1225,16 +1455,8 @@ public class EmployeesController : ControllerBase
                 rowWarnings.Add($"BasicSalary '{basicSalaryPreview}' is not a valid number — salary will not be imported");
 
             bool hasErrors = rowErrors.Count > 0;
-            if (!hasErrors)
-            {
-                if (wouldCreate >= remaining)
-                {
-                    rowErrors.Add($"Subscription limit reached ({sub?.MaxEmployees} employees)");
-                    hasErrors = true;
-                }
-            }
 
-            // Readiness projection for a row that WILL be created (before subscription-limit gate).
+            // Readiness projection for a row that WILL be created.
             string projectedStatus = string.Empty;
             List<string> projBlocking = new(), projRecommended = new();
             if (!hasErrors)
@@ -1242,22 +1464,50 @@ public class EmployeesController : ControllerBase
                 var csvStatus = row.GetValueOrDefault("Status", string.Empty).Trim();
                 var country = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
                 var nationality = row.GetValueOrDefault("Nationality", string.Empty).Trim();
-                var key = $"{country.ToUpperInvariant()}|{Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(nationality)}";
+                // Resolve the row's company (P1-2) — same rule as commit's ResolveRowLandingAsync — so a
+                // company-scoped policy applies here exactly as it will at commit; cache key mirrors commit.
+                var companyNameRaw = row.GetValueOrDefault("CompanyLegalName", string.Empty).Trim();
+                var rowCompany = !string.IsNullOrWhiteSpace(companyNameRaw)
+                    ? companiesByName.GetValueOrDefault(companyNameRaw.ToUpperInvariant())
+                    : defaultCompany;
+                var key = $"{rowCompany?.Id}|{country.ToUpperInvariant()}|{Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(nationality)}";
                 if (!previewPolicyCache.TryGetValue(key, out var policy))
                 {
-                    policy = await _activationGuard.ResolvePolicyAsync(tenantId, null, country, nationality, ct);
+                    policy = await _activationGuard.ResolvePolicyAsync(tenantId, rowCompany?.Id, country, nationality, ct);
                     previewPolicyCache[key] = policy;
                 }
+                // Country-aware column validation (§4): warn on values in columns that don't apply to this
+                // row's (country, nationality) and on identity numbers failing the pack format — never errors.
+                Zayra.Api.Application.CountryPack.IIdentityDocumentFormat fmt =
+                    countryPacks?.ResolveIdentityDocumentFormat(policy.CountryCode, string.Empty)
+                    ?? new Zayra.Api.Infrastructure.CountryPack.DefaultIdentityDocumentFormat();
+                rowWarnings.AddRange(CountryAwareRowWarnings(row, policy.CountryCode, nationality, fmt));
                 DateTime.TryParse(row.GetValueOrDefault("JoiningDate", string.Empty), out var pjd);
                 var snap = ImportReadinessSnapshot(row, null, null, pjd == default ? DateTime.UtcNow : pjd);
                 var readiness = _activationGuard.Evaluate(snap, policy);
                 projBlocking = readiness.Blocking.Select(b => b.Label).ToList();
                 projRecommended = readiness.Recommended.Select(b => b.Label).ToList();
+                RecordGaps(readiness.Blocking, "blocking");
+                RecordGaps(readiness.Recommended, "recommended");
                 projectedStatus = string.IsNullOrWhiteSpace(csvStatus)
                     ? EmployeeStatuses.Draft
                     : string.Equals(csvStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
                         ? (readiness.IsBlocked ? EmployeeStatuses.Draft : EmployeeStatuses.Active)
                         : csvStatus;
+
+                // Seat gate (P1-4): only Active-landing rows consume an active seat. A complete row that
+                // would land Active but has no seat left is DOWNGRADED to Draft (imported inactive), never
+                // errored — Draft rows never consume a seat, matching the inactive-until-complete model and
+                // the commit path. Unlimited plans have remaining == int.MaxValue so this never fires.
+                if (string.Equals(projectedStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (activeSeatsProjected < remaining) activeSeatsProjected++;
+                    else
+                    {
+                        projectedStatus = EmployeeStatuses.Draft;
+                        rowWarnings.Add($"Active seat limit reached ({sub?.MaxEmployees}) — imported as inactive until an active seat is available.");
+                    }
+                }
             }
 
             if (hasErrors) { status = "Error"; wouldSkip++; }
@@ -1284,6 +1534,14 @@ public class EmployeesController : ControllerBase
             });
         }
 
+        // Per-field summary ("most common missing fields" strip) — blockers first, then by frequency.
+        var fieldGaps = fieldGapAgg
+            .Select(kv => new { field = kv.Key, label = kv.Value.Label, gate = kv.Value.Gate, kind = kv.Value.Kind, rowCount = kv.Value.Count })
+            .OrderByDescending(g => g.kind == "blocking")
+            .ThenByDescending(g => g.rowCount)
+            .ThenBy(g => g.label)
+            .ToList();
+
         return Ok(new
         {
             received = rows.Count,
@@ -1291,6 +1549,7 @@ public class EmployeesController : ControllerBase
             wouldSkip,
             wouldCreateActive,
             wouldCreateDraft,
+            fieldGaps,
             rows = previewRows
         });
     }
@@ -2154,6 +2413,9 @@ public class EmployeesController : ControllerBase
         {
             ApplyChanges(employee, changes);
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, changes.Keys, cancellationToken);
+            // Keep the payroll profile's bank columns in step with the employee scalar so an IBAN fixed
+            // via the checklist actually reaches the WPS/payroll run (Δ13 / P1-1).
+            await EmployeeBankProfileSync.SyncAsync(_db, employee, changes.Keys, cancellationToken);
             employee.UpdatedAtUtc = DateTime.UtcNow;
             change.Status = "ApprovedApplied";
             change.ApprovedByUserId = approverId;

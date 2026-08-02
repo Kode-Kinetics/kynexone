@@ -31,6 +31,9 @@ public sealed class CountryPackResolver : ICountryPackResolver
     public ICountryPackDescriptor ResolveDescriptor(string cc, string j)
         => Resolve<ICountryPackDescriptor>(cc, j);
 
+    public IIdentityDocumentFormat ResolveIdentityDocumentFormat(string cc, string j)
+        => Resolve<IIdentityDocumentFormat>(cc, j);
+
     private T Resolve<T>(string countryCode, string jurisdiction) where T : class
     {
         // Pack registrations are keyed by ISO-3 ("SAU", "ARE"); canonical stored data is

@@ -251,6 +251,131 @@ public class EmployeeActivationGateTests
         (await db.Employees.CountAsync(e => e.TenantId == fx.TenantId)).Should().Be(0, "dry-run persists nothing");
     }
 
+    // ── Field-parity: registry is the single source of truth ─────────────────
+
+    [Fact]
+    public void FieldRegistry_CatalogAndReadinessSpecs_HaveNoDrift()
+    {
+        // The §3.1 enforcement: every readiness key has exactly one ActivationRelevant catalog descriptor
+        // (and vice-versa) and CSV headers are unique. Throws on drift — this test is the CI guard that a
+        // future edit desyncing the three surfaces fails fast instead of silently.
+        var act = () => EmployeeFieldRegistry.AssertCatalogIntegrity();
+        act.Should().NotThrow();
+    }
+
+    // ── Two-axis (country × nationality) catalog↔floor parity ────────────────
+
+    [Theory]
+    [InlineData("SA", "SA")]  [InlineData("SA", "Indian")]  [InlineData("SA", "AE")]
+    [InlineData("AE", "AE")]  [InlineData("AE", "Indian")]  [InlineData("AE", "SA")]
+    [InlineData("QA", "QA")]  [InlineData("QA", "Indian")]  [InlineData("QA", "SA")]
+    [InlineData("KW", "KW")]  [InlineData("KW", "Indian")]
+    [InlineData("OM", "OM")]  [InlineData("OM", "Indian")]
+    [InlineData("BH", "BH")]  [InlineData("BH", "Indian")]
+    public void FieldResolver_EveryHardFloorRequirement_HasAVisibleField(string country, string nationality)
+    {
+        // The mechanical anti-trap guarantee: no (country, nationality) can require a field the modal
+        // cannot show — i.e. no employee is un-activatable (the SA-national / UAE-expat trap class).
+        var normNat = GccReadinessFloor.NormalizeNationality(nationality);
+        var visible = EmployeeFieldRegistry.CatalogFor(country, nationality)
+            .Where(d => d.ActivationRelevant).Select(d => d.Key)
+            .ToHashSet(System.StringComparer.OrdinalIgnoreCase);
+        foreach (var req in GccReadinessFloor.Resolve(country))
+        {
+            if (!req.FailClosed || req.Key.StartsWith("doc:", System.StringComparison.OrdinalIgnoreCase)) continue;
+            if (!GccReadinessFloor.NationalityApplies(req.AppliesWhen, normNat)) continue;
+            visible.Should().Contain(req.Key, $"{country}/{nationality} floor requires '{req.Key}' — it must be enterable in the modal");
+        }
+    }
+
+    [Fact]
+    public void FieldResolver_SaudiNational_NeverSeesIqama_And_GccNational_NeverSeesWorkPermit()
+    {
+        // Owner's explicit acceptance criteria.
+        var saNational = EmployeeFieldRegistry.CatalogFor("SA", "Saudi").Select(d => d.Key).ToList();
+        saNational.Should().NotContain("IqamaNumber", "a Saudi national must NEVER see an Iqama field");
+        saNational.Should().NotContain("IqamaExpiry");
+        saNational.Should().Contain("IdNumber", "a Saudi national uses the National ID (Hawiyya)");
+
+        // A UAE national never needs a work permit / residence visa (GCC reciprocity).
+        var aeNational = EmployeeFieldRegistry.CatalogFor("AE", "Emirati").Select(d => d.Key).ToList();
+        aeNational.Should().NotContain("WorkPermitNumber");
+        aeNational.Should().Contain("EmiratesId");
+
+        // A GCC national working in another GCC state is work-permit / visa exempt (Saudi in UAE).
+        var gccExpat = EmployeeFieldRegistry.CatalogFor("AE", "Saudi").Select(d => d.Key).ToList();
+        gccExpat.Should().NotContain("WorkPermitNumber", "a Saudi in the UAE is work-permit exempt");
+        gccExpat.Should().Contain("EmiratesId", "but still holds an Emirates ID");
+
+        // A non-GCC expat in the UAE DOES get the work permit the AE floor gates (the A1 trap fix).
+        var expat = EmployeeFieldRegistry.CatalogFor("AE", "Indian").Select(d => d.Key).ToList();
+        expat.Should().Contain("WorkPermitNumber");
+    }
+
+    [Fact]
+    public void FieldResolver_CivilId_CarriesCountrySpecificLocalLabel()
+    {
+        string Label(string c) => EmployeeFieldRegistry.LabelFor(
+            EmployeeFieldRegistry.CatalogFor(c, "Indian").Single(d => d.Key == "CivilId"), c);
+        Label("KW").Should().Contain("Kuwait");
+        Label("OM").Should().Contain("Resident Card");
+        Label("BH").Should().Contain("CPR");
+    }
+
+    [Fact]
+    public void ImportTemplate_Headers_AreDrivenBy_RegistryCatalog()
+    {
+        using var db = CreateDb();
+        var fx = Guid.NewGuid();
+        var csv = System.Text.Encoding.UTF8.GetString(
+            ((FileContentResult)Controller(db, fx).ImportTemplate()).FileContents);
+        var headerLine = csv.Split('\n')[0].Split(',').Select(h => h.Trim('"')).ToList();
+
+        // The template column set IS the registry CSV header list — no hand-maintained array to drift.
+        headerLine.Should().BeEquivalentTo(EmployeeFieldRegistry.CsvHeaders, o => o.WithStrictOrdering());
+        // …and it now carries the parity columns that were previously missing (Δ11/Δ12/Δ16/Δ20/Δ23).
+        headerLine.Should().Contain(new[]
+        {
+            "IqamaExpiry", "EmiratesIdExpiry", "QidExpiry", "CivilIdExpiry",
+            "QiwaContractNumber", "SocialInsuranceReference",
+            "EmergencyContactName", "EmergencyContactPhone", "ContractStartDate", "ContractEndDate",
+        });
+    }
+
+    [Fact]
+    public async Task Import_GccIdExpiryColumns_RoundTripTo_EmployeeScalars()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedTenant(db);
+        // Registry-driven CSV column → first-class Employee scalar the readiness pay-gate reads (Δ20).
+        const string csv =
+            "FullName,CountryCode,Nationality,IqamaNumber,IqamaExpiry\n" +
+            "Iqama Holder,SA,Indian,2000000123,2030-06-30\n";
+        await ImportJson(Controller(db, fx.TenantId), csv);
+        var emp = await db.Employees.AsNoTracking().SingleAsync(e => e.TenantId == fx.TenantId);
+        emp.IqamaNumber.Should().Be("2000000123");
+        emp.IqamaExpiryDate.Should().Be(new DateOnly(2030, 6, 30));
+    }
+
+    [Fact]
+    public async Task ImportPreview_AggregatesFieldGaps_AcrossRows()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedTenant(db);
+        // Two KSA expats missing the GOSI/Iqama floor → a per-field summary the modal can render.
+        const string csv =
+            "FullName,CountryCode,Nationality,Status\n" +
+            "Expat One,SA,Indian,Active\n" +
+            "Expat Two,SA,Indian,Active\n";
+        var res = (OkObjectResult)await Controller(db, fx.TenantId)
+            .ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+        var json = JsonSerializer.SerializeToElement(res.Value);
+        var gaps = json.GetProperty("fieldGaps");
+        gaps.GetArrayLength().Should().BeGreaterThan(0);
+        gaps.EnumerateArray().Should().Contain(g =>
+            g.GetProperty("field").GetString() == "GosiReference" && g.GetProperty("rowCount").GetInt32() == 2);
+    }
+
     // ── Stubs ────────────────────────────────────────────────────────────────
 
     private sealed class FakeDocs : IDocumentStorage

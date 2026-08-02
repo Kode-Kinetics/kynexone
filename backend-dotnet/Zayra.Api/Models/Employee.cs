@@ -90,6 +90,13 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public string VisaNumber { get; set; } = string.Empty;
     public DateOnly? VisaExpiryDate { get; set; }
     public string IqamaNumber { get; set; } = string.Empty;
+    // GCC-ID expiry scalars — first-class columns for query/index parity with Passport/Visa expiry and
+    // so the readiness pay-gate reads them directly (Δ20). Additive/nullable; mirrored from the create
+    // modal's compliance records and set by the CSV importer's *Expiry columns.
+    public DateOnly? IqamaExpiryDate { get; set; }
+    public DateOnly? EmiratesIdExpiryDate { get; set; }
+    public DateOnly? QidExpiryDate { get; set; }
+    public DateOnly? CivilIdExpiryDate { get; set; }
     public string MuqeemNumber { get; set; } = string.Empty;
     public string GosiReference { get; set; } = string.Empty;
     public string QiwaContractNumber { get; set; } = string.Empty;

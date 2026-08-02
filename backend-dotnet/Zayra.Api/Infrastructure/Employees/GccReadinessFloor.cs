@@ -5,11 +5,16 @@ namespace Zayra.Api.Infrastructure.Employees;
 
 /// <summary>Optional conditionality for a requirement, evaluated against the employee snapshot.
 /// Absent ⇒ always applies. Conditionality is a COMPLIANCE requirement, not a nicety — requiring an
-/// Iqama for a Saudi national is wrong and would produce false blocks.</summary>
+/// Iqama for a Saudi national is wrong and would produce false blocks. The split is THREE-WAY, not
+/// binary: host-national (Nationality==country), GCC-national (a different GCC state — GCC common-market
+/// rules waive host work-permit/visa/residency + host social insurance), and non-GCC expat (the only
+/// class that needs a host work permit / residence visa). <see cref="NonGccExpatOnly"/> encodes that
+/// third class so a Saudi working in the UAE is never falsely required to hold a UAE work permit.</summary>
 public sealed record AppliesWhen(
-    string? Nationality = null,       // GCC nationality (ISO-2 or common name) equals this
-    string? NationalityNot = null,    // GCC nationality NOT this (the expat split)
-    bool? WpsEnabled = null);         // resolved from the effective policy layer (GCC setting/profile)
+    string? Nationality = null,       // GCC nationality (ISO-2 or common name) equals this — the host-national row
+    string? NationalityNot = null,    // GCC nationality NOT this (legacy binary expat split; kept for profile JSON compat)
+    bool? WpsEnabled = null,          // resolved from the effective policy layer (GCC setting/profile)
+    bool? NonGccExpatOnly = null);    // applies ONLY to a non-GCC expat (host + other-GCC nationals excluded)
 
 /// <summary>
 /// One required-to-be-ready field, jurisdiction-tagged. FailClosed=true blocks (hard gate);
@@ -61,7 +66,12 @@ public static class GccReadinessFloor
         };
     }
 
-    /// <summary>The floor requirements for a jurisdiction. Empty for non-GCC countries.</summary>
+    /// <summary>The floor requirements for a jurisdiction. Empty for non-GCC countries. Covers ALL SIX
+    /// GCC states on TWO axes (country × nationality). Identity CARDS (Emirates ID, QID, Civil ID, CPR)
+    /// are held by citizens and residents alike ⇒ all-nationality. Work-authorization (work permit,
+    /// residence visa, Iqama) applies to NON-GCC EXPATS only (GCC common-market reciprocity). Host social
+    /// insurance is the national scheme for host nationals (GPSSA/GRSIA/PIFSS/SPF); KSA GOSI and Bahrain
+    /// SIO extend to all residents by that country's rules.</summary>
     public static IReadOnlyList<ReadinessRequirement> Resolve(string? countryCode)
     {
         var iso2 = (CountryCodeStandard.NormalizeToIso2(countryCode) ?? countryCode ?? string.Empty).Trim().ToUpperInvariant();
@@ -77,46 +87,71 @@ public static class GccReadinessFloor
         switch (iso2)
         {
             case "SA":
-                items.Add(Req("GosiReference", "identity", true, "activate", iso2));                          // all
-                items.Add(Req("IdNumber", "identity", true, "activate", iso2, nationality: "SA"));            // national ID
-                items.Add(Req("IqamaNumber", "identity", true, "activate", iso2, nationalityNot: "SA"));      // expat
-                items.Add(Req("IqamaExpiry", "identity", true, "pay", iso2, nationalityNot: "SA"));
+                items.Add(Req("GosiReference", "identity", true, "activate", iso2));                          // all residents (nationals full, expats OH)
+                items.Add(Req("IdNumber", "identity", true, "activate", iso2, nationality: "SA"));            // National ID (Hawiyya) — host national
+                items.Add(Req("IqamaNumber", "identity", true, "activate", iso2, nonGccExpat: true));         // residence permit — non-GCC expat
+                items.Add(Req("IqamaExpiry", "identity", true, "pay", iso2, nonGccExpat: true));
                 break;
             case "AE":
                 items.Add(Req("EmiratesId", "identity", true, "activate", iso2));                             // all residents
                 items.Add(Req("EmiratesIdExpiry", "identity", true, "pay", iso2));
-                items.Add(Req("WorkPermitNumber", "identity", true, "activate", iso2, nationalityNot: "AE")); // MOHRE labour card
-                items.Add(Req("VisaExpiryDate", "identity", true, "pay", iso2, nationalityNot: "AE"));        // residence visa
+                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2, nationality: "AE")); // GPSSA — Emirati nationals
+                items.Add(Req("WorkPermitNumber", "identity", true, "activate", iso2, nonGccExpat: true));    // MOHRE work permit / labour card
+                items.Add(Req("VisaExpiryDate", "identity", true, "pay", iso2, nonGccExpat: true));           // residence visa
                 items.Add(Req("MolId", "payroll", false, "pay", iso2));
                 break;
             case "QA":
-                items.Add(Req("Qid", "identity", true, "activate", iso2, nationalityNot: "QA"));
-                items.Add(Req("QidExpiry", "identity", true, "pay", iso2, nationalityNot: "QA"));
+                items.Add(Req("Qid", "identity", true, "activate", iso2));                                    // QID — all residents (nationals hold a QID too)
+                items.Add(Req("QidExpiry", "identity", true, "pay", iso2));
+                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2, nationality: "QA")); // GRSIA — Qatari nationals
                 break;
             case "KW":
-                items.Add(Req("CivilId", "identity", true, "activate", iso2, nationalityNot: "KW"));
-                items.Add(Req("CivilIdExpiry", "identity", true, "pay", iso2, nationalityNot: "KW"));
+                items.Add(Req("CivilId", "identity", true, "activate", iso2));                                // Kuwait Civil ID — all residents
+                items.Add(Req("CivilIdExpiry", "identity", true, "pay", iso2));
+                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2, nationality: "KW")); // PIFSS — Kuwaiti nationals
                 break;
             case "OM":
-                items.Add(Req("CivilId", "identity", true, "activate", iso2, nationalityNot: "OM"));
-                items.Add(Req("CivilIdExpiry", "identity", true, "pay", iso2, nationalityNot: "OM"));
+                items.Add(Req("CivilId", "identity", true, "activate", iso2));                                // Oman Resident Card / Civil ID — all residents
+                items.Add(Req("CivilIdExpiry", "identity", true, "pay", iso2));
+                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2, nationality: "OM")); // SPF (PASI legacy) — Omani nationals
                 break;
             case "BH":
-                items.Add(Req("CivilId", "identity", true, "activate", iso2, nationalityNot: "BH"));          // CPR
-                items.Add(Req("CivilIdExpiry", "identity", true, "pay", iso2, nationalityNot: "BH"));
-                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2));               // SIO/GOSI-BH
+                items.Add(Req("CivilId", "identity", true, "activate", iso2));                                // Bahrain CPR — all residents
+                items.Add(Req("CivilIdExpiry", "identity", true, "pay", iso2));
+                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2));               // SIO (GOSI-BH legacy) — all residents
                 break;
         }
         return items;
     }
 
+    /// <summary>Whether a requirement's nationality conditionality applies to a normalized nationality.
+    /// The ONE place nationality applicability is decided — the resolver's enforcement AND the
+    /// catalog↔floor parity guard both call this, so a Saudi national never sees an Iqama field and the
+    /// two surfaces can never drift. WPS conditionality is evaluated separately (needs the policy layer).</summary>
+    public static bool NationalityApplies(AppliesWhen? when, string normalizedNationality)
+    {
+        if (when is null) return true;
+        if (when.Nationality is { } eq
+            && !string.Equals(NormalizeNationality(eq), normalizedNationality, System.StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (when.NationalityNot is { } ne
+            && string.Equals(NormalizeNationality(ne), normalizedNationality, System.StringComparison.OrdinalIgnoreCase))
+            return false;
+        // Non-GCC-expat rows (work permit / visa / residency / Iqama): host nationals AND other-GCC
+        // nationals are excluded (GCC common-market reciprocity). Unknown/blank normalizes to non-GCC ⇒
+        // treated as expat (fail-safe: work-authorization requirements apply).
+        if (when.NonGccExpatOnly == true && CountryTier.IsGcc(normalizedNationality))
+            return false;
+        return true;
+    }
+
     private static ReadinessRequirement Req(
         string key, string category, bool failClosed, string gate, string jurisdiction,
-        string? nationality = null, string? nationalityNot = null, bool wpsUpgrade = false)
+        string? nationality = null, string? nationalityNot = null, bool nonGccExpat = false, bool wpsUpgrade = false)
     {
         AppliesWhen? when = null;
-        if (nationality is not null || nationalityNot is not null || wpsUpgrade)
-            when = new AppliesWhen(nationality, nationalityNot, null);
+        if (nationality is not null || nationalityNot is not null || nonGccExpat || wpsUpgrade)
+            when = new AppliesWhen(nationality, nationalityNot, null, nonGccExpat ? true : null);
         // A wps-upgrade IBAN carries an appliesWhen so the resolver can upgrade pay→activate when WPS is on.
         return new ReadinessRequirement(key, category, failClosed, gate, "floor", jurisdiction,
             RequireVerified: null, AppliesWhen: when);

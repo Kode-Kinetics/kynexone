@@ -33,6 +33,14 @@ export interface ImportPreviewRow {
   warnings?: string[];
 }
 
+/** One aggregated missing/incorrect-field summary across all previewed rows. */
+export interface ImportFieldGap {
+  field?: string;
+  label: string;
+  gate?: string;
+  rowCount: number;
+}
+
 /** Dry-run projection returned before commit — persists nothing server-side. */
 export interface ImportPreview {
   received: number;
@@ -41,6 +49,35 @@ export interface ImportPreview {
   wouldCreateActive?: number;
   wouldCreateDraft?: number;
   rows: ImportPreviewRow[];
+  /** Optional per-field roll-up; when absent it is derived from each row's blocking/recommended. */
+  fieldGaps?: ImportFieldGap[];
+}
+
+/**
+ * Roll every row's missing/incorrect detail up into a per-field count, so the popup can show the
+ * owner's "which fields" summary even when the server doesn't pre-aggregate it. Blocking gaps
+ * (activation floor) are surfaced ahead of recommended ones, then by frequency.
+ */
+function deriveFieldGaps(preview: ImportPreview): ImportFieldGap[] {
+  if (preview.fieldGaps && preview.fieldGaps.length > 0) return preview.fieldGaps;
+  const counts = new Map<string, ImportFieldGap>();
+  const tally = (labels: string[] | undefined, gate: string) => {
+    for (const raw of labels ?? []) {
+      const label = raw.trim();
+      if (!label) continue;
+      const existing = counts.get(label);
+      if (existing) existing.rowCount += 1;
+      else counts.set(label, { label, gate, rowCount: 1 });
+    }
+  };
+  for (const row of preview.rows) {
+    tally(row.blocking, 'activate');
+    tally(row.recommended, 'recommended');
+  }
+  return [...counts.values()].sort((a, b) => {
+    if (a.gate !== b.gate) return a.gate === 'activate' ? -1 : 1;
+    return b.rowCount - a.rowCount;
+  });
 }
 
 export interface ImportExportToolbarProps {
@@ -124,7 +161,9 @@ function LandingPill({ status }: { status?: string }) {
     : draft
       ? 'bg-amber-400/15 text-amber-700 ring-amber-400/25 dark:text-amber-300'
       : 'bg-slate-100 text-slate-500 ring-slate-200 dark:bg-white/10 dark:text-slate-300';
-  return <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ${cls}`}>{status || '—'}</span>;
+  // Draft rows land as inactive-until-completed — say so in plain words rather than the raw status.
+  const label = active ? 'Active' : draft ? 'Inactive · needs info' : status || '—';
+  return <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ${cls}`}>{label}</span>;
 }
 
 export function ImportExportToolbar({
@@ -366,12 +405,44 @@ export function ImportExportToolbar({
               <div className="flex flex-wrap gap-2 text-xs">
                 <span className="rounded-md bg-slate-100 px-2 py-1 font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">{preview.received} rows</span>
                 <span className="rounded-md bg-emeraldZ/10 px-2 py-1 font-semibold text-emerald-700 ring-1 ring-emeraldZ/20 dark:text-emerald-300">{preview.wouldCreateActive ?? 0} Active</span>
-                <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-700 ring-1 ring-amber-400/25 dark:text-amber-300">{preview.wouldCreateDraft ?? 0} Draft</span>
+                <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-700 ring-1 ring-amber-400/25 dark:text-amber-300">{preview.wouldCreateDraft ?? 0} inactive · needs info</span>
                 {preview.wouldSkip > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{preview.wouldSkip} rejected</span>}
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Nothing is saved yet. Rows with missing required details are created as <strong>Draft</strong> — they can be completed and activated afterwards.
-              </p>
+              {(preview.wouldCreateDraft ?? 0) > 0 ? (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300" role="status">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>
+                    Nothing is saved yet. <strong>{preview.wouldCreateDraft} {preview.wouldCreateDraft === 1 ? 'employee' : 'employees'} will be imported as inactive until {preview.wouldCreateDraft === 1 ? 'its' : 'their'} details are completed.</strong> You can finish them one by one in the People list afterwards, or cancel and fix the sheet offline first.
+                  </span>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 dark:text-slate-400">Nothing is saved yet. All rows have the details required to activate.</p>
+              )}
+              {(() => {
+                const gaps = deriveFieldGaps(preview);
+                if (gaps.length === 0) return null;
+                return (
+                  <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
+                    <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-400">Most common missing details</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {gaps.slice(0, 8).map((gap) => (
+                        <span
+                          key={gap.label}
+                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${
+                            gap.gate === 'activate'
+                              ? 'bg-amber-400/15 text-amber-700 ring-amber-400/25 dark:text-amber-300'
+                              : 'bg-slate-100 text-slate-500 ring-slate-200 dark:bg-white/10 dark:text-slate-300'
+                          }`}
+                          title={gap.gate === 'activate' ? 'Required before activation' : 'Recommended detail'}
+                        >
+                          {gap.label}
+                          <span className="font-bold">{gap.rowCount}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="max-h-[50vh] overflow-auto rounded-lg border border-slate-200 dark:border-white/10">
                 <table className="w-full min-w-[560px] text-sm">
                   <thead className="sticky top-0 bg-slate-50 dark:bg-white/[0.04]">
@@ -430,8 +501,14 @@ export function ImportExportToolbar({
                 <CheckCircle2 className="h-3.5 w-3.5" /> {result.created} created
               </span>
               {result.skipped > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{result.skipped} skipped</span>}
-              {incompleteCount > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-700 ring-1 ring-amber-400/25 dark:text-amber-300">{incompleteCount} need info</span>}
+              {incompleteCount > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-700 ring-1 ring-amber-400/25 dark:text-amber-300">{incompleteCount} inactive · needs info</span>}
             </div>
+
+            {incompleteCount > 0 && (
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {incompleteCount} {incompleteCount === 1 ? 'employee was' : 'employees were'} imported as <strong>inactive</strong> because required details are missing — {incompleteCount === 1 ? 'it' : 'they'} cannot be set Active until completed. Open each from the list (they show a red <em>Incomplete</em> badge) to finish them.
+              </p>
+            )}
 
             {result.errors.length > 0 && (
               <ResultTier tone="rose" icon={<AlertTriangle className="h-3.5 w-3.5" />} title={`Rejected · ${result.errors.length}`} items={result.errors} />

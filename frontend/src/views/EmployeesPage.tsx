@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, FileUp, History, Pencil, Plus, RefreshCw, Search, Send, UserRound, Users } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { employeesApi, notActivatableFromError } from '../api/employees';
@@ -35,17 +35,27 @@ import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
 import { useCompany } from '../contexts/CompanyContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import {
+  employeeFieldCatalogApi,
+  resolveFieldCatalog,
+  normalizeCountryCode,
+  complianceRecordsForCountry,
+  complianceProfileForCountry,
+  editFieldsForCountry,
+  documentTypesForCountry,
+  LOCAL_FIELD_CATALOG,
+  GENDER_OPTIONS,
+  MARITAL_STATUS_OPTIONS,
+  EMPLOYMENT_TYPE_OPTIONS,
+  CONTRACT_TYPE_OPTIONS,
+  PAYMENT_METHOD_OPTIONS,
+  SALARY_CURRENCY_OPTIONS,
+} from '../api/employeeFieldCatalog';
+import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'compliance' | 'documents' | 'history' | 'transfers';
-type EditField = { key: string; label: string; type?: 'text' | 'email' | 'date' | 'number' | 'select'; options?: string[]; sensitive?: boolean; section: string };
-type ComplianceFieldDefinition = {
-  fieldKey: string;
-  fieldLabel: string;
-  entityKey?: string;
-  expiryEntityKey?: string;
-  required?: boolean;
-};
+type EditField = EmployeeEditField;
 
 const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'Probation', 'Confirmed', 'On leave', 'Suspended', 'Resigned', 'Notice period', 'Terminated', 'Retired', 'Absconded', 'Inactive', 'Blacklisted'];
 // Filter dropdown for the ACTIVE People list: drop 'Terminated' — the backend now excludes former
@@ -117,134 +127,12 @@ const emptyEmployee = (): EmployeeCreateRequest => ({
   complianceRecords: [],
 });
 
-// Editable fields for the Edit Details modal. Sensitive ones are routed by the
-// backend into an approval workflow (202) instead of applying immediately.
-const EDIT_FIELDS: EditField[] = [
-  { section: 'Personal', key: 'englishName', label: 'English full name' },
-  { section: 'Personal', key: 'arabicName', label: 'Arabic name' },
-  { section: 'Personal', key: 'preferredName', label: 'Preferred name' },
-  { section: 'Personal', key: 'gender', label: 'Gender', type: 'select', options: ['Male', 'Female', 'Other'] },
-  { section: 'Personal', key: 'nationality', label: 'Nationality' },
-  { section: 'Personal', key: 'maritalStatus', label: 'Marital status', type: 'select', options: ['Single', 'Married', 'Divorced', 'Widowed'] },
-  { section: 'Personal', key: 'dateOfBirth', label: 'Date of birth', type: 'date', sensitive: true },
-  { section: 'Personal', key: 'personalEmail', label: 'Personal email', type: 'email' },
-  { section: 'Personal', key: 'workEmail', label: 'Work email', type: 'email' },
-  { section: 'Personal', key: 'phone', label: 'Mobile number' },
-  { section: 'Personal', key: 'emergencyContactName', label: 'Emergency contact name' },
-  { section: 'Personal', key: 'emergencyContactPhone', label: 'Emergency contact phone' },
-  { section: 'Employment', key: 'department', label: 'Department' },
-  { section: 'Employment', key: 'designation', label: 'Designation' },
-  { section: 'Employment', key: 'jobTitle', label: 'Job title' },
-  { section: 'Employment', key: 'employmentType', label: 'Employment type', type: 'select', options: ['Full-Time', 'Part-Time', 'Contractor', 'Intern'] },
-  { section: 'Employment', key: 'contractType', label: 'Contract type', type: 'select', options: ['Unlimited', 'Fixed-Term', 'Temporary'] },
-  { section: 'Employment', key: 'workLocation', label: 'Work location' },
-  { section: 'Employment', key: 'grade', label: 'Grade' },
-  { section: 'Employment', key: 'costCenter', label: 'Cost center' },
-  { section: 'Employment', key: 'joiningDate', label: 'Joining date', type: 'date' },
-  { section: 'Employment', key: 'managerEmployeeId', label: 'Manager employee ID', type: 'number' },
-  { section: 'Payroll & Banking', key: 'salary', label: 'Salary', type: 'number', sensitive: true },
-  { section: 'Payroll & Banking', key: 'bankName', label: 'Bank name', sensitive: true },
-  { section: 'Payroll & Banking', key: 'bankIban', label: 'IBAN', sensitive: true },
-];
-
-// Display-labels + entity-key mapping ONLY (label text, edit-field wiring, document-type list).
-// The `required` flag here is NOT the source of "required to activate" — that is resolved
-// server-side and surfaced via the readiness checklist (GET /{id}/readiness). Do not reintroduce
-// a client-side required-field gate from this list (§8.5, "no hard-coded field list" on the client).
-const COMMON_COMPLIANCE_FIELDS: ComplianceFieldDefinition[] = [
-  { fieldKey: 'passport_number', fieldLabel: 'Passport Number', entityKey: 'passportNumber', expiryEntityKey: 'passportExpiryDate', required: true },
-];
-
-const COUNTRY_COMPLIANCE_PROFILES: Record<string, ComplianceFieldDefinition[]> = {
-  SA: [
-    ...COMMON_COMPLIANCE_FIELDS,
-    { fieldKey: 'iqama_number', fieldLabel: 'Saudi National ID / Iqama', entityKey: 'iqamaNumber', required: true },
-    { fieldKey: 'muqeem_reference', fieldLabel: 'Muqeem Reference', entityKey: 'muqeemNumber' },
-    { fieldKey: 'gosi_reference', fieldLabel: 'GOSI Reference', entityKey: 'gosiReference' },
-    { fieldKey: 'qiwa_contract_reference', fieldLabel: 'Qiwa Contract Number', entityKey: 'qiwaContractNumber' },
-    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
-  ],
-  AE: [
-    ...COMMON_COMPLIANCE_FIELDS,
-    { fieldKey: 'emirates_id', fieldLabel: 'Emirates ID', entityKey: 'emiratesId', required: true },
-    { fieldKey: 'visa_number', fieldLabel: 'Visa Number', entityKey: 'visaNumber', expiryEntityKey: 'visaExpiryDate' },
-    { fieldKey: 'visa_file_number', fieldLabel: 'Visa File Number', entityKey: 'visaFileNumber' },
-    { fieldKey: 'labor_card_number', fieldLabel: 'Labour Card Number', entityKey: 'laborCardNumber' },
-  ],
-  QA: [
-    ...COMMON_COMPLIANCE_FIELDS,
-    { fieldKey: 'qid', fieldLabel: 'Qatar ID', entityKey: 'qid', required: true },
-    { fieldKey: 'visa_number', fieldLabel: 'Visa Number', entityKey: 'visaNumber', expiryEntityKey: 'visaExpiryDate' },
-    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
-  ],
-  KW: [
-    ...COMMON_COMPLIANCE_FIELDS,
-    { fieldKey: 'civil_id', fieldLabel: 'Civil ID', entityKey: 'civilId', required: true },
-    { fieldKey: 'residency_number', fieldLabel: 'Residency Number', entityKey: 'residencyNumber', expiryEntityKey: 'residencyIssueDate' },
-    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
-  ],
-  OM: [
-    ...COMMON_COMPLIANCE_FIELDS,
-    { fieldKey: 'civil_id', fieldLabel: 'Civil ID', entityKey: 'civilId', required: true },
-    { fieldKey: 'residency_number', fieldLabel: 'Residency Number', entityKey: 'residencyNumber', expiryEntityKey: 'residencyIssueDate' },
-    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
-  ],
-  BH: [
-    ...COMMON_COMPLIANCE_FIELDS,
-    { fieldKey: 'civil_id', fieldLabel: 'CPR / Civil ID', entityKey: 'civilId', required: true },
-    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
-  ],
-};
-
-function normalizeCountryCode(value?: string) {
-  const code = (value ?? '').trim().toUpperCase();
-  const compact = code.replace(/[^A-Z]/g, '');
-  if (['SAU', 'KSA', 'SAUDIARABIA', 'KINGDOMOFSAUDIARABIA'].includes(compact)) return 'SA';
-  if (['ARE', 'UAE', 'UNITEDARABEMIRATES', 'UNITEDARABEMIRATE'].includes(compact)) return 'AE';
-  if (['QAT', 'QATAR'].includes(compact)) return 'QA';
-  if (['KWT', 'KUWAIT'].includes(compact)) return 'KW';
-  if (['OMN', 'OMAN'].includes(compact)) return 'OM';
-  if (['BHR', 'BAHRAIN'].includes(compact)) return 'BH';
-  return code.length === 2 ? code : '';
-}
-
-function complianceProfileForCountry(countryCode?: string) {
-  const country = normalizeCountryCode(countryCode);
-  return COUNTRY_COMPLIANCE_PROFILES[country] ?? COMMON_COMPLIANCE_FIELDS;
-}
-
-function complianceRecordsForCountry(countryCode?: string, existing: EmployeeCreateRequest['complianceRecords'] = []) {
-  const country = normalizeCountryCode(countryCode);
-  if (!country) return [];
-  const existingByKey = new Map((existing ?? []).map((record) => [record.fieldKey, record]));
-  return complianceProfileForCountry(country).map((field) => {
-    const current = existingByKey.get(field.fieldKey);
-    return {
-      countryCode: country,
-      fieldKey: field.fieldKey,
-      fieldLabel: field.fieldLabel,
-      fieldValue: current?.fieldValue ?? '',
-      issueDate: current?.issueDate,
-      expiryDate: current?.expiryDate,
-      isSensitive: true,
-      isRequired: Boolean(field.required),
-    };
-  });
-}
-
-function complianceEditFieldsForCountry(countryCode?: string): EditField[] {
-  return complianceProfileForCountry(countryCode).flatMap((field) => {
-    const fields: EditField[] = [];
-    if (field.entityKey) fields.push({ section: 'Compliance Documents', key: field.entityKey, label: field.fieldLabel, sensitive: true });
-    if (field.expiryEntityKey) fields.push({ section: 'Compliance Documents', key: field.expiryEntityKey, label: `${field.fieldLabel} expiry`, type: 'date', sensitive: true });
-    return fields;
-  });
-}
-
-function documentTypesForCountry(countryCode?: string) {
-  const statutory = complianceProfileForCountry(countryCode).map((field) => field.fieldLabel);
-  return [...new Set([...statutory, 'Contract', 'Offer letter', 'NDA', 'Policy acknowledgment'])];
-}
+// The create modal, the edit modal, and the GCC compliance section all derive from ONE source:
+// `../api/employeeFieldCatalog` (LOCAL_FIELD_CATALOG, optionally overlaid by the backend
+// EmployeeFieldRegistry via GET /api/employees/field-catalog). This is what keeps the modal in
+// field-parity with the CSV template + DB entity. Requiredness for activation is NOT expressed in
+// the catalog — it is resolved server-side and surfaced via the readiness checklist
+// (GET /{id}/readiness); do not reintroduce a client-side required-field gate.
 
 // Fast-fix field targets the PUT /{id} edit endpoint can persist — its ApplyChanges keys, plus the
 // IBAN alias. Payroll sub-fields (MOL ID, routing, payment method), org IDs, and compliance-sourced
@@ -325,6 +213,16 @@ export function EmployeesPage() {
   const [gradePayScale, setGradePayScale] = useState<GradePayScaleComponentDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [managerCandidates, setManagerCandidates] = useState<EmployeeListItem[]>([]);
+  // Field catalog: resolved by the backend EmployeeFieldRegistry on TWO axes — company country ×
+  // employee nationality — via GET /api/employees/field-catalog. LOCAL_FIELD_CATALOG is only the
+  // offline fallback used when that endpoint is unavailable.
+  const [fieldCatalog, setFieldCatalog] = useState<ResolvedFieldCatalog>(LOCAL_FIELD_CATALOG);
+  // Soft-hide value cache: every statutory value the user types is remembered by fieldKey, so
+  // toggling company country / nationality (which changes the visible field set) never wipes an
+  // entered value — hidden fields simply stop rendering and reappear with their value on toggle-back.
+  // Only the currently-VISIBLE records are submitted on save, so a value entered under one axis and
+  // then hidden is not persisted into the wrong typed column.
+  const complianceCacheRef = useRef<Record<string, { fieldValue?: string; issueDate?: string; expiryDate?: string }>>({});
   // Establishment guard: structured 409 (ESTABLISHMENT_BUDGET_EXCEEDED) rendered as the blocked-assignment popup.
   // refocusId points at the department control of the originating (still-mounted) form for "Choose a different department".
   const [establishmentBlock, setEstablishmentBlock] = useState<{ block: EstablishmentBlockedPayload; employeeName?: string; refocusId?: string } | null>(null);
@@ -417,12 +315,32 @@ export function EmployeesPage() {
     [selectedEmployeeCompanyCountry, selectedEmployee?.countryCode],
   );
   const editFields = useMemo(
-    () => [...EDIT_FIELDS, ...complianceEditFieldsForCountry(selectedEmployeeCountryCode)],
-    [selectedEmployeeCountryCode],
+    () => editFieldsForCountry(fieldCatalog, selectedEmployeeCountryCode),
+    [fieldCatalog, selectedEmployeeCountryCode],
   );
+
+  // Two-axis catalog fetch. The catalog is resolved by the backend on (company country × employee
+  // nationality) and re-fetched whenever either axis changes — the create form drives the axis while
+  // it is open, otherwise the open profile does. resolveFieldCatalog(null) degrades to the offline
+  // fallback, so a missing/failing endpoint never blanks the modal.
+  const activeCountryCode = formOpen ? formCountryCode : selectedEmployeeCountryCode;
+  const activeNationality = (formOpen ? form.nationality : selectedEmployee?.nationality) ?? '';
+  useEffect(() => {
+    let cancelled = false;
+    employeeFieldCatalogApi
+      .get({ countryCode: activeCountryCode || undefined, nationality: activeNationality || undefined })
+      .then((remote) => { if (!cancelled) setFieldCatalog(resolveFieldCatalog(remote)); });
+    return () => { cancelled = true; };
+  }, [activeCountryCode, activeNationality]);
   const selectedDocumentTypes = useMemo(
-    () => documentTypesForCountry(selectedEmployeeCountryCode),
-    [selectedEmployeeCountryCode],
+    () => documentTypesForCountry(fieldCatalog, selectedEmployeeCountryCode),
+    [fieldCatalog, selectedEmployeeCountryCode],
+  );
+  // Resolved statutory fields for the create form's active (country × nationality) — carries the
+  // advisory required flag and the country-pack format hint for the visible identity fields.
+  const formComplianceFields = useMemo(
+    () => complianceProfileForCountry(fieldCatalog, formCountryCode),
+    [fieldCatalog, formCountryCode],
   );
   const selectedDesignation = useMemo(
     () => designations.find((item) => item.id === form.designationId),
@@ -463,13 +381,27 @@ export function EmployeesPage() {
   useEffect(() => {
     if (!formOpen) return;
     setForm((current) => {
-      const desired = complianceRecordsForCountry(formCountryCode, current.complianceRecords);
-      const currentKeys = (current.complianceRecords ?? []).map((record) => `${normalizeCountryCode(record.countryCode)}:${record.fieldKey}`).join('|');
-      const desiredKeys = desired.map((record) => `${record.countryCode}:${record.fieldKey}`).join('|');
+      // Seed from the value cache first (so a field hidden by an earlier axis toggle returns with its
+      // value), then let any freshly-typed current values win. Only the resolved-visible set for the
+      // active (country, nationality) is kept in the form and therefore submitted.
+      const cached = Object.entries(complianceCacheRef.current).map(([fieldKey, v]) => ({
+        countryCode: formCountryCode,
+        fieldKey,
+        fieldLabel: '',
+        fieldValue: v.fieldValue,
+        issueDate: v.issueDate,
+        expiryDate: v.expiryDate,
+        isSensitive: true,
+        isRequired: false,
+      }));
+      const existing = [...cached, ...(current.complianceRecords ?? [])];
+      const desired = complianceRecordsForCountry(fieldCatalog, formCountryCode, existing);
+      const currentKeys = (current.complianceRecords ?? []).map((record) => `${normalizeCountryCode(record.countryCode)}:${record.fieldKey}:${record.fieldValue ?? ''}:${record.expiryDate ?? ''}`).join('|');
+      const desiredKeys = desired.map((record) => `${record.countryCode}:${record.fieldKey}:${record.fieldValue ?? ''}:${record.expiryDate ?? ''}`).join('|');
       if (currentKeys === desiredKeys) return current;
       return { ...current, complianceRecords: desired };
     });
-  }, [formCountryCode, formOpen]);
+  }, [fieldCatalog, formCountryCode, formOpen]);
 
   useEffect(() => {
     if (selectedDocumentTypes.length > 0 && !selectedDocumentTypes.includes(documentType)) {
@@ -506,6 +438,7 @@ export function EmployeesPage() {
   };
 
   const openCreateEmployee = () => {
+    complianceCacheRef.current = {}; // fresh draft — drop any remembered statutory values
     const next = emptyEmployee();
     if (defaultCompany) {
       next.companyId = defaultCompany.id;
@@ -517,7 +450,7 @@ export function EmployeesPage() {
         ...next.salaryBreakdown!,
         currency: defaultCompany.defaultCurrency || next.salaryBreakdown?.currency || currencyCode,
       };
-      next.complianceRecords = complianceRecordsForCountry(defaultCompany.countryCode);
+      next.complianceRecords = complianceRecordsForCountry(fieldCatalog, defaultCompany.countryCode);
     }
     setForm(next);
     setFormOriginal(next);
@@ -564,10 +497,19 @@ export function EmployeesPage() {
     }));
 
   const setComplianceValue = (index: number, key: string, value: string | boolean) =>
-    setForm((current) => ({
-      ...current,
-      complianceRecords: (current.complianceRecords ?? []).map((record, i) => (i === index ? { ...record, [key]: value } : record)),
-    }));
+    setForm((current) => {
+      const complianceRecords = (current.complianceRecords ?? []).map((record, i) => (i === index ? { ...record, [key]: value } : record));
+      const target = complianceRecords[index];
+      if (target) {
+        // Remember every entered value by fieldKey so it survives a country/nationality toggle.
+        complianceCacheRef.current[target.fieldKey] = {
+          fieldValue: target.fieldValue,
+          issueDate: target.issueDate,
+          expiryDate: target.expiryDate,
+        };
+      }
+      return { ...current, complianceRecords };
+    });
 
   const saveEmployee = async () => {
     setError('');
@@ -1300,8 +1242,10 @@ export function EmployeesPage() {
             <Input label="English full name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
             <Input label="Arabic full name" value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} rtl action={<TransliterateButton source={form.englishName} onSuggest={(s) => setField('arabicName', s)} />} />
             <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
-            <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={['Male', 'Female', 'Other']} />
+            <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={GENDER_OPTIONS} />
             <Input label="Nationality" value={form.nationality ?? ''} onChange={(v) => setField('nationality', v)} />
+            <Input label="Date of birth" value={form.dateOfBirth ?? ''} onChange={(v) => setField('dateOfBirth', v)} type="date" info="Used for statutory records and — for some jurisdictions — required before the employee can be activated." infoKey="employees.date_of_birth" />
+            <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={MARITAL_STATUS_OPTIONS} />
             <Input label="Personal email" value={form.personalEmail ?? ''} onChange={(v) => setField('personalEmail', v)} type="email" />
             <Input label="Work email" value={form.workEmail ?? ''} onChange={(v) => setField('workEmail', v)} type="email" info="Company email address. Also used to link this employee to their login account for self-service (ESS)." infoKey="employees.work_email" />
             <Input label="Mobile number" value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
@@ -1324,7 +1268,7 @@ export function EmployeesPage() {
                     ...current.salaryBreakdown!,
                     currency: company?.defaultCurrency || current.salaryBreakdown?.currency || currencyCode,
                   },
-                  complianceRecords: complianceRecordsForCountry(company?.countryCode, current.complianceRecords),
+                  complianceRecords: complianceRecordsForCountry(fieldCatalog, company?.countryCode, current.complianceRecords),
                 }));
               }}
               items={companies}
@@ -1363,8 +1307,8 @@ export function EmployeesPage() {
             )}
             <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
             <Input label="Job title" value={form.jobTitle ?? ''} onChange={(v) => setField('jobTitle', v)} />
-            <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={['Full-Time', 'Part-Time', 'Contractor', 'Intern']} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
-            <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={['Unlimited', 'Fixed-Term', 'Temporary']} />
+            <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={EMPLOYMENT_TYPE_OPTIONS} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
+            <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={CONTRACT_TYPE_OPTIONS} />
             <Input label="Joining date" value={form.joiningDate ?? ''} onChange={(v) => setField('joiningDate', v)} type="date" info="First working day. Used for probation tracking, leave accrual and end-of-service (EOSB) calculations." infoKey="employees.joining_date" />
             <Input label="Work location" value={form.workLocation ?? ''} onChange={(v) => setField('workLocation', v)} />
           </Section>
@@ -1375,7 +1319,8 @@ export function EmployeesPage() {
             <Input label="Account number" value={form.payrollProfile?.accountNumber ?? ''} onChange={(v) => setPayrollField('accountNumber', v)} />
             <Input label="Bank routing / sort code" value={form.payrollProfile?.bankRoutingCode ?? ''} onChange={(v) => setPayrollField('bankRoutingCode', v)} info="Bank branch routing or sort code required for WPS SIF export (UAE: 6-digit CBQ code; KSA: Mudad bank code)." infoKey="employees.bankRoutingCode" />
             <Input label="MOL ID / National labour number" value={form.payrollProfile?.molId ?? ''} onChange={(v) => setPayrollField('molId', v)} info="Ministry of Labour employee registration number — required in CBUAE WPS v2 SIF E1EDL20 segment and Saudi Mudad WPS." infoKey="employees.molId" />
-            <Select label="Salary currency" value={form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setPayrollField('salaryCurrency', v)} options={['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR']} />
+            <Select label="Salary currency" value={form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setPayrollField('salaryCurrency', v)} options={SALARY_CURRENCY_OPTIONS} />
+            <Select label="Payment method" value={form.payrollProfile?.paymentMethod ?? ''} onChange={(v) => setPayrollField('paymentMethod', v)} options={PAYMENT_METHOD_OPTIONS} info="How salary is disbursed. WPS/BankTransfer require valid bank details before payroll can run." infoKey="employees.payment_method" />
             <Input label="Payroll group" value={form.payrollProfile?.payrollGroup ?? ''} onChange={(v) => setPayrollField('payrollGroup', v)} />
             <Input label="Salary structure reference" value={form.payrollProfile?.salaryStructureReference ?? ''} onChange={(v) => setPayrollField('salaryStructureReference', v)} />
           </Section>
@@ -1389,7 +1334,7 @@ export function EmployeesPage() {
             <Input label="Other allowance" type="number" value={String(form.salaryBreakdown?.otherAllowance ?? '')} onChange={(v) => setSalaryField('otherAllowance', v)} />
             <Input label="Fixed deduction" type="number" value={String(form.salaryBreakdown?.fixedDeduction ?? '')} onChange={(v) => setSalaryField('fixedDeduction', v)} />
             <Input label="Salary structure code" value={form.salaryBreakdown?.salaryStructureCode ?? ''} onChange={(v) => setSalaryField('salaryStructureCode', v)} placeholder={selectedGrade ? `GRADE-${selectedGrade.code}` : undefined} />
-            <Select label="Breakdown currency" value={form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setSalaryField('currency', v)} options={['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR']} />
+            <Select label="Breakdown currency" value={form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setSalaryField('currency', v)} options={SALARY_CURRENCY_OPTIONS} />
             <Input label="Effective date" type="date" value={form.salaryBreakdown?.effectiveDate ?? form.joiningDate ?? ''} onChange={(v) => setSalaryField('effectiveDate', v)} />
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
               <p className="font-semibold text-slate-800 dark:text-white">Gross package: {(form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode)} {salaryTotal.toLocaleString()}</p>
@@ -1397,13 +1342,25 @@ export function EmployeesPage() {
             </div>
           </Section>
 
-          <Section title="Configurable GCC Compliance">
-            {(form.complianceRecords ?? []).map((record, index) => (
-              <div key={record.fieldKey} className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                <Input label={record.fieldLabel} value={record.fieldValue ?? ''} onChange={(v) => setComplianceValue(index, 'fieldValue', v)} />
-                <Input label="Expiry date" value={record.expiryDate ?? ''} onChange={(v) => setComplianceValue(index, 'expiryDate', v)} type="date" />
-              </div>
-            ))}
+          <Section title="Identity & GCC Compliance">
+            {(form.complianceRecords ?? []).length === 0 && (
+              <p className="text-xs text-slate-400">Select the employing company and nationality to see the required identity documents.</p>
+            )}
+            {(form.complianceRecords ?? []).map((record, index) => {
+              const field = formComplianceFields.find((f) => f.fieldKey === record.fieldKey);
+              return (
+                <div key={record.fieldKey} className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+                  <Input
+                    label={record.fieldLabel}
+                    required={record.isRequired}
+                    placeholder={field?.patternHint}
+                    value={record.fieldValue ?? ''}
+                    onChange={(v) => setComplianceValue(index, 'fieldValue', v)}
+                  />
+                  <Input label="Expiry date" value={record.expiryDate ?? ''} onChange={(v) => setComplianceValue(index, 'expiryDate', v)} type="date" />
+                </div>
+              );
+            })}
           </Section>
           </div>
         </div>

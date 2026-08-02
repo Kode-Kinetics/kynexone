@@ -28,6 +28,12 @@ public sealed record EmployeeReadinessSnapshot
     public string PassportNumber { get; init; } = string.Empty;
     public DateOnly? PassportExpiryDate { get; init; }
     public string IqamaNumber { get; init; } = string.Empty;
+    // GCC-ID expiry scalars (first-class columns, parity with Passport/Visa expiry — §D3/Δ20). The
+    // registry expiry getters read these; a compliance-record fallback is retained for legacy data.
+    public DateOnly? IqamaExpiryDate { get; init; }
+    public DateOnly? EmiratesIdExpiryDate { get; init; }
+    public DateOnly? QidExpiryDate { get; init; }
+    public DateOnly? CivilIdExpiryDate { get; init; }
     public string GosiReference { get; init; } = string.Empty;
     public string EmiratesId { get; init; } = string.Empty;
     public string Qid { get; init; } = string.Empty;

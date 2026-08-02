@@ -34,6 +34,12 @@ public interface IEmployeeActivationGuard
     /// <summary>Build a snapshot for one persisted employee from the DB (payroll/docs/compliance).</summary>
     Task<EmployeeReadinessSnapshot?> BuildSnapshotAsync(Guid tenantId, int employeeId, CancellationToken ct);
 
+    /// <summary>Recompute + stamp the denormalized readiness badge columns on a TRACKED employee (does
+    /// NOT SaveChanges — the caller persists). Lets edit/approval completion paths clear an employee from
+    /// the "needs info" worklist as soon as its details are completed. Best-effort: a no-op for a
+    /// transient (Id==0) employee.</summary>
+    Task StampReadinessAsync(Employee employee, CancellationToken ct);
+
     /// <summary>Live readiness for one persisted employee (used by the readiness endpoint + recompute).</summary>
     Task<(EmployeeReadiness Readiness, ResolvedReadinessPolicy Policy)?> EvaluateEmployeeAsync(
         Guid tenantId, int employeeId, CancellationToken ct);
@@ -76,6 +82,21 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
     {
         var map = await _evaluator.LoadSnapshotsAsync(tenantId, new[] { employeeId }, ct);
         return map.TryGetValue(employeeId, out var snap) ? snap : null;
+    }
+
+    public async Task StampReadinessAsync(Employee employee, CancellationToken ct)
+    {
+        if (employee.TenantId is null || employee.Id == 0) return;
+        var snapshot = await BuildSnapshotAsync(employee.TenantId.Value, employee.Id, ct);
+        if (snapshot is null) return;
+        var policy = await _resolver.ResolveAsync(employee.TenantId.Value, employee.CompanyId, employee.CountryCode, employee.Nationality, ct);
+        var readiness = _evaluator.Evaluate(snapshot, policy);
+        employee.ReadinessState = readiness.State;
+        employee.ActivationBlockersCount = readiness.Blocking.Count;
+        employee.ReadinessEvaluatedAtUtc = System.DateTime.UtcNow;
+        // Only overwrite completeness when a policy actually applies (a no-policy tenant keeps its prior
+        // HR-completeness signal — mirrors EmployeeManagementService.RefreshReadinessSnapshotAsync).
+        if (policy.Items.Count > 0) employee.ProfileCompletenessScore = readiness.Score;
     }
 
     public async Task<(EmployeeReadiness Readiness, ResolvedReadinessPolicy Policy)?> EvaluateEmployeeAsync(

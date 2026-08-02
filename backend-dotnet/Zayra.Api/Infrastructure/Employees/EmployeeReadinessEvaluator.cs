@@ -183,6 +183,10 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
         PassportNumber = e.PassportNumber,
         PassportExpiryDate = e.PassportExpiryDate,
         IqamaNumber = e.IqamaNumber,
+        IqamaExpiryDate = e.IqamaExpiryDate,
+        EmiratesIdExpiryDate = e.EmiratesIdExpiryDate,
+        QidExpiryDate = e.QidExpiryDate,
+        CivilIdExpiryDate = e.CivilIdExpiryDate,
         GosiReference = e.GosiReference,
         EmiratesId = e.EmiratesId,
         Qid = e.Qid,
@@ -194,7 +198,11 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
         MuqeemNumber = e.MuqeemNumber,
         LaborCardNumber = e.LaborCardNumber,
         QiwaContractNumber = e.QiwaContractNumber,
-        BankIban = pf?.Iban ?? e.BankIban,
+        // IBAN authority is the payroll profile (Δ13/P1-1), but the dual-home era left rows whose
+        // PP.Iban is BLANK while the fix landed on the Employee scalar (checklist/edit route bankIban→
+        // employee.BankIban). `??` catches only null, so an empty PP.Iban would pin the blocker forever —
+        // treat blank-or-whitespace as unset and fall through to the scalar so the fix actually clears.
+        BankIban = string.IsNullOrWhiteSpace(pf?.Iban) ? e.BankIban : pf!.Iban,
         PaymentMethod = pf?.PaymentMethod ?? string.Empty,
         MolId = pf?.MolId ?? string.Empty,
         BankRoutingCode = pf?.BankRoutingCode ?? string.Empty,

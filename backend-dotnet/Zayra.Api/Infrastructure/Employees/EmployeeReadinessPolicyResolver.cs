@@ -97,7 +97,7 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
             var added = false;
             void AddToggle(ReadinessRequirement r) { Union(merged, ApplyConditions(r, nat, wpsEnabled), contradictions); added = true; }
             if (gccSetting.IqamaRequired)
-                AddToggle(new ReadinessRequirement("IqamaNumber", "identity", true, "activate", "gcc-setting", iso2, null, new AppliesWhen(NationalityNot: iso2)));
+                AddToggle(new ReadinessRequirement("IqamaNumber", "identity", true, "activate", "gcc-setting", iso2, null, new AppliesWhen(NonGccExpatOnly: true)));
             if (gccSetting.EmiratesIdRequired)
                 AddToggle(new ReadinessRequirement("EmiratesId", "identity", true, "activate", "gcc-setting", iso2));
             if (gccSetting.WpsEnabled)
@@ -125,9 +125,9 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
         var when = r.AppliesWhen;
         if (when is not null)
         {
-            if (when.Nationality is { } natEq && !string.Equals(GccReadinessFloor.NormalizeNationality(natEq), nationality, StringComparison.OrdinalIgnoreCase))
-                return null;
-            if (when.NationalityNot is { } natNot && string.Equals(GccReadinessFloor.NormalizeNationality(natNot), nationality, StringComparison.OrdinalIgnoreCase))
+            // Nationality applicability (host / GCC-national / non-GCC-expat) is decided by the ONE
+            // shared helper so the resolver and the catalog↔floor parity guard can never disagree.
+            if (!GccReadinessFloor.NationalityApplies(when, nationality))
                 return null;
             if (when.WpsEnabled is { } needWps && needWps != wpsEnabled)
                 return null;
