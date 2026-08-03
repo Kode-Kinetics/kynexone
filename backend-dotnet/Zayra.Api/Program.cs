@@ -677,6 +677,18 @@ using (var scope = app.Services.CreateScope())
         catch (Exception ex) { logger.LogError(ex, "CompanyScopeBackfill failed — continuing startup."); }
     }
 
+    // POD-A3 payroll audit hash-chain backfill — seals legacy payroll_audit_logs rows into the
+    // per-tenant tamper-evident chain. Idempotent (only touches unsealed rows), runs before traffic
+    // so the strict verifier never false-positives on legacy rows, and is disabled via
+    // PayrollAudit:ChainBackfill=false / PayrollAudit__ChainBackfill=false. Non-fatal: if it is
+    // disabled or fails, the strict verifier honestly reports the still-unsealed rows as failures
+    // (fail-closed signal) rather than silently passing them.
+    if (!string.Equals(app.Configuration["PayrollAudit:ChainBackfill"], "false", StringComparison.OrdinalIgnoreCase))
+    {
+        try { await PayrollAuditChainBackfill.RunAsync(dbContext, logger); }
+        catch (Exception ex) { logger.LogError(ex, "PayrollAuditChainBackfill failed — continuing startup."); }
+    }
+
     // One-off demo cleanup: `dotnet Zayra.Api.dll --purge-demo`. Deactivates all
     // demo tenants (guarding the real SeedAdmin tenant) then exits — never seeds.
     if (isPurgeDemoMode)

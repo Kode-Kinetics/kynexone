@@ -2844,7 +2844,30 @@ public class PayrollController : ControllerBase
             UserId = GetUserId(),
             MetadataJson = JsonSerializer.Serialize(meta),
         });
+        // Seq / PreviousHash / EntryHash are stamped by the ZayraDbContext sealer when the row is
+        // flushed by the business SaveChangesAsync — never set here (this helper defers the save).
         await Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// POD-A3: verifies the tamper-evident payroll audit chain for the caller's tenant and reports
+    /// the first break (unsealed row, altered content, reordering, or a broken previous-hash link).
+    /// Segregation-of-duties gate: restricted to Admin and the read-only Auditor role — the Payroll
+    /// Manager/Officer roles that CREATE payroll-audit events cannot self-attest their integrity.
+    /// The report exposes only Action/EntityName/timestamp/Id/reason (no payroll metadata).
+    /// </summary>
+    [HttpGet("audit/integrity")]
+    [Authorize(Roles = "Admin,Auditor")]
+    public async Task<IActionResult> AuditIntegrity(CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+        var logs = await _db.PayrollAuditLogs
+            .AsNoTracking()
+            .Where(x => x.TenantId == tenantId)
+            .OrderBy(x => x.Seq)
+            .ThenBy(x => x.Id)
+            .ToListAsync(ct);
+        return Ok(Zayra.Api.Infrastructure.Audit.AuditService.VerifyPayrollChain(logs));
     }
 
     // ── Salary Structure Export / Import / Template ───────────────────────────

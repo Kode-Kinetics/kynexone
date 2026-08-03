@@ -700,4 +700,17 @@ public class PayrollAuditLog : ITenantOwned
     public string MetadataJson { get; set; } = "{}";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? UserId { get; set; }
+
+    // ── Tamper-evidence (POD-A3) — mirrors AuditLog's per-tenant hash chain ──────────
+    // Monotonic per-tenant ordinal assigned by the SaveChanges sealer under an advisory
+    // lock (see ZayraDbContext.SealPayrollAuditChain). It is the authoritative ordering key
+    // (timestamps can tie to the same tick) AND is bound into EntryHash, so any reordering
+    // is cryptographically detectable. Legacy rows default to 0 until the boot backfill
+    // assigns real ordinals.
+    public long Seq { get; set; }
+    // EntryHash of the immediately-preceding chain row for this tenant ("" for genesis).
+    public string PreviousHash { get; set; } = string.Empty;
+    // SHA-256 over the canonical field set (incl. Seq + PreviousHash). "" == unsealed row.
+    public string EntryHash { get; set; } = string.Empty;
+    public string HashAlgorithm { get; set; } = "SHA-256";
 }

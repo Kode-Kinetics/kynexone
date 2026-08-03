@@ -76,6 +76,19 @@ public class PayrollVoidTests
             .Where(a => a.EntityId == run.Id.ToString() && a.Action == "payroll.run.voided")
             .FirstOrDefaultAsync();
         audit.Should().NotBeNull("void must write an audit log entry");
+
+        // POD-A3: the void row is written by PayrollVoidService (a NON-helper writer). Proving it is
+        // sealed here confirms the ZayraDbContext chokepoint captures every payroll-audit writer,
+        // and — on real Postgres — that the microsecond-aligned CreatedAtUtc round-trips so the
+        // verifier does not false-positive.
+        audit!.EntryHash.Should().NotBeNullOrWhiteSpace("the void audit row must be sealed by the chokepoint");
+        audit.Seq.Should().BeGreaterThan(0);
+        var chain = await db.PayrollAuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId)
+            .OrderBy(a => a.Seq).ThenBy(a => a.Id)
+            .ToListAsync();
+        Zayra.Api.Infrastructure.Audit.AuditService.VerifyPayrollChain(chain).IsValid
+            .Should().BeTrue("the payroll audit chain must verify end-to-end after a real Postgres round-trip");
     }
 
     // ── (b) Void a Locked run — GL contra-entries ────────────────────────────────

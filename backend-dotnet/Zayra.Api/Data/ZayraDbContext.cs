@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Scope;
 using Zayra.Api.Models;
 
@@ -163,7 +164,11 @@ public class ZayraDbContext : DbContext
         }
         await EnforceCompanyScopeOnWritesAsync(cancellationToken);
         EnforceTenantScopeOnWrites();
-        return await base.SaveChangesAsync(cancellationToken);
+        // POD-A3: seal any pending payroll-audit rows into the per-tenant hash chain, then persist.
+        // MUST run AFTER the stamping loop above so CreatedAtUtc has already been normalized to
+        // Kind=Utc (the hash canonicalizes the UTC timestamp); the append-only guard already ran
+        // at the top of this method.
+        return await SealPayrollAuditChainAndSaveAsync(cancellationToken);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
@@ -173,7 +178,154 @@ public class ZayraDbContext : DbContext
         // synchronous path too — closing the gap where SaveChanges() enforced no scope at all.
         // (Audit/actor + company stamping remain async-only, a pre-existing divergence.)
         EnforceTenantScopeOnWrites();
+        // POD-A3: seal any pending payroll-audit rows here too. The sync path skips the async
+        // stamping/NormalizeDateTimeKinds loop, but that does NOT affect the chain: the sealer
+        // normalizes CreatedAtUtc to a Kind=Utc microsecond boundary itself (see
+        // AuditService.NormalizeUtcMicroseconds), so the persisted value and the hashed value match
+        // on reload regardless of which save path ran. No advisory lock is taken (the sync path is
+        // not used by the async production payroll-audit writers, so there is no concurrency to
+        // serialize) — the in-memory batch is still chained fork-free.
+        var pendingSync = ChangeTracker.Entries<PayrollAuditLog>()
+            .Where(e => e.State == EntityState.Added)
+            .Select(e => e.Entity)
+            .ToList();
+        if (pendingSync.Count > 0)
+            SealPayrollRows(pendingSync);
         return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    /// <summary>
+    /// POD-A3 payroll audit chain sealer. When a save carries pending PayrollAuditLog rows it
+    /// assigns each a monotonic per-tenant Seq, links PreviousHash → EntryHash, and computes the
+    /// SHA-256 EntryHash (shared with the central AuditLog chain via AuditService). Seeing ALL
+    /// pending Added rows together dissolves the "two adds before one save fork" hazard by
+    /// construction. On Postgres the tail-read-and-seal is serialized per tenant with a
+    /// transaction-scoped advisory lock (mirroring EstablishmentGuardService) so two concurrent
+    /// same-tenant writes cannot both chain off the same tail and manufacture a permanent
+    /// previous_hash_mismatch. Non-payroll saves (the overwhelming majority) short-circuit to a
+    /// plain base.SaveChangesAsync with zero added overhead.
+    /// </summary>
+    private async Task<int> SealPayrollAuditChainAndSaveAsync(CancellationToken ct)
+    {
+        var pending = ChangeTracker.Entries<PayrollAuditLog>()
+            .Where(e => e.State == EntityState.Added)
+            .Select(e => e.Entity)
+            .ToList();
+        if (pending.Count == 0)
+            return await base.SaveChangesAsync(ct);
+
+        // Non-Npgsql providers (EF InMemory, SQLite test fixtures) have no advisory locks and no
+        // real write concurrency: seal in memory and save directly.
+        if (!Database.IsNpgsql())
+        {
+            await SealPayrollRowsAsync(pending, ct);
+            return await base.SaveChangesAsync(ct);
+        }
+
+        var tenantIds = pending.Select(p => p.TenantId).Distinct().OrderBy(x => x).ToList();
+
+        // Ambient transaction (a caller composing several writes): join it — the advisory lock is
+        // held until the caller commits, which is exactly the serialization window we need.
+        if (Database.CurrentTransaction is not null)
+        {
+            await AcquirePayrollChainLocksAsync(tenantIds, ct);
+            await SealPayrollRowsAsync(pending, ct);
+            return await base.SaveChangesAsync(ct);
+        }
+
+        // EnableRetryOnFailure (Program.cs) forbids a bare BeginTransaction, so the whole unit —
+        // open tx → lock → (re-read tail &) seal → save → commit — lives inside the execution
+        // strategy delegate and must be safe to re-run from scratch. Re-sealing on each attempt is
+        // correct: a retry re-reads a possibly-advanced tail and re-chains off it.
+        var strategy = Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await Database.BeginTransactionAsync(ct);
+            await AcquirePayrollChainLocksAsync(tenantIds, ct);
+            await SealPayrollRowsAsync(pending, ct);
+            var n = await base.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+            return n;
+        });
+    }
+
+    private async Task AcquirePayrollChainLocksAsync(IReadOnlyList<Guid> tenantIds, CancellationToken ct)
+    {
+        // Sorted acquisition order (caller passes tenantIds sorted) is deadlock-free across a
+        // multi-tenant save. Transaction-scoped: auto-released at commit/rollback.
+        foreach (var tenantId in tenantIds)
+        {
+            var key = ComputePayrollChainLockKey(tenantId);
+            await Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", ct);
+        }
+    }
+
+    /// <summary>Stable 64-bit advisory-lock key namespaced to the payroll audit chain, derived
+    /// from SHA256("payroll_audit_chain" ‖ tenantId) so it never collides with other advisory-lock
+    /// users (e.g. the establishment guard's per-cell keys).</summary>
+    internal static long ComputePayrollChainLockKey(Guid tenantId)
+    {
+        Span<byte> buffer = stackalloc byte[24];
+        System.Text.Encoding.ASCII.GetBytes("PAYAUDIT", buffer[..8]);
+        tenantId.TryWriteBytes(buffer.Slice(8, 16));
+        Span<byte> hash = stackalloc byte[32];
+        System.Security.Cryptography.SHA256.HashData(buffer, hash);
+        return System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(hash[..8]);
+    }
+
+    /// <summary>
+    /// Chains a batch of pending payroll-audit rows in memory. Per tenant: read the persisted tail
+    /// (highest Seq) once — authoritative under the advisory lock — then walk this batch in
+    /// (CreatedAtUtc, Id) order assigning Seq, PreviousHash, and EntryHash. CreatedAtUtc is aligned
+    /// to microseconds so the seal matches the value Postgres stores and reads back.
+    /// </summary>
+    private async Task SealPayrollRowsAsync(IReadOnlyList<PayrollAuditLog> pending, CancellationToken ct)
+    {
+        foreach (var group in pending.GroupBy(p => p.TenantId))
+        {
+            var tail = await TenantChainTailQuery(group.Key).FirstOrDefaultAsync(ct);
+            ChainPendingGroup(group, tail?.EntryHash ?? string.Empty, tail?.Seq ?? 0L);
+        }
+    }
+
+    // Sync counterpart for the (test-only) synchronous save path — same chaining, sync tail read.
+    private void SealPayrollRows(IReadOnlyList<PayrollAuditLog> pending)
+    {
+        foreach (var group in pending.GroupBy(p => p.TenantId))
+        {
+            var tail = TenantChainTailQuery(group.Key).FirstOrDefault();
+            ChainPendingGroup(group, tail?.EntryHash ?? string.Empty, tail?.Seq ?? 0L);
+        }
+    }
+
+    private IQueryable<ChainTail> TenantChainTailQuery(Guid tenantId) =>
+        // IgnoreQueryFilters is intentional: the chain tail must be read per the row's own TenantId
+        // (applied inline below), independent of the ambient request/company scope, so the seal
+        // links to the true previous entry even for a system/background context.
+        PayrollAuditLogs.IgnoreQueryFilters()
+            .Where(x => x.TenantId == tenantId)
+            .OrderByDescending(x => x.Seq)
+            .ThenByDescending(x => x.CreatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Select(x => new ChainTail(x.EntryHash, x.Seq));
+
+    private sealed record ChainTail(string EntryHash, long Seq);
+
+    /// <summary>In-memory chaining shared by both save paths: order the pending batch by
+    /// (CreatedAtUtc, Id), then assign Seq / PreviousHash / EntryHash off the persisted tail.
+    /// CreatedAtUtc is aligned to a Kind=Utc microsecond boundary so the seal matches the value the
+    /// database stores and reads back.</summary>
+    private static void ChainPendingGroup(IEnumerable<PayrollAuditLog> group, string prev, long seq)
+    {
+        foreach (var row in group.OrderBy(r => r.CreatedAtUtc).ThenBy(r => r.Id))
+        {
+            row.CreatedAtUtc = AuditService.NormalizeUtcMicroseconds(row.CreatedAtUtc);
+            row.Seq = ++seq;
+            row.PreviousHash = prev;
+            row.HashAlgorithm = "SHA-256";
+            row.EntryHash = AuditService.ComputePayrollHash(row);
+            prev = row.EntryHash;
+        }
     }
 
     private void EnforceAuditLogAppendOnly()
@@ -182,6 +334,18 @@ public class ZayraDbContext : DbContext
             .FirstOrDefault(e => e.State is EntityState.Modified or EntityState.Deleted);
         if (auditMutation is not null)
             throw new InvalidOperationException("audit_log_append_only_violation: central audit log rows cannot be modified or deleted.");
+
+        // POD-A3: the payroll audit trail gets the SAME immutability as the central AuditLog. Its
+        // per-tenant hash chain is the evidentiary control; this ChangeTracker guard is the first,
+        // in-process line of defence (a matching BEFORE UPDATE/DELETE Postgres trigger — added by
+        // the AddPayrollAuditHashChain migration — is the second, and it also stops set-based SQL
+        // that never touches the ChangeTracker). The one legitimate mutation — the boot backfill
+        // sealing legacy rows — runs via ExecuteUpdate (no ChangeTracker entries), so it is not
+        // caught here, and the trigger permits it only while entry_hash is still empty.
+        var payrollMutation = ChangeTracker.Entries<PayrollAuditLog>()
+            .FirstOrDefault(e => e.State is EntityState.Modified or EntityState.Deleted);
+        if (payrollMutation is not null)
+            throw new InvalidOperationException("audit_log_append_only_violation: payroll audit log rows cannot be modified or deleted.");
     }
 
     /// <summary>
@@ -1669,7 +1833,21 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.WPSFileBatchId });
         });
         modelBuilder.Entity<EOSBCalculation>(entity => { entity.ToTable("eosb_calculations"); entity.HasKey(x => x.Id); entity.Property(x => x.EligibleSalary).HasPrecision(14,2); entity.Property(x => x.CalculatedAmount).HasPrecision(14,2); entity.Property(x => x.RulesSnapshotJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status }); });
-        modelBuilder.Entity<PayrollAuditLog>(entity => { entity.ToTable("payroll_audit_logs"); entity.HasKey(x => x.Id); entity.Property(x => x.MetadataJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.EntityName, x.EntityId }); });
+        modelBuilder.Entity<PayrollAuditLog>(entity =>
+        {
+            entity.ToTable("payroll_audit_logs");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.MetadataJson).HasColumnType("json");
+            entity.HasIndex(x => new { x.TenantId, x.EntityName, x.EntityId });
+            // POD-A3 tamper-evidence columns — mirror the AuditLog chain config (:1990-1995).
+            entity.Property(x => x.PreviousHash).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.EntryHash).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.HashAlgorithm).HasMaxLength(32).IsRequired();
+            entity.HasIndex(x => new { x.TenantId, x.EntryHash });
+            // Ordered-read index for the verifier and the sealer's tail lookup (Seq is the chain
+            // ordinal). Non-unique: legacy rows share Seq=0 until the boot backfill assigns ordinals.
+            entity.HasIndex(x => new { x.TenantId, x.Seq });
+        });
 
         modelBuilder.Entity<PayrollRun>(entity =>
         {
