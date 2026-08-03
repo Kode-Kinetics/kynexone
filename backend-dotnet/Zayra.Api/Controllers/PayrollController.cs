@@ -2330,48 +2330,22 @@ public class PayrollController : ControllerBase
 
         var eligibleSalary = salary?.BasicSalary ?? employee.Salary ?? 0m;
         var joiningDate = employee.JoiningDate;
-        var totalYears = (calcDate - joiningDate).Days / 365.0;
-        var minYears = gcc.EosbMinYears > 0 ? gcc.EosbMinYears : 1;
-
-        if (totalYears < minYears)
-            return Ok(new { employeeId = req.EmployeeId, employeeName = employee.FullName, eligibleSalary, totalYears, eosbAmount = 0m, message = $"Employee has {totalYears:F1} years of service. Minimum required: {minYears} year(s)." });
-
         var dailySalary = eligibleSalary * 12 / 365m;
         var monthlySalary = eligibleSalary;
 
-        decimal eosbAmount;
-        string eosbFormula;
+        // Resolve the separation reason once, consistently with /final-settlement:
+        // explicit request override → recorded EmployeeOffboarding.SeparationType → conservative default.
+        var terminationReason = await ResolveTerminationReasonAsync(tenantId, req.EmployeeId, req.TerminationReason, cancellationToken);
 
-        // Resolve the correct country-pack end-of-service calculator for this tenant.
-        // This ensures KSA uses KsaEndOfServiceCalculator (½ month/yr tiers 1-5, 1 month/yr tier 2+)
-        // rather than the incorrect inline formula that was using the resignation haircut as a base.
-        // Map GCC CountryCode "SA" → pack key "SAU" (CountryCodes.Saudi).
-        var eosbPackCc = gcc.CountryCode switch
-        {
-            "SA" => CountryCodes.Saudi,
-            "AE" or "UAE" => CountryCodes.UAE,
-            "QA" or "QAT" => CountryCodes.Qatar,
-            _ => gcc.CountryCode ?? "SAU",
-        };
-        var eosbJur = "mainland"; // GCCComplianceSetting has no jurisdiction field; default to mainland
-        var eosbCalc = _packResolver.ResolveEndOfServiceCalculator(eosbPackCc, eosbJur);
-
-        var serviceStartDate = DateOnly.FromDateTime(joiningDate);
-        var serviceEndDate   = DateOnly.FromDateTime(calcDate);
-
-        var eosbInput = new EndOfServiceInput(
-            EmployeeId:        Guid.Empty,
-            CompanyId:         Guid.Empty,
-            Salary:            new SalaryBreakdown(eligibleSalary, 0m, 0m, 0m),
-            ServiceStartDate:  serviceStartDate,
-            ServiceEndDate:    serviceEndDate,
-            TerminationReason: req.TerminationReason ?? "Termination",
-            ContractType:      employee.ContractType ?? "Indefinite",
-            Nationality:       employee.Nationality ?? string.Empty);
-
-        var eosbResult = await eosbCalc.CalculateAsync(eosbInput, cancellationToken);
-        eosbAmount  = Math.Round(eosbResult.TotalGratuity, 2);
-        eosbFormula = eosbResult.ApplicableRule;
+        // Single authoritative EOSB engine (shared verbatim with /final-settlement via
+        // ComputeEndOfServiceAsync). No controller-side minYears pre-gate: KSA Art.84 grants
+        // pro-rata gratuity to short-service TERMINATIONS from day one; the <2yr RESIGNATION
+        // forfeiture, the Art.80 dismissal forfeiture, and the non-KSA ≥1yr eligibility floors
+        // are all owned by the country packs (the single source of truth).
+        var (eosbResult, totalYears) = await ComputeEndOfServiceAsync(
+            gcc, eligibleSalary, joiningDate, calcDate, terminationReason, employee, cancellationToken);
+        var eosbAmount  = Math.Round(eosbResult.TotalGratuity, 2);
+        var eosbFormula = eosbResult.ApplicableRule;
 
         // Persist the calculation
         var existing = await _db.EOSBCalculations.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.Status == "Draft", cancellationToken);
@@ -2404,10 +2378,100 @@ public class PayrollController : ControllerBase
             dailySalary = Math.Round(dailySalary, 4),
             formula = eosbFormula,
             eosbAmount,
-            terminationReason = req.TerminationReason ?? "Termination",
+            terminationReason,
             currency = salary?.Currency ?? "SAR",
             message = $"Calculated EOSB/Gratuity for {employee.FullName}: {salary?.Currency ?? "SAR"} {eosbAmount:N2}"
         });
+    }
+
+    // ── Shared EOSB engine seam ───────────────────────────────────────────────────
+    // The ONE authoritative EOSB computation used by BOTH /eosb/calculate and
+    // /final-settlement, so identical inputs provably yield identical figures. It resolves
+    // the tenant's country-pack IEndOfServiceCalculator (KSA/UAE/Qatar/Default) and returns
+    // the structured EndOfServiceResult — the clean seam the Wave-C settlement pipeline
+    // (POD-C1 payable/GL/off-cycle WPS) can consume directly (this pod computes ONLY).
+    //
+    // Wage base: the pack computes gratuity on the LAST BASIC wage (input.Salary.Basic).
+    // This is a per-company-policy FLOOR — it is NOT the full statutory Art.84 "last wage"
+    // (basic + regular allowances such as housing), which materially exceeds basic-only.
+    // Wiring eligible allowances (PayComponent.EosbIncluded / IsIncludedInEosb, and the
+    // above-floor company rates) is deliberately DEFERRED here to avoid changing the live
+    // /eosb figure; it needs product/legal sign-off. The SalaryBreakdown seam below can
+    // carry those allowances when that decision is made, without changing this contract.
+    //
+    // Service period: the pack derives service length from DateOnly start/end
+    // (fullMonths/12 + remDays/365), eliminating the /365.0 leap drift the old inline
+    // final-settlement formula suffered.
+    private async Task<(EndOfServiceResult Result, double ServiceYearsDisplay)> ComputeEndOfServiceAsync(
+        GCCComplianceSetting gcc, decimal basicWage, DateTime joiningDate,
+        DateTime asOfDate, string terminationReason, Employee employee, CancellationToken ct)
+    {
+        // Map GCC CountryCode (ISO-2 stored) → pack key; the resolver maps ISO-2→ISO-3.
+        var packCc = gcc.CountryCode switch
+        {
+            "SA" => CountryCodes.Saudi,
+            "AE" or "UAE" => CountryCodes.UAE,
+            "QA" or "QAT" => CountryCodes.Qatar,
+            _ => gcc.CountryCode ?? CountryCodes.Saudi,
+        };
+        const string jur = "mainland"; // GCCComplianceSetting has no jurisdiction field; default mainland
+        var calc = _packResolver.ResolveEndOfServiceCalculator(packCc, jur);
+
+        var input = new EndOfServiceInput(
+            EmployeeId:        Guid.Empty,
+            CompanyId:         Guid.Empty,
+            Salary:            new SalaryBreakdown(basicWage, 0m, 0m, 0m),
+            ServiceStartDate:  DateOnly.FromDateTime(joiningDate),
+            ServiceEndDate:    DateOnly.FromDateTime(asOfDate),
+            TerminationReason: terminationReason,
+            ContractType:      employee.ContractType ?? "Indefinite",
+            Nationality:       employee.Nationality ?? string.Empty);
+
+        var result = await calc.CalculateAsync(input, ct);
+        var serviceYearsDisplay = (asOfDate - joiningDate).Days / 365.0;
+        return (result, serviceYearsDisplay);
+    }
+
+    // Resolves the EOSB separation reason with precedence:
+    //   1. explicit request override (EosbCalculationRequest/FinalSettlementRequest.TerminationReason)
+    //   2. the recorded EmployeeOffboarding.SeparationType for this employee (the authoritative
+    //      domain fact — a resignation on record is discounted per Art.85 WITHOUT the caller
+    //      having to re-state it, and Art.80 dismissals are forfeited rather than paid full)
+    //   3. a conservative default ("Termination") when nothing is on record.
+    // The resolved string is normalized to the vocabulary the packs understand.
+    private async Task<string> ResolveTerminationReasonAsync(
+        Guid tenantId, int employeeId, string? explicitReason, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitReason))
+            return NormalizeTerminationReason(explicitReason);
+
+        var separationType = await _db.EmployeeOffboardings.AsNoTracking()
+            .Where(o => o.TenantId == tenantId && o.EmployeeId == employeeId && o.Status != "Cancelled")
+            .OrderByDescending(o => o.CreatedAtUtc)
+            .Select(o => o.SeparationType)
+            .FirstOrDefaultAsync(ct);
+
+        return NormalizeTerminationReason(separationType);
+    }
+
+    // Maps free-form / domain separation strings to the canonical reason vocabulary the
+    // country packs branch on: "Resignation" (Art.85 reduction), "Article80" (Art.80
+    // dismissal-for-cause forfeiture), or a pass-through employer-side reason (full award).
+    private static string NormalizeTerminationReason(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "Termination"; // conservative default: employer-side, full award
+        var r = raw.Trim();
+        if (r.Equals("Resignation", StringComparison.OrdinalIgnoreCase)
+            || r.Equals("Resign", StringComparison.OrdinalIgnoreCase)
+            || r.Equals("Resigned", StringComparison.OrdinalIgnoreCase))
+            return "Resignation";
+        if (r.Equals("Article80", StringComparison.OrdinalIgnoreCase)
+            || r.Equals("Art80", StringComparison.OrdinalIgnoreCase)
+            || r.Equals("DismissalForCause", StringComparison.OrdinalIgnoreCase)
+            || r.Equals("SummaryDismissal", StringComparison.OrdinalIgnoreCase))
+            return "Article80";
+        // Termination / EndOfContract / Non-renewal / Retirement / Other / … → full award.
+        return r;
     }
 
     [HttpGet("eosb/list")]
@@ -3191,34 +3255,28 @@ public class PayrollController : ControllerBase
         var dailyGross     = grossSalary / daysInMonth;
         var proRataSalary  = Math.Round(dailyGross * lastDay.Day, 2);
 
-        // EOSB / Gratuity (reuse GCC compliance settings — KSA/UAE formula auto-selected)
+        // EOSB / Gratuity — routed through the SAME single authoritative engine as
+        // /eosb/calculate (ComputeEndOfServiceAsync → country-pack IEndOfServiceCalculator).
+        // The old inline flat-fraction formula (½-then-1 rule mis-implemented as a flat
+        // fraction on TOTAL years, with no Art.85 resignation discount) is DELETED. Reason
+        // precedence and the pack's Art.80/84/85 tiers now own every EOSB figure, so equal
+        // (basic, dates, reason, country) yield byte-identical results on both endpoints.
         var gcc = await _db.GCCComplianceSettings.AsNoTracking().Where(x => x.TenantId == tenantId).FirstOrDefaultAsync(cancellationToken);
-        var calcDate    = lastDay.ToDateTime(TimeOnly.MinValue);
-        var totalYears  = (calcDate - employee.JoiningDate).Days / 365.0;
-        var minYears    = gcc?.EosbMinYears > 0 ? gcc!.EosbMinYears : 1;
-        var dailySalary = basicSalary * 12 / 365m;
+        var calcDate = lastDay.ToDateTime(TimeOnly.MinValue);
+        var terminationReason = await ResolveTerminationReasonAsync(tenantId, req.EmployeeId, req.TerminationReason, cancellationToken);
+
         decimal eosbAmount = 0m;
-        if (totalYears >= minYears)
+        double totalYears = (calcDate - employee.JoiningDate).Days / 365.0;
+        // EOSB is computed only when the tenant has a country pack configured AND EOSB enabled —
+        // matching /eosb/calculate, which refuses when EOSB is not enabled. (Behavior change vs
+        // the old path, which computed a UAE-style figure even with no GCC row / EOSB disabled;
+        // flagged for the lead. The rest of the settlement still computes regardless.)
+        if (gcc is not null && gcc.EosbEnabled)
         {
-            bool settIsKsa = string.Equals(gcc?.CountryCode, "SA", StringComparison.OrdinalIgnoreCase);
-            bool settUaeDefault = (gcc?.EosbYears1To5Rate is null or <= 0 or 21m) && (gcc?.EosbYearsAbove5Rate is null or <= 0 or 30m);
-            if (settIsKsa && settUaeDefault)
-            {
-                // KSA Art. 84: fraction-of-month × total-years, tiered on total service
-                eosbAmount = totalYears <= 5
-                    ? Math.Round(basicSalary * (1m / 3m) * (decimal)totalYears, 2)
-                    : totalYears <= 10
-                        ? Math.Round(basicSalary * (2m / 3m) * (decimal)totalYears, 2)
-                        : Math.Round(basicSalary * 1m * (decimal)totalYears, 2);
-            }
-            else
-            {
-                var rate1 = gcc?.EosbYears1To5Rate > 0 ? gcc!.EosbYears1To5Rate : 21m;
-                var rate2 = gcc?.EosbYearsAbove5Rate > 0 ? gcc!.EosbYearsAbove5Rate : 30m;
-                eosbAmount = totalYears <= 5
-                    ? Math.Round(dailySalary * rate1 * (decimal)totalYears, 2)
-                    : Math.Round(dailySalary * rate1 * 5 + dailySalary * rate2 * (decimal)(totalYears - 5), 2);
-            }
+            var (eosbResult, svcYears) = await ComputeEndOfServiceAsync(
+                gcc, basicSalary, employee.JoiningDate, calcDate, terminationReason, employee, cancellationToken);
+            eosbAmount = Math.Round(eosbResult.TotalGratuity, 2);
+            totalYears = svcYears;
         }
 
         // Leave encashment: remaining balance × daily gross (30-day basis)
@@ -3242,7 +3300,7 @@ public class PayrollController : ControllerBase
             lastWorkingDay = req.LastWorkingDay, currency,
             basicSalary, grossSalary,
             proRataSalary, daysWorkedInMonth = lastDay.Day, daysInMonth,
-            eosbAmount, totalYears = Math.Round(totalYears, 2),
+            eosbAmount, totalYears = Math.Round(totalYears, 2), terminationReason,
             leaveBalanceDays, leaveEncashment,
             noticePeriodDaysShort = req.NoticePeriodDaysShort, noticePeriodDeduction,
             totalPayable = Math.Round(totalPayable, 2),
@@ -4010,4 +4068,4 @@ public record ErpPostingStatusRequest(string Status, string? Reference = null, s
 public record PayrollGroupRequest(string Code, string Name, string? Currency);
 public record ImportSalaryStructuresRequest(string CsvContent);
 public record EosbCalculationRequest(int EmployeeId, DateTime? AsOfDate, string? TerminationReason = null);
-public record FinalSettlementRequest(int EmployeeId, DateOnly LastWorkingDay, int NoticePeriodDaysShort = 0);
+public record FinalSettlementRequest(int EmployeeId, DateOnly LastWorkingDay, int NoticePeriodDaysShort = 0, string? TerminationReason = null);

@@ -74,12 +74,12 @@ public class QatarPackTests
     }
 
     [Fact]
-    public async Task QatarEos_OneYear_ProRated()
+    public async Task QatarEos_UnderOneYear_ReturnsZero()
     {
-        // 6 months (0.5 years), basic QAR 6,000
-        // Daily rate = 200
-        // Entitled days = 0.5 × 21 = 10.5
-        // Total = 10.5 × 200 = QAR 2,100
+        // 6 months (0.5 years), basic QAR 6,000.
+        // Qatar Law 14/2004 Art.54 requires at least ONE completed year of service, so a
+        // sub-1yr separation earns NO gratuity. This eligibility floor lives in the pack
+        // (single engine) now that the PayrollController minYears pre-gate has been removed.
         var calc = new QatarEndOfServiceCalculator(StubRules);
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
@@ -89,9 +89,8 @@ public class QatarPackTests
 
         var result = await calc.CalculateAsync(input);
 
-        // 184 days / 365 × 21 × 200 = ~2118
-        Assert.True(result.TotalGratuity > 2_000m && result.TotalGratuity < 2_200m,
-            $"Expected ~2100 for 6-month Qatar EOS, got {result.TotalGratuity}");
+        Assert.Equal(0m, result.TotalGratuity);
+        Assert.Equal("Qatar-LaborLaw-14-2004-Art54", result.ApplicableRule);
     }
 
     // ── Qatarization nationalization ─────────────────────────────────────────

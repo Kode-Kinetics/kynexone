@@ -88,8 +88,11 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
 // Tiered on basic salary only.
 // Tier 1 (years ≤ 5): ½ month basic per year of service.
 // Tier 2 (years > 5): 1 month basic per year, applied to the entire tenure.
-// Resignation discount per KSA Labor Law Art. 84.
-// Source: KSA Labor Law Royal Decree M/51 2005 + amendments.
+// Termination (employer-initiated / end-of-contract / retirement): full award from
+//   the first day of service (Art.84) — no minimum-service gate.
+// Resignation reduction per KSA Labor Law Art. 85 (tenure-band scale).
+// Dismissal for grave fault per KSA Labor Law Art. 80: FULL forfeiture (nil award).
+// Source: KSA Labor Law Royal Decree M/51 2005 + amendments (Art.80/84/85).
 
 public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
 {
@@ -112,7 +115,7 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
         decimal tier2 = Math.Round(tier2Years * 1.0m * basic, 2);
         decimal totalBeforeDiscount = tier1 + tier2;
 
-        decimal total = ApplyResignationDiscount(totalBeforeDiscount, serviceYears, input.TerminationReason);
+        decimal total = ApplyReasonAdjustment(totalBeforeDiscount, serviceYears, input.TerminationReason);
         total = Math.Round(total, 2);
 
         var bd = new List<EndOfServiceBreakdown>
@@ -121,7 +124,12 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
             new($"Tier 2 ({tier2Years:F4} yrs × 1 month)", tier2),
         };
         if (total != totalBeforeDiscount)
-            bd.Add(new("Resignation discount", total - totalBeforeDiscount));
+        {
+            var adjustmentLabel = IsDismissalForCause(input.TerminationReason)
+                ? "Art.80 forfeiture (dismissal for grave fault)"
+                : "Art.85 resignation reduction";
+            bd.Add(new(adjustmentLabel, total - totalBeforeDiscount));
+        }
 
         return await Task.FromResult(new EndOfServiceResult(total, "KSA-LaborLaw-Art84", bd));
     }
@@ -139,14 +147,27 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
         return (months, days);
     }
 
-    private static decimal ApplyResignationDiscount(decimal total, decimal years, string reason)
+    // Applies the reason-driven adjustment to the full two-tier award (Art.84 base):
+    //   • Art.80 dismissal for grave fault → nil (full forfeiture).
+    //   • Art.85 resignation → tenure-band reduction (nil < 2yr; ⅓ for 2–5yr inclusive;
+    //     ⅔ for >5 and <10yr; full ≥ 10yr).
+    //   • All other reasons (Termination / EndOfContract / Retirement / …) → full award.
+    private static decimal ApplyReasonAdjustment(decimal total, decimal years, string reason)
     {
+        // Art.80: summary dismissal for grave fault forfeits the entire gratuity.
+        if (IsDismissalForCause(reason)) return 0m;
+
+        // Art.85: resignation reduction scale. Non-resignation reasons keep the full award.
         if (!string.Equals(reason, "Resignation", StringComparison.OrdinalIgnoreCase)) return total;
-        if (years < 2m)  return 0m;
-        if (years < 5m)  return Math.Round(total / 3m, 2);
-        if (years < 10m) return Math.Round(total * 2m / 3m, 2);
-        return total;
+        if (years < 2m)  return 0m;                          // < 2 yrs → nil
+        if (years <= 5m) return Math.Round(total / 3m, 2);   // 2–5 yrs inclusive → ⅓ (Art.85)
+        if (years < 10m) return Math.Round(total * 2m / 3m, 2); // > 5 and < 10 yrs → ⅔
+        return total;                                        // ≥ 10 yrs → full
     }
+
+    private static bool IsDismissalForCause(string reason)
+        => string.Equals(reason, "Article80", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(reason, "DismissalForCause", StringComparison.OrdinalIgnoreCase);
 }
 
 // ── KSA Nitaqat nationalization tracker ───────────────────────────────────────

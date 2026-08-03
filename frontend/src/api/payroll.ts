@@ -239,6 +239,7 @@ export interface FinalSettlementResult {
   daysInMonth: number;
   eosbAmount: number;
   totalYears: number;
+  terminationReason: string;
   leaveBalanceDays: number;
   leaveEncashment: number;
   noticePeriodDaysShort: number;
@@ -405,8 +406,12 @@ export const payrollApi = {
   costCenterAllocation: (runId: string) =>
     client.get<CostCenterAllocationReport>(`/api/payroll/runs/${runId}/cost-center-allocation`).then((r) => r.data),
 
-  finalSettlement: (employeeId: number, lastWorkingDay: string, noticePeriodDaysShort = 0) =>
-    client.post<FinalSettlementResult>('/api/payroll/final-settlement', { employeeId, lastWorkingDay, noticePeriodDaysShort }).then((r) => r.data),
+  // terminationReason is optional: when omitted the backend sources the reason from the
+  // employee's EmployeeOffboarding.SeparationType record (Resignation → Art.85 discount,
+  // Article80 → forfeiture), defaulting to full-award Termination when nothing is recorded.
+  finalSettlement: (employeeId: number, lastWorkingDay: string, noticePeriodDaysShort = 0, terminationReason?: string) =>
+    client.post<FinalSettlementResult>('/api/payroll/final-settlement',
+      { employeeId, lastWorkingDay, noticePeriodDaysShort, terminationReason: terminationReason || undefined }).then((r) => r.data),
 
   slips: (runId: string, params: { page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<PayrollSlip>>(`/api/payroll/runs/${runId}/slips`, { params }).then((r) => r.data),

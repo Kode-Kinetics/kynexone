@@ -70,6 +70,16 @@ public sealed class UaeMainlandEndOfServiceCalculator : IEndOfServiceCalculator
         decimal dailyRate = basic / 30m;
 
         decimal serviceYears = ServiceYears(input.ServiceStartDate, input.ServiceEndDate);
+
+        // UAE Decree-Law 33/2021 Art.51: EOSB gratuity accrues only after ONE completed
+        // year of service. This eligibility floor lives in the pack (single engine) — the
+        // controller no longer pre-gates on GCC minYears. (DIFC/DEWS accrues from month 1
+        // and is handled by UaeDifcEndOfServiceCalculator, which has no such floor.)
+        if (serviceYears < 1m)
+            return await Task.FromResult(new EndOfServiceResult(
+                0m, "UAE-LaborLaw-Art51",
+                new List<EndOfServiceBreakdown> { new("No entitlement (< 1 year service, Art.51)", 0m) }));
+
         decimal tier1Years = Math.Min(serviceYears, 5m);
         decimal tier2Years = Math.Max(0m, serviceYears - 5m);
 

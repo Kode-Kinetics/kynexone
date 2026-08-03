@@ -71,6 +71,14 @@ public sealed class QatarEndOfServiceCalculator : IEndOfServiceCalculator
         int totalDays = input.ServiceEndDate.DayNumber - input.ServiceStartDate.DayNumber;
         decimal serviceYears = totalDays / 365m;
 
+        // Qatar Law 14/2004 Art.54 (as amended by Law 19/2020): EOS gratuity requires at
+        // least ONE completed year of service. This eligibility floor lives in the pack
+        // (single engine) — the controller no longer pre-gates on GCC minYears.
+        if (serviceYears < 1m)
+            return await Task.FromResult(new EndOfServiceResult(
+                0m, "Qatar-LaborLaw-14-2004-Art54",
+                new List<EndOfServiceBreakdown> { new("No entitlement (< 1 year service, Art.54)", 0m) }));
+
         // Minimum 3 weeks = 21 days per year of service
         decimal totalDaysEntitled = Math.Round(serviceYears * 21m, 4);
         decimal total = Math.Round(totalDaysEntitled * dailyRate, 2);

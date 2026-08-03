@@ -2311,7 +2311,7 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
 // ── Final Settlement Tab ────────────────────────────────────────────────────────
 
 function FinalSettlementTab() {
-  const [form, setForm] = useState({ employeeId: '', lastWorkingDay: new Date().toISOString().slice(0, 10), noticePeriodDaysShort: '0' });
+  const [form, setForm] = useState({ employeeId: '', lastWorkingDay: new Date().toISOString().slice(0, 10), noticePeriodDaysShort: '0', terminationReason: '' });
   const [result, setResult] = useState<FinalSettlementResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -2320,7 +2320,8 @@ function FinalSettlementTab() {
     if (!form.employeeId || !form.lastWorkingDay) return;
     setLoading(true); setError(''); setResult(null);
     try {
-      const res = await payrollApi.finalSettlement(Number(form.employeeId), form.lastWorkingDay, Number(form.noticePeriodDaysShort));
+      // Empty terminationReason ⇒ backend uses the employee's recorded separation type.
+      const res = await payrollApi.finalSettlement(Number(form.employeeId), form.lastWorkingDay, Number(form.noticePeriodDaysShort), form.terminationReason || undefined);
       setResult(res);
     } catch (e: unknown) {
       setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Calculation failed.');
@@ -2351,6 +2352,18 @@ function FinalSettlementTab() {
             <input type="number" className={inp} min="0" placeholder="0" value={form.noticePeriodDaysShort} onChange={e => setForm(f => ({ ...f, noticePeriodDaysShort: e.target.value }))} />
             <p className="mt-0.5 text-xs text-slate-400">Days employee served less than the contractual notice period</p>
           </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Separation Reason</label>
+            <select className={inp} aria-label="Separation reason" value={form.terminationReason} onChange={e => setForm(f => ({ ...f, terminationReason: e.target.value }))}>
+              <option value="">Auto (from offboarding record)</option>
+              <option value="Termination">Termination (employer) — full gratuity</option>
+              <option value="EndOfContract">End of Contract — full gratuity</option>
+              <option value="Retirement">Retirement — full gratuity</option>
+              <option value="Resignation">Resignation — Art.85 reduction</option>
+              <option value="Article80">Dismissal for cause (Art.80) — forfeited</option>
+            </select>
+            <p className="mt-0.5 text-xs text-slate-400">Drives the EOSB entitlement (KSA Art.80/84/85). Leave on Auto to use the recorded separation type.</p>
+          </div>
         </div>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <button type="button" className={btn.primary} onClick={calculate} disabled={!form.employeeId || !form.lastWorkingDay || loading}>
@@ -2362,7 +2375,7 @@ function FinalSettlementTab() {
         <div className="surface p-5 space-y-4">
           <div>
             <p className="text-sm font-semibold text-slate-900 dark:text-white">{result.employeeName}</p>
-            <p className="text-xs text-slate-400">Last working day: {result.lastWorkingDay} · Service: {result.totalYears.toFixed(2)} years</p>
+            <p className="text-xs text-slate-400">Last working day: {result.lastWorkingDay} · Service: {result.totalYears.toFixed(2)} years · Reason: {result.terminationReason}</p>
           </div>
 
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
