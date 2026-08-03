@@ -15,8 +15,13 @@ namespace Zayra.Api.Infrastructure.Compliance;
 public sealed class SaudiComplianceDashboardService
 {
     private readonly ZayraDbContext _db;
+    private readonly GosiReconciliationService _reconciliation;
 
-    public SaudiComplianceDashboardService(ZayraDbContext db) => _db = db;
+    public SaudiComplianceDashboardService(ZayraDbContext db, GosiReconciliationService reconciliation)
+    {
+        _db = db;
+        _reconciliation = reconciliation;
+    }
 
     public async Task<SaudiComplianceDashboard> BuildAsync(Guid tenantId, CancellationToken ct)
     {
@@ -190,6 +195,10 @@ public sealed class SaudiComplianceDashboardService
             .ToList();
 
         // Variance count from the most recent completed payroll run.
+        // POD-A1: unified onto the SAME reconciliation engine the GOSI endpoints use, so this count
+        // agrees with GosiController.variance-report (one GOSI truth). "expected" is recomputed via the
+        // run's country pack + covered-wage base — NOT the old GosiCalculationService basic-only path,
+        // which used a different base and rate store and flagged 100% of Saudi employees.
         var varianceCount = 0;
         var lastRun = await _db.PayrollRuns.AsNoTracking()
             .Where(r => r.TenantId == tenantId && (r.Status == "Locked" || r.Status == "Paid"))
@@ -198,32 +207,8 @@ public sealed class SaudiComplianceDashboardService
 
         if (lastRun is not null)
         {
-            var lastRunDate = new DateOnly(lastRun.Year, lastRun.Month,
-                DateTime.DaysInMonth(lastRun.Year, lastRun.Month));
-
-            var deductions = await _db.PayrollDeductions.AsNoTracking()
-                .Where(d => d.TenantId == tenantId && d.PayrollRunId == lastRun.Id
-                            && d.Source == "Statutory" && !d.IsEmployerContribution)
-                .ToListAsync(ct);
-
-            var empIds = deductions.Select(d => d.EmployeeId).Distinct().ToList();
-            foreach (var empId in empIds)
-            {
-                var emp  = employees.FirstOrDefault(e => e.Id == empId);
-                if (emp is null) continue;
-                var sal  = salaries
-                    .Where(s => s.EmployeeId == empId && s.EffectiveDate <= lastRunDate)
-                    .OrderByDescending(s => s.EffectiveDate)
-                    .FirstOrDefault();
-                var expected = GosiCalculationService.Calculate(
-                    emp.Nationality, sal?.BasicSalary ?? 0m, rules, lastRunDate, tenantId);
-                var actual = deductions
-                    .Where(d => d.EmployeeId == empId
-                             && d.ComponentCode.EndsWith("-EE"))
-                    .Sum(d => d.Amount);
-                if (Math.Abs(actual - expected.EmployeeTotal) > 0.01m)
-                    varianceCount++;
-            }
+            var recon = await _reconciliation.ReconcileAsync(tenantId, lastRun, ct);
+            varianceCount = recon.VarianceCount;
         }
 
         var warnings = new List<string>();

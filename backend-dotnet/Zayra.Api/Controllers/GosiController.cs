@@ -15,8 +15,13 @@ namespace Zayra.Api.Controllers;
 public class GosiController : ControllerBase
 {
     private readonly ZayraDbContext _db;
+    private readonly GosiReconciliationService _reconciliation;
 
-    public GosiController(ZayraDbContext db) => _db = db;
+    public GosiController(ZayraDbContext db, GosiReconciliationService reconciliation)
+    {
+        _db = db;
+        _reconciliation = reconciliation;
+    }
 
     // ── Contribution Rules ────────────────────────────────────────────────────
 
@@ -240,7 +245,9 @@ public class GosiController : ControllerBase
     // ── Payroll-Run GOSI Summary ──────────────────────────────────────────────
 
     /// <summary>
-    /// Returns a per-branch GOSI contribution summary for a completed payroll run.
+    /// Returns a per-branch GOSI contribution summary for a completed payroll run, reconciled against
+    /// what the run actually deducted, what the run's pack recomputes as expected, and what the GL
+    /// actually posted to Social Insurance Payable (EE 2101 / ER 2106) for the run.
     /// </summary>
     [HttpGet("payroll-runs/{runId:guid}/contribution-summary")]
     public async Task<IActionResult> GetRunContributionSummary(Guid runId, CancellationToken ct)
@@ -250,29 +257,21 @@ public class GosiController : ControllerBase
             .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == runId, ct);
         if (run is null) return NotFound();
 
-        var deductions = await _db.PayrollDeductions.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.PayrollRunId == runId
-                     && d.Source == "GOSI")
-            .ToListAsync(ct);
+        // POD-A1: one GOSI truth. All figures come from GosiReconciliationService, which reads the run's
+        // real persisted rows (Source == "Statutory", authoritative IsEmployerContribution flag) and
+        // recomputes "expected" with the SAME country pack + covered-wage base the run used.
+        var recon = await _reconciliation.ReconcileAsync(tenantId, run, ct);
 
-        var employeeCodes = new HashSet<string>
-        {
-            "GOSI_ANNUITIES_EMP", "GOSI_SANED_EMP",
-            "GOSI_EMPLOYEE",  // backward-compat for runs processed before PR-3
-        };
-        var employerCodes = new HashSet<string>
-        {
-            "GOSI_ANNUITIES_ER", "GOSI_SANED_ER", "GOSI_OCHAZARDS_ER",
-        };
-
-        var branchSummary = deductions
+        // Per-component-code breakdown, split by the authoritative employer flag (not by a code guess).
+        var branchBreakdown = recon.Deductions
             .GroupBy(d => d.ComponentCode)
             .Select(g => new
             {
-                componentCode = g.Key,
-                componentName = g.First().ComponentName,
-                totalAmount   = g.Sum(d => d.Amount),
-                employeeCount = g.Select(d => d.EmployeeId).Distinct().Count(),
+                componentCode          = g.Key,
+                componentName          = g.First().ComponentName,
+                isEmployerContribution = g.Any(d => d.IsEmployerContribution),
+                totalAmount            = g.Sum(d => d.Amount),
+                employeeCount          = g.Select(d => d.EmployeeId).Distinct().Count(),
             })
             .OrderBy(x => x.componentCode)
             .ToList();
@@ -280,18 +279,47 @@ public class GosiController : ControllerBase
         return Ok(new
         {
             runId,
-            period               = $"{run.Year}-{run.Month:D2}",
-            totalEmployeeContrib = deductions.Where(d => employeeCodes.Contains(d.ComponentCode)).Sum(d => d.Amount),
-            totalEmployerContrib = deductions.Where(d => employerCodes.Contains(d.ComponentCode)).Sum(d => d.Amount),
-            totalGosi            = deductions.Sum(d => d.Amount),
-            branchBreakdown      = branchSummary,
+            period               = recon.Period,
+            hasStatutoryData     = recon.HasStatutoryData,
+            packResolved         = recon.PackResolved,
+            packStatusNote       = recon.PackStatusNote,
+
+            // ── Actual (persisted deductions) ──
+            totalEmployeeContrib = recon.ActualEmployeeTotal,
+            totalEmployerContrib = recon.ActualEmployerTotal,
+            totalGosi            = recon.ActualEmployeeTotal + recon.ActualEmployerTotal,
+
+            // ── Expected (recomputed via the run's pack + base) ──
+            expectedEmployeeContrib = recon.ExpectedEmployeeTotal,
+            expectedEmployerContrib = recon.ExpectedEmployerTotal,
+            expectedVsActualEmployeeDelta = recon.ExpectedVsActualEmployeeDelta,
+            expectedVsActualEmployerDelta = recon.ExpectedVsActualEmployerDelta,
+
+            // ── Slip witnesses (persisted at run time; 4-way tie-out with lines/GL/expected) ──
+            slipEmployeeStatutoryTotal = recon.SlipEmployeeStatutoryTotal,
+            slipEmployerStatutoryTotal = recon.SlipEmployerStatutoryTotal,
+            runEmployerStatutoryCost   = recon.RunEmployerStatutoryCost,
+
+            // ── GL liability tie-out (2101 EE / 2106 ER, honoring any per-company account override) ──
+            glPosted             = recon.GlPosted,
+            glEmployeeLiability  = recon.GlEmployeeLiability,
+            glEmployerLiability  = recon.GlEmployerLiability,
+            glEmployeeAccount    = recon.GlEmployeeAccount,
+            glEmployerAccount    = recon.GlEmployerAccount,
+            glEmployeeDelta      = recon.GlEmployeeDelta,
+            glEmployerDelta      = recon.GlEmployerDelta,
+
+            branchBreakdown,
         });
     }
 
     /// <summary>
-    /// Reconciliation/variance report: compares GOSI deductions actually stored for
-    /// each employee in the run against the amounts that would be computed from
-    /// the current rules.  Variances above SAR 0.01 are flagged.
+    /// Reconciliation/variance report: compares the GOSI deductions actually stored for each employee
+    /// in the run against the amounts recomputed from the SAME country pack + covered-wage base the run
+    /// used (basic + housing + eligible bonus, capped at the statutory ceiling), for BOTH the employee
+    /// and employer sides. A non-zero variance is a true drift finding (salary/bonus/nationality/rate
+    /// changed since the run), not a report bug. The run-vs-GL tie-out is surfaced at the run level.
+    /// Variances above SAR 0.01 are flagged.
     /// </summary>
     [HttpGet("payroll-runs/{runId:guid}/variance-report")]
     public async Task<IActionResult> GetVarianceReport(Guid runId, CancellationToken ct)
@@ -301,76 +329,52 @@ public class GosiController : ControllerBase
             .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == runId, ct);
         if (run is null) return NotFound();
 
-        var periodEnd  = new DateTime(run.Year, run.Month,
-            DateTime.DaysInMonth(run.Year, run.Month));
-        var periodDate = DateOnly.FromDateTime(periodEnd);
+        // POD-A1: one GOSI truth — see GosiReconciliationService. "expected" is the run's own pack, not
+        // the parallel GosiCalculationService/GosiContributionRule path (which used basic-only on a
+        // different rate store and flagged 100% of Saudi employees).
+        var recon = await _reconciliation.ReconcileAsync(tenantId, run, ct);
 
-        // Load employees, salaries, and actual deductions for the run
-        var runEmployeeIds = await _db.PayrollRunEmployees.AsNoTracking()
-            .Where(re => re.TenantId == tenantId && re.PayrollRunId == runId)
-            .Select(re => re.EmployeeId)
-            .ToListAsync(ct);
-
-        var employees = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && runEmployeeIds.Contains(e.Id))
-            .ToListAsync(ct);
-
-        var salaries = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(s => s.TenantId == tenantId && runEmployeeIds.Contains(s.EmployeeId)
-                     && s.EffectiveDate <= periodDate)
-            .ToListAsync(ct);
-
-        var actualDeductions = await _db.PayrollDeductions.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.PayrollRunId == runId
-                     && d.Source == "GOSI")
-            .ToListAsync(ct);
-
-        var rules = await LoadRulesAsync(tenantId, ct);
-
-        var rows = new List<object>();
-        foreach (var emp in employees)
-        {
-            var salary = salaries
-                .Where(s => s.EmployeeId == emp.Id)
-                .OrderByDescending(s => s.EffectiveDate)
-                .FirstOrDefault();
-            var basic  = salary?.BasicSalary ?? 0m;
-
-            var expected = GosiCalculationService.Calculate(
-                emp.Nationality, basic, rules, periodDate, tenantId);
-
-            var actualEmployeeTotal = actualDeductions
-                .Where(d => d.EmployeeId == emp.Id
-                         && (d.ComponentCode.EndsWith("_EMP") || d.ComponentCode == "GOSI_EMPLOYEE"))
-                .Sum(d => d.Amount);
-
-            var variance = Math.Round(actualEmployeeTotal - expected.EmployeeTotal, 2);
-
-            rows.Add(new
-            {
-                employeeId         = emp.Id,
-                employeeCode       = emp.EmployeeCode,
-                employeeName       = emp.FullName,
-                classification     = expected.Classification,
-                basicSalary        = basic,
-                expectedEmployeeContrib = expected.EmployeeTotal,
-                actualEmployeeContrib   = actualEmployeeTotal,
-                variance,
-                hasVariance        = Math.Abs(variance) > 0.01m,
-                expectedLines      = expected.Lines
-                    .Where(l => l.Payer == GosiPayers.Employee)
-                    .Select(l => new { l.Branch, l.Rate, l.Amount }),
-            });
-        }
-
-        var variantRows = rows.Cast<dynamic>().Where(r => r.hasVariance).ToList();
+        var rows = recon.Rows
+            .OrderBy(r => r.EmployeeCode, StringComparer.Ordinal)
+            .Select(r => new GosiVarianceRow(
+                EmployeeId:              r.EmployeeId,
+                EmployeeCode:            r.EmployeeCode,
+                EmployeeName:            r.EmployeeName,
+                Classification:          r.Classification,
+                CoveredWageBase:         r.CoveredWageBase,
+                ExpectedEmployeeContrib: r.ExpectedEmployee,
+                ActualEmployeeContrib:   r.ActualEmployee,
+                EmployeeVariance:        r.EmployeeVariance,
+                ExpectedEmployerContrib: r.ExpectedEmployer,
+                ActualEmployerContrib:   r.ActualEmployer,
+                EmployerVariance:        r.EmployerVariance,
+                HasVariance:             r.HasVariance,
+                ExpectedLines:           r.ExpectedLines
+                    .Select(l => new GosiVarianceLine(l.Code, l.Label, l.EmployeeAmount, l.EmployerAmount))
+                    .ToList()))
+            .ToList();
 
         return Ok(new
         {
             runId,
-            period          = $"{run.Year}-{run.Month:D2}",
-            totalEmployees  = rows.Count,
-            withVariance    = variantRows.Count,
+            period            = recon.Period,
+            packResolved      = recon.PackResolved,
+            packStatusNote    = recon.PackStatusNote,
+            hasStatutoryData  = recon.HasStatutoryData,
+            totalEmployees    = rows.Count,
+            withVariance      = rows.Count(r => r.HasVariance),
+            // Run-level tie-out so a CFO sees the halala reconciliation alongside the per-employee drift.
+            expectedEmployeeContrib = recon.ExpectedEmployeeTotal,
+            actualEmployeeContrib   = recon.ActualEmployeeTotal,
+            expectedEmployerContrib = recon.ExpectedEmployerTotal,
+            actualEmployerContrib   = recon.ActualEmployerTotal,
+            expectedVsActualEmployeeDelta = recon.ExpectedVsActualEmployeeDelta,
+            expectedVsActualEmployerDelta = recon.ExpectedVsActualEmployerDelta,
+            glPosted            = recon.GlPosted,
+            glEmployeeLiability = recon.GlEmployeeLiability,
+            glEmployerLiability = recon.GlEmployerLiability,
+            glEmployeeDelta     = recon.GlEmployeeDelta,
+            glEmployerDelta     = recon.GlEmployerDelta,
             rows,
         });
     }
@@ -426,3 +430,23 @@ public record CreateGosiRuleRequest(
     string?  SourceReference     = null,
     string?  Notes               = null
 );
+
+// ── Variance-report response DTOs (concrete, not dynamic) ───────────────────────
+
+public record GosiVarianceRow(
+    int      EmployeeId,
+    string   EmployeeCode,
+    string   EmployeeName,
+    string   Classification,
+    decimal  CoveredWageBase,
+    decimal  ExpectedEmployeeContrib,
+    decimal  ActualEmployeeContrib,
+    decimal  EmployeeVariance,
+    decimal  ExpectedEmployerContrib,
+    decimal  ActualEmployerContrib,
+    decimal  EmployerVariance,
+    bool     HasVariance,
+    IReadOnlyList<GosiVarianceLine> ExpectedLines
+);
+
+public record GosiVarianceLine(string Code, string Label, decimal EmployeeAmount, decimal EmployerAmount);

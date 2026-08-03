@@ -49,7 +49,7 @@ public class ComplianceDashboardTests
         db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 2, 8_000m));
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.Equal(1, dash.Gosi.ReadyCount);
         Assert.Equal(1, dash.Gosi.BlockedCount);
@@ -66,7 +66,7 @@ public class ComplianceDashboardTests
         db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 1, 5_000m));
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.NotEmpty(dash.Gosi.BlockedEmployees);
         foreach (var blocked in dash.Gosi.BlockedEmployees)
@@ -88,7 +88,7 @@ public class ComplianceDashboardTests
         db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 1, 8_000m));
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.Equal(1, dash.Gosi.GccEmployeeCount);
     }
@@ -107,7 +107,7 @@ public class ComplianceDashboardTests
             new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 2, Iban = "INVALID_IBAN" });
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.Equal(1, dash.Wps.MissingIbanCount);
     }
@@ -122,7 +122,7 @@ public class ComplianceDashboardTests
             new WPSFileBatch { TenantId = TenantA, SifFileName = "run2.sif", Status = "Generated" });
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.Equal(2, dash.Wps.ExportHistoryCount);
     }
@@ -134,7 +134,7 @@ public class ComplianceDashboardTests
     {
         using var db = MakeDb();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.True(dash.Qiwa.FeatureEnabled);
     }
@@ -152,7 +152,7 @@ public class ComplianceDashboardTests
         });
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.False(dash.Qiwa.FeatureEnabled);
     }
@@ -171,7 +171,7 @@ public class ComplianceDashboardTests
         });
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.True(dash.Qiwa.CredentialConfigured);
     }
@@ -190,7 +190,7 @@ public class ComplianceDashboardTests
         db.PayrollRuns.Add(new PayrollRun { TenantId = TenantA, Year = 2026, Month = 5, Status = "Draft" });
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.InRange(dash.Overall.ComplianceScore, 0, 100);
     }
@@ -208,7 +208,7 @@ public class ComplianceDashboardTests
         db.Companies.Add(new Company { TenantId = TenantA, LegalNameEn = "Test Co", GosiEmployerId = "10000000001" });
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.True(dash.Overall.ComplianceScore >= 70,
             $"Expected score >= 70 for clean tenant; got {dash.Overall.ComplianceScore}");
@@ -227,7 +227,7 @@ public class ComplianceDashboardTests
         db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 1, 5_000m));
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.NotEmpty(dash.ActionItems);
         foreach (var item in dash.ActionItems)
@@ -257,7 +257,7 @@ public class ComplianceDashboardTests
         db.PayrollRuns.Add(new PayrollRun { TenantId = TenantA, Year = 2026, Month = 5, Status = "Draft" });
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         var json = System.Text.Json.JsonSerializer.Serialize(dash);
         Assert.DoesNotContain(sensitiveIban,    json);
@@ -278,7 +278,7 @@ public class ComplianceDashboardTests
         }
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         // Verify sort order: Critical before High before Medium before Low.
         var severityOrder = new Dictionary<string, int>
@@ -312,7 +312,7 @@ public class ComplianceDashboardTests
         db.WPSFileBatches.Add(new WPSFileBatch { TenantId = TenantB, SifFileName = "b.sif", Status = "Generated" });
         await db.SaveChangesAsync();
 
-        var dash = await new SaudiComplianceDashboardService(db).BuildAsync(TenantA, CancellationToken.None);
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
 
         // Tenant A has exactly 1 employee.
         Assert.Equal(1, dash.Gosi.ReadyCount + dash.Gosi.BlockedCount);

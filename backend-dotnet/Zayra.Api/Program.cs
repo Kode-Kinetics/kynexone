@@ -315,6 +315,9 @@ builder.Services.AddScoped<IPolicyDocumentService, PolicyDocumentService>();
 builder.Services.AddScoped<IQiwaIntegrationService, QiwaIntegrationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.SaudiComplianceDashboardService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.GosiReadinessReportService>();
+// POD-A1: single GOSI/statutory reconciliation truth (contribution-summary, variance-report,
+// compliance dashboard variance count). Scoped so it shares the request's memoized IStatutoryRuleReader.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.GosiReconciliationService>();
 
 // Data protection — encrypts Qiwa client secrets at rest.
 builder.Services.AddDataProtection();
