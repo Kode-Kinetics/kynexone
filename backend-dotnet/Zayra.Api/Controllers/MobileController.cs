@@ -254,19 +254,38 @@ public class MobileController : ControllerBase
         if (employeeId != callerId.Value) return Forbid();
         employeeId = callerId.Value;
 
-        var payslips = await _db.Payslips
+        var heads = await _db.Payslips
             .Where(p => p.TenantId == tenantId && p.EmployeeId == employeeId)
             .Join(_db.PayrollRuns.Where(r => r.TenantId == tenantId),
                 p => p.PayrollRunId, r => r.Id,
-                (p, r) => new
-                {
-                    p.Id, r.Year, r.Month, r.TotalGrossSalary, r.TotalNetSalary,
-                    p.IsPublishedToEss, p.CreatedAtUtc
-                })
+                (p, r) => new { p.Id, r.Year, r.Month, p.IsPublishedToEss, p.CreatedAtUtc })
             .OrderByDescending(x => x.Year)
             .ThenByDescending(x => x.Month)
             .Take(12)
             .ToListAsync(ct);
+
+        // CONFIDENTIALITY: the per-employee gross/net MUST come from THIS payslip's own
+        // components, never the PayrollRun totals — projecting r.TotalGrossSalary/
+        // r.TotalNetSalary leaked the whole company's monthly payroll to every employee.
+        // Gross = sum of "Earning" lines; Net = the stored "Net" line (PayrollController
+        // writes these component types when generating the slip).
+        var slipIds = heads.Select(h => h.Id).ToList();
+        var comps = await _db.PayslipComponents
+            .Where(c => c.TenantId == tenantId && slipIds.Contains(c.PayslipId))
+            .Select(c => new { c.PayslipId, c.ComponentType, c.Amount })
+            .ToListAsync(ct);
+
+        var payslips = heads.Select(h =>
+        {
+            var own = comps.Where(c => c.PayslipId == h.Id).ToList();
+            return new
+            {
+                h.Id, h.Year, h.Month,
+                TotalGrossSalary = own.Where(c => c.ComponentType == "Earning").Sum(c => c.Amount),
+                TotalNetSalary = own.Where(c => c.ComponentType == "Net").Sum(c => c.Amount),
+                h.IsPublishedToEss, h.CreatedAtUtc
+            };
+        }).ToList();
 
         return Ok(payslips);
     }

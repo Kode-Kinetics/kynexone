@@ -207,6 +207,46 @@ public class SecurityAuditBatch2Tests
     }
 
     [Fact]
+    public async Task Mobile_Payslips_ReturnsOwnFiguresNotCompanyRunTotals()
+    {
+        // Regression (confidentiality): the mobile payslip list must project THIS employee's
+        // own gross/net from their PayslipComponents, never the PayrollRun's company-wide
+        // totals — projecting r.TotalGrossSalary/r.TotalNetSalary leaked the whole company's
+        // monthly payroll to every employee.
+        await using var db = CreateDb();
+        var tenant = Guid.NewGuid();
+        var me = SeedEmployee(db, tenant, 100, "ME");
+
+        var run = new PayrollRun
+        {
+            Id = Guid.NewGuid(), TenantId = tenant, Year = 2026, Month = 7,
+            TotalGrossSalary = 999_999m, TotalNetSalary = 888_888m, // company-wide — must NOT leak
+        };
+        db.PayrollRuns.Add(run);
+        var slip = new Payslip { TenantId = tenant, EmployeeId = me.Id, PayrollRunId = run.Id };
+        db.Payslips.Add(slip);
+        db.PayslipComponents.AddRange(
+            new PayslipComponent { TenantId = tenant, PayslipId = slip.Id, ComponentType = "Earning", ComponentName = "Basic", Amount = 5_000m },
+            new PayslipComponent { TenantId = tenant, PayslipId = slip.Id, ComponentType = "Earning", ComponentName = "Housing", Amount = 1_000m },
+            new PayslipComponent { TenantId = tenant, PayslipId = slip.Id, ComponentType = "Deduction", ComponentName = "GOSI", Amount = 600m },
+            new PayslipComponent { TenantId = tenant, PayslipId = slip.Id, ComponentType = "Net", ComponentName = "Net pay", Amount = 5_400m });
+        db.SaveChanges();
+
+        var controller = new MobileController(db)
+        { ControllerContext = new ControllerContext { HttpContext = EssContext(tenant, me.Id) } };
+
+        var result = await controller.MyPayslips(me.Id, CancellationToken.None);
+        var ok = result.Should().BeOfType<OkObjectResult>().Subject;
+        var row = ((System.Collections.IEnumerable)ok.Value!).Cast<object>().Single();
+        decimal Get(string p) => (decimal)row.GetType().GetProperty(p)!.GetValue(row)!;
+
+        Get("TotalGrossSalary").Should().Be(6_000m, "gross = sum of the employee's own Earning lines");
+        Get("TotalNetSalary").Should().Be(5_400m, "net = the employee's own Net line");
+        Get("TotalGrossSalary").Should().NotBe(999_999m, "must never expose the company-wide run gross");
+        Get("TotalNetSalary").Should().NotBe(888_888m, "must never expose the company-wide run net");
+    }
+
+    [Fact]
     public async Task Mobile_Dashboard_CannotReadAnotherEmployee()
     {
         await using var db = CreateDb();
