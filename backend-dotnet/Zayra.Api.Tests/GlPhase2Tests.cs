@@ -184,7 +184,7 @@ public class GlPhase2Tests
         await db.SaveChangesAsync();
 
         var drivers = await db.GlDrivers.IgnoreQueryFilters().Where(d => d.TenantId == tid).ToListAsync();
-        drivers.Should().HaveCount(17);
+        drivers.Should().HaveCount(18);   // 17 original + POD-B1 CASH_BANK balancing driver
         // Golden checks against the compiled switch semantics.
         Route(drivers, "BASIC", "Salary", GlDriverCategories.Earning).Should().Be("EARN:BASIC");
         Route(drivers, "HOUSING", "Salary", GlDriverCategories.Earning).Should().Be("EARN:HOUSING");

@@ -528,6 +528,9 @@ app.UseExceptionHandler(errApp => errApp.Run(async ctx =>
 
     var (statusCode, code, message) = ex switch
     {
+        // POD-B1 — a GL post into a closed period (via the Loans/Advances/Bonus posting paths) surfaces
+        // as a typed 422 gl_period_closed, matching the inline guards on the payroll Lock/settle/remit paths.
+        Zayra.Api.Infrastructure.Payroll.PeriodClosedException closed => (StatusCodes.Status422UnprocessableEntity, "gl_period_closed", closed.Message),
         UnauthorizedAccessException unauthorized => (StatusCodes.Status403Forbidden, "forbidden", unauthorized.Message),
         InvalidOperationException invalid => (StatusCodes.Status400BadRequest, "bad_request", invalid.Message),
         _ => (StatusCodes.Status500InternalServerError, "internal_error", "An unexpected error occurred. Quote your traceId when contacting support.")

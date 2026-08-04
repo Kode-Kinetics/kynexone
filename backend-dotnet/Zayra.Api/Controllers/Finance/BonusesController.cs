@@ -7,6 +7,7 @@ using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Governance;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Finance;
@@ -505,6 +506,9 @@ public class BonusesController : ControllerBase
         // GL: Bonus Expense Dr / Bonus Payable Cr
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var bonusApprovalCurrency = await _db.ResolveTenantCurrencyAsync(tid, ct);
+        // POD-B1 (req-4) — no GL posting into a closed period (companyId=null → tenant-wide close;
+        // per-company bonus attribution is POD-B1b). Throws BEFORE the Add/SaveChanges so nothing commits.
+        await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, null, batch.PaymentPeriod, ct);
         _db.FinanceGlEntries.Add(new FinanceGlEntry
         {
             TenantId = tid, SourceModule = "Bonus", SourceEntityId = id,
@@ -579,6 +583,9 @@ public class BonusesController : ControllerBase
         var remainingGlAmount = unpaidBonuses.Sum(b => b.BonusAmount);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var bonusPayCurrency = await _db.ResolveTenantCurrencyAsync(tid, ct);
+        // POD-B1 (req-4) — no cash GL posting into a closed period (companyId=null → tenant-wide close).
+        if (remainingGlAmount > 0)
+            await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, null, batch.PaymentPeriod, ct);
         if (remainingGlAmount > 0)
             _db.FinanceGlEntries.Add(new FinanceGlEntry
             {

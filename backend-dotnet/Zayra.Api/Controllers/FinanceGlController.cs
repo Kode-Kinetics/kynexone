@@ -357,6 +357,103 @@ public class FinanceGlController : ControllerBase
         return Ok(new { accounts = seeded.Accounts, mappings = seeded.Mappings, drivers = seeded.Drivers, rateDefinitions = seeded.RateDefinitions, payComponents = seededComponents.Components });
     }
 
+    // ── GL period-close / reopen ─────────────────────────────────────────────
+    //
+    // POD-B1 — a Closed period BLOCKS new GL postings dated into it (enforced by PeriodCloseGuard on the
+    // payroll Lock/settle/remit/void paths and the Loans/Advances/Bonus disbursement posts). Absence of
+    // a Closed row = Open (open is the default; no backfill). A group-wide close (companyId omitted /
+    // null) blocks every company for the period; a company-specific close blocks only that company.
+
+    [HttpGet("periods")]
+    public async Task<IActionResult> ListPeriods([FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.read") && !HasPermission("finance.gl.manage")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (ScopeError(companyId) is { } err) return err;
+
+        var scope = this.GetEntityScope();
+        var q = _db.GlPeriodCloses.AsNoTracking().Where(p => p.TenantId == tid);
+        // A group-wide close (CompanyId == null) is relevant to every company's list view (P2-9), so a
+        // company query includes tenant-wide rows too.
+        if (companyId is not null) q = q.Where(p => p.CompanyId == companyId || p.CompanyId == null);
+        else if (!scope.IsGroupLevel)
+            q = q.Where(p => p.CompanyId == null || scope.AccessibleCompanyIds.Contains(p.CompanyId!.Value));
+        var rows = await q.OrderByDescending(p => p.Period).ThenBy(p => p.CompanyId).ToListAsync(ct);
+        return Ok(rows.Select(ToPeriodDto));
+    }
+
+    [HttpPost("periods/{period}/close")]
+    public async Task<IActionResult> ClosePeriod(string period, [FromQuery] Guid? companyId, [FromBody] GlPeriodActionRequest? req, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.manage")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (ScopeError(companyId) is { } err) return err;
+        if (!IsValidPeriod(period)) return BadRequest(new { message = "Period must be in YYYY-MM format." });
+
+        // IgnoreQueryFilters is intentional: scope authorised above (ScopeError); WHERE re-applies exact
+        // tenant+company scope so the upsert targets the right scope's row, never another tenant's.
+        var existing = await _db.GlPeriodCloses.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(p => p.TenantId == tid && p.CompanyId == companyId && p.Period == period, ct);
+        if (existing is not null && existing.Status == GlPeriodStatuses.Closed)
+            return Ok(ToPeriodDto(existing));   // idempotent — already closed
+
+        var before = existing?.Status ?? GlPeriodStatuses.Open;
+        if (existing is null)
+        {
+            existing = new GlPeriodClose { TenantId = tid.Value, CompanyId = companyId, Period = period };
+            _db.GlPeriodCloses.Add(existing);
+        }
+        existing.Status = GlPeriodStatuses.Closed;
+        existing.ClosedAtUtc = DateTime.UtcNow;
+        existing.ClosedByUserId = this.GetUserId();
+        existing.ClosedByName = UserName();
+        existing.ClosedReason = req?.Reason;
+        existing.UpdatedAtUtc = DateTime.UtcNow;
+        await WriteAudit("finance.gl.period.closed", "GlPeriodClose", existing.Id.ToString(), companyId,
+            new { period, companyId, before, after = GlPeriodStatuses.Closed, reason = req?.Reason }, ct);
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToPeriodDto(existing));
+    }
+
+    [HttpPost("periods/{period}/reopen")]
+    public async Task<IActionResult> ReopenPeriod(string period, [FromQuery] Guid? companyId, [FromBody] GlPeriodActionRequest? req, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.manage")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (ScopeError(companyId) is { } err) return err;
+        if (string.IsNullOrWhiteSpace(req?.Reason))
+            return BadRequest(new { message = "A reason is required to reopen a closed period (audited)." });
+
+        // IgnoreQueryFilters is intentional: same scope-authorised system read as ClosePeriod.
+        var existing = await _db.GlPeriodCloses.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(p => p.TenantId == tid && p.CompanyId == companyId && p.Period == period, ct);
+        if (existing is null || existing.Status != GlPeriodStatuses.Closed)
+            return BadRequest(new { message = $"Period {period} is not closed in this scope." });
+
+        existing.Status = GlPeriodStatuses.Open;
+        existing.ReopenedAtUtc = DateTime.UtcNow;
+        existing.ReopenedByUserId = this.GetUserId();
+        existing.ReopenedByName = UserName();
+        existing.ReopenReason = req.Reason;
+        existing.UpdatedAtUtc = DateTime.UtcNow;
+        await WriteAudit("finance.gl.period.reopened", "GlPeriodClose", existing.Id.ToString(), companyId,
+            new { period, companyId, before = GlPeriodStatuses.Closed, after = GlPeriodStatuses.Open, reason = req.Reason }, ct);
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToPeriodDto(existing));
+    }
+
+    private static bool IsValidPeriod(string period) =>
+        System.Text.RegularExpressions.Regex.IsMatch(period ?? string.Empty, @"^\d{4}-(0[1-9]|1[0-2])$");
+
+    private string? UserName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name");
+
+    private static object ToPeriodDto(GlPeriodClose p) => new
+    {
+        p.Id, p.CompanyId, p.Period, p.Status,
+        p.ClosedAtUtc, p.ClosedByName, p.ClosedReason,
+        p.ReopenedAtUtc, p.ReopenedByName, p.ReopenReason,
+    };
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     /// <summary>Loads the drivers visible to a scope (company rows + tenant defaults; company wins per key).
@@ -484,6 +581,7 @@ public class FinanceGlController : ControllerBase
     };
 }
 
+public record GlPeriodActionRequest(string? Reason = null);
 public record GlAccountRequest(string Code, string Name, string AccountType = "Expense", bool IsActive = true);
 public record GlMappingRequest(string DriverKey, Guid AccountId, Guid? SegmentCostCenterId = null);
 public record GlDriverRequest(

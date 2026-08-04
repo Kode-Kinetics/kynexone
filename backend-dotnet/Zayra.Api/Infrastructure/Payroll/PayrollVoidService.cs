@@ -51,6 +51,12 @@ public sealed class PayrollVoidService
                      && g.SourceEntityId == runId && !g.IsReversed)
             .ToListAsync(ct);
 
+        // POD-B1 (P0-3) — a void writes GL contras into the run period; refuse to silently rewrite a
+        // CLOSED period's books. Force an audited reopen → void → re-close. Only blocks when there is
+        // GL to reverse (a Processed run with no GL touches no books, so a closed period is irrelevant).
+        if (glEntries.Count > 0 && await PeriodCloseGuard.IsClosedAsync(_db, tenantId, run.CompanyId, period, ct))
+            return VoidRunResult.PeriodClosed(period);
+
         int glReversed = 0;
         if (glEntries.Count > 0)
         {
@@ -60,7 +66,7 @@ public sealed class PayrollVoidService
                 SourceModule      = "Payroll",
                 SourceEntityId    = runId,
                 SourceEntityRef   = period,
-                EventType         = "PayrollVoid",
+                EventType         = GlEventTypes.Void,
                 DebitAccount      = orig.CreditAccount,
                 CreditAccount     = orig.DebitAccount,
                 Amount            = orig.Amount,
@@ -84,6 +90,16 @@ public sealed class PayrollVoidService
             .Where(s => s.TenantId == tenantId && s.RunId == runId)
             .ExecuteUpdateAsync(s => s.SetProperty(p => p.Status, "Voided"), ct);
 
+        // POD-B1 (P1-5) — the GL contras above already reversed any net-pay settlement / statutory
+        // remittance (they share SourceModule="Payroll"/SourceEntityId=runId). Keep the OPERATIONAL
+        // state consistent with the returned-to-zero ledger: a settled batch (WpsStatus=Paid) reverts to
+        // Accepted so status never reads "money left" while the ledger says it came back.
+        int batchesReverted = await _db.PayrollPaymentBatches
+            .Where(b => b.TenantId == tenantId && b.PayrollRunId == runId && b.WpsStatus == WpsStatuses.Paid)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(p => p.WpsStatus, WpsStatuses.Accepted)
+                .SetProperty(p => p.WpsStatusChangedAtUtc, DateTime.UtcNow), ct);
+
         run.Status         = "Voided";
         run.VoidedAtUtc    = DateTime.UtcNow;
         run.VoidedByUserId = actorId;
@@ -101,6 +117,7 @@ public sealed class PayrollVoidService
             {
                 reason,
                 glEntriesReversed = glReversed,
+                batchesReverted,
                 period,
                 actorName,
                 source = "PayrollVoidService",
@@ -115,18 +132,22 @@ public sealed class PayrollVoidService
 
 public sealed class VoidRunResult
 {
-    public enum Kind { Voided, AlreadyVoided, NotFound }
+    public enum Kind { Voided, AlreadyVoided, NotFound, PeriodClosed }
 
     public Kind   ResultKind    { get; private init; }
     public string Period        { get; private init; } = string.Empty;
     public int    GlReversed    { get; private init; }
 
-    public bool IsVoided      => ResultKind == Kind.Voided;
-    public bool IsAlreadyVoid => ResultKind == Kind.AlreadyVoided;
-    public bool IsNotFound    => ResultKind == Kind.NotFound;
+    public bool IsVoided       => ResultKind == Kind.Voided;
+    public bool IsAlreadyVoid  => ResultKind == Kind.AlreadyVoided;
+    public bool IsNotFound     => ResultKind == Kind.NotFound;
+    public bool IsPeriodClosed => ResultKind == Kind.PeriodClosed;
 
     public static VoidRunResult Voided(string period, int glReversed) => new()
         { ResultKind = Kind.Voided, Period = period, GlReversed = glReversed };
     public static VoidRunResult AlreadyVoided => new() { ResultKind = Kind.AlreadyVoided };
     public static VoidRunResult NotFound      => new() { ResultKind = Kind.NotFound };
+    // POD-B1 (P0-3) — the run's GL period is closed; void must not silently mutate closed books.
+    public static VoidRunResult PeriodClosed(string period) => new()
+        { ResultKind = Kind.PeriodClosed, Period = period };
 }

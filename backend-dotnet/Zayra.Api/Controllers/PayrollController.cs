@@ -1177,6 +1177,17 @@ public class PayrollController : ControllerBase
             .AnyAsync(x => x.SourceModule == "Payroll" && x.SourceEntityId == id && x.TenantId == tenantId, cancellationToken);
         if (!alreadyPosted)
         {
+            // POD-B1 — a closed GL period rejects NEW postings. Dated into the accrual (run) period, so
+            // this only ever fires for an explicitly closed period; a re-lock that posts nothing (already
+            // posted) is unaffected because the guard sits inside the not-yet-posted branch.
+            if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, run.CompanyId, period, cancellationToken))
+                return UnprocessableEntity(new
+                {
+                    error     = "gl_period_closed",
+                    message   = $"GL period {period} is closed. Reopen it before locking payroll into this period.",
+                    period,
+                    companyId = run.CompanyId,
+                });
             var earnings   = await _db.PayrollEarnings.AsNoTracking()
                 .Where(e => e.TenantId == tenantId && e.PayrollRunId == id).ToListAsync(cancellationToken);
             var dedxns     = await _db.PayrollDeductions.AsNoTracking()
@@ -1443,6 +1454,14 @@ public class PayrollController : ControllerBase
 
         if (result.IsNotFound)    return NotFound();
         if (result.IsAlreadyVoid) return Conflict(new { error = "already_voided", message = "This payroll run has already been voided." });
+        // POD-B1 (P0-3) — voiding would post contras into a closed GL period; require an audited reopen.
+        if (result.IsPeriodClosed)
+            return UnprocessableEntity(new
+            {
+                error   = "gl_period_closed",
+                message = $"GL period {result.Period} is closed. Reopen it (Finance → GL periods) before voiding this run so the reversal is not posted into closed books.",
+                period  = result.Period,
+            });
 
         return Ok(new
         {
@@ -1958,6 +1977,25 @@ public class PayrollController : ControllerBase
             });
         }
 
+        // POD-B1 (P1-6) — a batch may not reach the terminal Reconciled state until net pay has actually
+        // been settled to GL (2100 Salaries Payable cleared against Cash/Bank). This gates the legacy
+        // Accepted→Reconciled edge at runtime without deleting it from the transition table (WpsTests
+        // still asserts the edge). The supported path is Accepted →(settle)→ Paid → Reconciled.
+        if (req.Status is WpsStatuses.Reconciled)
+        {
+            var settlementPosted = await _db.FinanceGlEntries.AnyAsync(
+                x => x.TenantId == tenantId && x.SourceModule == "Payroll"
+                  && x.SourceEntityId == batch.PayrollRunId
+                  && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed, cancellationToken);
+            if (!settlementPosted)
+                return UnprocessableEntity(new
+                {
+                    error   = "settlement_required",
+                    message = "Settle the net pay (POST payment-batches/{id}/settle) before reconciling — "
+                            + "reconciling now would close the batch with Salaries Payable (2100) still open.",
+                });
+        }
+
         batch.WpsStatus = req.Status;
         batch.WpsStatusChangedAtUtc = DateTime.UtcNow;
         latestFile.FilingStatus = req.Status;
@@ -2030,6 +2068,352 @@ public class PayrollController : ControllerBase
             new { from, to = req.Status, reference = req.Reference, notes = req.Notes }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         return Ok(new { runId = id, erpPostingStatus = run.ErpPostingStatus, reference = run.ErpPostingReference });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+    // POD-B1 — GL SETTLEMENT & STATUTORY REMITTANCE
+    //
+    // Lifecycle: Lock (accrue liabilities) → Pay (settle net) → Remit (settle statutory). The accrual
+    // (Lock) CREATES the control-account liabilities (2100 net, 2101/2106 GOSI, 2102 tax, 2107 loan).
+    // These endpoints CLEAR them against Cash/Bank so — after Pay + Remit — every control account nets
+    // to zero and 1000 Cash/Bank carries the actual outflow, with ZERO manual journal entries.
+    //
+    // Remap-immunity (consultant P0-1): both builders CLEAR THE EXACT ACCRUAL LINES — they DR each
+    // accrual credit line's STORED account/amount verbatim and only RESOLVE Cash/Bank for the credit
+    // side. So a chart-of-accounts remap between Lock and Pay/Remit can never make a control account
+    // drift off zero (the gl_unbalanced guard only proves per-journal balance, never cross-journal
+    // tie-out — which is exactly why we clear the stored lines instead of re-resolving accounts).
+    //
+    // Period (consultant P0-2): the cash entry is dated into the PAYMENT / REMIT period, not the
+    // accrual period, and the closed-period guard tests THAT period — so an accrual month can close on
+    // schedule with the payable legitimately carrying into the settlement month (standard accrual
+    // accounting). "Net to zero" holds cumulatively across the run's ledger.
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// NET-PAY SETTLEMENT (Pay). When a payment batch is confirmed paid (WPS/bank Accepted), posts a
+    /// balanced DR 2100 Salaries Payable / CR 1000 Cash-Bank journal for the accrued net — clearing 2100
+    /// and booking the outflow. Idempotent (mirrors the Lock guard), and reversible via
+    /// settle/reverse. Requires payroll.export.
+    /// </summary>
+    [HttpPost("payment-batches/{batchId:guid}/settle")]
+    public async Task<IActionResult> SettlePaymentBatch(Guid batchId, [FromBody] SettlePaymentBatchRequest req, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("payroll.export")) return Forbid();
+
+        var tenantId = GetTenantId();
+        var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
+        if (batch is null) return NotFound();
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
+        if (run is null) return NotFound();
+
+        if (run.Status != "Locked")
+            return BadRequest(new { error = "run_not_locked", message = "Only a Locked run can be settled." });
+        if (batch.WpsStatus != WpsStatuses.Accepted)
+            return BadRequest(new { error = "batch_not_accepted", message = $"Only an Accepted payment batch can be settled (current: {batch.WpsStatus}). Mark the WPS/bank file Accepted first." });
+
+        // Accrual must exist — cannot settle an un-accrued run.
+        var accrualLines = await _db.FinanceGlEntries
+            .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == run.Id
+                     && x.EventType == GlEventTypes.Accrual && !x.IsReversed)
+            .ToListAsync(cancellationToken);
+        if (accrualLines.Count == 0)
+            return BadRequest(new { error = "gl_not_accrued", message = "This run has no accrual GL. Lock the run before settling." });
+
+        // P1-7 — do not book cash that never left: block while any payment record is Rejected (bounced
+        // IBAN / failed transfer). Pending records are fine (WPS instructed but not yet cleared).
+        var rejectedCount = await _db.PayrollPaymentRecords
+            .CountAsync(x => x.TenantId == tenantId && x.PaymentBatchId == batch.Id && x.Status == "Rejected", cancellationToken);
+        if (rejectedCount > 0)
+            return UnprocessableEntity(new { error = "payment_records_rejected", message = $"{rejectedCount} payment record(s) are Rejected. Resolve/retry them before settling so Cash/Bank reflects the actual outflow.", rejectedCount });
+
+        // Idempotency (mirror Lock).
+        var alreadySettled = await _db.FinanceGlEntries.AnyAsync(
+            x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == run.Id
+              && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed, cancellationToken);
+        if (alreadySettled)
+            return Conflict(new { error = "already_settled", message = "This batch's net pay has already been settled to GL." });
+
+        // Date into the PAYMENT period; guard THAT period (P0-2).
+        var paidDate = req.PaidDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var settlementPeriod = $"{paidDate.Year}-{paidDate.Month:D2}";
+        if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, run.CompanyId, settlementPeriod, cancellationToken))
+            return UnprocessableEntity(new { error = "gl_period_closed", message = $"GL period {settlementPeriod} is closed. Reopen it before settling payments into it.", period = settlementPeriod, companyId = run.CompanyId });
+
+        // Clear the EXACT accrual NET_PAYABLE line(s) verbatim (remap-immune), CR Cash/Bank.
+        var netLines = accrualLines
+            .Where(l => string.IsNullOrEmpty(l.DebitAccount) && l.Description == PayrollGlDescriptions.NetPayable)
+            .ToList();
+        if (netLines.Count == 0 || netLines.Sum(l => l.Amount) <= 0m)
+            return BadRequest(new { error = "nothing_to_settle", message = "No open net-pay liability was found on the accrual to settle." });
+
+        var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
+        var (cashCode, cashName) = ResolveGlAccount("CASH_BANK", glCtx.Overrides, glCtx.DriverDefaults);
+        var cashAccount = $"{cashCode} - {cashName}";
+        var currency = netLines[0].Currency;
+
+        var (lines, dr, cr) = BuildLiabilityClearingGl(
+            tenantId, run.Id, settlementPeriod, batch.BatchNumber, GlEventTypes.NetSettlement,
+            netLines, cashAccount, GetUserId(), GetUserName(), currency,
+            $"Net pay settlement — batch {batch.BatchNumber}");
+        if (Math.Abs(dr - cr) > 0.01m)
+            return UnprocessableEntity(new { error = "gl_unbalanced", message = "Net-pay settlement GL is not balanced.", totalDebits = dr, totalCredits = cr });
+
+        _db.FinanceGlEntries.AddRange(lines);
+        batch.WpsStatus = WpsStatuses.Paid;
+        batch.WpsStatusChangedAtUtc = DateTime.UtcNow;
+        await PayrollAudit("payroll.batch.settled", "PayrollPaymentBatch", batch.Id.ToString(),
+            new { runId = run.Id, batch.BatchNumber, amount = cr, cashAccount, period = settlementPeriod, reference = req.Reference }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new { batchId = batch.Id, runId = run.Id, wpsStatus = batch.WpsStatus, settled = cr, cashAccount, period = settlementPeriod });
+    }
+
+    /// <summary>
+    /// Reverses a net-pay settlement via contra entries (re-opening 2100) and reverts the batch to
+    /// Accepted so operational state matches the ledger. Blocks if the settlement period is closed
+    /// (P0-3 — force an audited reopen). Requires payroll.export.
+    /// </summary>
+    [HttpPost("payment-batches/{batchId:guid}/settle/reverse")]
+    public async Task<IActionResult> ReverseSettlement(Guid batchId, [FromBody] PayrollReasonRequest req, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("payroll.export")) return Forbid();
+        if (string.IsNullOrWhiteSpace(req.Reason))
+            return BadRequest(new { error = "reason_required", message = "A reason is required to reverse a settlement." });
+
+        var tenantId = GetTenantId();
+        var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
+        if (batch is null) return NotFound();
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
+
+        var originals = await _db.FinanceGlEntries
+            .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == batch.PayrollRunId
+                     && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed)
+            .ToListAsync(cancellationToken);
+        if (originals.Count == 0)
+            return Conflict(new { error = "not_settled", message = "There is no active net-pay settlement to reverse for this batch." });
+
+        // P0-3 — do not silently rewrite closed books; require an audited reopen first.
+        foreach (var closedPeriod in originals.Select(o => o.Period).Distinct())
+            if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, run?.CompanyId, closedPeriod, cancellationToken))
+                return UnprocessableEntity(new { error = "gl_period_closed", message = $"GL period {closedPeriod} is closed. Reopen it before reversing this settlement.", period = closedPeriod });
+
+        var contras = BuildContraGl(tenantId, batch.PayrollRunId, originals, GlEventTypes.NetSettlementReversal, GetUserId(), GetUserName(), req.Reason);
+        foreach (var o in originals) o.IsReversed = true;
+        _db.FinanceGlEntries.AddRange(contras);
+        if (batch.WpsStatus == WpsStatuses.Paid)
+        {
+            batch.WpsStatus = WpsStatuses.Accepted;
+            batch.WpsStatusChangedAtUtc = DateTime.UtcNow;
+        }
+        await PayrollAudit("payroll.batch.settlement_reversed", "PayrollPaymentBatch", batch.Id.ToString(),
+            new { runId = batch.PayrollRunId, reversed = contras.Count, reason = req.Reason }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new { batchId = batch.Id, wpsStatus = batch.WpsStatus, reversedEntries = contras.Count });
+    }
+
+    /// <summary>
+    /// STATUTORY REMITTANCE (Remit). When GOSI/Tax/Loan is filed + remitted, clears the corresponding
+    /// control liabilities (GOSI → 2101 + 2106; TAX → 2102; LOAN → 2107) against Cash/Bank. Clears the
+    /// EXACT accrual credit lines verbatim (remap-immune), classifying them by the run's own deduction
+    /// Source. The employer expense (5101) is a P&amp;L line and is intentionally NOT cleared. Idempotent
+    /// per group and reversible. group ∈ {GOSI, TAX, LOAN, All}. Requires payroll.export.
+    /// </summary>
+    [HttpPost("runs/{id:guid}/remit")]
+    public async Task<IActionResult> RemitStatutory(Guid id, [FromBody] RemitStatutoryRequest req, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("payroll.export")) return Forbid();
+
+        var tenantId = GetTenantId();
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (run is null) return NotFound();
+        if (run.Status != "Locked")
+            return BadRequest(new { error = "run_not_locked", message = "Only a Locked run can be remitted." });
+
+        var groupArg = (req.Group ?? RemitGroups.All).Trim();
+        var groupsRequested = string.Equals(groupArg, RemitGroups.All, StringComparison.OrdinalIgnoreCase)
+            ? RemitGroups.Concrete
+            : RemitGroups.Concrete.Where(g => string.Equals(g, groupArg, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (groupsRequested.Length == 0)
+            return BadRequest(new { error = "invalid_group", message = $"Group must be one of: {string.Join(", ", RemitGroups.Concrete)}, {RemitGroups.All}." });
+
+        var accrualLines = await _db.FinanceGlEntries
+            .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id
+                     && x.EventType == GlEventTypes.Accrual && !x.IsReversed)
+            .ToListAsync(cancellationToken);
+        if (accrualLines.Count == 0)
+            return BadRequest(new { error = "gl_not_accrued", message = "This run has no accrual GL. Lock the run before remitting." });
+
+        // Classify each accrual deduction CR line into a remit group using the run's OWN deduction
+        // records (which carry Source). Remap-immune: we then DR the line's stored account, never a
+        // re-resolved one. Driver ROUTING (component→driver) is stable/add-only; only account MAPPING
+        // drifts, and that is exactly what clearing-by-stored-account defends against.
+        var deductions = await _db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == id)
+            .Select(d => new { d.ComponentCode, d.Source })
+            .ToListAsync(cancellationToken);
+        var groupByCode = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var d in deductions)
+        {
+            var g = RemitGroups.ForSource(d.Source);
+            if (g is not null) groupByCode[d.ComponentCode] = g;   // codes are group-stable per source
+        }
+
+        // Date into the REMIT period; guard THAT period (P0-2).
+        var remitDate = req.RemitDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var remitPeriod = $"{remitDate.Year}-{remitDate.Month:D2}";
+        if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, run.CompanyId, remitPeriod, cancellationToken))
+            return UnprocessableEntity(new { error = "gl_period_closed", message = $"GL period {remitPeriod} is closed. Reopen it before remitting into it.", period = remitPeriod, companyId = run.CompanyId });
+
+        var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
+        var (cashCode, cashName) = ResolveGlAccount("CASH_BANK", glCtx.Overrides, glCtx.DriverDefaults);
+        var cashAccount = $"{cashCode} - {cashName}";
+
+        var posted = new List<object>();
+        var skipped = new List<object>();
+        foreach (var g in groupsRequested)
+        {
+            var already = await _db.FinanceGlEntries.AnyAsync(
+                x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id
+                  && x.EventType == GlEventTypes.RemitPrefix + g && !x.IsReversed, cancellationToken);
+            if (already) { skipped.Add(new { group = g, reason = "already_remitted" }); continue; }
+
+            var groupLines = accrualLines.Where(l =>
+                    string.IsNullOrEmpty(l.DebitAccount)
+                    && l.Description.StartsWith(PayrollGlDescriptions.DeductionPrefix, StringComparison.Ordinal)
+                    && groupByCode.TryGetValue(l.Description[PayrollGlDescriptions.DeductionPrefix.Length..], out var lg)
+                    && lg == g)
+                .ToList();
+            if (groupLines.Count == 0 || groupLines.Sum(l => l.Amount) <= 0m)
+            { skipped.Add(new { group = g, reason = "nothing_to_remit" }); continue; }
+
+            var currency = groupLines[0].Currency;
+            var (lines, dr, cr) = BuildLiabilityClearingGl(
+                tenantId, id, remitPeriod, req.Reference ?? g, GlEventTypes.Remit(g),
+                groupLines, cashAccount, GetUserId(), GetUserName(), currency,
+                $"{g} remittance — ref {req.Reference ?? "(none)"}");
+            if (Math.Abs(dr - cr) > 0.01m)
+                return UnprocessableEntity(new { error = "gl_unbalanced", group = g, message = "Statutory remittance GL is not balanced.", totalDebits = dr, totalCredits = cr });
+
+            _db.FinanceGlEntries.AddRange(lines);
+            posted.Add(new { group = g, amount = cr });
+            await PayrollAudit("payroll.statutory.remitted", "PayrollRun", id.ToString(),
+                new { group = g, reference = req.Reference, amount = cr, cashAccount, period = remitPeriod }, cancellationToken);
+        }
+
+        if (posted.Count == 0)
+            return Conflict(new { error = "nothing_remitted", message = "No statutory liabilities were remitted (already remitted, or none in scope).", skipped });
+
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new { runId = id, posted, skipped, cashAccount, period = remitPeriod });
+    }
+
+    /// <summary>
+    /// Reverses a statutory remittance group via contra entries (re-opening the control liabilities).
+    /// Blocks if the remittance period is closed (P0-3). group ∈ {GOSI, TAX, LOAN}. Requires payroll.export.
+    /// </summary>
+    [HttpPost("runs/{id:guid}/remit/reverse")]
+    public async Task<IActionResult> ReverseRemittance(Guid id, [FromBody] RemitReverseRequest req, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("payroll.export")) return Forbid();
+        if (string.IsNullOrWhiteSpace(req.Reason))
+            return BadRequest(new { error = "reason_required", message = "A reason is required to reverse a remittance." });
+
+        var groupArg = (req.Group ?? "").Trim();
+        var group = RemitGroups.Concrete.FirstOrDefault(g => string.Equals(g, groupArg, StringComparison.OrdinalIgnoreCase));
+        if (group is null)
+            return BadRequest(new { error = "invalid_group", message = $"Group must be one of: {string.Join(", ", RemitGroups.Concrete)}." });
+
+        var tenantId = GetTenantId();
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (run is null) return NotFound();
+
+        var originals = await _db.FinanceGlEntries
+            .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id
+                     && x.EventType == GlEventTypes.RemitPrefix + group && !x.IsReversed)
+            .ToListAsync(cancellationToken);
+        if (originals.Count == 0)
+            return Conflict(new { error = "not_remitted", message = $"There is no active {group} remittance to reverse for this run." });
+
+        foreach (var closedPeriod in originals.Select(o => o.Period).Distinct())
+            if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, run.CompanyId, closedPeriod, cancellationToken))
+                return UnprocessableEntity(new { error = "gl_period_closed", message = $"GL period {closedPeriod} is closed. Reopen it before reversing this remittance.", period = closedPeriod });
+
+        var contras = BuildContraGl(tenantId, id, originals, GlEventTypes.RemitReversal(group), GetUserId(), GetUserName(), req.Reason);
+        foreach (var o in originals) o.IsReversed = true;
+        _db.FinanceGlEntries.AddRange(contras);
+        await PayrollAudit("payroll.statutory.remittance_reversed", "PayrollRun", id.ToString(),
+            new { group, reversed = contras.Count, reason = req.Reason }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new { runId = id, group, reversedEntries = contras.Count });
+    }
+
+    // ── POD-B1 GL builders (settlement / remittance / reversal) ─────────────────────────────────────
+
+    /// <summary>
+    /// Builds a balanced "clear liabilities against Cash/Bank" journal: for each accrual CREDIT line it
+    /// posts DR &lt;that line's STORED CreditAccount&gt; for the STORED amount (so the control account nets to
+    /// zero regardless of any later CoA remap), then ONE CR to <paramref name="cashAccount"/> for the
+    /// total. Reused by net-pay settlement and each remittance group. Returns (lines, DR, CR) so the
+    /// caller reuses the gl_unbalanced 422 guard. Balanced by construction (Σ DR == CR == total).
+    /// </summary>
+    private static (List<FinanceGlEntry> Lines, decimal TotalDebits, decimal TotalCredits) BuildLiabilityClearingGl(
+        Guid tenantId, Guid runId, string entryPeriod, string sourceRef, string eventType,
+        IReadOnlyList<FinanceGlEntry> accrualCreditLines, string cashAccount,
+        Guid? postedBy, string postedByName, string currency, string description)
+    {
+        var lines = new List<FinanceGlEntry>();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        decimal total = 0m;
+        foreach (var accrual in accrualCreditLines)
+        {
+            if (accrual.Amount <= 0m) continue;
+            lines.Add(new FinanceGlEntry
+            {
+                TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
+                SourceEntityRef = sourceRef, EventType = eventType,
+                DebitAccount = accrual.CreditAccount, CreditAccount = string.Empty,
+                Amount = accrual.Amount, Currency = currency,
+                EntryDate = today, Period = entryPeriod,
+                Description = description,
+                PostedBy = postedBy, PostedByName = postedByName,
+            });
+            total += accrual.Amount;
+        }
+        if (total > 0m)
+            lines.Add(new FinanceGlEntry
+            {
+                TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
+                SourceEntityRef = sourceRef, EventType = eventType,
+                DebitAccount = string.Empty, CreditAccount = cashAccount,
+                Amount = total, Currency = currency,
+                EntryDate = today, Period = entryPeriod,
+                Description = description,
+                PostedBy = postedBy, PostedByName = postedByName,
+            });
+        var dr = lines.Where(l => !string.IsNullOrEmpty(l.DebitAccount)).Sum(l => l.Amount);
+        var cr = lines.Where(l => !string.IsNullOrEmpty(l.CreditAccount)).Sum(l => l.Amount);
+        return (lines, dr, cr);
+    }
+
+    /// <summary>Builds contra entries reversing <paramref name="originals"/> (swap DR/CR, same amount,
+    /// dated to the original period, ReversalOfEntryId set) — the PayrollVoidService pattern, filtered to
+    /// one EventType. The caller flags the originals IsReversed=true.</summary>
+    private static List<FinanceGlEntry> BuildContraGl(
+        Guid tenantId, Guid runId, IReadOnlyList<FinanceGlEntry> originals, string eventType,
+        Guid? postedBy, string postedByName, string reason)
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        return originals.Select(orig => new FinanceGlEntry
+        {
+            TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
+            SourceEntityRef = orig.SourceEntityRef, EventType = eventType,
+            DebitAccount = orig.CreditAccount, CreditAccount = orig.DebitAccount,
+            Amount = orig.Amount, Currency = orig.Currency,
+            EntryDate = today, Period = orig.Period,
+            Description = $"REVERSAL — {orig.Description} — {reason}",
+            PostedBy = postedBy, PostedByName = postedByName,
+            IsReversed = false, ReversalOfEntryId = orig.Id,
+        }).ToList();
     }
 
     /// <summary>
@@ -2663,7 +3047,7 @@ public class PayrollController : ControllerBase
             lines.Add(new FinanceGlEntry
             {
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
-                SourceEntityRef = period, EventType = "PayrollLock",
+                SourceEntityRef = period, EventType = GlEventTypes.Accrual,
                 DebitAccount  = Account(driver), CreditAccount = string.Empty,
                 Amount = grp.Sum(e => e.Amount), Currency = currency,
                 EntryDate = today, Period = period,
@@ -2699,11 +3083,11 @@ public class PayrollController : ControllerBase
             lines.Add(new FinanceGlEntry
             {
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
-                SourceEntityRef = period, EventType = "PayrollLock",
+                SourceEntityRef = period, EventType = GlEventTypes.Accrual,
                 DebitAccount = string.Empty, CreditAccount = Account(driver),
                 Amount = grp.Sum(d => d.Amount), Currency = currency,
                 EntryDate = today, Period = period,
-                Description = $"Payroll deduction: {grp.Key.ComponentCode}",
+                Description = $"{PayrollGlDescriptions.DeductionPrefix}{grp.Key.ComponentCode}",
                 PostedBy = postedBy, PostedByName = postedByName,
             });
         }
@@ -2715,7 +3099,7 @@ public class PayrollController : ControllerBase
             lines.Add(new FinanceGlEntry
             {
                 TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
-                SourceEntityRef = period, EventType = "PayrollLock",
+                SourceEntityRef = period, EventType = GlEventTypes.Accrual,
                 DebitAccount = Account(pairKey), CreditAccount = string.Empty,
                 Amount = amount, Currency = currency,
                 EntryDate = today, Period = period,
@@ -2728,11 +3112,11 @@ public class PayrollController : ControllerBase
         lines.Add(new FinanceGlEntry
         {
             TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
-            SourceEntityRef = period, EventType = "PayrollLock",
+            SourceEntityRef = period, EventType = GlEventTypes.Accrual,
             DebitAccount = string.Empty, CreditAccount = Account("NET_PAYABLE"),
             Amount = totalNetSalary, Currency = currency,
             EntryDate = today, Period = period,
-            Description = "Net salaries payable",
+            Description = PayrollGlDescriptions.NetPayable,
             PostedBy = postedBy, PostedByName = postedByName,
         });
 
@@ -4088,6 +4472,11 @@ public record PayrollDecisionRequest(string? Notes);
 public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency);
 public record WpsStatusRequest(string Status, string? Notes, string? Reference = null);
 public record ErpPostingStatusRequest(string Status, string? Reference = null, string? Notes = null);
+// POD-B1 — settlement / remittance / reversal request bodies.
+public record SettlePaymentBatchRequest(string? Reference = null, DateOnly? PaidDate = null);
+public record RemitStatutoryRequest(string? Group = null, string? Reference = null, DateOnly? RemitDate = null);
+public record PayrollReasonRequest(string? Reason = null);
+public record RemitReverseRequest(string? Group = null, string? Reason = null);
 public record PayrollGroupRequest(string Code, string Name, string? Currency);
 public record ImportSalaryStructuresRequest(string CsvContent);
 public record EosbCalculationRequest(int EmployeeId, DateTime? AsOfDate, string? TerminationReason = null);

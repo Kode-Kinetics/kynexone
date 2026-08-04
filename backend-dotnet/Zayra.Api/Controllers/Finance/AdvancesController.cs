@@ -6,6 +6,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Finance;
@@ -329,6 +330,10 @@ public class AdvancesController : ControllerBase
             ? await _db.ResolveTenantCurrencyAsync(tid, ct)
             : currency;
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        // POD-B1 (req-4) — no GL posting into a closed period. Single choke point covers every advance
+        // disbursement/repayment post. companyId=null → guarded by a tenant-wide close (per-company
+        // advance attribution is POD-B1b). Throws BEFORE the Add so nothing is persisted.
+        await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, null, today.ToString("yyyy-MM"), ct);
         _db.FinanceGlEntries.Add(new FinanceGlEntry
         {
             TenantId = tid, SourceModule = module, SourceEntityId = entityId,

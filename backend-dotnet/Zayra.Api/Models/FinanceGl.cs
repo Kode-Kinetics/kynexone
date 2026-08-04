@@ -125,6 +125,11 @@ public static class PayrollGlCatalog
         // Balancing entries
         new Driver("EMPLOYER_STATUTORY_EXPENSE", "Employer Statutory Expense", "5101", "Employer Social Insurance Expense", "Expense"),
         new Driver("NET_PAYABLE",           "Net Salaries Payable",          "2100", "Salaries Payable",                "Liability"),
+        // POD-B1 SETTLEMENT — the cash/bank asset the net-pay and statutory-remittance disbursements
+        // credit when a liability is cleared. Name/code deliberately match the "1000 - Cash/Bank"
+        // string the Loans/Advances/Bonus modules already post to (AdvancesController.cs:336,
+        // BonusesController.cs:588) so the whole product books cash to ONE consolidated account.
+        new Driver("CASH_BANK",             "Cash / Bank",                   "1000", "Cash/Bank",                       "Asset"),
     };
 
     public static IReadOnlyDictionary<string, (string Code, string Name)> Defaults { get; } =
@@ -154,6 +159,12 @@ public static class PayrollGlCatalog
         Sys(tenantId, "DED:OTHER",             "Deduction — Other",             GlDriverCategories.Deduction, "CR", "Liability", "2199", "Other Deductions",                 null,        "Any",    null,               98),
         Sys(tenantId, "EMPLOYER_STATUTORY_EXPENSE", "Employer Statutory Expense",GlDriverCategories.Balancing,"DR", "Expense",   "5101", "Employer Social Insurance Expense",null,        "Any",    null,               100),
         Sys(tenantId, "NET_PAYABLE",           "Net Salaries Payable",          GlDriverCategories.Balancing, "CR", "Liability", "2100", "Salaries Payable",                 null,        "Any",    null,               101),
+        // POD-B1 — Cash/Bank disbursement account. Category=Balancing so component routing
+        // (ResolveDriverForComponent filters Earning/Deduction only) NEVER selects it; it is resolved
+        // exclusively by explicit ResolveGlAccount("CASH_BANK", …) from the settlement/remittance builders,
+        // exactly like NET_PAYABLE. Adding it here auto-populates PayrollGlCatalog.Defaults so posting
+        // resolves "1000 - Cash/Bank" for every tenant via the compiled fallback with no data migration.
+        Sys(tenantId, "CASH_BANK",             "Cash / Bank",                   GlDriverCategories.Balancing, "CR", "Asset",     "1000", "Cash/Bank",                        null,        "Any",    null,               102),
     };
 
     private static GlDriver Sys(
@@ -167,4 +178,95 @@ public static class PayrollGlCatalog
         EmitsEmployerExpensePair = emitsPair, PairedExpenseDriverKey = paired,
         IsSystem = true, IsActive = true, SortOrder = sort,
     };
+}
+
+/// <summary>Lifecycle states for a GL accounting period.</summary>
+public static class GlPeriodStatuses
+{
+    public const string Open   = "Open";
+    public const string Closed = "Closed";
+}
+
+/// <summary>
+/// Canonical EventType tags for the payroll GL lifecycle. One declaration point so the accrual
+/// (Lock), the POD-B1 settlement/remittance clearing journals, their reversals, and the void contra
+/// all agree — and so idempotency/tie-out queries never rely on scattered string literals.
+/// </summary>
+public static class GlEventTypes
+{
+    public const string Accrual               = "PayrollLock";                  // liabilities created on Lock
+    public const string NetSettlement         = "PayrollNetSettlement";         // DR 2100 / CR 1000 on Pay
+    public const string NetSettlementReversal = "PayrollNetSettlementReversal"; // contra of the above
+    public const string Void                  = "PayrollVoid";                  // full-run void contra
+    public const string RemitPrefix           = "PayrollRemit:";                // + group (GOSI/TAX/LOAN)
+    public const string RemitReversalPrefix   = "PayrollRemitReversal:";        // + group
+
+    public static string Remit(string group)         => RemitPrefix + group;
+    public static string RemitReversal(string group) => RemitReversalPrefix + group;
+}
+
+/// <summary>Stable, remap-immune identifiers embedded in the accrual line Descriptions. The settlement
+/// and remittance builders locate the exact accrual lines to clear by these (and then DR the lines'
+/// STORED account/amount verbatim), so a chart-of-accounts remap between Lock and Pay/Remit can never
+/// make a control account drift off zero.</summary>
+public static class PayrollGlDescriptions
+{
+    public const string NetPayable      = "Net salaries payable";
+    public const string DeductionPrefix = "Payroll deduction: ";
+}
+
+/// <summary>Statutory remittance groups for POD-B1. A group maps a deduction Source to the set of
+/// control accounts a single remittance clears (they go to different authorities on different dates).</summary>
+public static class RemitGroups
+{
+    public const string Gosi = "GOSI";  // Source == "Statutory" → clears 2101 (EE) + 2106 (ER)
+    public const string Tax  = "TAX";   // Source == "Tax"       → clears 2102
+    public const string Loan = "LOAN";  // Source == "Loan"      → clears 2107
+    public const string All  = "All";   // every applicable group in one call
+
+    public static readonly string[] Concrete = { Gosi, Tax, Loan };
+
+    /// <summary>Deduction Source → remittance group, or null when the source is not remitted here.</summary>
+    public static string? ForSource(string source) => source switch
+    {
+        "Statutory" => Gosi,
+        "Tax"       => Tax,
+        "Loan"      => Loan,
+        _           => null,
+    };
+}
+
+/// <summary>
+/// POD-B1 — GL period-close control. The ABSENCE of a Closed row for a scope+period means the period
+/// is OPEN (open is the default, so no backfill is needed for the ~55 live tenants). A Status="Closed"
+/// row BLOCKS new GL postings dated into that period (enforced by
+/// <see cref="Zayra.Api.Infrastructure.Payroll.PeriodCloseGuard"/> on the Lock / settle / remit / void
+/// posting paths). Reopen is an explicit, reason-gated, audited transition back to Open.
+///
+/// Scope tier: <see cref="ICompanyScoped"/> (config, NOT operational): a group-wide close
+/// (CompanyId == null) is a legitimate tenant-wide shared row that MUST be visible to every company's
+/// list view — the poison-default hardening of ICompanyScopedOperational would wrongly hide it from
+/// company-scoped users. A company-specific close (CompanyId set) closes only that company's period.
+/// </summary>
+public class GlPeriodClose : ITenantOwned, ICompanyScoped
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    // Null = group/tenant-wide close (blocks every company for the period); set = company-specific close.
+    public Guid? CompanyId { get; set; }
+    public string Period { get; set; } = string.Empty;   // "YYYY-MM"
+    public string Status { get; set; } = GlPeriodStatuses.Closed;
+
+    public DateTime? ClosedAtUtc { get; set; }
+    public Guid? ClosedByUserId { get; set; }
+    public string? ClosedByName { get; set; }
+    public string? ClosedReason { get; set; }
+
+    public DateTime? ReopenedAtUtc { get; set; }
+    public Guid? ReopenedByUserId { get; set; }
+    public string? ReopenedByName { get; set; }
+    public string? ReopenReason { get; set; }
+
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedAtUtc { get; set; }
 }

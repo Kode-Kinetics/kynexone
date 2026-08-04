@@ -557,10 +557,13 @@ public static class WpsStatuses
     public const string Submitted  = "Submitted";
     public const string Accepted   = "Accepted";
     public const string Rejected   = "Rejected";
+    // POD-B1 — the bank/Mudad-accepted disbursement has been SETTLED (money left the account and the
+    // net-pay GL settlement journal posted, clearing 2100 Salaries Payable against Cash/Bank).
+    public const string Paid       = "Paid";
     public const string Reconciled = "Reconciled";
 
     public static readonly string[] All =
-        { Draft, Generated, Downloaded, Submitted, Accepted, Rejected, Reconciled };
+        { Draft, Generated, Downloaded, Submitted, Accepted, Rejected, Paid, Reconciled };
 }
 
 /// <summary>
@@ -576,7 +579,12 @@ public static class WpsTransitions
             [WpsStatuses.Generated]  = new[] { WpsStatuses.Downloaded, WpsStatuses.Submitted },
             [WpsStatuses.Downloaded] = new[] { WpsStatuses.Submitted },
             [WpsStatuses.Submitted]  = new[] { WpsStatuses.Accepted, WpsStatuses.Rejected },
-            [WpsStatuses.Accepted]   = new[] { WpsStatuses.Reconciled },
+            // POD-B1 — Accepted (bank/Mudad instructed) settles to Paid (net-pay GL cleared). The
+            // legacy Accepted→Reconciled edge is retained (WpsTests asserts it), but at runtime
+            // UpdateWpsStatus gates any →Reconciled on the net-pay settlement GL existing so a batch can
+            // never reach a terminal state with 2100 still open (see PayrollController.UpdateWpsStatus).
+            [WpsStatuses.Accepted]   = new[] { WpsStatuses.Reconciled, WpsStatuses.Paid },
+            [WpsStatuses.Paid]       = new[] { WpsStatuses.Reconciled },
             // Rejected allows re-export: a new WPSFileBatch is created, then status reverts to Generated.
             [WpsStatuses.Rejected]   = new[] { WpsStatuses.Generated },
             [WpsStatuses.Reconciled] = Array.Empty<string>(),

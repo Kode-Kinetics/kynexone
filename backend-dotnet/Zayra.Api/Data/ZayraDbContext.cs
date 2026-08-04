@@ -889,6 +889,7 @@ public class ZayraDbContext : DbContext
     public DbSet<GlAccount> GlAccounts => Set<GlAccount>();
     public DbSet<GlAccountMapping> GlAccountMappings => Set<GlAccountMapping>();
     public DbSet<GlDriver> GlDrivers => Set<GlDriver>();
+    public DbSet<GlPeriodClose> GlPeriodCloses => Set<GlPeriodClose>();
     public DbSet<PayComponent> PayComponents => Set<PayComponent>();
     public DbSet<CompanyRatePolicy> CompanyRatePolicies => Set<CompanyRatePolicy>();
     public DbSet<CompanyStatutoryOverride> CompanyStatutoryOverrides => Set<CompanyStatutoryOverride>();
@@ -1390,6 +1391,22 @@ public class ZayraDbContext : DbContext
             entity.HasKey(x => x.Id);
             // Non-unique helper index; real UNIQUE (tenant, company, key) NULLS NOT DISTINCT via raw SQL.
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Key });
+        });
+
+        modelBuilder.Entity<GlPeriodClose>(entity =>
+        {
+            entity.ToTable("gl_period_closes");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Period).HasMaxLength(7);   // "YYYY-MM"
+            entity.Property(x => x.Status).HasMaxLength(16);
+            entity.Property(x => x.ClosedByName).HasMaxLength(200);
+            entity.Property(x => x.ClosedReason).HasMaxLength(1000);
+            entity.Property(x => x.ReopenedByName).HasMaxLength(200);
+            entity.Property(x => x.ReopenReason).HasMaxLength(1000);
+            // Helper index for the closed-period guard lookup; the real UNIQUE (tenant, company, period)
+            // NULLS NOT DISTINCT is created via raw SQL in AddGlPeriodClose (Npgsql 8 can't express it) so
+            // one scope cannot hold two rows for the same period.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
         });
 
         modelBuilder.Entity<PayComponent>(entity =>
