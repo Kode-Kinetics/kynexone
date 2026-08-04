@@ -666,6 +666,7 @@ public class ZayraDbContext : DbContext
     public DbSet<PayrollGroup> PayrollGroups => Set<PayrollGroup>();
     public DbSet<PayrollCycle> PayrollCycles => Set<PayrollCycle>();
     public DbSet<PayrollRunEmployee> PayrollRunEmployees => Set<PayrollRunEmployee>();
+    public DbSet<PayrollRunEmployeeSelection> PayrollRunEmployeeSelections => Set<PayrollRunEmployeeSelection>();
     public DbSet<PayrollEarning> PayrollEarnings => Set<PayrollEarning>();
     public DbSet<PayrollDeduction> PayrollDeductions => Set<PayrollDeduction>();
     public DbSet<BenefitPlan> BenefitPlans => Set<BenefitPlan>();
@@ -1877,12 +1878,57 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.ErpPostingStatus).HasMaxLength(40);
             entity.Property(x => x.ErpPostingReference).HasMaxLength(120);
             entity.Property(x => x.ErpPostingFailureReason).HasMaxLength(1000);
-            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Year, x.Month });
+            // POD-B2 — run typing. HasDefaultValue MUST stay byte-identical to the migration's
+            // defaultValue: "Regular", or the next `migrations add` emits a spurious ALTER.
+            entity.Property(x => x.RunType).HasMaxLength(20).HasDefaultValue(PayrollRunTypes.Regular);
+            entity.Property(x => x.IncludesRecurringPay).HasDefaultValue(true);
+            entity.Property(x => x.GlPostingPeriod).HasMaxLength(7);
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.ErpPostingStatus });
+            entity.HasIndex(x => new { x.TenantId, x.ParentRunId });
+            // POD-B2 (M6) — the ONLY plain index on the period columns. The unnamed HasIndex on
+            // (TenantId, CompanyId, Year, Month) below is the SAME EF index object as the unique one
+            // (EF returns the existing builder for an identical property set), so after B2 that index is
+            // filtered to run_type = 'Regular' and is unusable for non-Regular period lookups
+            // (ListRuns / PayrollOverview / PayrollReadiness / Reconciliation / the sibling-run scans).
+            // A DISTINCT property ORDER creates a genuinely separate, snapshot-tracked index. The order
+            // (TenantId, Year, Month, CompanyId) is also the better prefix for those queries, which filter
+            // tenant+period first and company second (or not at all).
+            entity.HasIndex(x => new { x.TenantId, x.Year, x.Month, x.CompanyId })
+                .HasDatabaseName("IX_payroll_runs_period_lookup");
+            // POD-B2 — uniqueness now applies ONLY to Regular runs: exactly one non-voided REGULAR run per
+            // (tenant, company, year, month); any number of OffCycle/Supplementary/Correction runs coexist.
+            // The filter string must stay byte-identical to the migration SQL predicate (`!=`, not `<>`,
+            // double-quoted column names) or EF will diff it every time.
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Year, x.Month }).IsUnique()
                 .HasDatabaseName("IX_payroll_runs_tenant_id_company_id_year_month")
-                .HasFilter("\"status\" != 'Voided'");
+                .HasFilter("\"status\" != 'Voided' AND \"run_type\" = 'Regular'");
+            // POD-B2 (M1) — the null-company companion. Postgres treats NULL as distinct, so the index
+            // above constrains NOTHING when company_id IS NULL, and both seeders (AuthSeeder /
+            // DemoDataSeeder) create null-company runs. Without this a seeded tenant-wide Regular run does
+            // not block a second Regular run for a company in the same period. This restores the coverage
+            // that IX_payroll_runs_tenant_id_year_month gave before 20260712235953 dropped it, now scoped
+            // to unscoped Regular rows only.
+            entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }).IsUnique()
+                .HasDatabaseName("IX_payroll_runs_tenant_id_year_month")
+                .HasFilter("\"company_id\" IS NULL AND \"status\" != 'Voided' AND \"run_type\" = 'Regular'");
+        });
+
+        // POD-B2 — audited include/exclude intent for a run's population. ITenantOwned +
+        // ICompanyScopedOperational, so it inherits the fail-closed tenant read filter AND the company
+        // write guard; CompanyId is always stamped from the run, so only the "CompanyId set → actor must
+        // have access" branch of the guard applies. ApplyCompanyScopeIndexes adds (TenantId, CompanyId).
+        modelBuilder.Entity<PayrollRunEmployeeSelection>(entity =>
+        {
+            entity.ToTable("payroll_run_employee_selections");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Mode).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Reason).HasMaxLength(500).IsRequired();
+            entity.Property(x => x.Outcome).HasMaxLength(16);
+            entity.Property(x => x.CreatedByName).HasMaxLength(200);
+            // Upsert semantics: re-posting the same employee flips Mode/Reason instead of duplicating.
+            // Mirrors PayrollRunEmployee's (TenantId, PayrollRunId, EmployeeId) unique index.
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique();
         });
 
         modelBuilder.Entity<PayrollSlip>(entity =>

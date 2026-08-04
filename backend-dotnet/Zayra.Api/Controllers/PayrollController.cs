@@ -475,15 +475,51 @@ public class PayrollController : ControllerBase
 
     [HttpGet("runs")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
-    public async Task<IActionResult> ListRuns([FromQuery] Guid? companyId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> ListRuns([FromQuery] Guid? companyId, [FromQuery] string? status, [FromQuery] string? runType, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
         var tenantId = GetTenantId();
         var query = _db.PayrollRuns.Where(r => r.TenantId == tenantId);
         if (companyId.HasValue) query = query.Where(r => r.CompanyId == companyId);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(r => r.Status == status);
+        // POD-B2: optional type filter. Unknown values 400 rather than silently returning everything.
+        if (!string.IsNullOrWhiteSpace(runType))
+        {
+            var normalizedFilter = PayrollRunTypes.Normalize(runType);
+            if (normalizedFilter is null)
+                return BadRequest(new { error = "invalid_run_type", message = $"runType must be one of: {string.Join(", ", PayrollRunTypes.All)}." });
+            query = query.Where(r => r.RunType == normalizedFilter);
+        }
         var total = await query.CountAsync(cancellationToken);
-        var items = await query.OrderByDescending(r => r.Year).ThenByDescending(r => r.Month).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
-        return Ok(new PagedResult<PayrollRun>(items, total, page, pageSize));
+        var items = await query.OrderByDescending(r => r.Year).ThenByDescending(r => r.Month)
+            .ThenBy(r => r.RunType == PayrollRunTypes.Regular ? 0 : 1).ThenBy(r => r.CreatedAtUtc)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
+
+        // POD-B2 (M5b) — hold-out visibility on the RUN HEADER. Before Process an Exclude row has a null
+        // Outcome and produces no validation result at all, so the intent would be completely invisible
+        // until someone opened GET runs/{id}/population. The counts ride alongside the unchanged
+        // items/total/page/pageSize shape, so this is a pure JSON superset for the frontend.
+        var runIds = items.Select(r => r.Id).ToList();
+        var selectionRows = runIds.Count == 0
+            ? new List<PayrollRunEmployeeSelection>()
+            : await _db.PayrollRunEmployeeSelections.AsNoTracking()
+                .Where(s => s.TenantId == tenantId && runIds.Contains(s.PayrollRunId))
+                .ToListAsync(cancellationToken);
+        var selectionSummary = selectionRows
+            .GroupBy(s => s.PayrollRunId)
+            .Select(g => new
+            {
+                runId          = g.Key,
+                includeCount   = g.Count(s => s.Mode == PayrollRunSelectionModes.Include),
+                excludeCount   = g.Count(s => s.Mode == PayrollRunSelectionModes.Exclude),
+                excludedCount  = g.Count(s => s.Outcome == PayrollRunSelectionOutcomes.Excluded),
+                notEligibleCount = g.Count(s => s.Outcome == PayrollRunSelectionOutcomes.NotEligible),
+                // Rows whose intent has not yet been applied by a Process pass.
+                pendingCount   = g.Count(s => s.Outcome == null),
+            })
+            .ToList();
+
+        var paged = new PagedResult<PayrollRun>(items, total, page, pageSize);
+        return Ok(new { paged.Items, paged.Total, paged.Page, paged.PageSize, selectionSummary });
     }
 
     [HttpPost("runs")]
@@ -510,13 +546,121 @@ public class PayrollController : ControllerBase
         if (runCompany is null)
             return BadRequest(new { message = "Select a legal entity before creating payroll. Multi-entity tenants cannot create tenant-wide payroll runs." });
 
-        // One run per legal entity per period. Multi-entity tenants must process each company
-        // separately so statutory country packs, employees, impacts, GL and WPS remain scoped.
-        var existing = await _db.PayrollRuns
-            .Where(r => r.TenantId == tenantId && r.Year == req.Year && r.Month == req.Month && r.CompanyId == runCompany.Id)
-            .FirstOrDefaultAsync(cancellationToken);
-        if (existing is not null)
-            return Conflict(new { message = $"A payroll run for {runCompany.LegalNameEn} {req.Year}/{req.Month:D2} already exists.", runId = existing.Id });
+        // ── POD-B2: run TYPE ──────────────────────────────────────────────────────────────────────
+        var runType = PayrollRunTypes.Normalize(req.RunType);
+        if (runType is null)
+            return BadRequest(new
+            {
+                error   = "invalid_run_type",
+                message = $"runType must be one of: {string.Join(", ", PayrollRunTypes.All)}.",
+            });
+
+        // ── POD-B2: pay BASIS, persisted on the run, NOT derived from the type (M2) ───────────────
+        // Regular is always full-recurring. Supplementary/Correction are always supplemental (a top-up
+        // to an already-paid period). OffCycle is the operator's choice: supplemental by default (the
+        // mid-month bonus), full-recurring on request (the MISSED JOINER, which the type-derived design
+        // made impossible — a zero-recurring slip trips ZERO_NET_WITH_GROSS / GL_WILL_NOT_BALANCE).
+        var includesRecurringPay = PayrollRunTypes.DefaultIncludesRecurringPay(runType);
+        if (req.IncludesRecurringPay.HasValue && req.IncludesRecurringPay.Value != includesRecurringPay)
+        {
+            if (!PayrollRunTypes.AllowsBasisOverride(runType))
+                return BadRequest(new
+                {
+                    error   = "basis_not_overridable",
+                    message = $"A '{runType}' run always uses {(includesRecurringPay ? "a full recurring" : "a supplemental")} pay basis. " +
+                              "Only an OffCycle run may choose its basis.",
+                });
+            includesRecurringPay = req.IncludesRecurringPay.Value;
+        }
+
+        // ── POD-B2 (M7): GL posting period for a prior-period correction ─────────────────────────
+        // Once a month is closed, no correction for it can ever post (PeriodCloseGuard, correctly,
+        // rejects it). Real payroll shops book a prior-period correction into the CURRENT OPEN period
+        // carrying a prior-period reference — the run still reports under Year/Month, only the accrual
+        // journal moves. A Regular run may never do this: its accrual belongs to its own period.
+        string? glPostingPeriod = null;
+        if (!string.IsNullOrWhiteSpace(req.GlPostingPeriod))
+        {
+            if (runType == PayrollRunTypes.Regular)
+                return BadRequest(new
+                {
+                    error   = "gl_posting_period_not_allowed",
+                    message = "A Regular run always accrues into its own pay period. glPostingPeriod is only valid for OffCycle/Supplementary/Correction runs.",
+                });
+            var pp = req.GlPostingPeriod.Trim();
+            if (!TryParseGlPeriod(pp, out var ppYear, out var ppMonth))
+                return BadRequest(new { error = "invalid_gl_posting_period", message = "glPostingPeriod must be formatted 'yyyy-MM'." });
+            // Posting BACKWARDS (into a period earlier than the pay period) is never the correction use
+            // case and would silently pre-date the expense.
+            if (ppYear * 12 + ppMonth < req.Year * 12 + req.Month)
+                return BadRequest(new
+                {
+                    error   = "gl_posting_period_before_pay_period",
+                    message = $"glPostingPeriod ({pp}) cannot precede the pay period ({req.Year}-{req.Month:D2}).",
+                });
+            if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, runCompany.Id, pp, cancellationToken))
+                return UnprocessableEntity(new
+                {
+                    error   = "gl_period_closed",
+                    message = $"GL period {pp} is closed. Choose an open period to book this run's journal into.",
+                    period  = pp,
+                });
+            glPostingPeriod = pp;
+        }
+
+        // ── POD-B2: type-aware conflict ──────────────────────────────────────────────────────────
+        // One non-voided REGULAR run per legal entity per period. Multi-entity tenants must process each
+        // company separately so statutory country packs, employees, impacts, GL and WPS remain scoped.
+        // OffCycle/Supplementary/Correction runs are unconstrained — any number may coexist.
+        if (runType == PayrollRunTypes.Regular)
+        {
+            // The `Status != "Voided"` predicate is the API catching up with the index, which has carried
+            // `WHERE status != 'Voided'` since 20260624000001 precisely so a voided run does not block
+            // re-running the period. Without it the 409 here contradicted the DB and bricked the period
+            // forever. This is also the seam POD-B3's void→recreate recovery needs.
+            //
+            // `|| r.CompanyId == null` closes the null-company hole: Postgres unique indexes treat NULL as
+            // distinct, so the company-scoped index constrains NOTHING for the null-company runs both
+            // seeders create (AuthSeeder / DemoDataSeeder). An unscoped Regular run competes with EVERY
+            // company in the tenant — it is exactly what Process's `run.CompanyId ??= company.Id` will
+            // collapse onto.
+            var existing = await _db.PayrollRuns
+                .Where(r => r.TenantId == tenantId && r.Year == req.Year && r.Month == req.Month
+                         && (r.CompanyId == runCompany.Id || r.CompanyId == null)
+                         && r.RunType == PayrollRunTypes.Regular
+                         && r.Status != "Voided")
+                .FirstOrDefaultAsync(cancellationToken);
+            if (existing is not null)
+                return Conflict(new
+                {
+                    error   = "regular_run_exists",
+                    message = $"A regular payroll run for {runCompany.LegalNameEn} {req.Year}/{req.Month:D2} already exists. " +
+                              "Create an OffCycle/Supplementary/Correction run for an additional payment in this period, " +
+                              "or void the existing run first.",
+                    runId   = existing.Id,
+                });
+        }
+
+        // ── POD-B2: parent-run link ──────────────────────────────────────────────────────────────
+        if (req.ParentRunId.HasValue && runType == PayrollRunTypes.Regular)
+            return BadRequest(new { error = "parent_not_allowed", message = "A Regular run cannot amend another run; parentRunId is only valid for Correction/Supplementary/OffCycle runs." });
+        if (runType == PayrollRunTypes.Correction && !req.ParentRunId.HasValue)
+            return BadRequest(new { error = "parent_required", message = "A Correction run must name the run it amends via parentRunId." });
+        if (req.ParentRunId.HasValue)
+        {
+            var parent = await _db.PayrollRuns.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == req.ParentRunId.Value, cancellationToken);
+            if (parent is null)
+                return BadRequest(new { error = "parent_not_found", message = "parentRunId does not identify a payroll run in this tenant." });
+            if (parent.CompanyId != runCompany.Id)
+                return BadRequest(new { error = "parent_company_mismatch", message = "The parent run belongs to a different legal entity." });
+            if (parent.Status == "Voided")
+                return BadRequest(new { error = "parent_voided", message = "A voided run cannot be amended. Recreate the run instead." });
+            if (parent.Status == "Draft")
+                return BadRequest(new { error = "parent_not_processed", message = "A Draft run has produced nothing to amend. Process the parent run first." });
+            // Period is DELIBERATELY not constrained: a correction booked in M+1 for M is normal payroll
+            // practice. Only the LINK is POD-B2; the retro/arrears math for it is POD-C3.
+        }
 
         var run = new PayrollRun
         {
@@ -524,11 +668,380 @@ public class PayrollController : ControllerBase
             CompanyId = runCompany.Id,
             Year = req.Year,
             Month = req.Month,
+            RunType = runType,
+            ParentRunId = req.ParentRunId,
+            IncludesRecurringPay = includesRecurringPay,
+            GlPostingPeriod = glPostingPeriod,
             CreatedByUserId = GetUserId(),
         };
         _db.PayrollRuns.Add(run);
+        // CreateRun wrote no audit row before B2. A run of a non-default TYPE or BASIS is an operator
+        // decision with financial consequences and must be attributable. Routed through the standard
+        // helper so POD-A3's sealer stamps Seq/PreviousHash/EntryHash on the business SaveChanges.
+        await PayrollAudit("payroll.run.created", "PayrollRun", run.Id.ToString(), new
+        {
+            runType,
+            parentRunId          = req.ParentRunId,
+            includesRecurringPay = includesRecurringPay,
+            glPostingPeriod,
+            year                 = req.Year,
+            month                = req.Month,
+            companyId            = runCompany.Id,
+        }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         return Created($"/api/payroll/runs/{run.Id}", run);
+    }
+
+    /// <summary>POD-B2 — "yyyy-MM" parser for GlPostingPeriod, matching the format every GL period uses.</summary>
+    private static bool TryParseGlPeriod(string value, out int year, out int month)
+    {
+        year = 0; month = 0;
+        if (string.IsNullOrWhiteSpace(value) || value.Length != 7 || value[4] != '-') return false;
+        return int.TryParse(value.AsSpan(0, 4), out year)
+            && int.TryParse(value.AsSpan(5, 2), out month)
+            && year >= 2000 && month >= 1 && month <= 12;
+    }
+
+    /// <summary>
+    /// POD-B2 (M7) — the period a run's ACCRUAL journal (Lock) and its void contra post into.
+    /// Defaults to the run's own pay period; a non-Regular run may book into a later open period.
+    /// </summary>
+    internal static string GlAccrualPeriod(PayrollRun run) =>
+        string.IsNullOrWhiteSpace(run.GlPostingPeriod) ? $"{run.Year}-{run.Month:D2}" : run.GlPostingPeriod!;
+
+    /// <summary>
+    /// POD-B2 — is this pay component payable on a SUPPLEMENTAL-basis run (one that pays no recurring
+    /// salary)? Only the bonus, adjustment and statutory families are: everything else is either the
+    /// recurring wage itself or a recurring deduction whose period was already consumed by the run that
+    /// paid that wage. Mirrors the legacy emission block's `if (includesRecurringPay)` gate exactly, so
+    /// both paths still produce the same rows. Client-added components default to NOT supplemental —
+    /// a new custom allowance is recurring unless someone deliberately models it as a bonus/adjustment.
+    /// </summary>
+    private static bool IsSupplementalPayComponent(PayComponent c)
+    {
+        if (c.IsStatutory
+            || c.CalcMethod == PayComponentCalcMethods.Statutory
+            || c.ProviderKey == PayComponentProviders.Statutory)
+            return true;
+        return c.ProviderKey is PayComponentProviders.Bonus or PayComponentProviders.Adjustment;
+    }
+
+    // ── POD-B2: run population selector (include / exclude with an audited reason) ────────────────
+    //
+    // Statuses in which the population may still be changed. This is Process's own refusal list plus
+    // "Voided": changing who is in a run after it has produced slips requires a re-Process, and a voided
+    // run is finished. Kept as one list so the selector and Process can never disagree.
+    private static readonly string[] PopulationLockedStatuses =
+        { "Processed", "PendingFinanceReview", "Locked", "Approved", "Paid", "Voided" };
+
+    /// <summary>The resolved population of a run plus every unhonoured/deliberate deviation from it.</summary>
+    private sealed record RunPopulation(
+        List<Employee> Employees,
+        List<PayrollRunExclusion> Exclusions,
+        List<PayrollRunExclusion> NotEligible,
+        List<PayrollRunEmployeeSelection> Selections,
+        string Mode);
+
+    /// <summary>
+    /// POD-B2 — the SINGLE resolver used by BOTH Process and Validate.
+    ///
+    /// Validate re-deriving the population independently was a hard break: Rule 1 MISSING_SALARY_STRUCTURE
+    /// is an Error raised over ctx.ActiveEmployees, so a run with a hold-out would accumulate blocking
+    /// Errors for the very people it deliberately excluded and could NEVER be approved or locked.
+    ///
+    ///   1. eligible  = the caller's existing Active/not-deleted/company-scoped query (UNCHANGED)
+    ///   2. any Include row → ALLOW-LIST: population = eligible ∩ include; else population = eligible
+    ///   3. minus every Exclude row, always
+    ///   4. each selection row is stamped Included / Excluded / NotEligible
+    /// </summary>
+    private async Task<RunPopulation> ResolveRunPopulationAsync(
+        Guid tenantId, PayrollRun run, List<Employee> eligible, CancellationToken ct)
+    {
+        var selections = await _db.PayrollRunEmployeeSelections
+            .Where(s => s.TenantId == tenantId && s.PayrollRunId == run.Id)
+            .ToListAsync(ct);
+
+        if (selections.Count == 0)
+            return new RunPopulation(eligible, new(), new(), selections, "AllEligible");
+
+        var eligibleById = eligible.ToDictionary(e => e.Id);
+        var includeIds = selections.Where(s => s.Mode == PayrollRunSelectionModes.Include).Select(s => s.EmployeeId).ToHashSet();
+        var excludeIds = selections.Where(s => s.Mode == PayrollRunSelectionModes.Exclude).Select(s => s.EmployeeId).ToHashSet();
+
+        var mode = includeIds.Count > 0 ? "AllowList" : "DenyList";
+        var population = (includeIds.Count > 0 ? eligible.Where(e => includeIds.Contains(e.Id)) : eligible.AsEnumerable())
+            .Where(e => !excludeIds.Contains(e.Id))
+            .ToList();
+        var populationIds = population.Select(e => e.Id).ToHashSet();
+
+        var exclusions  = new List<PayrollRunExclusion>();
+        var notEligible = new List<PayrollRunExclusion>();
+        foreach (var s in selections)
+        {
+            var emp = eligibleById.TryGetValue(s.EmployeeId, out var e) ? e : null;
+            var code = emp?.EmployeeCode ?? s.EmployeeId.ToString();
+            var name = emp?.FullName ?? "(not in this run's eligible set)";
+            if (populationIds.Contains(s.EmployeeId))
+            {
+                s.Outcome = PayrollRunSelectionOutcomes.Included;
+            }
+            else if (emp is null)
+            {
+                // Named in the selector but not eligible at all — wrong company, not Active, or deleted.
+                s.Outcome = PayrollRunSelectionOutcomes.NotEligible;
+                notEligible.Add(new PayrollRunExclusion(s.EmployeeId, code, name, s.Reason));
+            }
+            else
+            {
+                s.Outcome = PayrollRunSelectionOutcomes.Excluded;
+                exclusions.Add(new PayrollRunExclusion(s.EmployeeId, code, name, s.Reason));
+            }
+        }
+
+        // An eligible employee dropped by ALLOW-LIST mode without ever being named is still a hold-out and
+        // must be reported — silence here is exactly the "silently unpay the company" failure mode.
+        if (includeIds.Count > 0)
+        {
+            foreach (var e in eligible)
+            {
+                if (populationIds.Contains(e.Id) || excludeIds.Contains(e.Id)) continue;
+                exclusions.Add(new PayrollRunExclusion(e.Id, e.EmployeeCode, e.FullName,
+                    "Not named in this run's allow-list."));
+            }
+        }
+
+        return new RunPopulation(population, exclusions, notEligible, selections, mode);
+    }
+
+    /// <summary>
+    /// POD-B2 — the eligible-employee query, verbatim from Process, factored out so Process, Validate and
+    /// the population preview all start from the SAME set. Behaviour is unchanged from
+    /// PayrollController.Process's original inline query, including the legacy-unscoped fallback.
+    /// </summary>
+    private async Task<List<Employee>> LoadEligibleEmployeesAsync(
+        Guid tenantId, Guid companyId, bool allowLegacyUnscopedEmployees, bool asNoTracking, CancellationToken ct)
+    {
+        var q = _db.Employees.Where(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted
+            && (e.CompanyId == companyId || (allowLegacyUnscopedEmployees && e.CompanyId == null)));
+        if (asNoTracking) q = q.AsNoTracking();
+        return await q.ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// POD-B2 — resolve the run's legal entity and the legacy-unscoped-employee allowance exactly the way
+    /// Process/Validate do, so the selector endpoints scope to the same eligible set.
+    /// </summary>
+    private async Task<(Company? Company, bool AllowLegacyUnscoped)> ResolveRunCompanyScopeAsync(
+        Guid tenantId, PayrollRun run, CancellationToken ct)
+    {
+        var activeCompanies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .ToListAsync(ct);
+        var legacySingleCompanyScope = activeCompanies.Count == 1;
+        var company = run.CompanyId.HasValue
+            ? activeCompanies.FirstOrDefault(c => c.Id == run.CompanyId.Value)
+            : legacySingleCompanyScope ? activeCompanies[0] : null;
+        if (company is null) return (null, false);
+
+        var hasAnyCompanyScoped = await _db.Employees.AsNoTracking()
+            .AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId.HasValue, ct);
+        var hasForCompany = await _db.Employees.AsNoTracking()
+            .AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId == company.Id, ct);
+        return (company, legacySingleCompanyScope || !hasAnyCompanyScoped || !hasForCompany);
+    }
+
+    /// <summary>
+    /// POD-B2 — upsert include/exclude intent for a run's population, with a mandatory reason.
+    ///
+    /// REGULAR RUNS ARE DENY-LIST ONLY. One stray Include row on the monthly run would silently reduce
+    /// the month to one person, and the partial unique index would then refuse a second Regular run to
+    /// catch everyone else — the only remedy being Void + recreate + re-Process.
+    /// </summary>
+    [HttpPost("runs/{id:guid}/selection")]
+    [HasPermission("payroll.write")]
+    public async Task<IActionResult> UpsertRunSelection(Guid id, [FromBody] PayrollRunSelectionRequest req, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
+        if (run is null) return NotFound();
+
+        var mode = PayrollRunSelectionModes.Normalize(req.Mode);
+        if (mode is null)
+            return BadRequest(new { error = "invalid_mode", message = "mode must be 'Include' or 'Exclude'." });
+        if (string.IsNullOrWhiteSpace(req.Reason))
+            return BadRequest(new { error = "reason_required", message = "A reason is required. Holding an employee out of (or into) a payroll run must be documented." });
+        if (req.Reason.Length > 500)
+            return BadRequest(new { error = "reason_too_long", message = "Reason must be 500 characters or fewer." });
+
+        if (PopulationLockedStatuses.Contains(run.Status))
+            return Conflict(new
+            {
+                error   = "population_locked",
+                message = $"A run in '{run.Status}' status has already produced (or finished with) its payslips. " +
+                          "Changing its population requires re-processing the run.",
+                status  = run.Status,
+            });
+
+        if (mode == PayrollRunSelectionModes.Include && run.RunType == PayrollRunTypes.Regular)
+            return BadRequest(new
+            {
+                error   = "include_not_allowed_on_regular_run",
+                message = "A Regular run is deny-list only: it always covers every eligible employee minus explicit " +
+                          "exclusions. Allow-list selection is available on OffCycle/Supplementary/Correction runs, " +
+                          "where a narrow population is the point.",
+            });
+
+        var (company, allowLegacyUnscoped) = await ResolveRunCompanyScopeAsync(tenantId, run, cancellationToken);
+        if (company is null)
+            return UnprocessableEntity(new { error = "company_not_resolved", message = "The run must be linked to an active legal entity before its population can be scoped." });
+
+        var eligible = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscoped, asNoTracking: true, cancellationToken);
+        List<int> targetIds;
+        if (req.AllEligible)
+        {
+            // Materialises "everyone" into REAL Include rows in one call, so the legitimate company-wide
+            // off-cycle bonus run costs one click and still leaves an auditable record of who was intended.
+            if (mode != PayrollRunSelectionModes.Include)
+                return BadRequest(new { error = "all_eligible_requires_include", message = "allEligible is only meaningful with mode 'Include'." });
+            targetIds = eligible.Select(e => e.Id).ToList();
+        }
+        else
+        {
+            targetIds = (req.EmployeeIds ?? new List<int>()).Distinct().ToList();
+            if (targetIds.Count == 0)
+                return BadRequest(new { error = "employees_required", message = "Provide employeeIds, or allEligible=true for an Include over the whole eligible set." });
+        }
+
+        var existing = await _db.PayrollRunEmployeeSelections
+            .Where(s => s.TenantId == tenantId && s.PayrollRunId == id)
+            .ToListAsync(cancellationToken);
+        var byEmployee = existing.ToDictionary(s => s.EmployeeId);
+        var now = DateTime.UtcNow;
+        var created = 0; var updated = 0;
+        foreach (var empId in targetIds)
+        {
+            if (byEmployee.TryGetValue(empId, out var row))
+            {
+                row.Mode = mode;
+                row.Reason = req.Reason.Trim();
+                row.Outcome = null;               // intent changed → outcome is stale until the next Process
+                row.UpdatedAtUtc = now;
+                updated++;
+            }
+            else
+            {
+                _db.PayrollRunEmployeeSelections.Add(new PayrollRunEmployeeSelection
+                {
+                    TenantId        = tenantId,
+                    CompanyId       = run.CompanyId,   // stamped from the run → company write guard applies
+                    PayrollRunId    = id,
+                    EmployeeId      = empId,
+                    Mode            = mode,
+                    Reason          = req.Reason.Trim(),
+                    CreatedByUserId = GetUserId(),
+                    CreatedByName   = GetUserName(),
+                    CreatedAtUtc    = now,
+                });
+                created++;
+            }
+        }
+
+        await PayrollAudit("payroll.run.selection.changed", "PayrollRun", id.ToString(), new
+        {
+            mode, reason = req.Reason.Trim(), employeeIds = targetIds, allEligible = req.AllEligible,
+            created, updated, runType = run.RunType,
+        }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new { runId = id, mode, created, updated, totalSelections = existing.Count + created });
+    }
+
+    /// <summary>POD-B2 — withdraw one employee's include/exclude intent (audited).</summary>
+    [HttpDelete("runs/{id:guid}/selection/{employeeId:int}")]
+    [HasPermission("payroll.write")]
+    public async Task<IActionResult> DeleteRunSelection(Guid id, int employeeId, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
+        if (run is null) return NotFound();
+        if (PopulationLockedStatuses.Contains(run.Status))
+            return Conflict(new { error = "population_locked", message = $"A run in '{run.Status}' status cannot have its population changed.", status = run.Status });
+
+        var row = await _db.PayrollRunEmployeeSelections
+            .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.PayrollRunId == id && s.EmployeeId == employeeId, cancellationToken);
+        if (row is null) return NotFound();
+
+        _db.PayrollRunEmployeeSelections.Remove(row);
+        await PayrollAudit("payroll.run.selection.removed", "PayrollRun", id.ToString(),
+            new { employeeId, mode = row.Mode, reason = row.Reason }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
+    /// <summary>POD-B2 — effective population preview: who this run will pay, and who it will not (with why).</summary>
+    [HttpGet("runs/{id:guid}/population")]
+    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer,Finance Controller,Finance Approver,Auditor")]
+    public async Task<IActionResult> GetRunPopulation(Guid id, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
+        if (run is null) return NotFound();
+
+        var (company, allowLegacyUnscoped) = await ResolveRunCompanyScopeAsync(tenantId, run, cancellationToken);
+        if (company is null)
+            return UnprocessableEntity(new { error = "company_not_resolved", message = "The run must be linked to an active legal entity." });
+
+        var eligible = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscoped, asNoTracking: true, cancellationToken);
+        // AsNoTracking selections: this is a preview, the Outcome stamps must not leak into a SaveChanges.
+        var pop = await ResolveRunPopulationAsync(tenantId, run, eligible, cancellationToken);
+        foreach (var s in pop.Selections) _db.Entry(s).State = EntityState.Detached;
+
+        return Ok(new
+        {
+            runId                = id,
+            runType              = run.RunType,
+            includesRecurringPay = run.IncludesRecurringPay,
+            populationMode       = pop.Mode,
+            eligibleCount        = eligible.Count,
+            includedCount        = pop.Employees.Count,
+            excludedCount        = pop.Exclusions.Count,
+            notEligibleCount     = pop.NotEligible.Count,
+            included    = pop.Employees.Select(e => new { employeeId = e.Id, code = e.EmployeeCode, name = e.FullName }).ToList(),
+            excluded    = pop.Exclusions.Select(x => new { employeeId = x.EmployeeId, code = x.EmployeeCode, name = x.EmployeeName, reason = x.Reason }).ToList(),
+            notEligible = pop.NotEligible.Select(x => new { employeeId = x.EmployeeId, code = x.EmployeeCode, name = x.EmployeeName, reason = x.Reason }).ToList(),
+        });
+    }
+
+    /// <summary>
+    /// POD-B2 — other non-voided runs for the same (company, year, month). The basis for the
+    /// ALREADY_PAID_THIS_PERIOD control, the incremental statutory base, the sibling-run warning and the
+    /// WPS duplicate-export guard.
+    /// </summary>
+    private Task<List<PayrollRun>> LoadSiblingRunsAsync(Guid tenantId, PayrollRun run, Guid companyId, CancellationToken ct) =>
+        _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Id != run.Id
+                     && r.Year == run.Year && r.Month == run.Month
+                     && (r.CompanyId == companyId || r.CompanyId == null)
+                     && r.Status != "Voided")
+            .ToListAsync(ct);
+
+    /// <summary>
+    /// POD-B2 — collapse the period-to-date statutory map to employee-side GOSI per employee, for
+    /// PayrollValidationContext.PriorPeriodGosiEeByEmployee. Classification uses
+    /// PayrollValidationEngine.IsGosiEmployeeCode, i.e. the SAME predicate Rule 2 applies to this run's
+    /// own deductions, so the period total and the per-run total can never drift apart.
+    /// </summary>
+    private static Dictionary<int, decimal> BuildPriorPeriodGosiEe(
+        IReadOnlyDictionary<(int EmployeeId, string Code, bool IsEmployer), decimal> priorStatutory)
+    {
+        var map = new Dictionary<int, decimal>();
+        foreach (var kv in priorStatutory)
+        {
+            if (kv.Key.IsEmployer) continue;
+            if (!PayrollValidationEngine.IsGosiEmployeeCode(kv.Key.Code)) continue;
+            map[kv.Key.EmployeeId] = map.GetValueOrDefault(kv.Key.EmployeeId) + kv.Value;
+        }
+        return map;
     }
 
     [HttpPost("runs/{id:guid}/process")]
@@ -541,6 +1054,16 @@ public class PayrollController : ControllerBase
         // Processing mutates attendance/leave impacts and loan/advance balances, so completed states must use a correction workflow.
         if (run.Status is "Processed" or "PendingFinanceReview" or "Locked" or "Approved" or "Paid")
             return BadRequest(new { message = $"A run in '{run.Status}' status cannot be reprocessed. Void/delete and recreate the run, or use the correction workflow." });
+        // POD-B2: "Voided" was missing from the list above. Pre-B2 that silently RESURRECTED a voided run
+        // (Voided → Processed). Post-B2 it is worse: flipping the status pulls the row back INTO the
+        // partial unique index alongside the live Regular run, so it would fail as a DbUpdateException 500
+        // instead of a clean 4xx. This is a hardening of the void rules, never a relaxation.
+        if (run.Status == "Voided")
+            return BadRequest(new
+            {
+                error   = "run_voided",
+                message = "A voided payroll run cannot be reprocessed. Create a replacement run for the period instead.",
+            });
 
         var periodStart = new DateOnly(run.Year, run.Month, 1);
         var periodEnd = periodStart.AddMonths(1).AddDays(-1);
@@ -601,15 +1124,58 @@ public class PayrollController : ControllerBase
             .AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId == company.Id, cancellationToken);
         var allowLegacyUnscopedEmployees = legacySingleCompanyScope || !hasAnyCompanyScopedEmployees || !hasEmployeesForRunCompany;
 
-        var employees = await _db.Employees
-            .Where(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted && (e.CompanyId == company.Id || (allowLegacyUnscopedEmployees && e.CompanyId == null)))
-            .ToListAsync(cancellationToken);
+        // ── POD-B2 (M1): a null-company Regular run is UNSCOPED and competes with every company ──────
+        // Process is about to stamp `run.CompanyId ??= company.Id`, collapsing this run onto that
+        // company's period key. If a Regular run already owns that key, the ??= would throw a
+        // DbUpdateException 500 at commit. Surface it as a clean 409 BEFORE any work is done.
+        if (run.CompanyId is null && run.RunType == PayrollRunTypes.Regular)
+        {
+            var competing = await _db.PayrollRuns.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && r.Id != run.Id
+                         && r.Year == run.Year && r.Month == run.Month
+                         && r.CompanyId == company.Id
+                         && r.RunType == PayrollRunTypes.Regular
+                         && r.Status != "Voided")
+                .Select(r => r.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (competing != Guid.Empty)
+                return Conflict(new
+                {
+                    error     = "regular_run_exists",
+                    message   = $"This run has no legal entity and would be scoped to '{company.LegalNameEn}' on processing, " +
+                                $"but a regular run already exists there for {run.Year}/{run.Month:D2}. Void one of them first.",
+                    runId     = competing,
+                    companyId = company.Id,
+                });
+        }
+
+        var eligibleEmployees = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscopedEmployees, asNoTracking: false, cancellationToken);
+
+        // ── POD-B2: the operator's include/exclude intent decides who this run pays ──────────────────
+        var runPopulation = await ResolveRunPopulationAsync(tenantId, run, eligibleEmployees, cancellationToken);
+
+        // A non-Regular run over the WHOLE company is almost always operator error: per the supplemental
+        // rules below it would consume the period's bonuses and adjustments out from under the Regular
+        // run. Require the population to be stated explicitly. POST runs/{id}/selection with
+        // allEligible=true materialises "everyone" in one call and still records who was intended.
+        if (PayrollRunTypes.IsNonRegular(run.RunType) && runPopulation.Mode != "AllowList")
+            return UnprocessableEntity(new
+            {
+                error   = "run_population_required",
+                message = $"A '{run.RunType}' run must state its population explicitly. POST /api/payroll/runs/{run.Id}/selection " +
+                          "with mode='Include' and the employee ids (or allEligible=true for the whole entity) before processing.",
+                runType = run.RunType,
+            });
+
+        var employees = runPopulation.Employees;
         var employeeIdsForRun = employees.Select(e => e.Id).ToHashSet();
         if (employeeIdsForRun.Count == 0)
             return UnprocessableEntity(new
             {
                 error = "no_company_employees",
-                message = $"No active employees are linked to legal entity '{company.LegalNameEn}'. Payroll run aborted.",
+                message = runPopulation.Mode == "AllEligible"
+                    ? $"No active employees are linked to legal entity '{company.LegalNameEn}'. Payroll run aborted."
+                    : $"This run's include/exclude selection resolves to zero employees for '{company.LegalNameEn}'. Payroll run aborted.",
                 companyId = company.Id,
             });
 
@@ -665,6 +1231,87 @@ public class PayrollController : ControllerBase
             .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.Status == "Approved" && employeeIdsForRun.Contains(a.EmployeeId))
             .ToListAsync(cancellationToken);
 
+        // ── POD-B2: sibling runs for this (company, year, month) ─────────────────────────────────────
+        // Everything below short-circuits to today's exact behaviour when there are none, which is the
+        // case for every run in every tenant before B2 — so a Regular run is provably unchanged.
+        var siblingRuns   = await LoadSiblingRunsAsync(tenantId, run, company.Id, cancellationToken);
+        var siblingRunIds = siblingRuns.Select(r => r.Id).ToList();
+
+        // (M2) Employees already paid RECURRING salary this period by another non-voided run. Feeds the
+        // Error-severity ALREADY_PAID_THIS_PERIOD rule — the real cross-run double-pay control.
+        var recurringSiblingIds = siblingRuns.Where(r => r.IncludesRecurringPay).Select(r => r.Id).ToList();
+        var alreadyPaidRecurringEmpIds = recurringSiblingIds.Count == 0
+            ? new HashSet<int>()
+            : (await _db.PayrollSlips.AsNoTracking()
+                .Where(s => s.TenantId == tenantId && recurringSiblingIds.Contains(s.RunId) && employeeIdsForRun.Contains(s.EmployeeId))
+                .Select(s => s.EmployeeId)
+                .Distinct()
+                .ToListAsync(cancellationToken)).ToHashSet();
+
+        // (M8) Period-to-date statutory position from sibling runs, per employee.
+        //
+        // The statutory ceiling (GOSI covered wage = basic + housing, capped) is a PERIOD concept: computing
+        // a supplemental run against a zero base applies the ceiling to the supplemental amount alone and
+        // over-deducts near the cap, while ignoring siblings entirely would double-deduct the monthly wage.
+        // Both are wrong. Instead the run is computed INCREMENTALLY: the pack is fed
+        // (period-to-date covered wage + this run's own amounts), the ceiling therefore applies to the
+        // period total, and the amounts sibling runs already deducted are netted off per line code
+        // (floored at zero). Exact, because SalaryBreakdown.GosiCoveredWage == Basic + HousingAllowance and
+        // both components are recoverable: the recurring halves from the sibling slips' own columns, the
+        // GOSI-eligible bonus half by re-reading the bonuses those runs consumed.
+        var priorBasicByEmp   = new Dictionary<int, decimal>();
+        var priorHousingByEmp = new Dictionary<int, decimal>();
+        var priorStatutoryByEmp = new Dictionary<(int EmployeeId, string Code, bool IsEmployer), decimal>();
+        if (siblingRunIds.Count > 0)
+        {
+            var siblingSlips = await _db.PayrollSlips.AsNoTracking()
+                .Where(s => s.TenantId == tenantId && siblingRunIds.Contains(s.RunId) && employeeIdsForRun.Contains(s.EmployeeId))
+                .Select(s => new { s.EmployeeId, s.BasicSalary, s.HousingAllowance })
+                .ToListAsync(cancellationToken);
+            foreach (var s in siblingSlips)
+            {
+                priorBasicByEmp[s.EmployeeId]   = priorBasicByEmp.GetValueOrDefault(s.EmployeeId) + s.BasicSalary;
+                priorHousingByEmp[s.EmployeeId] = priorHousingByEmp.GetValueOrDefault(s.EmployeeId) + s.HousingAllowance;
+            }
+            // GOSI-eligible bonus already covered by a sibling run rides in the housing slot, exactly as
+            // this run's own gosiIncludedBonusTotal does below.
+            var siblingBonuses = await _db.EmployeeBonuses.AsNoTracking()
+                .Where(b => b.TenantId == tenantId && !b.IsDeleted && b.PayrollRunId != null
+                         && siblingRunIds.Contains(b.PayrollRunId!.Value)
+                         && b.EmployeeIntId != null && employeeIdsForRun.Contains(b.EmployeeIntId!.Value))
+                .Select(b => new { b.EmployeeIntId, b.BonusTypeId, b.GrossBonusAmount })
+                .ToListAsync(cancellationToken);
+            if (siblingBonuses.Count > 0)
+            {
+                var siblingBonusTypeIds = siblingBonuses.Select(b => b.BonusTypeId).Distinct().ToList();
+                var gosiEligibleTypeIds = (await _db.BonusTypes.AsNoTracking()
+                    .Where(t => siblingBonusTypeIds.Contains(t.Id) && t.IsIncludedInGosiBase)
+                    .Select(t => t.Id)
+                    .ToListAsync(cancellationToken)).ToHashSet();
+                foreach (var b in siblingBonuses)
+                {
+                    if (!gosiEligibleTypeIds.Contains(b.BonusTypeId)) continue;
+                    var eid = b.EmployeeIntId!.Value;
+                    priorHousingByEmp[eid] = priorHousingByEmp.GetValueOrDefault(eid) + b.GrossBonusAmount;
+                }
+            }
+            var siblingStatutory = await _db.PayrollDeductions.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && siblingRunIds.Contains(d.PayrollRunId)
+                         && d.Source == "Statutory" && employeeIdsForRun.Contains(d.EmployeeId))
+                .Select(d => new { d.EmployeeId, d.ComponentCode, d.IsEmployerContribution, d.Amount })
+                .ToListAsync(cancellationToken);
+            foreach (var d in siblingStatutory)
+            {
+                var key = (d.EmployeeId, d.ComponentCode, d.IsEmployerContribution);
+                priorStatutoryByEmp[key] = priorStatutoryByEmp.GetValueOrDefault(key) + d.Amount;
+            }
+        }
+
+        // POD-B2 — does this run pay recurring salary? Persisted on the run (M2), not derived from its
+        // type, so an OffCycle run for a MISSED JOINER can pay a full salary while a mid-month bonus run
+        // pays only the bonus. Regular runs are always true, so their emission path is byte-identical.
+        var includesRecurringPay = run.IncludesRecurringPay;
+
         // BONUS: Load approved bonuses for this pay period — consumed here, blocked from MarkBatchPaid.
         var periodStr = $"{run.Year}-{run.Month:D2}";
         var pendingBonuses = await _db.EmployeeBonuses
@@ -686,10 +1333,16 @@ public class PayrollController : ControllerBase
             .GroupBy(b => b.EmployeeIntId!.Value)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        // COMPLIANCE: YTD — sum of all locked runs in the same year (before this month)
+        // COMPLIANCE: YTD — sum of all locked runs in the same year (before this month).
+        // POD-B2: `r.Month < run.Month` alone made two runs in the SAME month invisible to each other, so
+        // the payslip's YTD under-reported by the whole earlier run. Now: everything earlier in the year,
+        // PLUS any other locked run in this same month. Zero effect on existing data — a second Locked
+        // run in one month was impossible before B2.
         var ytdSlips = await _db.PayrollSlips.AsNoTracking()
             .Where(s => s.TenantId == tenantId)
-            .Join(_db.PayrollRuns.AsNoTracking().Where(r => r.TenantId == tenantId && r.CompanyId == company.Id && r.Year == run.Year && r.Month < run.Month && r.Status == "Locked"),
+            .Join(_db.PayrollRuns.AsNoTracking().Where(r => r.TenantId == tenantId && r.CompanyId == company.Id && r.Year == run.Year
+                    && (r.Month < run.Month || (r.Month == run.Month && r.Id != run.Id))
+                    && r.Status == "Locked"),
                   s => s.RunId, r => r.Id, (s, r) => s)
             .ToListAsync(cancellationToken);
 
@@ -778,8 +1431,10 @@ public class PayrollController : ControllerBase
         // read-only snapshots loaded above are immutable and safe to reuse across a retry.
         var attempt = 0;
         var strategy = _db.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async () =>
+        try
         {
+            await strategy.ExecuteAsync(async () =>
+            {
             // Retry-safety: on a transient RETRY, discard the failed attempt's tracked state so the
             // rebuild starts clean. We do NOT clear on the first attempt — that would detach entities
             // the caller is still holding (the request's scoped context), changing observable behaviour.
@@ -801,6 +1456,10 @@ public class PayrollController : ControllerBase
             _db.PayrollValidationResults.RemoveRange(_db.PayrollValidationResults.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
 
         var slips = new List<PayrollSlip>();
+        // POD-B2 — per-attempt accumulators. Declared INSIDE the execution-strategy delegate so a
+        // transient retry starts clean (the delegate re-runs from here).
+        var negativeNetEmployees = new List<object>();
+        var statutoryComputedIncrementally = false;
         foreach (var e in employees)
         {
             var salary = salaryAssignments.Where(x => x.EmployeeId == e.Id && x.EffectiveDate <= periodEnd).OrderByDescending(x => x.EffectiveDate).FirstOrDefault();
@@ -861,6 +1520,23 @@ public class PayrollController : ControllerBase
                 taxDeduction = Math.Round(taxableBase * incomeTaxRate / 100m, 2);
             }
 
+            // ── POD-B2: SUPPLEMENTAL BASIS ───────────────────────────────────────────────────────────
+            // A run that does not pay recurring salary pays supplemental items ONLY: bonuses, the
+            // adjustments attached to this run, and statutory on the supplemental base. Without this gate
+            // a mid-month bonus run pays the employee their WHOLE monthly salary a second time (the loop
+            // has no `continue` and BASIC is emitted unconditionally at any amount), plus a second loan
+            // EMI. Every recurring scalar is zeroed here, before it reaches the statutory input, the slip
+            // aggregates or either emission path; the recurring LINES are skipped (not emitted at 0.00) so
+            // no empty GL group is produced. `includesRecurringPay` is always true for a Regular run, so
+            // this block is dead code on every existing run.
+            if (!includesRecurringPay)
+            {
+                basic = 0m; housing = 0m; transport = 0m; otherAllowances = 0m; gross = 0m;
+                fixedDeduction = 0m; hourlyRate = 0m;
+                attendanceDeduction = 0m; lopDays = 0m; lopDayRate = 0m; lopDeduction = 0m;
+                leaveDeduction = 0m; overtimePay = 0m; otHours = 0m; taxDeduction = 0m;
+            }
+
             // BONUS: collect this employee's approved bonuses for the period.
             var empBonuses = bonusesByEmployee.TryGetValue(e.Id, out var eb) ? eb : new List<EmployeeBonus>();
             // Gross bonus amounts that are part of the social insurance base (e.g. GOSI/GPSSA/GRSIA).
@@ -885,20 +1561,52 @@ public class PayrollController : ControllerBase
             // Statutory deduction via country pack — rates from tenant-overridable StatutoryRule rows.
             // GosiCalculationService is retained for parity testing; it is no longer called in the run path.
             // GOSI-included bonus is added to housing slot so GosiCoveredWage = Basic + Housing + Bonus.
+            //
+            // POD-B2 (M8): the covered-wage CEILING is a period concept, so once a sibling run exists for
+            // this (company, year, month) the pack is fed the PERIOD-TO-DATE base and the amounts the
+            // siblings already deducted are netted off per line. With no siblings — every run in every
+            // tenant before B2 — priorBasic/priorHousing are 0 and this is the original call, unchanged.
+            var priorBasic   = priorBasicByEmp.GetValueOrDefault(e.Id);
+            var priorHousing = priorHousingByEmp.GetValueOrDefault(e.Id);
             var statutoryInput = new StatutoryDeductionInput(
                 EmployeeId:   Guid.Empty, // Employee PK is int; Guid field not used in pack calculations
                 CompanyId:    run.CompanyId ?? Guid.Empty,
-                Salary:       new SalaryBreakdown(basic, housing + gosiIncludedBonusTotal, transport, otherAllowances),
+                Salary:       new SalaryBreakdown(priorBasic + basic, priorHousing + housing + gosiIncludedBonusTotal, transport, otherAllowances),
                 Nationality:  e.Nationality ?? string.Empty,
                 ContractType: e.ContractType ?? "Indefinite",
                 PeriodYear:   run.Year,
                 PeriodMonth:  run.Month);
-            var statutoryResult   = await deductionCalc.CalculateAsync(statutoryInput, cancellationToken);
+            var statutoryResult = await deductionCalc.CalculateAsync(statutoryInput, cancellationToken);
+            if (priorStatutoryByEmp.Count > 0)
+            {
+                // Net off the period-to-date statutory already deducted by sibling runs, per (code, side),
+                // floored at zero. What remains is THIS run's incremental statutory obligation, so the
+                // period total ties out to a single ceiling-capped computation across all its runs.
+                var netted = new List<StatutoryDeductionLine>();
+                foreach (var line in statutoryResult.Lines)
+                {
+                    var priorEe = priorStatutoryByEmp.GetValueOrDefault((e.Id, line.Code, false));
+                    var priorEr = priorStatutoryByEmp.GetValueOrDefault((e.Id, line.Code, true));
+                    var ee = Math.Max(0m, line.EmployeeAmount - priorEe);
+                    var er = Math.Max(0m, line.EmployerAmount - priorEr);
+                    netted.Add(line with { EmployeeAmount = ee, EmployerAmount = er });
+                }
+                statutoryResult = statutoryResult with
+                {
+                    Lines                      = netted,
+                    TotalEmployeeDeduction     = netted.Sum(l => l.EmployeeAmount),
+                    TotalEmployerContribution  = netted.Sum(l => l.EmployerAmount),
+                };
+                statutoryComputedIncrementally = true;
+            }
             var gosiEmployeeTotal = statutoryResult.TotalEmployeeDeduction;
 
-            // COMPLIANCE: Loan & advance EMI deduction
-            var empLoans   = activeLoans.Where(l => l.EmployeeIntId == e.Id).ToList();
-            var empAdv     = activeAdvances.Where(a => a.EmployeeIntId == e.Id).ToList();
+            // COMPLIANCE: Loan & advance EMI deduction.
+            // POD-B2: a supplemental run takes NO recurring deduction — an off-cycle bonus run must not
+            // collect a second EMI for the period. The mutable decrement block after the loop is gated on
+            // the same flag, so balances and installments are untouched too.
+            var empLoans   = includesRecurringPay ? activeLoans.Where(l => l.EmployeeIntId == e.Id).ToList() : new List<EmployeeLoan>();
+            var empAdv     = includesRecurringPay ? activeAdvances.Where(a => a.EmployeeIntId == e.Id).ToList() : new List<SalaryAdvance>();
             var loanEmi    = empLoans.Sum(l => Math.Min(l.InstallmentAmount, l.OutstandingBalance));
             var advEmi     = empAdv.Sum(a => Math.Min(a.InstallmentAmount, a.OutstandingBalance));
             var totalLoanDeduction = Math.Round(loanEmi + advEmi, 2);
@@ -906,7 +1614,15 @@ public class PayrollController : ControllerBase
             var deductions = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction + adjustmentDeductions + totalBonusTax;
             // C3: net salary cannot be negative (GCC labour law); engine Rule 3 will flag this.
             // (gross bonus in, bonus tax out) == (net bonus in) — take-home is unchanged by POD-B1b.
-            var netSalary = Math.Max(0m, gross + overtimePay + totalBonusGross + adjustmentEarnings - deductions);
+            var rawNet = gross + overtimePay + totalBonusGross + adjustmentEarnings - deductions;
+            // POD-B2 (M4): a supplemental run whose deductions exceed its earnings has no vehicle to
+            // express the shortfall — the floor below silently swallows it and the run then trips
+            // GL_WILL_NOT_BALANCE (an Error whose remedy, "re-process the run", can never fix it), leaving
+            // an unlockable run that DeleteRun also refuses. B2 Corrections are ADDITIVE-ONLY: collect the
+            // offenders and refuse the whole run with a specific 422 below. Clawback/negative delta is B3.
+            if (!includesRecurringPay && rawNet < 0m)
+                negativeNetEmployees.Add(new { employeeId = e.Id, code = e.EmployeeCode, name = e.FullName, shortfall = Math.Abs(rawNet) });
+            var netSalary = Math.Max(0m, rawNet);
 
             // COMPLIANCE: YTD — sum all locked slips for this employee earlier in the same year
             var empYtdSlips = ytdSlips.Where(s => s.EmployeeId == e.Id).ToList();
@@ -955,6 +1671,11 @@ public class PayrollController : ControllerBase
                 AddEarning(tenantId, id, e.Id, BonusGlLedger.EarningComponentCode(bonus.BonusTypeName), bonus.BonusTypeName, bonus.GrossBonusAmount, "Bonus");
             foreach (var adjustment in empAdjustments.Where(a => a.Amount > 0m))
                 AddEarning(tenantId, id, e.Id, $"ADJ_{NormalizeCode(adjustment.AdjustmentType)}", AdjustmentLabel(adjustment), adjustment.Amount, "Adjustment");
+            // POD-B2: BASIC is the ONLY line emitted unconditionally (every other recurring line already
+            // carries an `if (x > 0)` guard, and the scalars above are zeroed on a supplemental basis).
+            // Skipping it — rather than emitting 0.00 — keeps a supplemental run's journal free of an
+            // empty EARN:BASIC debit group in BuildPayrollGlEntries.
+            if (includesRecurringPay)
             AddEarning(tenantId, id, e.Id, "BASIC", "Basic salary", basic, "Salary");
             if (housing > 0) AddEarning(tenantId, id, e.Id, "HOUSING", "Housing allowance", housing, "Salary");
             if (transport > 0) AddEarning(tenantId, id, e.Id, "TRANSPORT", "Transport allowance", transport, "Salary");
@@ -1015,7 +1736,15 @@ public class PayrollController : ControllerBase
                         .ToList(),
                     StatutoryLines = statutoryResult.Lines,
                 };
-                var computation = PayComponentEngine.Compute(payComponents, payCtx);
+                // POD-B2: the engine's mirror of the legacy `if (includesRecurringPay)` gate. Filtering the
+                // component SET (rather than zeroing amounts) is what makes the two paths still emit the
+                // same rows: BASIC's EmitWhenZero flag would otherwise emit a 0.00 BASIC line here while
+                // the legacy branch skipped it entirely. Bonus / Adjustment / Statutory providers survive —
+                // those are exactly the supplemental families a non-recurring run pays.
+                var effectiveComponents = includesRecurringPay
+                    ? payComponents
+                    : payComponents.Where(c => IsSupplementalPayComponent(c)).ToList();
+                var computation = PayComponentEngine.Compute(effectiveComponents, payCtx);
                 foreach (var line in computation.Earnings)
                     AddEarning(tenantId, id, e.Id, line.Code, line.Name, line.Amount, line.Source);
                 foreach (var line in computation.Deductions)
@@ -1032,6 +1761,21 @@ public class PayrollController : ControllerBase
                     BonusGlDescriptions.PayrollTaxComponentCode, BonusGlDescriptions.PayrollTaxComponentName,
                     totalBonusTax, "Tax");
         }
+
+        // POD-B2 (M4) — refuse the whole run BEFORE anything is written, rather than shipping an
+        // unlockable one. Throws out of the execution strategy so the transaction rolls back and the
+        // caller gets a specific 422 naming every employee and their shortfall.
+        if (negativeNetEmployees.Count > 0)
+            throw new PayrollProcessAbortException(422, new
+            {
+                error   = "negative_net_unsupported",
+                message = $"{negativeNetEmployees.Count} employee(s) on this supplemental run have deductions exceeding " +
+                          "their supplemental earnings. POD-B2 correction/supplementary runs are ADDITIVE-ONLY — a " +
+                          "negative delta (clawback) has no vehicle here and would produce a run that can never be " +
+                          "locked or deleted. Reduce the negative adjustments, or recover the amount through the " +
+                          "next regular run's deductions.",
+                employees = negativeNetEmployees,
+            });
 
         _db.PayrollSlips.AddRange(slips);
         // POD-B1b-FIX (P2-1) — pin the run's legal entity NOW, at Process, instead of re-deriving it at
@@ -1052,11 +1796,21 @@ public class PayrollController : ControllerBase
         run.TotalDeductions = slips.Sum(s => s.Deductions);
         run.TotalNetSalary = slips.Sum(s => s.NetSalary);
         run.TotalEmployerStatutoryCost = slips.Sum(s => s.EmployerStatutoryTotal);
-        await _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId)).ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
-        await _db.LeavePayrollImpacts.Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId)).ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
-        await _db.OvertimePayrollImpacts
-            .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
-            .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+        // POD-B2 — impact CONSUMPTION is gated on the run's basis. These writes are already scoped by
+        // `employeeIdsForRun` (so the selector narrows them for free), but a SUPPLEMENTAL run paid none of
+        // the attendance/LOP/leave/overtime this period produced, so marking them "Processed" would starve
+        // the Regular run of the period's impacts — the employee would silently lose their OT or gain
+        // free absence. Unchanged for every Regular run (includesRecurringPay is always true there).
+        if (includesRecurringPay)
+        {
+            await _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId)).ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
+            await _db.LeavePayrollImpacts.Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId)).ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+            await _db.OvertimePayrollImpacts
+                .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
+                .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+        }
+        // Adjustments are NOT gated: they are already `PayrollRunId == id`-scoped, i.e. attached to THIS
+        // run by the operator, and a supplemental run pays them.
         await _db.PayrollAdjustments
             .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.Status == "Approved" && employeeIdsForRun.Contains(x.EmployeeId))
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
@@ -1099,15 +1853,32 @@ public class PayrollController : ControllerBase
             OvertimeHoursByEmployee        = otHoursByEmpForValidation,
             AttendanceProcessedEmployeeIds = attendanceProcessedEmpIds,
             GosiRatesEffectiveFrom         = gosiRatesEffectiveFrom,
+            // POD-B2 — multi-run-per-period facts. Written INSIDE the Process transaction, after the wipe
+            // at the top of the strategy delegate, so re-processing never duplicates them.
+            EmployeesAlreadyPaidRecurringThisPeriod = alreadyPaidRecurringEmpIds,
+            Exclusions                              = runPopulation.Exclusions,
+            NotEligibleSelections                   = runPopulation.NotEligible,
+            SiblingRunCount                         = siblingRuns.Count,
+            StatutoryComputedIncrementally          = statutoryComputedIncrementally,
+            // Period-to-date employee-side GOSI from the sibling runs, so Rule 2 judges the PERIOD rather
+            // than this run in isolation. Derived from the same priorStatutoryByEmp map the incremental
+            // netting above used, so the figure Rule 2 credits is exactly the figure that was netted off.
+            PriorPeriodGosiEeByEmployee             = BuildPriorPeriodGosiEe(priorStatutoryByEmp),
         };
         foreach (var r in PayrollValidationEngine.Run(validationCtx))
             _db.PayrollValidationResults.Add(r);
 
-        var activeLoansMutable = await _db.EmployeeLoans
+        // POD-B2 (M10) — the WHOLE loan/advance decrement block is gated, not each slip line. A
+        // supplemental run collected no EMI (loanEmi/advEmi are 0 above), so decrementing
+        // OutstandingBalance / TotalRepaid or marking a LoanInstallment "Paid" here would retire debt the
+        // employee never actually repaid.
+        // (Pre-existing asymmetry, NOT amplified here: loans are scoped by `employeeIdsForRun` while
+        //  bonuses are scoped by `processedEmpIds` further down.)
+        var activeLoansMutable = !includesRecurringPay ? new List<EmployeeLoan>() : await _db.EmployeeLoans
             .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
                 && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd))
             .ToListAsync(cancellationToken);
-        var activeAdvMutable = await _db.SalaryAdvances
+        var activeAdvMutable = !includesRecurringPay ? new List<SalaryAdvance>() : await _db.SalaryAdvances
             .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
                 && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
             .ToListAsync(cancellationToken);
@@ -1150,11 +1921,35 @@ public class PayrollController : ControllerBase
         {
             var consumedBonusIds = toConsumeBonuses.Select(b => b.Id).ToHashSet();
             var consumedBatches  = toConsumeBonuses.Select(b => b.BonusBatchId).Distinct().ToList();
-            await _db.EmployeeBonuses
-                .Where(b => consumedBonusIds.Contains(b.Id))
+            // POD-B2 (M3) — CONDITIONAL stamp + affected-row assertion.
+            //
+            // The selection at the top of Process filters `PayrollRunId == null` at READ time; this stamp
+            // used to key only on the id set. Pre-B2 that was unreachable (one run per period), but a
+            // Regular and an OffCycle run for the same period can now be Processed CONCURRENTLY: both
+            // would read the bonus as unconsumed, both would emit a Bonus earning, both would pay it into
+            // net and WPS, and the stamp would be last-writer-wins. The accrual side then HIDES it —
+            // BonusGlLedger.BuildPayrollClearingAsync reads `PayrollRunId == runId` and the cursor caps at
+            // the outstanding position, so the payable clears exactly once, the losing run's bonus falls
+            // through to the un-accrued EARN:BONUS remainder debit, and the journal still BALANCES. Cash
+            // leaves twice, the accrual retires once, nothing reconciles: POD-B1b's double-count coming
+            // back through a door B2 opens.
+            //
+            // The re-checked predicate makes the stamp a compare-and-swap, and the row count proves we won
+            // it. ExecuteUpdateAsync runs inside this transaction, so aborting rolls the slips back too.
+            var stampedBonusCount = await _db.EmployeeBonuses
+                .Where(b => consumedBonusIds.Contains(b.Id) && b.PayrollRunId == null && b.Status == "Approved")
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(b => b.Status, "PaidInPayroll")
                     .SetProperty(b => b.PayrollRunId, id), cancellationToken);
+            if (stampedBonusCount != toConsumeBonuses.Count)
+                throw new PayrollProcessAbortException(409, new
+                {
+                    error    = "bonus_consumed_concurrently",
+                    message  = $"{toConsumeBonuses.Count - stampedBonusCount} bonus(es) selected by this run were consumed " +
+                               "by another payroll run while it was processing. Nothing was written — re-process this run.",
+                    expected = toConsumeBonuses.Count,
+                    stamped  = stampedBonusCount,
+                });
             // Lock the batch if all its approved bonuses are now consumed.
             foreach (var batchId2 in consumedBatches)
             {
@@ -1170,12 +1965,50 @@ public class PayrollController : ControllerBase
             }
         }
 
-        await PayrollAudit("payroll.run.processed", "PayrollRun", run.Id.ToString(), new { employeeCount = slips.Count, totalNet = run.TotalNetSalary, bonusesConsumed = toConsumeBonuses.Count }, cancellationToken);
+        await PayrollAudit("payroll.run.processed", "PayrollRun", run.Id.ToString(), new
+        {
+            employeeCount   = slips.Count,
+            totalNet        = run.TotalNetSalary,
+            bonusesConsumed = toConsumeBonuses.Count,
+            // POD-B2 — a run's TYPE, BASIS and the population it actually paid are the facts an auditor
+            // needs to explain why two runs exist for one month and why one of them paid no salary.
+            runType              = run.RunType,
+            includesRecurringPay = includesRecurringPay,
+            populationMode       = runPopulation.Mode,
+            eligibleCount        = eligibleEmployees.Count,
+            excludedCount        = runPopulation.Exclusions.Count,
+            notEligibleCount     = runPopulation.NotEligible.Count,
+            siblingRunCount      = siblingRuns.Count,
+            statutoryIncremental = statutoryComputedIncrementally,
+        }, cancellationToken);
+            // The selector rows are TRACKED, so the Outcome stamps applied by ResolveRunPopulationAsync
+            // persist with this save — inside the run transaction, alongside the slips they describe.
             await _db.SaveChangesAsync(cancellationToken); // second save: validation results + loan/advance decrements
 
             await tx.CommitAsync(cancellationToken); // commit the whole run atomically
-        });
+            });
+        }
+        catch (PayrollProcessAbortException abort)
+        {
+            // POD-B2 — a deliberate, pre-commit abort (negative supplemental net, or a bonus consumed by a
+            // concurrent run). The transaction was never committed, so nothing was written; surface the
+            // specific 4xx instead of letting it escape as a 500.
+            return StatusCode(abort.StatusCode, abort.Payload);
+        }
         return Ok(run);
+    }
+
+    /// <summary>
+    /// POD-B2 — a deliberate abort from inside Process's execution-strategy transaction. Thrown (not
+    /// returned) because the delegate cannot return an IActionResult; throwing is also what guarantees the
+    /// transaction is rolled back rather than partially committed.
+    /// </summary>
+    private sealed class PayrollProcessAbortException : Exception
+    {
+        public int StatusCode { get; }
+        public object Payload { get; }
+        public PayrollProcessAbortException(int statusCode, object payload)
+            : base("Payroll processing aborted.") { StatusCode = statusCode; Payload = payload; }
     }
 
     [HttpPost("runs/{id:guid}/lock")]
@@ -1202,7 +2035,10 @@ public class PayrollController : ControllerBase
             });
 
         // FINANCE-P1: Persist double-entry GL on lock (idempotent — skip if already posted).
-        var period = $"{run.Year}-{run.Month:D2}";
+        // POD-B2 (M7): a non-Regular run may book its ACCRUAL into a later open period (set at Create and
+        // validated open there) so a prior-period correction is possible after the month is closed. A
+        // Regular run's GlPostingPeriod is always null, so `period` is byte-identical to before for them.
+        var period = GlAccrualPeriod(run);
         var alreadyPosted = await _db.FinanceGlEntries
             .AnyAsync(x => x.SourceModule == "Payroll" && x.SourceEntityId == id && x.TenantId == tenantId, cancellationToken);
         if (!alreadyPosted)
@@ -1260,7 +2096,17 @@ public class PayrollController : ControllerBase
         run.ErpPostingStatusChangedAtUtc = DateTime.UtcNow;
         await _db.PayrollSlips.Where(s => s.RunId == id).ExecuteUpdateAsync(s => s.SetProperty(p => p.Status, "Final"), cancellationToken);
         await _db.Payslips.Where(s => s.PayrollRunId == id && s.TenantId == tenantId).ExecuteUpdateAsync(s => s.SetProperty(p => p.IsPublishedToEss, true).SetProperty(p => p.PublishedAtUtc, DateTime.UtcNow), cancellationToken);
-        await PayrollAudit("payroll.run.locked", "PayrollRun", id.ToString(), new { glPosted = !alreadyPosted, period }, cancellationToken);
+        // POD-B2 (M5b) — echo the hold-out count on the Lock audit and response so the last irreversible
+        // step before payment restates who is NOT being paid.
+        var lockExcludedCount = await _db.PayrollRunEmployeeSelections.AsNoTracking()
+            .CountAsync(s => s.TenantId == tenantId && s.PayrollRunId == id
+                          && s.Outcome == PayrollRunSelectionOutcomes.Excluded, cancellationToken);
+        await PayrollAudit("payroll.run.locked", "PayrollRun", id.ToString(), new
+        {
+            glPosted = !alreadyPosted, period,
+            runType = run.RunType, includesRecurringPay = run.IncludesRecurringPay,
+            payPeriod = $"{run.Year}-{run.Month:D2}", excludedCount = lockExcludedCount,
+        }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         // Notify all employees with a payslip for this run
         var employeeIds = await _db.PayrollSlips.AsNoTracking().Where(s => s.RunId == id && s.TenantId == tenantId).Select(s => s.EmployeeId).ToListAsync(cancellationToken);
@@ -1278,7 +2124,20 @@ public class PayrollController : ControllerBase
             }
             catch { /* best-effort per employee */ }
         }
-        return Ok(run);
+        // JSON superset of the previous `Ok(run)` body — every PayrollRun property is still present at the
+        // same path, so no existing consumer breaks.
+        return Ok(new
+        {
+            run.Id, run.TenantId, run.CompanyId, run.Year, run.Month, run.Status,
+            run.RunType, run.ParentRunId, run.IncludesRecurringPay, run.GlPostingPeriod,
+            run.TotalGrossSalary, run.TotalDeductions, run.TotalNetSalary, run.TotalEmployerStatutoryCost,
+            run.EmployeeCount, run.CreatedByUserId, run.ProcessedByUserId, run.CreatedAtUtc,
+            run.ProcessedAtUtc, run.LockedAtUtc, run.ErpPostingStatus, run.ErpPostingStatusChangedAtUtc,
+            run.ErpPostingReference, run.ErpPostingFailureReason,
+            run.VoidReason, run.VoidedAtUtc, run.VoidedByUserId, run.VoidedByName,
+            glPostingPeriodUsed = period,
+            excludedCount       = lockExcludedCount,
+        });
     }
 
     [HttpGet("runs/{id:guid}/slips")]
@@ -1334,9 +2193,17 @@ public class PayrollController : ControllerBase
         var hasEmployeesForValidationCompany = await _db.Employees.AsNoTracking()
             .AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId == company.Id, cancellationToken);
         var allowLegacyUnscopedEmployeesForValidation = legacySingleCompanyValidationScope || !hasAnyCompanyScopedEmployeesForValidation || !hasEmployeesForValidationCompany;
-        var employees = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted && (e.CompanyId == company.Id || (allowLegacyUnscopedEmployeesForValidation && e.CompanyId == null)))
-            .ToListAsync(cancellationToken);
+        // ── POD-B2: Validate MUST resolve the population through the SAME resolver as Process ────────
+        // Re-deriving it independently (every active company employee, selector-blind) is a hard break:
+        // Rule 1 MISSING_SALARY_STRUCTURE is an Error raised over ctx.ActiveEmployees, so a run with a
+        // hold-out would accumulate blocking Errors for the very people it deliberately excluded and could
+        // never be approved or locked. Rule 10 WARN_NO_ATTENDANCE noises up the same way.
+        var eligibleForValidation = await LoadEligibleEmployeesAsync(
+            tenantId, company.Id, allowLegacyUnscopedEmployeesForValidation, asNoTracking: true, cancellationToken);
+        var validationPopulation = await ResolveRunPopulationAsync(tenantId, run, eligibleForValidation, cancellationToken);
+        // /validate is a read-model refresh; the Outcome stamps belong to Process (inside its transaction).
+        foreach (var s in validationPopulation.Selections) _db.Entry(s).State = EntityState.Detached;
+        var employees = validationPopulation.Employees;
         var employeeIdsForValidation = employees.Select(e => e.Id).ToHashSet();
         var slips       = await _db.PayrollSlips.AsNoTracking().Where(s => s.TenantId == tenantId && s.RunId == id && employeeIdsForValidation.Contains(s.EmployeeId)).ToListAsync(cancellationToken);
         var validationAsOf = new DateOnly(run.Year, run.Month, DateTime.DaysInMonth(run.Year, run.Month));
@@ -1366,10 +2233,50 @@ public class PayrollController : ControllerBase
             .GroupBy(x => x.EmployeeId)
             .ToDictionary(g => g.Key, g => g.Sum(x => x.Hours));
 
+        // POD-B2 — the cross-run facts Process computes must be recomputed here, or /validate would clear
+        // an ALREADY_PAID_THIS_PERIOD Error that Process legitimately raised and hand the run to Approve.
+        var valSiblingRuns = await LoadSiblingRunsAsync(tenantId, run, company.Id, cancellationToken);
+        var valRecurringSiblingIds = valSiblingRuns.Where(r => r.IncludesRecurringPay).Select(r => r.Id).ToList();
+        var valAlreadyPaidEmpIds = valRecurringSiblingIds.Count == 0
+            ? new HashSet<int>()
+            : (await _db.PayrollSlips.AsNoTracking()
+                .Where(s => s.TenantId == tenantId && valRecurringSiblingIds.Contains(s.RunId) && employeeIdsForValidation.Contains(s.EmployeeId))
+                .Select(s => s.EmployeeId)
+                .Distinct()
+                .ToListAsync(cancellationToken)).ToHashSet();
+
+        // Period-to-date statutory from the sibling runs. /validate DELETES this run's stored results and
+        // replaces them wholesale, so any fact Process fed the engine must be reproduced here or /validate
+        // silently re-raises an Error that Process correctly withheld — and, because nothing ever sets
+        // IsResolved, that Error would be unclearable. Same shape as the map Process builds.
+        var valSiblingRunIds = valSiblingRuns.Select(r => r.Id).ToList();
+        var valPriorStatutory = new Dictionary<(int EmployeeId, string Code, bool IsEmployer), decimal>();
+        if (valSiblingRunIds.Count > 0)
+        {
+            var valSiblingStatutory = await _db.PayrollDeductions.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && valSiblingRunIds.Contains(d.PayrollRunId)
+                         && d.Source == "Statutory" && employeeIdsForValidation.Contains(d.EmployeeId))
+                .Select(d => new { d.EmployeeId, d.ComponentCode, d.IsEmployerContribution, d.Amount })
+                .ToListAsync(cancellationToken);
+            foreach (var d in valSiblingStatutory)
+            {
+                var key = (d.EmployeeId, d.ComponentCode, d.IsEmployerContribution);
+                valPriorStatutory[key] = valPriorStatutory.GetValueOrDefault(key) + d.Amount;
+            }
+        }
+
         var ctx     = new PayrollValidationContext(run, slips, employees, salaries, profiles, deductions, earnings, company)
         {
             OvertimeHoursByEmployee        = valOtHoursByEmp,
             AttendanceProcessedEmployeeIds = valAttendanceEmpIds,
+            EmployeesAlreadyPaidRecurringThisPeriod = valAlreadyPaidEmpIds,
+            Exclusions                              = validationPopulation.Exclusions,
+            NotEligibleSelections                   = validationPopulation.NotEligible,
+            SiblingRunCount                         = valSiblingRuns.Count,
+            // Matches Process: the stored statutory amounts WERE netted incrementally whenever a sibling
+            // run had already reported statutory for these employees, which is exactly this condition.
+            StatutoryComputedIncrementally          = valPriorStatutory.Count > 0,
+            PriorPeriodGosiEeByEmployee             = BuildPriorPeriodGosiEe(valPriorStatutory),
         };
         var results = PayrollValidationEngine.Run(ctx);
 
@@ -1415,6 +2322,27 @@ public class PayrollController : ControllerBase
                 message = $"Run has {blockingErrors.Count} unresolved validation error(s). " +
                           "Run /validate and resolve all errors before approving.",
                 errors  = blockingErrors,
+            });
+
+        // ── POD-B2 (M5b): deliberate hold-outs must be ACKNOWLEDGED, not merely warned ───────────────
+        // EMPLOYEE_EXCLUDED_FROM_RUN is a Warning by design (an exclusion is intentional and must not
+        // block), but a warning is invisible in practice: this endpoint and Lock only block on
+        // Severity == "Error", and a normal monthly run already carries dozens of warnings
+        // (MISSING_PAYROLL_PROFILE, WARN_NO_ATTENDANCE, MISSING_NATIONALITY, NON_SAUDI_IBAN…). The
+        // approver is not the person who set the exclusion. So the approver must state the number they
+        // expect and it must match, exactly like a cash count.
+        var resolvedExcludedCount = await _db.PayrollRunEmployeeSelections.AsNoTracking()
+            .CountAsync(s => s.TenantId == tenantId && s.PayrollRunId == id
+                          && s.Outcome == PayrollRunSelectionOutcomes.Excluded, cancellationToken);
+        if (resolvedExcludedCount > 0 && req.ExpectedExcludedCount != resolvedExcludedCount)
+            return Conflict(new
+            {
+                error          = "excluded_employees_not_acknowledged",
+                message        = $"This run deliberately excludes {resolvedExcludedCount} employee(s) from payment. " +
+                                 "Review GET /api/payroll/runs/{id}/population and re-submit with " +
+                                 $"expectedExcludedCount={resolvedExcludedCount} to acknowledge.",
+                excludedCount  = resolvedExcludedCount,
+                acknowledged   = req.ExpectedExcludedCount,
             });
 
         // Maker-checker: the user who processed the run cannot approve it.
@@ -1510,6 +2438,9 @@ public class PayrollController : ControllerBase
             status            = "Voided",
             glEntriesReversed = result.GlReversed,
             reason            = req.Notes,
+            // POD-B2 — non-voided runs that AMEND this one are now orphaned. Surfaced, not cascaded:
+            // recovery of a correction chain is POD-B3.
+            childRunIds       = result.ChildRunIds,
         });
     }
 
@@ -1539,8 +2470,11 @@ public class PayrollController : ControllerBase
         _db.PayrollEarnings.RemoveRange(_db.PayrollEarnings.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
         _db.PayrollDeductions.RemoveRange(_db.PayrollDeductions.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
         _db.PayrollValidationResults.RemoveRange(_db.PayrollValidationResults.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+        // POD-B2 — the run's population selections have no FK (nothing in this schema does), so remove
+        // them here or they would outlive the run as orphans and be re-resolved onto a recycled id.
+        _db.PayrollRunEmployeeSelections.RemoveRange(_db.PayrollRunEmployeeSelections.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
         _db.PayrollRuns.Remove(run);
-        await PayrollAudit("payroll.run.deleted", "PayrollRun", id.ToString(), new { run.Year, run.Month }, cancellationToken);
+        await PayrollAudit("payroll.run.deleted", "PayrollRun", id.ToString(), new { run.Year, run.Month, run.RunType }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
@@ -1759,11 +2693,23 @@ public class PayrollController : ControllerBase
         var slips    = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).ToListAsync(cancellationToken);
         var profiles = await _db.EmployeePayrollProfiles.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(cancellationToken);
         var currency = req.Currency ?? await ResolveCurrencyAsync(tenantId, cancellationToken);
+        // POD-B2 — BatchNumber has no unique index and two runs in a period differ only by seconds. A
+        // 2-char type tag plus a short id fragment makes an off-cycle batch legible to an operator and
+        // collision-proof between concurrent batches in the same second.
+        var runTypeTag = run.RunType switch
+        {
+            PayrollRunTypes.OffCycle      => "OC",
+            PayrollRunTypes.Supplementary => "SU",
+            PayrollRunTypes.Correction    => "CO",
+            _                             => "RG",
+        };
         var batch    = new PayrollPaymentBatch
         {
             TenantId      = tenantId,
             PayrollRunId  = id,
-            BatchNumber   = $"PAY-{run.Year}{run.Month:00}-{DateTime.UtcNow:HHmmss}",
+            BatchNumber   = run.RunType == PayrollRunTypes.Regular
+                ? $"PAY-{run.Year}{run.Month:00}-{DateTime.UtcNow:HHmmss}"
+                : $"PAY-{run.Year}{run.Month:00}-{runTypeTag}-{DateTime.UtcNow:HHmmss}-{id.ToString("N")[..4]}",
             PaymentMethod = req.PaymentMethod ?? "WPS",
             TotalAmount   = slips.Sum(x => x.NetSalary),
             Currency      = currency,
@@ -1777,9 +2723,21 @@ public class PayrollController : ControllerBase
                 _db.PayrollValidationResults.Add(new PayrollValidationResult { TenantId = tenantId, PayrollRunId = id, EmployeeId = slip.EmployeeId, Severity = "Warning", Code = "MISSING_IBAN", Message = "Employee is missing IBAN for payment file." });
             _db.PayrollPaymentRecords.Add(new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = slip.EmployeeId, Amount = slip.NetSalary, Iban = profile?.Iban ?? string.Empty, Status = "Pending", WpsReference = $"WPS-{slip.EmployeeCode}-{run.Year}{run.Month:00}" });
         }
-        await PayrollAudit("payroll.payment_batch.created", "PayrollPaymentBatch", batch.Id.ToString(), new { totalAmount = batch.TotalAmount, method = batch.PaymentMethod }, cancellationToken);
+        // POD-B2 (M5b) — restate the hold-out count at the moment money is queued for disbursement.
+        var batchExcludedCount = await _db.PayrollRunEmployeeSelections.AsNoTracking()
+            .CountAsync(s => s.TenantId == tenantId && s.PayrollRunId == id
+                          && s.Outcome == PayrollRunSelectionOutcomes.Excluded, cancellationToken);
+        await PayrollAudit("payroll.payment_batch.created", "PayrollPaymentBatch", batch.Id.ToString(),
+            new { totalAmount = batch.TotalAmount, method = batch.PaymentMethod, runType = run.RunType, excludedCount = batchExcludedCount }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        return Created($"/api/payroll/payment-batches/{batch.Id}", batch);
+        return Created($"/api/payroll/payment-batches/{batch.Id}", new
+        {
+            batch.Id, batch.TenantId, batch.PayrollRunId, batch.BatchNumber, batch.PaymentMethod,
+            batch.TotalAmount, batch.Currency, batch.WpsStatus,
+            runType       = run.RunType,
+            parentRunId   = run.ParentRunId,
+            excludedCount = batchExcludedCount,
+        });
     }
 
     /// <summary>
@@ -1826,7 +2784,7 @@ public class PayrollController : ControllerBase
     /// Requires payroll.export permission.
     /// </summary>
     [HttpPost("payment-batches/{id:guid}/wps-file")]
-    public async Task<IActionResult> GenerateWps(Guid id, [FromQuery] bool acknowledgeReadinessDrift, CancellationToken cancellationToken)
+    public async Task<IActionResult> GenerateWps(Guid id, [FromQuery] bool acknowledgeReadinessDrift, [FromQuery] bool acknowledgeSiblingWpsExport, CancellationToken cancellationToken)
     {
         if (!HasPermission("payroll.export")) return Forbid();
 
@@ -1853,6 +2811,39 @@ public class PayrollController : ControllerBase
         // Run-level eligibility check (backend-enforced, never trusts frontend).
         if (run is null || (run.Status is not ("Approved" or "Locked" or "Paid")))
             return BadRequest(new { error = "run_not_exportable", message = "Payroll run must be Approved (or Locked/Paid) before WPS export." });
+
+        // ── POD-B2 (M9): a second SIF for the same establishment + salary month ──────────────────────
+        // Mudad / UAE WPS treat a second file for the same (establishment, salary month) as a
+        // REPLACEMENT, not an addition. Generating one silently after a sibling run's batch was already
+        // accepted or paid invites an underpayment the bank accepts without complaint. This is a payment-
+        // integrity risk, not a labelling problem, so it hard-blocks until acknowledged.
+        // [PRODUCT DECISION OUTSTANDING: whether a period's runs should be exported as ONE aggregated SIF
+        //  or as separate files is bank/MOL-specific and needs sign-off before the first tenant does this
+        //  in anger. Until then the operator must consciously choose.]
+        var siblingRunsForWps = await LoadSiblingRunsAsync(tenantId, run, run.CompanyId ?? Guid.Empty, cancellationToken);
+        if (siblingRunsForWps.Count > 0 && !acknowledgeSiblingWpsExport)
+        {
+            var siblingRunIdsForWps = siblingRunsForWps.Select(r => r.Id).ToList();
+            var conflictingBatches = await _db.PayrollPaymentBatches.AsNoTracking()
+                .Where(b => b.TenantId == tenantId && siblingRunIdsForWps.Contains(b.PayrollRunId)
+                         && (b.WpsStatus == WpsStatuses.Accepted || b.WpsStatus == WpsStatuses.Paid
+                          || b.WpsStatus == WpsStatuses.Submitted || b.WpsStatus == WpsStatuses.Reconciled))
+                .Select(b => new { b.Id, b.BatchNumber, b.WpsStatus, b.PayrollRunId, b.TotalAmount })
+                .ToListAsync(cancellationToken);
+            if (conflictingBatches.Count > 0)
+                return UnprocessableEntity(new
+                {
+                    error   = "sibling_wps_export_exists",
+                    message = $"Another payroll run for {run.Year}-{run.Month:D2} in this legal entity already has a " +
+                              "submitted/accepted/paid WPS batch. Banks and Mudad treat a second SIF for the same " +
+                              "salary month as a REPLACEMENT of the first, which would under-pay the employees in " +
+                              "that batch. Confirm with your bank whether a second file is additive, then re-submit " +
+                              "with acknowledgeSiblingWpsExport=true.",
+                    period  = $"{run.Year}-{run.Month:D2}",
+                    runType = run.RunType,
+                    conflictingBatches,
+                });
+        }
 
         // Resolve company → pack exporter; guard if no pack configured for this jurisdiction.
         var wpsCompany = await _db.Companies.AsNoTracking()
@@ -2708,15 +3699,30 @@ public class PayrollController : ControllerBase
         if (!HasPermission("payroll.export")) return Forbid();
 
         var tenantId = GetTenantId();
-        if (!await _db.PayrollPaymentBatches.AnyAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken))
-            return NotFound();
+        var wpsBatch = await _db.PayrollPaymentBatches.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
+        if (wpsBatch is null) return NotFound();
 
         var history = await _db.WPSFileBatches.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batchId)
             .OrderByDescending(x => x.CreatedAtUtc)
             .ToListAsync(cancellationToken);
 
-        return Ok(new { batchId, exportCount = history.Count, history });
+        // POD-B2 (M9) — stamp the run's type/parent into the export history so an operator reconciling a
+        // month against the bank can tell which SIF belongs to which run.
+        var historyRun = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Id == wpsBatch.PayrollRunId)
+            .Select(r => new { r.Id, r.RunType, r.ParentRunId, r.Year, r.Month })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return Ok(new
+        {
+            batchId, exportCount = history.Count, history,
+            runId       = historyRun?.Id,
+            runType     = historyRun?.RunType,
+            parentRunId = historyRun?.ParentRunId,
+            period      = historyRun is null ? null : $"{historyRun.Year}-{historyRun.Month:D2}",
+        });
     }
 
     [HttpGet("employee-salary-structures")]
@@ -3740,7 +4746,16 @@ public class PayrollController : ControllerBase
         if (run is null) return NotFound();
 
         var (priorYear, priorMonth) = run.Month == 1 ? (run.Year - 1, 12) : (run.Year, run.Month - 1);
-        var priorRun = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Year == priorYear && x.Month == priorMonth, cancellationToken);
+        // POD-B2 — this lookup was company-, type- AND status-blind: in a multi-entity tenant it could
+        // already pick another company's run as "last month", and post-B2 it could pick an off-cycle or
+        // voided run, producing a joiners/leavers/variance report against a bonus-only population. The
+        // month-over-month comparison is only meaningful against the prior REGULAR run of the SAME entity.
+        var priorRun = await _db.PayrollRuns.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Year == priorYear && x.Month == priorMonth
+                     && x.CompanyId == run.CompanyId
+                     && x.RunType == PayrollRunTypes.Regular
+                     && x.Status != "Voided")
+            .FirstOrDefaultAsync(cancellationToken);
 
         var currentSlips = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == runId).ToListAsync(cancellationToken);
         var priorSlips   = priorRun is not null ? await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == priorRun.Id).ToListAsync(cancellationToken) : new List<PayrollSlip>();
@@ -4012,13 +5027,38 @@ public class PayrollController : ControllerBase
             .Select(g => new { CompanyId = g.Key, Count = g.Count() })
             .ToListAsync(cancellationToken);
 
+        // POD-B2 (M5b) — deliberate hold-outs, surfaced on the dashboard card. `Pending` counts intent
+        // that has NOT yet been applied by a Process pass: before Process an Exclude row has a null
+        // Outcome and produces no validation result at all, so it would otherwise be invisible until
+        // someone opened GET runs/{id}/population.
+        var exclusionsByCompany = await _db.PayrollRunEmployeeSelections
+            .AsNoTracking()
+            .Where(s => s.TenantId == tenantId)
+            .Join(_db.PayrollRuns.Where(r => r.TenantId == tenantId && r.Year == targetYear && r.Month == targetMonth && r.Status != "Voided"),
+                  s => s.PayrollRunId, r => r.Id, (s, r) => new { r.CompanyId, s.Mode, s.Outcome })
+            .GroupBy(x => x.CompanyId)
+            .Select(g => new
+            {
+                CompanyId = g.Key,
+                Excluded  = g.Count(x => x.Outcome == PayrollRunSelectionOutcomes.Excluded),
+                Pending   = g.Count(x => x.Outcome == null),
+            })
+            .ToListAsync(cancellationToken);
+
         var result = companies.Select(c =>
         {
             var empCount = employeesByCompany.FirstOrDefault(x => x.CompanyId == c.Id)?.Count ?? 0;
             var salaryCount = salaryAssignedByCompany.FirstOrDefault(x => x.CompanyId == c.Id)?.Count ?? 0;
-            var run = runsForMonth.FirstOrDefault(r => r.CompanyId == c.Id);
+            // POD-B2 — the monthly cycle card describes the REGULAR run. FirstOrDefault used to pick an
+            // arbitrary run for the company, which post-B2 could be an off-cycle bonus run and would make
+            // the dashboard report a company's gross payroll as a few thousand in bonuses.
+            var companyRuns = runsForMonth.Where(r => r.CompanyId == c.Id && r.Status != "Voided").ToList();
+            var run = companyRuns.FirstOrDefault(r => r.RunType == PayrollRunTypes.Regular)
+                   ?? runsForMonth.FirstOrDefault(r => r.CompanyId == c.Id && r.RunType == PayrollRunTypes.Regular);
+            var offCycleRunCount = companyRuns.Count(r => r.RunType != PayrollRunTypes.Regular);
             var valErr = validationErrors.FirstOrDefault(v => v.CompanyId == c.Id);
             var pendAppr = pendingApprovals.FirstOrDefault(p => p.CompanyId == c.Id);
+            var exclusions = exclusionsByCompany.FirstOrDefault(x => x.CompanyId == c.Id);
             return new
             {
                 CompanyId = c.Id,
@@ -4039,6 +5079,14 @@ public class PayrollController : ControllerBase
                 WpsEmployerId = c.WpsEmployerId,
                 GosiEmployerId = c.GosiEmployerId,
                 HasPayrollRun = run != null,
+                // POD-B2 — additional runs in the period, counted separately so the monthly figures above
+                // stay a like-for-like month-over-month series.
+                OffCycleRunCount = offCycleRunCount,
+                OffCycleGross    = companyRuns.Where(r => r.RunType != PayrollRunTypes.Regular).Sum(r => r.TotalGrossSalary),
+                OffCycleNet      = companyRuns.Where(r => r.RunType != PayrollRunTypes.Regular).Sum(r => r.TotalNetSalary),
+                // Employees deliberately held out of this period's runs (and intent not yet applied).
+                ExcludedEmployees         = exclusions?.Excluded ?? 0,
+                PendingExclusionSelections = exclusions?.Pending ?? 0,
             };
         }).ToList();
 
@@ -4085,9 +5133,18 @@ public class PayrollController : ControllerBase
 
         var coveragePercent = totalActive > 0 ? Math.Round(assignedCount * 100.0 / totalActive, 1) : 0.0;
 
-        var runQuery = _db.PayrollRuns.Where(r => r.TenantId == tenantId && r.Year == targetYear && r.Month == targetMonth);
+        // POD-B2 — the 6-step readiness checklist describes the MONTHLY cycle, so it must track the
+        // Regular run. Without the filter an off-cycle bonus run could mark "Payroll Run Created"
+        // complete and report its status as the month's, while the real monthly run had not been started.
+        var runQuery = _db.PayrollRuns.Where(r => r.TenantId == tenantId && r.Year == targetYear && r.Month == targetMonth
+                                              && r.RunType == PayrollRunTypes.Regular && r.Status != "Voided");
         if (companyId.HasValue) runQuery = runQuery.Where(r => r.CompanyId == companyId);
         var run = await runQuery.FirstOrDefaultAsync(cancellationToken);
+        var offCycleRunsForPeriod = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Year == targetYear && r.Month == targetMonth
+                     && r.RunType != PayrollRunTypes.Regular && r.Status != "Voided"
+                     && (!companyId.HasValue || r.CompanyId == companyId))
+            .CountAsync(cancellationToken);
 
         var validationErrors = run != null
             ? await _db.PayrollValidationResults
@@ -4118,6 +5175,7 @@ public class PayrollController : ControllerBase
             ValidationErrors = validationErrors,
             PayrollRunStatus = run?.Status,
             Steps = steps,
+            OffCycleRunCount = offCycleRunsForPeriod,   // POD-B2: additional runs in the period, if any
         });
     }
 
@@ -4629,7 +5687,23 @@ public class PayrollController : ControllerBase
             : $"Payroll adjustment - {adjustment.AdjustmentType}: {adjustment.Reason}";
 }
 
-public record CreatePayrollRunRequest(int Year, int Month, Guid? CompanyId = null);
+// POD-B2 — every new member is optional and defaulted, so the existing frontend call
+// (frontend/src/api/payroll.ts createRun) keeps producing a Regular, full-basis, run-period run.
+public record CreatePayrollRunRequest(
+    int Year,
+    int Month,
+    Guid? CompanyId = null,
+    string? RunType = null,
+    Guid? ParentRunId = null,
+    bool? IncludesRecurringPay = null,
+    string? GlPostingPeriod = null);
+
+/// <summary>POD-B2 — upsert include/exclude intent for a run's population.</summary>
+public record PayrollRunSelectionRequest(
+    string Mode,
+    string Reason,
+    List<int>? EmployeeIds = null,
+    bool AllEligible = false);
 public record SalaryStructureRequest(
     string Code,
     string Name,
@@ -4684,7 +5758,11 @@ public record SalaryComponentDto(Guid Id, Guid? SalaryStructureId, string Code, 
 }
 public record SalaryComponentRequest(string Code, string Name, string ComponentType, string CalculationType, decimal Amount, decimal Percentage, bool IsTaxable, bool IsActive = true);
 public record EmployeeSalaryStructureRequest(int EmployeeId, Guid SalaryStructureId, decimal BasicSalary, decimal HousingAllowance, decimal TransportAllowance, decimal FoodAllowance, decimal MobileAllowance, decimal OtherAllowance, decimal FixedDeduction, DateOnly EffectiveDate, string? Currency);
-public record PayrollDecisionRequest(string? Notes);
+// POD-B2 (M5b) — ExpectedExcludedCount is an ACKNOWLEDGEMENT, not a warning. Approve refuses with 409
+// when the run holds deliberate exclusions and the approver's expectation does not match the resolved
+// count, so the person signing off cannot miss a hold-out buried among dozens of routine warnings.
+// Optional and defaulted, so every existing caller (and the frontend) is unaffected on a run with none.
+public record PayrollDecisionRequest(string? Notes, int? ExpectedExcludedCount = null);
 public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency);
 public record WpsStatusRequest(string Status, string? Notes, string? Reference = null);
 public record ErpPostingStatusRequest(string Status, string? Reference = null, string? Notes = null);

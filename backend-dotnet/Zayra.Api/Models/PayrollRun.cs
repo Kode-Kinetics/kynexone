@@ -9,6 +9,24 @@ public class PayrollRun : ITenantOwned, ICompanyScopedOperational
     public int Year { get; set; }
     public int Month { get; set; }
     public string Status { get; set; } = "Draft";
+    // POD-B2 — run TYPE. Exactly one non-voided Regular run may exist per (tenant, company, year, month);
+    // any number of OffCycle/Supplementary/Correction runs may coexist for the same period.
+    // Enforced by the partial unique indexes IX_payroll_runs_tenant_id_company_id_year_month and
+    // IX_payroll_runs_tenant_id_year_month (the null-company companion), both filtered on run_type = 'Regular'.
+    public string RunType { get; set; } = PayrollRunTypes.Regular;
+    // POD-B2 — links a Correction/Supplementary run to the run it amends. Null for Regular/standalone runs.
+    public Guid? ParentRunId { get; set; }
+    // POD-B2 — pay BASIS, persisted on the run rather than derived from RunType, so an off-cycle run for a
+    // missed joiner CAN pay full recurring salary while a mid-month bonus run does not. When false the run
+    // pays supplemental items only (bonuses, adjustments, statutory on the supplemental base) and takes no
+    // recurring deduction, consumes no attendance/leave/OT impact and decrements no loan/advance balance.
+    // The real double-pay control is the ALREADY_PAID_THIS_PERIOD validation Error, not this flag.
+    public bool IncludesRecurringPay { get; set; } = true;
+    // POD-B2 — GL posting period ("yyyy-MM") for the ACCRUAL journal (Lock) and its void contra, when it
+    // must differ from the pay period. Null (the default, and the only legal value for a Regular run) means
+    // "post into the run's own period". A prior-period correction booked into the current open month sets
+    // this; the run still REPORTS under Year/Month, only the journal moves.
+    public string? GlPostingPeriod { get; set; }
     public decimal TotalGrossSalary { get; set; }
     public decimal TotalDeductions { get; set; }
     public decimal TotalNetSalary { get; set; }
@@ -29,6 +47,83 @@ public class PayrollRun : ITenantOwned, ICompanyScopedOperational
     public DateTime? VoidedAtUtc { get; set; }
     public Guid? VoidedByUserId { get; set; }
     public string? VoidedByName { get; set; }
+}
+
+/// <summary>
+/// POD-B2 — payroll run types.
+///
+///   Regular      the monthly cycle. Exactly one non-voided Regular run per (tenant, company, year, month).
+///   OffCycle     an out-of-band run inside the period (mid-month bonus, a missed joiner). Basis is
+///                operator-selected: supplemental by default, full-recurring on request.
+///   Supplementary an additive top-up to an already-run period. Supplemental basis.
+///   Correction   amends a named parent run. Supplemental basis, ADDITIVE-ONLY in B2 — a negative delta
+///                (clawback) is rejected at Process with 422 negative_net_unsupported and is POD-B3 work.
+///
+/// Open for a future "Replacement" member: POD-B3's void→recreate recovery path will add one here and
+/// reuse ParentRunId + the Status != 'Voided' relaxation in CreateRun.
+/// </summary>
+public static class PayrollRunTypes
+{
+    public const string Regular       = "Regular";
+    public const string OffCycle      = "OffCycle";
+    public const string Supplementary = "Supplementary";
+    public const string Correction    = "Correction";
+
+    public static readonly string[] All = { Regular, OffCycle, Supplementary, Correction };
+
+    /// <summary>
+    /// Case-insensitive canonicalisation. Returns null for an unrecognised value so the caller can 400 —
+    /// NEVER silently coerces to Regular (a typo'd type must not become the tenant's monthly run).
+    /// A null/blank input means "not supplied" and canonicalises to Regular.
+    /// </summary>
+    public static string? Normalize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return Regular;
+        foreach (var t in All)
+            if (string.Equals(t, value.Trim(), StringComparison.OrdinalIgnoreCase)) return t;
+        return null;
+    }
+
+    public static bool IsValid(string? value) => Normalize(value) is not null;
+
+    /// <summary>True for every type except Regular — i.e. the run does not own the period's monthly cycle.</summary>
+    public static bool IsNonRegular(string? runType) =>
+        !string.Equals(runType, Regular, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Default pay basis for a type. Regular is always full-recurring. Supplementary/Correction are always
+    /// supplemental. OffCycle defaults to supplemental but the operator may opt into full recurring pay
+    /// (the missed-joiner case) via CreatePayrollRunRequest.IncludesRecurringPay.
+    /// </summary>
+    public static bool DefaultIncludesRecurringPay(string runType) =>
+        string.Equals(runType, Regular, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Only OffCycle lets the operator choose the basis; the others are fixed by their contract.</summary>
+    public static bool AllowsBasisOverride(string runType) =>
+        string.Equals(runType, OffCycle, StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>POD-B2 — Include/Exclude modes for the run population selector.</summary>
+public static class PayrollRunSelectionModes
+{
+    public const string Include = "Include";
+    public const string Exclude = "Exclude";
+
+    public static string? Normalize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (string.Equals(Include, value.Trim(), StringComparison.OrdinalIgnoreCase)) return Include;
+        if (string.Equals(Exclude, value.Trim(), StringComparison.OrdinalIgnoreCase)) return Exclude;
+        return null;
+    }
+}
+
+/// <summary>POD-B2 — outcome stamped on a selection row by Process, so intent is never silently dropped.</summary>
+public static class PayrollRunSelectionOutcomes
+{
+    public const string Included    = "Included";
+    public const string Excluded    = "Excluded";
+    public const string NotEligible = "NotEligible";
 }
 
 public static class ErpPostingStatuses

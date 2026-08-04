@@ -283,6 +283,12 @@ public class GosiController : ControllerBase
             hasStatutoryData     = recon.HasStatutoryData,
             packResolved         = recon.PackResolved,
             packStatusNote       = recon.PackStatusNote,
+            // POD-B2 — this run is only PART of the period's filing once siblings exist, and its expected
+            // figure is then a standalone recomputation against an actual that is a period delta. Both
+            // fields are inert (0 / false / null) for a single-run period.
+            siblingRunCount         = recon.SiblingRunCount,
+            expectedIsPeriodPartial = recon.ExpectedIsPeriodPartial,
+            periodScopeNote         = recon.PeriodScopeNote,
 
             // ── Actual (persisted deductions) ──
             totalEmployeeContrib = recon.ActualEmployeeTotal,
@@ -309,6 +315,73 @@ public class GosiController : ControllerBase
             glEmployeeDelta      = recon.GlEmployeeDelta,
             glEmployerDelta      = recon.GlEmployerDelta,
 
+            branchBreakdown,
+        });
+    }
+
+    // ── POD-B2 (M8): PERIOD-level GOSI summary — the FILING view ──────────────────────────────
+    //
+    // The run-level endpoint above is keyed on a single runId. POD-A1's invariant (deducted == report
+    // == GL) survives per run, but a GOSI submission is filed per PERIOD, and once POD-B2 allows an
+    // off-cycle/supplementary run alongside the monthly one, a per-run report is only PART of the
+    // filing. This unions every non-voided run for the (company, year, month) and recomputes
+    // "expected" ONCE on the period-aggregated covered wage, so the statutory ceiling — a period
+    // concept — is applied to the period total exactly once.
+    /// <summary>
+    /// Period-level GOSI contribution summary across ALL non-voided payroll runs for the month.
+    /// Use this, not the per-run summary, as the source for a statutory filing.
+    /// </summary>
+    [HttpGet("periods/{year:int}/{month:int}/contribution-summary")]
+    public async Task<IActionResult> GetPeriodContributionSummary(
+        int year, int month, [FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        if (month < 1 || month > 12) return BadRequest(new { error = "invalid_month", message = "month must be between 1 and 12." });
+        var tenantId = GetTenantId();
+        var recon = await _reconciliation.ReconcilePeriodAsync(tenantId, companyId, year, month, ct);
+
+        var branchBreakdown = recon.Deductions
+            .GroupBy(d => d.ComponentCode)
+            .Select(g => new
+            {
+                componentCode          = g.Key,
+                componentName          = g.First().ComponentName,
+                isEmployerContribution = g.Any(d => d.IsEmployerContribution),
+                totalAmount            = g.Sum(d => d.Amount),
+                employeeCount          = g.Select(d => d.EmployeeId).Distinct().Count(),
+            })
+            .OrderBy(x => x.componentCode)
+            .ToList();
+
+        return Ok(new
+        {
+            period               = recon.Period,
+            companyId            = recon.CompanyId,
+            runCount             = recon.RunCount,
+            runIds               = recon.RunIds,
+            // Which run contributed what — a preparer must be able to see that the month's filing is the
+            // sum of a Regular run plus, say, an OffCycle bonus run.
+            runs                 = recon.RunSummaries,
+            hasStatutoryData     = recon.HasStatutoryData,
+            packResolved         = recon.PackResolved,
+            packStatusNote       = recon.PackStatusNote,
+
+            totalEmployeeContrib = recon.ActualEmployeeTotal,
+            totalEmployerContrib = recon.ActualEmployerTotal,
+            totalGosi            = recon.ActualEmployeeTotal + recon.ActualEmployerTotal,
+
+            expectedEmployeeContrib = recon.ExpectedEmployeeTotal,
+            expectedEmployerContrib = recon.ExpectedEmployerTotal,
+            expectedVsActualEmployeeDelta = recon.ExpectedVsActualEmployeeDelta,
+            expectedVsActualEmployerDelta = recon.ExpectedVsActualEmployerDelta,
+
+            glPosted             = recon.GlPosted,
+            glEmployeeLiability  = recon.GlEmployeeLiability,
+            glEmployerLiability  = recon.GlEmployerLiability,
+            glEmployeeDelta      = recon.GlEmployeeDelta,
+            glEmployerDelta      = recon.GlEmployerDelta,
+
+            varianceCount        = recon.VarianceCount,
+            employees            = recon.Rows,
             branchBreakdown,
         });
     }
@@ -363,6 +436,11 @@ public class GosiController : ControllerBase
             hasStatutoryData  = recon.HasStatutoryData,
             totalEmployees    = rows.Count,
             withVariance      = rows.Count(r => r.HasVariance),
+            // POD-B2 — when true, a variance below is expected arithmetic (period-delta actual vs
+            // standalone expected), NOT a filing defect. Inert for a single-run period.
+            siblingRunCount         = recon.SiblingRunCount,
+            expectedIsPeriodPartial = recon.ExpectedIsPeriodPartial,
+            periodScopeNote         = recon.PeriodScopeNote,
             // Run-level tie-out so a CFO sees the halala reconciliation alongside the per-employee drift.
             expectedEmployeeContrib = recon.ExpectedEmployeeTotal,
             actualEmployeeContrib   = recon.ActualEmployeeTotal,

@@ -93,14 +93,29 @@ public static class PayrollValidationEngine
                 new Employee { Id = s.EmployeeId, EmployeeCode = s.EmployeeCode, FullName = s.EmployeeName ?? string.Empty });
         }
 
+        // POD-B2 — does this run pay recurring salary? Drives which rules are applicable. A supplemental
+        // run (bonus-only / adjustment-only) pays no recurring component, so rules whose premise is
+        // "this run pays the monthly wage" are demoted to Warning rather than blocking Approve/Lock.
+        // For a Regular run IncludesRecurringPay is always true, so nothing about an existing run changes.
+        var paysRecurring = ctx.Run.IncludesRecurringPay;
+
         // ── Rule 1: Missing salary structure / payroll profile ────────────────
         foreach (var emp in ctx.ActiveEmployees)
         {
             if (!salaryByEmp.ContainsKey(emp.Id))
-                Err("MISSING_SALARY_STRUCTURE",
+            {
+                var missingStructureMsg =
                     $"Employee {emp.EmployeeCode} ({emp.FullName}) has no active salary structure. " +
-                    "All active employees in the run must have a salary assignment before payroll is processed.",
-                    emp.Id);
+                    "All active employees in the run must have a salary assignment before payroll is processed.";
+                // POD-B2: on a supplemental-basis run no recurring pay is derived from the structure, so a
+                // lapsed assignment cannot produce a wrong figure — it must not brick a bonus-only run.
+                if (paysRecurring)
+                    Err("MISSING_SALARY_STRUCTURE", missingStructureMsg, emp.Id);
+                else
+                    Warn("MISSING_SALARY_STRUCTURE",
+                        missingStructureMsg + " (Advisory only: this run pays supplemental items, not recurring salary.)",
+                        emp.Id);
+            }
 
             if (!profileByEmp.ContainsKey(emp.Id))
                 Warn("MISSING_PAYROLL_PROFILE",
@@ -140,7 +155,18 @@ public static class PayrollValidationEngine
                     "Deductions exceed gross pay; deduction amounts must be reviewed.",
                     slip.EmployeeId);
 
-            if (slip.NetSalary == 0m && slip.GrossSalary > 0m)
+            // POD-B2 (M4): on a supplemental run a small bonus fully consumed by withholding tax + GOSI
+            // legitimately nets to zero. Gross == deductions still satisfies Rule 8, so the journal
+            // balances — blocking it as an Error would leave an unlockable, undeletable run whose only
+            // exit is Void. Demoted to Warning for supplemental basis ONLY; unchanged for Regular runs.
+            // A genuinely NEGATIVE raw net is refused earlier, at Process, with 422 negative_net_unsupported.
+            if (slip.NetSalary == 0m && slip.GrossSalary > 0m && !paysRecurring)
+                Warn("ZERO_NET_WITH_GROSS",
+                    $"Employee {slip.EmployeeCode} net salary is zero but gross is {slip.GrossSalary:N2}. " +
+                    "On a supplemental run this normally means the supplemental amount was fully consumed by " +
+                    "withholding tax and statutory contributions. Verify the deduction amounts.",
+                    slip.EmployeeId);
+            else if (slip.NetSalary == 0m && slip.GrossSalary > 0m)
                 Err("ZERO_NET_WITH_GROSS",
                     $"Employee {slip.EmployeeCode} net salary is zero but gross is {slip.GrossSalary:N2}. " +
                     "This usually indicates an over-deduction; verify deduction amounts.",
@@ -162,11 +188,47 @@ public static class PayrollValidationEngine
 
                 if (classification is "Saudi" or "GCC")
                 {
-                    if (!hasGosiEe)
+                    // POD-B2 — GOSI is a PERIOD obligation, not a per-run one. Once a period may hold
+                    // several runs, "THIS run deducted zero" stops being evidence of non-compliance:
+                    //
+                    //   • a supplemental run whose earnings sit outside the GOSI base has no covered wage
+                    //     to contribute on at all — Process zeroes basic/housing for that basis
+                    //     (PayrollController, the SUPPLEMENTAL BASIS block), so the pack is fed a zero
+                    //     base and correctly returns zero; and
+                    //   • the incremental statutory basis (M8) nets off what sibling runs already
+                    //     deducted, so whichever run arrives after the 45 k ceiling is fully consumed
+                    //     legitimately nets to zero. That can be the REGULAR run — a >45 k GOSI-base
+                    //     bonus paid off-cycle first consumes the whole period ceiling.
+                    //
+                    // Raising an Error in either case STRANDS the run: Approve and Lock 422 on it,
+                    // re-Process is refused once the run left Draft/Processed, DeleteRun is Draft-only,
+                    // and nothing in this codebase ever sets PayrollValidationResult.IsResolved — so Void
+                    // would be the only exit from a payroll that is in fact perfectly correct.
+                    //
+                    // The Error premise is therefore narrowed to what it always meant: this employee
+                    // contributed NOTHING to GOSI for the whole PERIOD, on a run that pays the monthly
+                    // wage. For every pre-B2 run PriorPeriodGosiEeByEmployee is empty and this run pays
+                    // recurring, so periodGosiEe == gosiEeAmount and the rule is byte-identical.
+                    var priorGosiEe  = ctx.PriorPeriodGosiEeByEmployee.TryGetValue(slip.EmployeeId, out var pg) ? pg : 0m;
+                    var periodGosiEe = gosiEeAmount + priorGosiEe;
+
+                    if (!hasGosiEe && periodGosiEe <= 0m && paysRecurring)
                         Err("GOSI_MISSING_FOR_SAUDI",
                             $"Employee {slip.EmployeeCode} is classified as {classification} but has zero GOSI employee deductions. " +
                             "Saudi and GCC nationals must contribute to GOSI Annuities (GOSI-ANN-EE) and SANED (GOSI-SANED-EE).",
                             slip.EmployeeId);
+                    else if (!hasGosiEe && periodGosiEe <= 0m)
+                        Warn("GOSI_MISSING_FOR_SAUDI",
+                            $"Employee {slip.EmployeeCode} is classified as {classification} and no GOSI employee " +
+                            $"contribution has been deducted anywhere in {ctx.Run.Year}-{ctx.Run.Month:D2}. " +
+                            "This run pays supplemental items only, so it has no covered wage of its own to " +
+                            "contribute on — but the period's regular run must still deduct GOSI Annuities " +
+                            "(GOSI-ANN-EE) and SANED (GOSI-SANED-EE) for this employee. Advisory on a " +
+                            "supplemental run; it will block the regular run for the period until resolved.",
+                            slip.EmployeeId);
+                    // periodGosiEe > 0 with zero on THIS run needs no result: the period obligation is
+                    // demonstrably met, and SUPPLEMENTAL_STATUTORY_BASE already tells the preparer the
+                    // per-run figure is a period delta.
 
                     // 45 k ceiling warning
                     var coveredWage = slip.BasicSalary + slip.HousingAllowance;
@@ -299,10 +361,78 @@ public static class PayrollValidationEngine
             }
         }
 
+        // ── Rule 12 (POD-B2 / M2): cross-run double-pay of recurring salary ───────
+        // ERROR — the only control in this codebase that looks ACROSS runs. Rule 4's DUPLICATE_EMPLOYEE
+        // is within-run only, and "non-Regular runs skip recurring pay" is a convention, not a guard: one
+        // operator setting includesRecurringPay on an off-cycle run would otherwise pay a second full
+        // salary with nothing objecting. Symmetric by construction — it fires on whichever recurring-pay
+        // run is processed SECOND, so it protects the Regular run too.
+        if (paysRecurring && ctx.EmployeesAlreadyPaidRecurringThisPeriod.Count > 0)
+        {
+            foreach (var slip in ctx.Slips.GroupBy(s => s.EmployeeId).Select(g => g.First()))
+            {
+                if (!ctx.EmployeesAlreadyPaidRecurringThisPeriod.Contains(slip.EmployeeId)) continue;
+                Err("ALREADY_PAID_THIS_PERIOD",
+                    $"Employee {slip.EmployeeCode} was already paid recurring salary for " +
+                    $"{ctx.Run.Year}-{ctx.Run.Month:D2} by another non-voided payroll run. " +
+                    "Paying recurring salary twice in one period is never correct: either exclude this " +
+                    "employee from this run (Include/Exclude selector), switch this run to a supplemental " +
+                    "basis, or void the other run.",
+                    slip.EmployeeId);
+            }
+        }
+
+        // ── Rule 13 (POD-B2): deliberate hold-outs are REPORTED, never silently dropped ───────────
+        // Warning severity by design — an exclusion is intentional, so it must not block the workflow.
+        // The control that makes it *seen* is the acknowledgement gate at Approve
+        // (expectedExcludedCount), plus the exclusion counts echoed on the run header, Lock and the
+        // payment batch. A warning alone is not a control; these four channels together are.
+        foreach (var x in ctx.Exclusions)
+            Warn("EMPLOYEE_EXCLUDED_FROM_RUN",
+                $"Employee {x.EmployeeCode} ({x.EmployeeName}) was deliberately excluded from this run. " +
+                $"Reason: {x.Reason}",
+                x.EmployeeId);
+
+        // Include rows naming someone outside the eligible set — the operator's intent could NOT be
+        // honoured, which is a different (and more dangerous) fact than a deliberate exclusion.
+        foreach (var x in ctx.NotEligibleSelections)
+            Warn("EMPLOYEE_SELECTION_NOT_ELIGIBLE",
+                $"Employee {x.EmployeeCode} ({x.EmployeeName}) was named in this run's population selector " +
+                "but is not eligible for it (not Active, deleted, or belongs to another legal entity), so " +
+                $"they were NOT paid by this run. Reason recorded: {x.Reason}",
+                x.EmployeeId);
+
+        // ── Rule 14 (POD-B2 / M8): the period holds more than one run ─────────────
+        // Statutory reporting (GosiController's contribution-summary / variance-report) is runId-keyed, so
+        // a per-run GOSI figure is only PART of the period's filing once siblings exist. Surface that to
+        // the preparer here; the period-level rollup endpoint is the correct filing source.
+        if (ctx.SiblingRunCount > 0)
+            Warn("PERIOD_HAS_SIBLING_RUNS",
+                $"{ctx.SiblingRunCount} other non-voided payroll run(s) exist for {ctx.Run.Year}-{ctx.Run.Month:D2} " +
+                "in this legal entity. Per-run statutory reports cover THIS run only — use the period-level " +
+                "GOSI rollup (GET /api/gosi/periods/{year}/{month}/contribution-summary) for filing.");
+
+        if (ctx.StatutoryComputedIncrementally)
+            Warn("SUPPLEMENTAL_STATUTORY_BASE",
+                "Statutory contributions on this run were computed INCREMENTALLY: the covered wage already " +
+                "reported by sibling runs for this period was added to the base, the statutory ceiling was " +
+                "applied to the period total, and the amounts sibling runs already deducted were netted off. " +
+                "The per-run figure is therefore a period delta, not a standalone computation. " +
+                "[FLAG-COMPLIANCE-KSA: incremental period-to-date statutory basis requires sign-off before filing.]");
+
         return results;
     }
 
-    private static bool IsGosiEeCode(string code) =>
+    private static bool IsGosiEeCode(string code) => IsGosiEmployeeCode(code);
+
+    /// <summary>
+    /// Employee-side GOSI component codes (GOSI-ANN-EE, GOSI-SANED-EE, …). Public so the callers that
+    /// build <see cref="PayrollValidationContext.PriorPeriodGosiEeByEmployee"/> classify sibling-run
+    /// deductions with the SAME predicate Rule 2 uses — a second, drifting copy of this test would put
+    /// the period total and the per-run total on different definitions.
+    /// </summary>
+    public static bool IsGosiEmployeeCode(string code) =>
+        !string.IsNullOrWhiteSpace(code) &&
         code.StartsWith("GOSI-", StringComparison.OrdinalIgnoreCase) &&
         code.EndsWith("-EE", StringComparison.OrdinalIgnoreCase);
 }
@@ -338,4 +468,50 @@ public sealed record PayrollValidationContext(
     /// Populated by the Process/Validate endpoints from GosiContributionRule data.
     /// </summary>
     public DateOnly? GosiRatesEffectiveFrom { get; init; }
+
+    // ── POD-B2: multi-run-per-period inputs ──────────────────────────────────────
+
+    /// <summary>
+    /// POD-B2 (M2) — employees who ALREADY hold a payslip from a different non-voided run that paid
+    /// recurring salary for this same (company, year, month). This is the real cross-run double-pay
+    /// control: "non-Regular runs skip recurring pay" is only a convention, and nothing else in this
+    /// codebase checks across runs (Rule 4 DUPLICATE_EMPLOYEE is within-ctx.Slips only). Raised as an
+    /// Error whenever THIS run also pays recurring, so it protects symmetrically — the Regular run is
+    /// blocked when a full-basis OffCycle run got there first, and vice versa.
+    /// </summary>
+    public IReadOnlySet<int> EmployeesAlreadyPaidRecurringThisPeriod { get; init; } = new HashSet<int>();
+
+    /// <summary>POD-B2 — employees the operator deliberately held OUT, with the recorded reason.</summary>
+    public IReadOnlyList<PayrollRunExclusion> Exclusions { get; init; } = Array.Empty<PayrollRunExclusion>();
+
+    /// <summary>POD-B2 — Include rows naming someone who is not in the eligible set (wrong company / not Active / deleted).</summary>
+    public IReadOnlyList<PayrollRunExclusion> NotEligibleSelections { get; init; } = Array.Empty<PayrollRunExclusion>();
+
+    /// <summary>POD-B2 (M8) — count of OTHER non-voided runs in the same (company, year, month).</summary>
+    public int SiblingRunCount { get; init; }
+
+    /// <summary>
+    /// POD-B2 — employee-side GOSI already deducted for this (company, year, month) by OTHER non-voided
+    /// runs. Rule 2 adds it to this run's own GOSI EE before deciding whether the employee contributed
+    /// nothing, because GOSI is a period obligation and the incremental statutory basis deliberately nets
+    /// a run to zero once the period ceiling is consumed. Empty for a period with a single run — i.e. for
+    /// every run that exists in every tenant today — so Rule 2 is then exactly what it was.
+    /// MUST be populated identically by Process and by /validate: /validate replaces the stored results
+    /// wholesale, so a version that omitted this would re-raise the Error that Process correctly withheld.
+    /// </summary>
+    public IReadOnlyDictionary<int, decimal> PriorPeriodGosiEeByEmployee { get; init; } =
+        new Dictionary<int, decimal>();
+
+    /// <summary>
+    /// POD-B2 (M8) — true when this run's statutory amounts were computed INCREMENTALLY against the
+    /// period-to-date covered wage already reported by sibling runs, rather than against zero. Drives an
+    /// informational warning so the preparer knows the per-run GOSI figure is a period delta.
+    /// </summary>
+    public bool StatutoryComputedIncrementally { get; init; }
 }
+
+/// <summary>
+/// POD-B2 — one employee deliberately held out of (or wrongly named in) a run's population, carrying the
+/// operator's reason so the exclusion is reported on the run rather than silently dropped.
+/// </summary>
+public sealed record PayrollRunExclusion(int EmployeeId, string EmployeeCode, string EmployeeName, string Reason);

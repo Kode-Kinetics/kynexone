@@ -36,14 +36,47 @@ public sealed class PostgresFixture : IAsyncLifetime
         await using var db = CreateDb();
         await db.Database.EnsureCreatedAsync();
         // EnsureCreatedAsync generates CREATE INDEX from HasFilter but omits the WHERE clause
-        // for partial indexes in some Npgsql versions. Recreate the payroll_runs period index
-        // explicitly so voided runs don't permanently block re-use of the same period.
-        await db.Database.ExecuteSqlRawAsync(
-            @"DROP INDEX IF EXISTS ""IX_payroll_runs_tenant_id_year_month"";");
-        await db.Database.ExecuteSqlRawAsync(
-            @"CREATE UNIQUE INDEX ""IX_payroll_runs_tenant_id_year_month""
+        // for partial indexes in some Npgsql versions. Recreate the payroll_runs period indexes
+        // explicitly so the fixture matches PRODUCTION's shape.
+        //
+        // POD-B2: this block used to recreate the OLD tenant-wide index
+        //   IX_payroll_runs_tenant_id_year_month UNIQUE (tenant_id, year, month) WHERE status != 'Voided'
+        // — an index production DROPPED in 20260712235953_CompanyScopedPayrollIndexes. Every
+        // [Collection("Integration")] test shares this fixture, so ANY second run for a (tenant, year,
+        // month) violated it regardless of company or run type, and no multi-run test could ever pass.
+        // Replaced with the two-index shape the B2 migration creates:
+        //   A. company-scoped, unique for non-voided REGULAR runs
+        //   B. the null-company companion (Postgres treats NULL as distinct, so A does not cover
+        //      company_id IS NULL rows — which both seeders create)
+        await db.Database.ExecuteSqlRawAsync(@"
+            DROP INDEX IF EXISTS ""IX_payroll_runs_tenant_id_company_id_year_month"";
+            CREATE UNIQUE INDEX ""IX_payroll_runs_tenant_id_company_id_year_month""
+              ON payroll_runs (tenant_id, company_id, year, month)
+              WHERE ""status"" != 'Voided' AND ""run_type"" = 'Regular';
+
+            DROP INDEX IF EXISTS ""IX_payroll_runs_tenant_id_year_month"";
+            CREATE UNIQUE INDEX ""IX_payroll_runs_tenant_id_year_month""
               ON payroll_runs (tenant_id, year, month)
-              WHERE status != 'Voided';");
+              WHERE ""company_id"" IS NULL AND ""status"" != 'Voided' AND ""run_type"" = 'Regular';
+        ");
+    }
+
+    /// <summary>
+    /// POD-B2 (M10) — read an index's actual DDL. A behavioural test like "many off-cycle runs coexist"
+    /// passes for the WRONG reason if the partial predicate silently went missing, so tests assert the
+    /// emitted predicate before asserting behaviour.
+    /// </summary>
+    public async Task<string?> GetIndexDefinitionAsync(string indexName)
+    {
+        await using var db = CreateDb();
+        await using var cmd = db.Database.GetDbConnection().CreateCommand();
+        await db.Database.OpenConnectionAsync();
+        cmd.CommandText = "SELECT indexdef FROM pg_indexes WHERE indexname = @n";
+        var p = cmd.CreateParameter();
+        p.ParameterName = "@n";
+        p.Value = indexName;
+        cmd.Parameters.Add(p);
+        return (await cmd.ExecuteScalarAsync()) as string;
     }
 
     public Task DisposeAsync() => _container.DisposeAsync().AsTask();

@@ -72,6 +72,17 @@ public sealed class GosiReconciliationService
             ? activeCompanies.FirstOrDefault(c => c.Id == run.CompanyId.Value)
             : activeCompanies.Count == 1 ? activeCompanies[0] : null;
 
+        // ── POD-B2: does this run share its period? ─────────────────────────────────────────────
+        // Same scoping rule as PayrollController.LoadSiblingRunsAsync (null-company runs are in scope for
+        // every company, because Process collapses them onto one). Zero for every run in every tenant
+        // before B2, so nothing below it changes for them.
+        var scopeCompanyId = run.CompanyId ?? company?.Id;
+        var siblingRunCount = await _db.PayrollRuns.AsNoTracking()
+            .CountAsync(r => r.TenantId == tenantId && r.Id != run.Id
+                          && r.Year == run.Year && r.Month == run.Month
+                          && (scopeCompanyId == null || r.CompanyId == scopeCompanyId || r.CompanyId == null)
+                          && r.Status != "Voided", ct);
+
         // ── Load the run's persisted outputs (the immutable witnesses) ──────────────────────────
         var slips = await _db.PayrollSlips.AsNoTracking()
             .Where(s => s.TenantId == tenantId && s.RunId == run.Id)
@@ -254,7 +265,161 @@ public sealed class GosiReconciliationService
             GlEmployeeDelta:      glPosted ? Math.Round(actualEeTotal - glEe, 2) : (decimal?)null,
             GlEmployerDelta:      glPosted ? Math.Round(actualErTotal - glEr, 2) : (decimal?)null,
             Deductions:           deductions,
-            Rows:                 rows);
+            Rows:                 rows)
+        {
+            // POD-B2 — flag a period that holds more than one run. The per-run "expected" above is a
+            // STANDALONE recomputation, but Process computes a sibling run's statutory INCREMENTALLY
+            // (period-to-date base, ceiling applied once, siblings netted off). Below the ceiling both
+            // agree exactly; at or above it they cannot, and reporting that as a silent variance would
+            // send a compliance officer chasing a filing error that does not exist. Reproducing the delta
+            // here is not possible either — it depends on the ORDER the period's runs were processed in,
+            // which is not persisted — so the honest contract is: per-run expected is meaningful for a
+            // single-run period, and ReconcilePeriodAsync is the tie-out that always holds.
+            SiblingRunCount = siblingRunCount,
+        };
+    }
+
+    /// <summary>
+    /// POD-B2 (M8) — PERIOD-level statutory reconciliation across every non-voided run for a
+    /// (company, year, month).
+    ///
+    /// POD-A1 established "deducted == report == GL". That invariant survives per RUN, but once B2 allows
+    /// several runs in one month it no longer survives per PERIOD, and a period is what gets FILED: the
+    /// GOSI submission for 2026-08 would otherwise be whichever run the preparer happened to open.
+    ///
+    /// ACTUAL is the union of every run's persisted statutory deduction rows — the filing figure, correct
+    /// by construction. EXPECTED is recomputed ONCE per employee on the PERIOD-AGGREGATED covered wage
+    /// (Σ slip basic, Σ slip housing + Σ GOSI-eligible bonus over all the period's runs), so the statutory
+    /// CEILING — a period concept — is applied to the period total exactly once. That matches what
+    /// PayrollController.Process's incremental statutory base produces, so expected == actual holds across
+    /// a Regular + OffCycle pair the same way it holds for a single run.
+    /// </summary>
+    public async Task<GosiPeriodReconciliation> ReconcilePeriodAsync(
+        Guid tenantId, Guid? companyId, int year, int month, CancellationToken ct)
+    {
+        var period = $"{year}-{month:D2}";
+        var runs = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Year == year && r.Month == month && r.Status != "Voided"
+                     && (companyId == null || r.CompanyId == companyId || r.CompanyId == null))
+            .OrderBy(r => r.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        var runReconciliations = new List<GosiRunReconciliation>(runs.Count);
+        foreach (var r in runs)
+            runReconciliations.Add(await ReconcileAsync(tenantId, r, ct));
+
+        var runIds = runs.Select(r => r.Id).ToList();
+        var allDeductions = runReconciliations.SelectMany(x => x.Deductions).ToList();
+
+        var actualEeByEmp = allDeductions.Where(d => !d.IsEmployerContribution)
+            .GroupBy(d => d.EmployeeId).ToDictionary(g => g.Key, g => g.Sum(d => d.Amount));
+        var actualErByEmp = allDeductions.Where(d => d.IsEmployerContribution)
+            .GroupBy(d => d.EmployeeId).ToDictionary(g => g.Key, g => g.Sum(d => d.Amount));
+
+        // ── Period-aggregated covered wage, per employee ─────────────────────────────────────────
+        var slips = runIds.Count == 0 ? new List<PayrollSlip>() : await _db.PayrollSlips.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && runIds.Contains(s.RunId))
+            .ToListAsync(ct);
+        var periodBonuses = runIds.Count == 0 ? new List<EmployeeBonus>() : await _db.EmployeeBonuses.AsNoTracking()
+            .Where(b => b.TenantId == tenantId && !b.IsDeleted && b.PayrollRunId != null
+                     && runIds.Contains(b.PayrollRunId!.Value) && b.EmployeeIntId != null)
+            .ToListAsync(ct);
+        var periodBonusTypeIds = periodBonuses.Select(b => b.BonusTypeId).Distinct().ToList();
+        var periodGosiTypeIds = periodBonusTypeIds.Count > 0
+            ? (await _db.BonusTypes.AsNoTracking()
+                .Where(t => periodBonusTypeIds.Contains(t.Id) && t.IsIncludedInGosiBase)
+                .Select(t => t.Id).ToListAsync(ct)).ToHashSet()
+            : new HashSet<Guid>();
+        var periodGosiBonusByEmp = periodBonuses
+            .Where(b => periodGosiTypeIds.Contains(b.BonusTypeId))
+            .GroupBy(b => b.EmployeeIntId!.Value)
+            .ToDictionary(g => g.Key, g => g.Sum(b => b.GrossBonusAmount));
+
+        // Resolve the pack once from the period's company (same rule as ReconcileAsync).
+        var activeCompanies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc).ToListAsync(ct);
+        var company = companyId.HasValue
+            ? activeCompanies.FirstOrDefault(c => c.Id == companyId.Value)
+            : runs.Select(r => r.CompanyId).FirstOrDefault(cid => cid.HasValue) is Guid rc
+                ? activeCompanies.FirstOrDefault(c => c.Id == rc)
+                : activeCompanies.Count == 1 ? activeCompanies[0] : null;
+        IStatutoryDeductionCalculator? calc = null;
+        string? packNote = null;
+        if (company is null)
+            packNote = "No legal entity could be resolved for this period; expected GOSI cannot be recomputed. Actual and GL figures are still reported.";
+        else if (string.IsNullOrWhiteSpace(company.CountryCode))
+            packNote = $"Company '{company.LegalNameEn}' has no CountryCode; expected GOSI cannot be recomputed.";
+        else
+        {
+            calc = _packResolver.ResolveDeductionCalculator(company.CountryCode, company.Jurisdiction ?? string.Empty);
+            if (calc is DefaultStatutoryDeductionCalculator) { calc = null; packNote = $"No statutory pack registered for '{company.CountryCode}'/'{company.Jurisdiction}'."; }
+        }
+
+        var empIds = slips.Select(s => s.EmployeeId).Distinct().ToList();
+        var employees = empIds.Count == 0 ? new Dictionary<int, Employee>() : await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && empIds.Contains(e.Id))
+            .ToDictionaryAsync(e => e.Id, ct);
+
+        var rows = new List<GosiPeriodRow>(empIds.Count);
+        foreach (var empId in empIds.OrderBy(x => x))
+        {
+            var empSlips = slips.Where(s => s.EmployeeId == empId).ToList();
+            var basic    = empSlips.Sum(s => s.BasicSalary);
+            var housing  = empSlips.Sum(s => s.HousingAllowance) + periodGosiBonusByEmp.GetValueOrDefault(empId);
+            var transport = empSlips.Sum(s => s.TransportAllowance);
+            employees.TryGetValue(empId, out var emp);
+
+            decimal expectedEe = 0m, expectedEr = 0m, coveredWage = 0m;
+            if (calc is not null)
+            {
+                var breakdown = new SalaryBreakdown(basic, housing, transport, 0m);
+                var expected = await calc.CalculateAsync(new StatutoryDeductionInput(
+                    EmployeeId: Guid.Empty, CompanyId: company!.Id, Salary: breakdown,
+                    Nationality: emp?.Nationality ?? string.Empty,
+                    ContractType: emp?.ContractType ?? "Indefinite",
+                    PeriodYear: year, PeriodMonth: month), ct);
+                expectedEe  = expected.TotalEmployeeDeduction;
+                expectedEr  = expected.TotalEmployerContribution;
+                coveredWage = breakdown.GosiCoveredWage;
+            }
+
+            var first = empSlips[0];
+            rows.Add(new GosiPeriodRow(
+                empId, first.EmployeeCode, first.EmployeeName,
+                GosiCalculationService.DeriveClassification(emp?.Nationality ?? string.Empty),
+                coveredWage, expectedEe, expectedEr,
+                actualEeByEmp.GetValueOrDefault(empId), actualErByEmp.GetValueOrDefault(empId),
+                empSlips.Select(s => s.RunId).Distinct().Count()));
+        }
+
+        var actualEeTotal = allDeductions.Where(d => !d.IsEmployerContribution).Sum(d => d.Amount);
+        var actualErTotal = allDeductions.Where(d => d.IsEmployerContribution).Sum(d => d.Amount);
+        var glEe = runReconciliations.Sum(x => x.GlEmployeeLiability ?? 0m);
+        var glEr = runReconciliations.Sum(x => x.GlEmployerLiability ?? 0m);
+        var anyGlPosted = runReconciliations.Any(x => x.GlPosted);
+
+        return new GosiPeriodReconciliation(
+            Period:                period,
+            CompanyId:             company?.Id ?? companyId,
+            RunCount:              runs.Count,
+            RunIds:                runIds,
+            PackResolved:          calc is not null,
+            PackStatusNote:        packNote,
+            HasStatutoryData:      allDeductions.Count > 0,
+            GlPosted:              anyGlPosted,
+            ActualEmployeeTotal:   Math.Round(actualEeTotal, 2),
+            ActualEmployerTotal:   Math.Round(actualErTotal, 2),
+            ExpectedEmployeeTotal: Math.Round(rows.Sum(r => r.ExpectedEmployee), 2),
+            ExpectedEmployerTotal: Math.Round(rows.Sum(r => r.ExpectedEmployer), 2),
+            GlEmployeeLiability:   anyGlPosted ? Math.Round(glEe, 2) : (decimal?)null,
+            GlEmployerLiability:   anyGlPosted ? Math.Round(glEr, 2) : (decimal?)null,
+            Deductions:            allDeductions,
+            Rows:                  rows,
+            RunSummaries:          runs.Select((r, i) => new GosiPeriodRunSummary(
+                                        r.Id, r.RunType, r.Status, r.IncludesRecurringPay,
+                                        Math.Round(runReconciliations[i].ActualEmployeeTotal, 2),
+                                        Math.Round(runReconciliations[i].ActualEmployerTotal, 2))).ToList());
     }
 }
 
@@ -313,5 +478,86 @@ public sealed record GosiRunReconciliation(
     IReadOnlyList<GosiReconciliationRow> Rows)
 {
     /// <summary>Convenience: employees whose recomputed-expected diverges from the persisted actual.</summary>
+    public int VarianceCount => Rows.Count(r => r.HasVariance);
+
+    /// <summary>POD-B2 — other non-voided runs in this run's (company, year, month).</summary>
+    public int SiblingRunCount { get; init; }
+
+    /// <summary>
+    /// POD-B2 — true when this run shares its period with another run, which makes the per-run EXPECTED
+    /// figure above a standalone recomputation while the run's ACTUAL was computed as a period DELTA
+    /// (PayrollController.Process nets the statutory ceiling across the period's runs). Below the ceiling
+    /// the two still agree exactly; at or above it they cannot, because "this run's share of a capped
+    /// period total" is not a standalone quantity. A variance reported here is therefore not evidence of
+    /// a defect — <see cref="GosiPeriodReconciliation"/> is the tie-out that holds, and is what a filing
+    /// must be built from.
+    /// </summary>
+    public bool ExpectedIsPeriodPartial => SiblingRunCount > 0;
+
+    /// <summary>POD-B2 — human-readable form of <see cref="ExpectedIsPeriodPartial"/>; null when the run
+    /// is the period's only run, i.e. for every run in every tenant before B2.</summary>
+    public string? PeriodScopeNote => ExpectedIsPeriodPartial
+        ? $"{SiblingRunCount} other non-voided run(s) exist for {Period}. This run's statutory amounts were " +
+          "computed as a PERIOD DELTA (the covered-wage ceiling is applied once across the period), so the " +
+          "per-run 'expected' recomputation here is standalone and may differ near the ceiling. Use " +
+          $"GET /api/gosi/periods/{Period[..4]}/{Period[5..].TrimStart('0')}/contribution-summary as the " +
+          "filing source and the authoritative tie-out."
+        : null;
+}
+
+// ── POD-B2 (M8): period-level result types ──────────────────────────────────────
+
+/// <summary>One employee's PERIOD statutory position: expected on the period-aggregated covered wage
+/// (ceiling applied once) vs the union of what every run in the period actually deducted.</summary>
+public sealed record GosiPeriodRow(
+    int EmployeeId,
+    string EmployeeCode,
+    string EmployeeName,
+    string Classification,
+    decimal CoveredWageBase,
+    decimal ExpectedEmployee,
+    decimal ExpectedEmployer,
+    decimal ActualEmployee,
+    decimal ActualEmployer,
+    int RunCount)
+{
+    public decimal EmployeeVariance => Math.Round(ActualEmployee - ExpectedEmployee, 2);
+    public decimal EmployerVariance => Math.Round(ActualEmployer - ExpectedEmployer, 2);
+    public bool HasVariance => Math.Abs(EmployeeVariance) > 0.01m || Math.Abs(EmployerVariance) > 0.01m;
+}
+
+/// <summary>Per-run contribution to the period total, so a preparer can see which run carried what.</summary>
+public sealed record GosiPeriodRunSummary(
+    Guid RunId, string RunType, string Status, bool IncludesRecurringPay,
+    decimal EmployeeTotal, decimal EmployerTotal);
+
+/// <summary>
+/// POD-B2 — the FILING view: every non-voided run for a (company, year, month) unioned, with expected
+/// recomputed once at period scope. This is the source the statutory submission should be built from;
+/// the per-run contribution-summary covers only its own run and is partial once siblings exist.
+/// </summary>
+public sealed record GosiPeriodReconciliation(
+    string Period,
+    Guid? CompanyId,
+    int RunCount,
+    IReadOnlyList<Guid> RunIds,
+    bool PackResolved,
+    string? PackStatusNote,
+    bool HasStatutoryData,
+    bool GlPosted,
+    decimal ActualEmployeeTotal,
+    decimal ActualEmployerTotal,
+    decimal ExpectedEmployeeTotal,
+    decimal ExpectedEmployerTotal,
+    decimal? GlEmployeeLiability,
+    decimal? GlEmployerLiability,
+    IReadOnlyList<PayrollDeduction> Deductions,
+    IReadOnlyList<GosiPeriodRow> Rows,
+    IReadOnlyList<GosiPeriodRunSummary> RunSummaries)
+{
+    public decimal ExpectedVsActualEmployeeDelta => Math.Round(ActualEmployeeTotal - ExpectedEmployeeTotal, 2);
+    public decimal ExpectedVsActualEmployerDelta => Math.Round(ActualEmployerTotal - ExpectedEmployerTotal, 2);
+    public decimal? GlEmployeeDelta => GlPosted ? Math.Round(ActualEmployeeTotal - (GlEmployeeLiability ?? 0m), 2) : null;
+    public decimal? GlEmployerDelta => GlPosted ? Math.Round(ActualEmployerTotal - (GlEmployerLiability ?? 0m), 2) : null;
     public int VarianceCount => Rows.Count(r => r.HasVariance);
 }

@@ -85,7 +85,11 @@ public sealed class PayrollVoidService
         if (run.Status == "Voided") return VoidRunResult.AlreadyVoided;
 
         var today  = DateOnly.FromDateTime(DateTime.UtcNow);
-        var period = $"{run.Year}-{run.Month:D2}";
+        // POD-B2 (M7) — the contra must land in the SAME period the accrual did. For a non-Regular run
+        // that booked into a later open month (GlPostingPeriod), reversing into its pay period instead
+        // would leave both periods permanently unbalanced. Regular runs have a null GlPostingPeriod, so
+        // this is byte-identical to the previous $"{run.Year}-{run.Month:D2}" for every existing run.
+        var period = Controllers.PayrollController.GlAccrualPeriod(run);
 
         // GL contra-entries — only Locked runs have posted GL
         var glEntries = await _db.FinanceGlEntries
@@ -244,6 +248,15 @@ public sealed class PayrollVoidService
                 .SetProperty(p => p.WpsStatus, WpsStatuses.Accepted)
                 .SetProperty(p => p.WpsStatusChangedAtUtc, DateTime.UtcNow), ct);
 
+        // POD-B2 — runs that AMEND this one (Correction/Supplementary with ParentRunId == this run).
+        // Voiding the parent leaves them dangling. REPORTED, not blocked and not cascaded: cascade
+        // recovery of a correction chain is POD-B3, and half-implementing it here would be worse than
+        // surfacing the fact and letting the operator act.
+        var childRunIds = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.ParentRunId == runId && r.Status != "Voided")
+            .Select(r => r.Id)
+            .ToListAsync(ct);
+
         run.Status         = "Voided";
         run.VoidedAtUtc    = DateTime.UtcNow;
         run.VoidedByUserId = actorId;
@@ -269,6 +282,11 @@ public sealed class PayrollVoidService
                 // restored to Cancelled, never to Approved, so a void can never resurrect them.
                 bonusesCancelled,
                 period,
+                payPeriod = $"{run.Year}-{run.Month:D2}",
+                // POD-B2 — runs that AMEND this one. Reported, never blocked: cascade recovery of a
+                // correction chain is POD-B3 and must not be half-implemented here.
+                runType = run.RunType,
+                childRunIds,
                 actorName,
                 source = "PayrollVoidService",
             }),
@@ -276,7 +294,7 @@ public sealed class PayrollVoidService
 
         await _db.SaveChangesAsync(ct);
 
-        return VoidRunResult.Voided(period, glReversed);
+        return VoidRunResult.Voided(period, glReversed, childRunIds);
     }
 }
 
@@ -287,14 +305,18 @@ public sealed class VoidRunResult
     public Kind   ResultKind    { get; private init; }
     public string Period        { get; private init; } = string.Empty;
     public int    GlReversed    { get; private init; }
+    /// <summary>POD-B2 — ids of runs whose ParentRunId is this run (corrections/supplementaries amending
+    /// it). Surfaced so the operator sees the chain they have just orphaned. Voiding is NOT blocked and
+    /// children are NOT cascaded: recovery of a correction chain is POD-B3.</summary>
+    public IReadOnlyList<Guid> ChildRunIds { get; private init; } = Array.Empty<Guid>();
 
     public bool IsVoided       => ResultKind == Kind.Voided;
     public bool IsAlreadyVoid  => ResultKind == Kind.AlreadyVoided;
     public bool IsNotFound     => ResultKind == Kind.NotFound;
     public bool IsPeriodClosed => ResultKind == Kind.PeriodClosed;
 
-    public static VoidRunResult Voided(string period, int glReversed) => new()
-        { ResultKind = Kind.Voided, Period = period, GlReversed = glReversed };
+    public static VoidRunResult Voided(string period, int glReversed, IReadOnlyList<Guid>? childRunIds = null) => new()
+        { ResultKind = Kind.Voided, Period = period, GlReversed = glReversed, ChildRunIds = childRunIds ?? Array.Empty<Guid>() };
     public static VoidRunResult AlreadyVoided => new() { ResultKind = Kind.AlreadyVoided };
     public static VoidRunResult NotFound      => new() { ResultKind = Kind.NotFound };
     // POD-B1 (P0-3) — the run's GL period is closed; void must not silently mutate closed books.
