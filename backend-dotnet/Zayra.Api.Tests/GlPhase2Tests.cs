@@ -184,7 +184,10 @@ public class GlPhase2Tests
         await db.SaveChangesAsync();
 
         var drivers = await db.GlDrivers.IgnoreQueryFilters().Where(d => d.TenantId == tid).ToListAsync();
-        drivers.Should().HaveCount(18);   // 17 original + POD-B1 CASH_BANK balancing driver
+        // 17 original + POD-B1 CASH_BANK + POD-B1b BONUS_PAYABLE / LOAN_RECEIVABLE / ADVANCE_RECEIVABLE.
+        // All four additions are Category=Balancing, so the component ROUTING assertions below are
+        // unaffected — ResolveDriverForComponent only ever considers Earning/Deduction rows.
+        drivers.Should().HaveCount(21);
         // Golden checks against the compiled switch semantics.
         Route(drivers, "BASIC", "Salary", GlDriverCategories.Earning).Should().Be("EARN:BASIC");
         Route(drivers, "HOUSING", "Salary", GlDriverCategories.Earning).Should().Be("EARN:HOUSING");

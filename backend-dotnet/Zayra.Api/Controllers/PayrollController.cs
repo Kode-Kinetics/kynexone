@@ -869,6 +869,15 @@ public class PayrollController : ControllerBase
                 .Sum(b => b.GrossBonusAmount);
             // Net bonus earnings added to employee take-home this period.
             decimal totalBonusNet = empBonuses.Sum(b => b.BonusAmount);
+            // POD-B1b — the bonus EARNING line has always been emitted GROSS (see AddEarning below), but
+            // the slip aggregates counted it NET and the withheld tax was never emitted as a deduction at
+            // all. That made the Lock journal short by exactly Σ TaxWithheld on any taxable bonus, so a
+            // non-GCC tenant could never lock (gl_unbalanced 422). Carry the bonus GROSS through the slip
+            // and emit the withholding as a real Tax deduction: gross − tax == net, so NetSalary, WPS/SIF
+            // and the GOSI base are arithmetically unchanged, and for GCC (tax = 0) every emitted line and
+            // every aggregate is byte-identical to before.
+            decimal totalBonusGross = empBonuses.Sum(b => b.GrossBonusAmount);
+            decimal totalBonusTax   = empBonuses.Sum(b => b.TaxWithheld);
             var empAdjustments = approvedAdjustments.Where(a => a.EmployeeId == e.Id).ToList();
             var adjustmentEarnings = empAdjustments.Where(a => a.Amount > 0m).Sum(a => a.Amount);
             var adjustmentDeductions = Math.Abs(empAdjustments.Where(a => a.Amount < 0m).Sum(a => a.Amount));
@@ -894,9 +903,10 @@ public class PayrollController : ControllerBase
             var advEmi     = empAdv.Sum(a => Math.Min(a.InstallmentAmount, a.OutstandingBalance));
             var totalLoanDeduction = Math.Round(loanEmi + advEmi, 2);
 
-            var deductions = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction + adjustmentDeductions;
+            var deductions = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction + adjustmentDeductions + totalBonusTax;
             // C3: net salary cannot be negative (GCC labour law); engine Rule 3 will flag this.
-            var netSalary = Math.Max(0m, gross + overtimePay + totalBonusNet + adjustmentEarnings - deductions);
+            // (gross bonus in, bonus tax out) == (net bonus in) — take-home is unchanged by POD-B1b.
+            var netSalary = Math.Max(0m, gross + overtimePay + totalBonusGross + adjustmentEarnings - deductions);
 
             // COMPLIANCE: YTD — sum all locked slips for this employee earlier in the same year
             var empYtdSlips = ytdSlips.Where(s => s.EmployeeId == e.Id).ToList();
@@ -916,14 +926,14 @@ public class PayrollController : ControllerBase
                 BasicSalary = basic,
                 HousingAllowance = housing,
                 TransportAllowance = transport,
-                OtherAllowances = otherAllowances + overtimePay + totalBonusNet + adjustmentEarnings,
-                GrossSalary = gross + overtimePay + totalBonusNet + adjustmentEarnings,
+                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings,
+                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings,
                 Deductions = deductions,
                 NetSalary = netSalary,
                 EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
                 EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
-                YtdGross = ytdGross + gross + overtimePay + totalBonusNet + adjustmentEarnings,
+                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings,
                 YtdDeductions = ytdDeduct + deductions,
                 YtdNet = ytdNet + netSalary,
                 Status = "Draft",
@@ -942,7 +952,7 @@ public class PayrollController : ControllerBase
             {
             // Bonus earning lines (one per bonus in the batch, gross amount for GL expense tracking).
             foreach (var bonus in empBonuses)
-                AddEarning(tenantId, id, e.Id, $"BONUS_{bonus.BonusTypeName.ToUpperInvariant().Replace(' ', '_')}", bonus.BonusTypeName, bonus.GrossBonusAmount, "Bonus");
+                AddEarning(tenantId, id, e.Id, BonusGlLedger.EarningComponentCode(bonus.BonusTypeName), bonus.BonusTypeName, bonus.GrossBonusAmount, "Bonus");
             foreach (var adjustment in empAdjustments.Where(a => a.Amount > 0m))
                 AddEarning(tenantId, id, e.Id, $"ADJ_{NormalizeCode(adjustment.AdjustmentType)}", AdjustmentLabel(adjustment), adjustment.Amount, "Adjustment");
             AddEarning(tenantId, id, e.Id, "BASIC", "Basic salary", basic, "Salary");
@@ -995,7 +1005,7 @@ public class PayrollController : ControllerBase
                     LopDeduction = lopDeduction, LopDays = lopDays, LopDayRate = lopDayRate,
                     LeaveDeduction = leaveDeduction, LoanEmi = loanEmi, AdvEmi = advEmi,
                     BonusLines = empBonuses
-                        .Select(b => new PayComponentLine($"BONUS_{b.BonusTypeName.ToUpperInvariant().Replace(' ', '_')}", b.BonusTypeName, b.GrossBonusAmount, "Bonus", false))
+                        .Select(b => new PayComponentLine(BonusGlLedger.EarningComponentCode(b.BonusTypeName), b.BonusTypeName, b.GrossBonusAmount, "Bonus", false))
                         .ToList(),
                     AdjustmentEarningLines = empAdjustments.Where(a => a.Amount > 0m)
                         .Select(a => new PayComponentLine($"ADJ_{NormalizeCode(a.AdjustmentType)}", AdjustmentLabel(a), a.Amount, "Adjustment", false))
@@ -1011,9 +1021,29 @@ public class PayrollController : ControllerBase
                 foreach (var line in computation.Deductions)
                     AddDeduction(tenantId, company.Id, id, e.Id, line.Code, line.Name, line.Amount, line.Source, isEmployerContribution: line.IsEmployerContribution);
             }
+
+            // POD-B1b — bonus withholding. Emitted OUTSIDE the branch so the legacy block and the
+            // component engine stay provably identical (neither owns bonus tax). Source="Tax" routes it
+            // to DED:TAX (2102) via the same driver every other PIT line uses, so it accrues on Lock and
+            // clears through the existing POD-B1 TAX remittance with no new machinery. Zero rows emitted
+            // for GCC tenants (ResolveTaxRate → 0), which is why no existing run changes shape.
+            if (totalBonusTax > 0m)
+                AddDeduction(tenantId, company.Id, id, e.Id,
+                    BonusGlDescriptions.PayrollTaxComponentCode, BonusGlDescriptions.PayrollTaxComponentName,
+                    totalBonusTax, "Tax");
         }
 
         _db.PayrollSlips.AddRange(slips);
+        // POD-B1b-FIX (P2-1) — pin the run's legal entity NOW, at Process, instead of re-deriving it at
+        // Lock. BonusGlLedger.BuildPayrollClearingAsync fell back to "the tenant's single active company"
+        // when run.CompanyId was null (BonusGlLedger.cs:174-183); if a second company were activated
+        // between Process and Lock that fallback would resolve to nothing, no clearing would be planned,
+        // and the bonus would be expensed a second time — the exact double-count this pod exists to kill.
+        // `company` is the same value that fallback would compute and it has already been fail-loud
+        // validated above (:566 company_not_resolved), so persisting it removes the race entirely.
+        // Assigning a previously-null CompanyId is the sanctioned "repair" path in the write-side company
+        // guard (ZayraDbContext.cs:366-368) and is access-validated there.
+        run.CompanyId ??= company.Id;
         run.Status = "Processed";
         run.ProcessedAtUtc = DateTime.UtcNow;
         run.ProcessedByUserId = GetUserId();
@@ -1200,6 +1230,16 @@ public class PayrollController : ControllerBase
                 .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId, cancellationToken);
             var glCurrency = glCompany?.DefaultCurrency ?? "SAR";
             var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
+            // POD-B1b — bonuses this run PAYS were already expensed when their batch was approved
+            // (DR bonus expense / CR Bonus Payable). Clear that payable instead of expensing them again;
+            // the plan is capped by the outstanding accrual AND by the run's own bonus earning total, so
+            // an un-accrued bonus is still expensed here and the journal always balances.
+            var bonusEarningTotal = earnings.Where(e => e.Source == "Bonus").Sum(e => e.Amount);
+            glCtx = glCtx with
+            {
+                BonusClearings = await BonusGlLedger.BuildPayrollClearingAsync(
+                    _db, tenantId, id, run.CompanyId, bonusEarningTotal, cancellationToken),
+            };
             var (glLines, totalDebits, totalCredits) = BuildPayrollGlEntries(
                 tenantId, id, period, earnings, dedxns, totalNet, uid, uname, glCurrency, glCtx);
             if (Math.Abs(totalDebits - totalCredits) > 0.01m)
@@ -1545,14 +1585,75 @@ public class PayrollController : ControllerBase
             var deductions = await _db.PayrollDeductions.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
             var totalNet   = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).SumAsync(x => x.NetSalary, cancellationToken);
             var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
+            // POD-B1b — preview MUST mirror the posted journal (see the doctrine note above
+            // AddEarning/AddDeduction): a bonus covered by a live accrual will DR the payable on lock,
+            // not the bonus expense, so the preview shows exactly that.
+            var previewBonusTotal = earnings.Where(e => e.Source == "Bonus").Sum(e => e.Amount);
+            var previewClearings = await BonusGlLedger.BuildPayrollClearingAsync(
+                _db, tenantId, id, run.CompanyId, previewBonusTotal, cancellationToken);
+            var previewClearsBonus = previewClearings.Count > 0;
 
+            decimal previewBonusSkipped = 0m;
+            // POD-B1b-FIX (P1-7) — mirror the posted journal's per-component remainder routing exactly.
+            var previewDeferredBonus = new List<(string Code, string Name, string Driver, decimal Amount)>();
             foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
             {
                 var first = grp.First();
                 var driver = ResolveDriverForComponent(glCtx.Drivers, grp.Key, first.Source, GlDriverCategories.Earning)?.Key
                              ?? EarningDriverKey(grp.Key, first.Source);
+                if (previewClearsBonus && first.Source == "Bonus")
+                {
+                    var bonusAmount = grp.Sum(e => e.Amount);
+                    previewBonusSkipped += bonusAmount;
+                    previewDeferredBonus.Add((grp.Key, first.ComponentName, driver, bonusAmount));
+                    continue;
+                }
                 var (acct, aName) = ResolveGlAccount(driver, glCtx.Overrides, glCtx.DriverDefaults);
                 entries.Add((grp.Key, first.ComponentName, acct, aName, "DR", grp.Sum(e => e.Amount)));
+            }
+
+            if (previewClearsBonus)
+            {
+                decimal previewCleared = 0m;
+                var previewClearedByCode = new Dictionary<string, decimal>(StringComparer.Ordinal);
+                foreach (var c in previewClearings)
+                {
+                    if (c.Amount <= 0m) continue;
+                    previewCleared += c.Amount;
+                    foreach (var kv in c.ByComponentCode)
+                        previewClearedByCode[kv.Key] = previewClearedByCode.GetValueOrDefault(kv.Key) + kv.Value;
+                    var (code, name) = SplitAccountLabel(c.AccrualAccount);
+                    entries.Add(("BONUS_PAYABLE", $"Bonus payable cleared ({c.BatchRef})", code, name, "DR", c.Amount));
+                }
+                var previewRemainder = Math.Round(previewBonusSkipped - previewCleared, 2);
+                if (previewRemainder > 0m && previewDeferredBonus.Count > 0 && previewBonusSkipped > 0m)
+                {
+                    // Same shortfall-first allocation and same ordering as BuildPayrollGlEntries (re-audit
+                    // #5), so preview == posting line for line.
+                    var ordered = previewDeferredBonus.OrderBy(g => g.Code, StringComparer.Ordinal).ToList();
+                    var shortfall = ordered
+                        .Select(g => Math.Max(0m, Math.Round(g.Amount - previewClearedByCode.GetValueOrDefault(g.Code), 2)))
+                        .ToList();
+                    var useShortfall = shortfall.Sum() > 0m;
+                    var weights = useShortfall ? shortfall : ordered.Select(g => g.Amount).ToList();
+                    var weightTotal = weights.Sum();
+                    var slice = previewRemainder;
+                    for (var i = 0; i < ordered.Count; i++)
+                    {
+                        var share = i == ordered.Count - 1
+                            ? slice
+                            : Math.Min(slice, Math.Round(previewRemainder * (weights[i] / weightTotal), 2));
+                        slice = Math.Round(slice - share, 2);
+                        if (share <= 0m) continue;
+                        var (rc, rn) = ResolveGlAccount(ordered[i].Driver, glCtx.Overrides, glCtx.DriverDefaults);
+                        entries.Add((ordered[i].Code, $"{ordered[i].Name} (un-accrued)", rc, rn, "DR", share));
+                    }
+                }
+                else if (previewRemainder > 0m)
+                {
+                    var (rc, rn) = ResolveGlAccount("EARN:BONUS", glCtx.Overrides, glCtx.DriverDefaults);
+                    entries.Add(("BONUS", "Bonus (un-accrued)", rc, rn, "DR", previewRemainder));
+                }
             }
 
             var employerExpenseByPairKey = new Dictionary<string, decimal>(StringComparer.Ordinal);
@@ -2155,7 +2256,7 @@ public class PayrollController : ControllerBase
         var (lines, dr, cr) = BuildLiabilityClearingGl(
             tenantId, run.Id, settlementPeriod, batch.BatchNumber, GlEventTypes.NetSettlement,
             netLines, cashAccount, GetUserId(), GetUserName(), currency,
-            $"Net pay settlement — batch {batch.BatchNumber}");
+            $"Net pay settlement — batch {batch.BatchNumber}", run.CompanyId);
         if (Math.Abs(dr - cr) > 0.01m)
             return UnprocessableEntity(new { error = "gl_unbalanced", message = "Net-pay settlement GL is not balanced.", totalDebits = dr, totalCredits = cr });
 
@@ -2268,6 +2369,56 @@ public class PayrollController : ControllerBase
         var (cashCode, cashName) = ResolveGlAccount("CASH_BANK", glCtx.Overrides, glCtx.DriverDefaults);
         var cashAccount = $"{cashCode} - {cashName}";
 
+        // POD-B1b — a LOAN "remittance" is not a cash payment. The EMI was WITHHELD from net pay, so the
+        // 2107 clearing must credit the receivable the money is owed against (1400 loans / 1410 advances),
+        // not Cash/Bank — cash already left at disbursement (LoansController.cs:181,
+        // AdvancesController.cs:183). Without this the outflow is booked twice and 1400/1410 never
+        // amortise. GOSI/TAX are genuine cash remittances and keep crediting Cash/Bank unchanged.
+        //
+        // POD-B1b-FIX (P0-2) — but ONLY up to what the receivable actually holds. Loans that predate the
+        // disbursement GL (LoansController is older than 72d3983), seeded Active loans/advances with a
+        // real OutstandingBalance and no GL at all (AuthSeeder.cs:1132/:1155), and an ApprovedAmount
+        // raised by a second Approved decision past the post-once probe (LoansController.cs:237-247) all
+        // carry an operational balance with NO 1400/1410 debit behind it. Crediting them anyway drove an
+        // ASSET into a credit balance, and BuildLiabilityClearingGl being balanced by construction meant
+        // the gl_unbalanced 422 below could never catch it. So: CAP the receivable credit at the account's
+        // real carrying balance and route the EXCESS to Cash/Bank — which is exactly the pre-B1b treatment
+        // for the uncovered portion. Metered across the whole remittance by the splitter (the P0-1 lesson:
+        // never re-read an immutable balance per iteration).
+        var loanReceivableAccount    = GlAccountResolver.AccountLabel("LOAN_RECEIVABLE", glCtx);
+        var advanceReceivableAccount = GlAccountResolver.AccountLabel("ADVANCE_RECEIVABLE", glCtx);
+        var loanContraByCode = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["LOAN_EMI"]    = loanReceivableAccount,
+            ["ADVANCE_EMI"] = advanceReceivableAccount,
+        };
+        //
+        // POD-B1b-FIX (re-audit #1) — the cap is AvailableForRelief, not the scoped balance. Every
+        // pre-B1b disbursement carries CompanyId = NULL, and that unattributed pool sits inside EVERY
+        // company's scoped view while the relief posted against it is stamped with the relieving company
+        // and therefore invisible to the next one — so companies A and B against one 10,000 pool would
+        // each read 10,000 and each relieve 6,000, leaving the ASSET with a 2,000 CREDIT balance. Clamping
+        // to the tenant-wide balance nets every other company's relief and makes Σ(relief) ≤ Σ(debits)
+        // arithmetically certain whatever order the entities remit in.
+        var loanBalance    = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, loanReceivableAccount, cancellationToken);
+        var advanceBalance = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, advanceReceivableAccount, cancellationToken);
+        var receivableSplitter = new ReceivableClearingSplitter(cashAccount, new[]
+        {
+            new KeyValuePair<string, decimal>(loanReceivableAccount,    loanBalance.AvailableForRelief),
+            new KeyValuePair<string, decimal>(advanceReceivableAccount, advanceBalance.AvailableForRelief),
+        });
+        IReadOnlyList<(string Account, decimal Amount)> LoanContraFor(FinanceGlEntry accrual)
+        {
+            var code = accrual.Description.StartsWith(PayrollGlDescriptions.DeductionPrefix, StringComparison.Ordinal)
+                ? accrual.Description[PayrollGlDescriptions.DeductionPrefix.Length..]
+                : string.Empty;
+            // An unrecognised Loan-source component (e.g. a third-party garnishment routed to DED:LOAN)
+            // is a real cash payout — null tells the splitter to send the whole line to Cash/Bank rather
+            // than guess a receivable. (Dispatch mechanism unchanged; only the amount routing is capped.)
+            var receivable = loanContraByCode.TryGetValue(code, out var r) ? r : null;
+            return receivableSplitter.Split(receivable, accrual.Amount);
+        }
+
         var posted = new List<object>();
         var skipped = new List<object>();
         foreach (var g in groupsRequested)
@@ -2290,14 +2441,25 @@ public class PayrollController : ControllerBase
             var (lines, dr, cr) = BuildLiabilityClearingGl(
                 tenantId, id, remitPeriod, req.Reference ?? g, GlEventTypes.Remit(g),
                 groupLines, cashAccount, GetUserId(), GetUserName(), currency,
-                $"{g} remittance — ref {req.Reference ?? "(none)"}");
+                $"{g} remittance — ref {req.Reference ?? "(none)"}", run.CompanyId,
+                g == RemitGroups.Loan ? LoanContraFor : null);
             if (Math.Abs(dr - cr) > 0.01m)
                 return UnprocessableEntity(new { error = "gl_unbalanced", group = g, message = "Statutory remittance GL is not balanced.", totalDebits = dr, totalCredits = cr });
 
             _db.FinanceGlEntries.AddRange(lines);
-            posted.Add(new { group = g, amount = cr });
+            // POD-B1b-FIX (P0-2) — surface the cap-and-route-excess split explicitly: how much of the LOAN
+            // group amortised a real receivable vs. how much was an uncovered cash payout. Finance can
+            // reconcile 1400/1410 against the loan sub-ledger from this, and it makes the split testable
+            // through the API rather than only by inspecting raw ledger rows.
+            var creditBreakdown = lines
+                .Where(l => !string.IsNullOrEmpty(l.CreditAccount))
+                .GroupBy(l => l.CreditAccount, StringComparer.Ordinal)
+                .Select(x => new { account = x.Key, amount = x.Sum(l => l.Amount) })
+                .OrderBy(x => x.account, StringComparer.Ordinal)
+                .ToList();
+            posted.Add(new { group = g, amount = cr, credits = creditBreakdown });
             await PayrollAudit("payroll.statutory.remitted", "PayrollRun", id.ToString(),
-                new { group = g, reference = req.Reference, amount = cr, cashAccount, period = remitPeriod }, cancellationToken);
+                new { group = g, reference = req.Reference, amount = cr, cashAccount, period = remitPeriod, credits = creditBreakdown }, cancellationToken);
         }
 
         if (posted.Count == 0)
@@ -2350,26 +2512,43 @@ public class PayrollController : ControllerBase
     // ── POD-B1 GL builders (settlement / remittance / reversal) ─────────────────────────────────────
 
     /// <summary>
-    /// Builds a balanced "clear liabilities against Cash/Bank" journal: for each accrual CREDIT line it
-    /// posts DR &lt;that line's STORED CreditAccount&gt; for the STORED amount (so the control account nets to
-    /// zero regardless of any later CoA remap), then ONE CR to <paramref name="cashAccount"/> for the
-    /// total. Reused by net-pay settlement and each remittance group. Returns (lines, DR, CR) so the
-    /// caller reuses the gl_unbalanced 422 guard. Balanced by construction (Σ DR == CR == total).
+    /// Builds a balanced "clear liabilities" journal: for each accrual CREDIT line it posts
+    /// DR &lt;that line's STORED CreditAccount&gt; for the STORED amount (so the control account nets to zero
+    /// regardless of any later CoA remap), then CREDITS the contra side for the total. Reused by net-pay
+    /// settlement and each remittance group. Returns (lines, DR, CR) so the caller reuses the
+    /// gl_unbalanced 422 guard. Balanced by construction (Σ DR == Σ CR == total).
+    ///
+    /// <para>POD-B1b — <paramref name="creditSplitFor"/> selects the credit account(s) PER accrual line
+    /// instead of always using Cash/Bank. Cash is right for GOSI/TAX/net pay (money really leaves the
+    /// bank), but WRONG for the LOAN group: an employer-granted loan's cash already left at disbursement,
+    /// so crediting cash again double-counts the outflow and leaves 1400/1410 to amortise forever.
+    /// A LOAN_EMI / ADVANCE_EMI withholding instead credits the RECEIVABLE, which is what finally drives
+    /// it to zero. Credits are consolidated per distinct account so the journal keeps one CR per contra
+    /// account; with the default selector this is a single CR line — byte-identical to POD-B1.</para>
+    ///
+    /// <para>POD-B1b-FIX (P0-2) — the selector returns a SPLIT, not one account, because crediting a
+    /// receivable is only valid up to what that receivable actually holds; the uncovered excess must fall
+    /// back to Cash/Bank. Σ(split) is asserted to equal the line amount, so an ill-behaved selector shows
+    /// up in the caller's dr/cr 422 instead of silently unbalancing the journal.</para>
     /// </summary>
     private static (List<FinanceGlEntry> Lines, decimal TotalDebits, decimal TotalCredits) BuildLiabilityClearingGl(
         Guid tenantId, Guid runId, string entryPeriod, string sourceRef, string eventType,
         IReadOnlyList<FinanceGlEntry> accrualCreditLines, string cashAccount,
-        Guid? postedBy, string postedByName, string currency, string description)
+        Guid? postedBy, string postedByName, string currency, string description,
+        Guid? companyId = null,
+        Func<FinanceGlEntry, IReadOnlyList<(string Account, decimal Amount)>>? creditSplitFor = null)
     {
         var lines = new List<FinanceGlEntry>();
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        decimal total = 0m;
+        var creditTotals = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var creditOrder = new List<string>();
         foreach (var accrual in accrualCreditLines)
         {
             if (accrual.Amount <= 0m) continue;
             lines.Add(new FinanceGlEntry
             {
-                TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
+                TenantId = tenantId, CompanyId = companyId ?? accrual.CompanyId,
+                SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = sourceRef, EventType = eventType,
                 DebitAccount = accrual.CreditAccount, CreditAccount = string.Empty,
                 Amount = accrual.Amount, Currency = currency,
@@ -2377,19 +2556,31 @@ public class PayrollController : ControllerBase
                 Description = description,
                 PostedBy = postedBy, PostedByName = postedByName,
             });
-            total += accrual.Amount;
+            var split = creditSplitFor?.Invoke(accrual)
+                        ?? new[] { (Account: cashAccount, Amount: accrual.Amount) };
+            foreach (var (contra, amount) in split)
+            {
+                if (amount <= 0m) continue;
+                if (!creditTotals.ContainsKey(contra)) creditOrder.Add(contra);
+                creditTotals[contra] = creditTotals.GetValueOrDefault(contra) + amount;
+            }
         }
-        if (total > 0m)
+        foreach (var contra in creditOrder)
+        {
+            var total = creditTotals[contra];
+            if (total <= 0m) continue;
             lines.Add(new FinanceGlEntry
             {
-                TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
+                TenantId = tenantId, CompanyId = companyId,
+                SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = sourceRef, EventType = eventType,
-                DebitAccount = string.Empty, CreditAccount = cashAccount,
+                DebitAccount = string.Empty, CreditAccount = contra,
                 Amount = total, Currency = currency,
                 EntryDate = today, Period = entryPeriod,
                 Description = description,
                 PostedBy = postedBy, PostedByName = postedByName,
             });
+        }
         var dr = lines.Where(l => !string.IsNullOrEmpty(l.DebitAccount)).Sum(l => l.Amount);
         var cr = lines.Where(l => !string.IsNullOrEmpty(l.CreditAccount)).Sum(l => l.Amount);
         return (lines, dr, cr);
@@ -2405,7 +2596,8 @@ public class PayrollController : ControllerBase
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         return originals.Select(orig => new FinanceGlEntry
         {
-            TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
+            TenantId = tenantId, CompanyId = orig.CompanyId,
+            SourceModule = "Payroll", SourceEntityId = runId,
             SourceEntityRef = orig.SourceEntityRef, EventType = eventType,
             DebitAccount = orig.CreditAccount, CreditAccount = orig.DebitAccount,
             Amount = orig.Amount, Currency = orig.Currency,
@@ -2922,78 +3114,24 @@ public class PayrollController : ControllerBase
         };
     }
 
+    // POD-B1b — the driver routing + company-first account resolution that used to live here as private
+    // statics now lives in Infrastructure/Payroll/GlAccountResolver.cs, so the bonus, loan and advance
+    // posting paths resolve accounts through the EXACT same code instead of hard-coded label strings.
+    // These remain as thin delegating wrappers: every existing call site (and the reflection-driven
+    // golden master) is untouched, and there is still only ONE implementation.
+
     /// <summary>Driver key → (code, name): company/tenant mapping override wins, else the persisted
     /// driver default (company row → tenant row), else the compiled catalog default, else Unmapped.</summary>
     private static (string Code, string Name) ResolveGlAccount(
         string driverKey,
         IReadOnlyDictionary<string, (string Code, string Name)>? overrides,
         IReadOnlyDictionary<string, (string Code, string Name)>? driverDefaults = null)
-    {
-        if (overrides is not null && overrides.TryGetValue(driverKey, out var o)) return o;
-        if (driverDefaults is not null && driverDefaults.TryGetValue(driverKey, out var dd)) return dd;
-        if (PayrollGlCatalog.Defaults.TryGetValue(driverKey, out var d)) return d;
-        return ("9999", "Unmapped");
-    }
+        => GlAccountResolver.Resolve(driverKey, overrides, driverDefaults);
 
-    // ── Data-driven driver routing (Phase 2 driver store) ────────────────────────
-    // Replaces the compiled EarningDriverKey/DeductionDriverKey switches with a match over the
-    // persisted gl_drivers set. When the store is empty (or no driver matches) it falls back to the
-    // compiled switch so behaviour is byte-identical for tenants that have not seeded drivers yet.
-
-    private sealed record GlDriverRow(
-        string Key, string Category, string PostingSide, string? MatchSource, string MatchMode,
-        string? MatchComponentCode, bool EmitsEmployerExpensePair, string? PairedExpenseDriverKey,
-        bool IsSystem, int SortOrder);
-
-    /// <summary>Everything the shared GL routing needs, loaded once per run (company-first).</summary>
-    private sealed record GlResolutionContext(
-        IReadOnlyDictionary<string, (string Code, string Name)> Overrides,
-        IReadOnlyDictionary<string, (string Code, string Name)> DriverDefaults,
-        IReadOnlyList<GlDriverRow> Drivers)
-    {
-        public static readonly GlResolutionContext Empty = new(
-            new Dictionary<string, (string, string)>(),
-            new Dictionary<string, (string, string)>(),
-            Array.Empty<GlDriverRow>());
-    }
-
-    private static int SpecificityRank(string matchMode) => matchMode switch
-    {
-        GlDriverMatchModes.Exact => 3,
-        GlDriverMatchModes.Suffix => 2,
-        GlDriverMatchModes.Prefix => 2,
-        _ => 1, // Any
-    };
-
-    private static bool DriverMatches(GlDriverRow d, string componentCode, string source)
-    {
-        if (d.MatchSource is not null && !string.Equals(d.MatchSource, source, StringComparison.Ordinal))
-            return false;
-        return d.MatchMode switch
-        {
-            GlDriverMatchModes.Exact => d.MatchComponentCode is not null && componentCode == d.MatchComponentCode,
-            GlDriverMatchModes.Suffix => d.MatchComponentCode is not null && componentCode.EndsWith(d.MatchComponentCode, StringComparison.Ordinal),
-            GlDriverMatchModes.Prefix => d.MatchComponentCode is not null && componentCode.StartsWith(d.MatchComponentCode, StringComparison.Ordinal),
-            _ => d.MatchComponentCode is null, // Any
-        };
-    }
-
-    /// <summary>Most-specific driver for a component within a category, or null (→ compiled fallback).
-    /// Add-only authority: system wins on a specificity tie so a custom driver can only WIN by being
-    /// strictly more specific.</summary>
+    /// <summary>Most-specific driver for a component within a category, or null (→ compiled fallback).</summary>
     private static GlDriverRow? ResolveDriverForComponent(
         IReadOnlyList<GlDriverRow> drivers, string componentCode, string source, string category)
-    {
-        if (drivers.Count == 0) return null;
-        return drivers
-            .Where(d => d.Category == category && DriverMatches(d, componentCode, source))
-            .OrderByDescending(d => SpecificityRank(d.MatchMode))
-            .ThenByDescending(d => d.MatchSource != null)
-            .ThenBy(d => d.SortOrder)
-            .ThenByDescending(d => d.IsSystem)
-            .ThenBy(d => d.Key, StringComparer.Ordinal)
-            .FirstOrDefault();
-    }
+        => GlAccountResolver.ResolveDriverForComponent(drivers, componentCode, source, category);
 
     /// <summary>Splits a persisted "<code> - <name>" account label on the FIRST " - " only
     /// (account names may legitimately contain " - ").</summary>
@@ -3039,14 +3177,40 @@ public class PayrollController : ControllerBase
         }
 
         // ── Earnings (Debit side) ──────────────────────────────────────────────
+        // POD-B1b — BONUS DOUBLE-COUNT FIX. A bonus that was ACCRUED by the bonus module
+        // (ApproveBatch: DR bonus expense / CR Bonus Payable) must NOT be expensed a second time here;
+        // this run PAYS it, so the correct debit is the accrual's own payable account. gl.BonusClearings
+        // carries, per batch, how much of that accrual is still outstanding (capped by
+        // BonusGlLedger.BuildPayrollClearingAsync) and the STORED account it was credited to, which makes
+        // the clearing immune to a chart-of-accounts remap between approve and lock.
+        //
+        // Anything NOT covered by a live accrual (bonus injected straight into a run with no accrual at
+        // all, or the tax slice of a pre-B1b accrual booked at net) still debits EARN:BONUS exactly as
+        // before — so tenants with no bonus accruals see a byte-identical journal.
+        var bonusClearings = gl.BonusClearings;
+        var clearsBonusAccrual = bonusClearings.Count > 0;
+        decimal bonusEarningTotal = 0m;
+        // POD-B1b-FIX (P1-7) — keep each deferred bonus component's OWN resolved driver. The remainder used
+        // to be re-posted as one hard-coded Account("EARN:BONUS") line, which silently discarded a tenant's
+        // custom Phase-2 Earning driver (a shipped feature — ResolveDriverForComponent matches e.g.
+        // BONUS_EID by Exact/Prefix/Suffix) and collapsed per-component detail into a single line.
+        var deferredBonusGroups = new List<(string Code, string Driver, decimal Amount)>();
         foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
         {
             var src = grp.First().Source;
-            var driver = ResolveDriverForComponent(gl.Drivers, grp.Key, src, GlDriverCategories.Earning)?.Key
-                         ?? EarningDriverKey(grp.Key, src);
+            var driverKey = ResolveDriverForComponent(gl.Drivers, grp.Key, src, GlDriverCategories.Earning)?.Key
+                            ?? EarningDriverKey(grp.Key, src);
+            if (clearsBonusAccrual && src == "Bonus")
+            {
+                var bonusAmount = grp.Sum(e => e.Amount);
+                bonusEarningTotal += bonusAmount;
+                deferredBonusGroups.Add((grp.Key, driverKey, bonusAmount));
+                continue;   // re-emitted below as accrual clearing + per-component un-accrued remainder
+            }
+            var driver = driverKey;
             lines.Add(new FinanceGlEntry
             {
-                TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
+                TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = GlEventTypes.Accrual,
                 DebitAccount  = Account(driver), CreditAccount = string.Empty,
                 Amount = grp.Sum(e => e.Amount), Currency = currency,
@@ -3054,6 +3218,97 @@ public class PayrollController : ControllerBase
                 Description = $"Payroll earning: {grp.Key}",
                 PostedBy = postedBy, PostedByName = postedByName,
             });
+        }
+
+        if (clearsBonusAccrual)
+        {
+            // DR the payable once per batch. EventType is BonusPayrollClearing (not Accrual) and the
+            // batch id rides in SourceEntityRef, so BonusGlLedger can tell exactly how much of each
+            // accrual this run consumed; a void contras these lines like any other payroll line
+            // (PayrollVoidService.cs:63-84) and re-opens the payable automatically.
+            decimal cleared = 0m;
+            // POD-B1b-FIX (re-audit #5) — how much of each EARNING COMPONENT the clearings covered.
+            var clearedByCode = new Dictionary<string, decimal>(StringComparer.Ordinal);
+            foreach (var c in bonusClearings)
+            {
+                if (c.Amount <= 0m) continue;
+                cleared += c.Amount;
+                foreach (var kv in c.ByComponentCode)
+                    clearedByCode[kv.Key] = clearedByCode.GetValueOrDefault(kv.Key) + kv.Value;
+                lines.Add(new FinanceGlEntry
+                {
+                    // The clearing carries the ACCRUAL's legal entity (falling back to the run's) so a
+                    // per-company trial balance nets to zero and the payable sub-ledger can match this
+                    // line to the exact position it retires — see BonusAccrualClearing.CompanyId.
+                    TenantId = tenantId, CompanyId = c.CompanyId ?? gl.CompanyId,
+                    SourceModule = "Payroll", SourceEntityId = runId,
+                    SourceEntityRef = BonusGlLedger.BatchRef(c.BatchId),
+                    EventType = GlEventTypes.BonusPayrollClearing,
+                    DebitAccount = c.AccrualAccount, CreditAccount = string.Empty,
+                    Amount = c.Amount, Currency = currency,
+                    EntryDate = today, Period = period,
+                    Description = $"{BonusGlDescriptions.PayrollClearingPrefix}{c.BatchRef}",
+                    PostedBy = postedBy, PostedByName = postedByName,
+                });
+            }
+            // POD-B1b-FIX (P1-7 + re-audit #5). Each component debits its OWN driver for what is left,
+            // keeping a custom Earning driver (BONUS_EID etc.) authoritative and preserving per-component
+            // detail. The remainder is allocated to the components that are genuinely STILL UN-ACCRUED —
+            // BonusAccrualClearing.ByComponentCode carries the batch→component link out of the consumed
+            // EmployeeBonus rows (the earning code is derived from the bonus type,
+            // BonusGlLedger.EarningComponentCode, so the link was never actually missing). Spreading the
+            // remainder pro rata instead put half of a never-accrued batch's expense on a FULLY-accrued
+            // component's account: total expense right, both accounts wrong, and the accrued component
+            // expensed twice at account level.
+            //
+            // Pro rata over gross remains the fallback for a legacy/incoherent plan that carries no
+            // component map, so the journal balances by construction either way
+            // (Σ(clearing) + Σ(remainder slices) == Σ(bonus earnings), always).
+            var remainder = Math.Round(bonusEarningTotal - cleared, 2);
+            if (remainder > 0m && deferredBonusGroups.Count > 0 && bonusEarningTotal > 0m)
+            {
+                var ordered = deferredBonusGroups.OrderBy(g => g.Code, StringComparer.Ordinal).ToList();
+                var shortfall = ordered
+                    .Select(g => Math.Max(0m, Math.Round(g.Amount - clearedByCode.GetValueOrDefault(g.Code), 2)))
+                    .ToList();
+                var useShortfall = shortfall.Sum() > 0m;
+                var weights = useShortfall ? shortfall : ordered.Select(g => g.Amount).ToList();
+                var weightTotal = weights.Sum();
+                var slice = remainder;
+                for (var i = 0; i < ordered.Count; i++)
+                {
+                    var share = i == ordered.Count - 1
+                        ? slice
+                        : Math.Min(slice, Math.Round(remainder * (weights[i] / weightTotal), 2));
+                    slice = Math.Round(slice - share, 2);
+                    if (share <= 0m) continue;
+                    lines.Add(new FinanceGlEntry
+                    {
+                        TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
+                        SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                        DebitAccount = Account(ordered[i].Driver), CreditAccount = string.Empty,
+                        Amount = share, Currency = currency,
+                        EntryDate = today, Period = period,
+                        Description = $"Payroll earning: {ordered[i].Code} (un-accrued)",
+                        PostedBy = postedBy, PostedByName = postedByName,
+                    });
+                }
+            }
+            else if (remainder > 0m)
+            {
+                // Defensive: a clearing plan with no bonus earning lines behind it. Keep the pre-B1b-FIX
+                // single EARN:BONUS line so the journal can never come out unbalanced.
+                lines.Add(new FinanceGlEntry
+                {
+                    TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
+                    SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                    DebitAccount = Account("EARN:BONUS"), CreditAccount = string.Empty,
+                    Amount = remainder, Currency = currency,
+                    EntryDate = today, Period = period,
+                    Description = "Payroll earning: BONUS (un-accrued)",
+                    PostedBy = postedBy, PostedByName = postedByName,
+                });
+            }
         }
 
         // ── Deductions (Credit side) ──────────────────────────────────────────
@@ -3082,7 +3337,7 @@ public class PayrollController : ControllerBase
 
             lines.Add(new FinanceGlEntry
             {
-                TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
+                TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = GlEventTypes.Accrual,
                 DebitAccount = string.Empty, CreditAccount = Account(driver),
                 Amount = grp.Sum(d => d.Amount), Currency = currency,
@@ -3098,7 +3353,7 @@ public class PayrollController : ControllerBase
             if (amount <= 0) continue;
             lines.Add(new FinanceGlEntry
             {
-                TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
+                TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = GlEventTypes.Accrual,
                 DebitAccount = Account(pairKey), CreditAccount = string.Empty,
                 Amount = amount, Currency = currency,
@@ -3111,7 +3366,7 @@ public class PayrollController : ControllerBase
         // Net salary payable balances all DR earnings vs. CR deductions.
         lines.Add(new FinanceGlEntry
         {
-            TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = runId,
+            TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
             SourceEntityRef = period, EventType = GlEventTypes.Accrual,
             DebitAccount = string.Empty, CreditAccount = Account("NET_PAYABLE"),
             Amount = totalNetSalary, Currency = currency,
@@ -3133,47 +3388,8 @@ public class PayrollController : ControllerBase
     /// and the tenant-default (CompanyId == null) rows regardless of the caller's own company claims;
     /// the WHERE re-applies exact tenant + company/default scope and never reads another tenant.
     /// </summary>
-    private async Task<GlResolutionContext> LoadGlResolutionContextAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
-    {
-        // Mapping overrides joined to active accounts; company-scoped mapping/account beat tenant default.
-        var mapRows = await _db.GlAccountMappings.IgnoreQueryFilters().AsNoTracking()
-            .Where(m => m.TenantId == tenantId && m.IsActive && (m.CompanyId == companyId || m.CompanyId == null))
-            .Join(_db.GlAccounts.IgnoreQueryFilters().AsNoTracking()
-                    .Where(a => a.TenantId == tenantId && a.IsActive && (a.CompanyId == companyId || a.CompanyId == null)),
-                  m => m.AccountId, a => a.Id,
-                  (m, a) => new { m.DriverKey, m.CompanyId, a.Code, a.Name })
-            .ToListAsync(ct);
-        var overrides = mapRows
-            .GroupBy(r => r.DriverKey)
-            .ToDictionary(g => g.Key, g =>
-            {
-                var win = g.OrderByDescending(r => r.CompanyId != null).First();
-                return (win.Code, win.Name);
-            });
-
-        // IgnoreQueryFilters is intentional: same system-read rationale as the mapping load above —
-        // must see the run's company drivers AND tenant-default drivers regardless of caller claims.
-        var driverRows = await _db.GlDrivers.IgnoreQueryFilters().AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.IsActive && (d.CompanyId == companyId || d.CompanyId == null))
-            .ToListAsync(ct);
-
-        // Company driver row wins over the tenant driver row for both routing and default account.
-        var driverDefaults = driverRows
-            .GroupBy(d => d.Key)
-            .ToDictionary(g => g.Key, g =>
-            {
-                var win = g.OrderByDescending(d => d.CompanyId != null).First();
-                return (win.DefaultCode, win.DefaultName);
-            });
-        var drivers = driverRows
-            .GroupBy(d => d.Key)
-            .Select(g => g.OrderByDescending(d => d.CompanyId != null).First())
-            .Select(d => new GlDriverRow(d.Key, d.Category, d.PostingSide, d.MatchSource, d.MatchMode,
-                d.MatchComponentCode, d.EmitsEmployerExpensePair, d.PairedExpenseDriverKey, d.IsSystem, d.SortOrder))
-            .ToList();
-
-        return new GlResolutionContext(overrides, driverDefaults, drivers);
-    }
+    private Task<GlResolutionContext> LoadGlResolutionContextAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+        => GlAccountResolver.LoadAsync(_db, tenantId, companyId, ct);
 
     /// <summary>Per-tenant kill-switch for the data-driven pay-component engine. Default ON: the engine is
     /// proven byte-identical to the legacy compiled sequence by the golden-master + equivalence-twin tests

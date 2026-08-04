@@ -177,8 +177,10 @@ public class LoansController : ControllerBase
             loan.OutstandingBalance = req.RequestedAmount;
             loan.Status = "Active";
             GenerateInstallments(tid, loan);
-            await PostGlEntry(tid, uid, loan.Id, loan.LoanNumber, "Loan", "Disbursement",
-                "1400 - Employee Loans Receivable", "1000 - Cash/Bank", loan.ApprovedAmount, null, ct);
+            // CompanyId is stamped server-side from the employee by ZayraDbContext's company-scope
+            // enforcement on write; resolve it here so the journal is attributed to the right entity.
+            await PostGlEntry(tid, uid, await ResolveLoanCompanyAsync(tid, loan, ct), loan.Id, loan.LoanNumber,
+                "Loan", "Disbursement", "LOAN_RECEIVABLE", "CASH_BANK", loan.ApprovedAmount, null, ct);
         }
 
         await _db.SaveChangesAsync(ct);
@@ -240,8 +242,11 @@ public class LoansController : ControllerBase
                 if (req.RepaymentStartDate.HasValue) loan.RepaymentStartDate = req.RepaymentStartDate;
                 else loan.RepaymentStartDate = DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(1));
                 GenerateInstallments(tid, loan);
-                await PostGlEntry(tid, uid, loan.Id, loan.LoanNumber, "Loan", "Disbursement",
-                    "1400 - Employee Loans Receivable", "1000 - Cash/Bank", loan.ApprovedAmount, null, ct);
+                // POD-B1b — post-once: a second "Approved" decision on an already-fully-approved loan
+                // must not disburse (and expense cash) twice.
+                if (!await DisbursementAlreadyPostedAsync(tid, id, ct))
+                    await PostGlEntry(tid, uid, await ResolveLoanCompanyAsync(tid, loan, ct), loan.Id, loan.LoanNumber,
+                        "Loan", "Disbursement", "LOAN_RECEIVABLE", "CASH_BANK", loan.ApprovedAmount, null, ct);
             }
         }
         loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = uid;
@@ -276,8 +281,8 @@ public class LoansController : ControllerBase
         if (loan.OutstandingBalance == 0) loan.Status = "Settled";
         loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = uid;
 
-        await PostGlEntry(tid, uid, loan.Id, loan.LoanNumber, "Loan", "Repayment",
-            "1000 - Cash/Bank", "1400 - Employee Loans Receivable", req.SettlementAmount, null, ct);
+        await PostGlEntry(tid, uid, await ResolveLoanCompanyAsync(tid, loan, ct), loan.Id, loan.LoanNumber,
+            "Loan", "Repayment", "CASH_BANK", "LOAN_RECEIVABLE", req.SettlementAmount, null, ct);
 
         await _db.SaveChangesAsync(ct);
         await WriteLoanAudit(tid, uid, id, "LoanSettled",
@@ -315,8 +320,8 @@ public class LoansController : ControllerBase
         if (loan.OutstandingBalance == 0) { loan.Status = "Settled"; }
         loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = uid;
 
-        await PostGlEntry(tid, uid, loan.Id, loan.LoanNumber, "Loan", "Repayment",
-            "1000 - Cash/Bank", "1400 - Employee Loans Receivable", req.AmountPaid, null, ct);
+        await PostGlEntry(tid, uid, await ResolveLoanCompanyAsync(tid, loan, ct), loan.Id, loan.LoanNumber,
+            "Loan", "Repayment", "CASH_BANK", "LOAN_RECEIVABLE", req.AmountPaid, null, ct);
 
         await _db.SaveChangesAsync(ct);
         await WriteLoanAudit(tid, uid, id, "InstallmentPaid", null,
@@ -378,29 +383,72 @@ public class LoansController : ControllerBase
         }
     }
 
-    private async Task PostGlEntry(Guid tid, Guid? uid, Guid entityId, string entityRef,
-        string module, string eventType, string debitAccount, string creditAccount,
+    /// <summary>
+    /// Posts one balanced loan journal line.
+    ///
+    /// <para>POD-B1b — the accounts are now DRIVER KEYS resolved company-first through the same
+    /// <see cref="GlAccountResolver"/> the payroll accrual uses, instead of the hard-coded
+    /// "1400 - Employee Loans Receivable" / "1000 - Cash/Bank" labels this method used to take. In a
+    /// multi-company tenant the old code always hit the tenant-default account and stamped the tenant
+    /// currency; it now honours a per-company GlAccountMapping override and the company's
+    /// DefaultCurrency, and stamps CompanyId so the line lands in that entity's trial balance. Driver
+    /// defaults reproduce the exact same labels, so nothing moves for a single-company tenant.</para>
+    /// </summary>
+    private async Task PostGlEntry(Guid tid, Guid? uid, Guid? companyId, Guid entityId, string entityRef,
+        string module, string eventType, string debitDriverKey, string creditDriverKey,
         decimal amount, string? currency, CancellationToken ct)
     {
         var resolvedCurrency = string.IsNullOrWhiteSpace(currency)
-            ? await _db.ResolveTenantCurrencyAsync(tid, ct)
+            ? await GlAccountResolver.ResolveCurrencyAsync(_db, tid, companyId, ct)
             : currency;
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        // POD-B1 (req-4) — no GL posting into a closed period. Single choke point covers every
-        // loan disbursement/repayment/settlement post. companyId=null → guarded by a tenant-wide close
-        // (per-company loan attribution is POD-B1b). Throws BEFORE the Add so nothing is persisted.
-        await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, null, today.ToString("yyyy-MM"), ct);
+        // POD-B1 (req-4) — no GL posting into a closed period. Single choke point covers every loan
+        // disbursement/repayment/settlement post. POD-B1b tightens it from a group-wide close to the
+        // loan's OWN company (a group-wide close still blocks — PeriodCloseGuard.cs:31 ORs CompanyId
+        // IS NULL). Throws BEFORE the Add so nothing is persisted.
+        await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, companyId, today.ToString("yyyy-MM"), ct);
+        var glCtx = await GlAccountResolver.LoadAsync(_db, tid, companyId, ct);
         _db.FinanceGlEntries.Add(new FinanceGlEntry
         {
-            TenantId = tid, SourceModule = module, SourceEntityId = entityId,
+            TenantId = tid, CompanyId = companyId, SourceModule = module, SourceEntityId = entityId,
             SourceEntityRef = entityRef, EventType = eventType,
-            DebitAccount = debitAccount, CreditAccount = creditAccount,
+            DebitAccount = GlAccountResolver.AccountLabel(debitDriverKey, glCtx),
+            CreditAccount = GlAccountResolver.AccountLabel(creditDriverKey, glCtx),
             Amount = amount, Currency = resolvedCurrency,
             EntryDate = today, Period = today.ToString("yyyy-MM"),
             Description = $"{module} {eventType}: {entityRef}",
             PostedBy = uid, PostedByName = GetUserName(),
         });
     }
+
+    /// <summary>
+    /// POD-B1b — the legal entity a loan's journal belongs to. <c>EmployeeLoan.CompanyId</c> is stamped
+    /// server-side from the owning employee on write, but the disbursement posts BEFORE that SaveChanges
+    /// on the create path, so fall back to the employee's own company. Null (legacy, pre-backfill data)
+    /// resolves tenant defaults, which is exactly the pre-B1b behaviour.
+    /// </summary>
+    private async Task<Guid?> ResolveLoanCompanyAsync(Guid tid, EmployeeLoan loan, CancellationToken ct)
+    {
+        if (loan.CompanyId is Guid cid) return cid;
+        if (loan.EmployeeIntId is not int empId) return null;
+        // IgnoreQueryFilters: server-side attribution must see the employee row regardless of the
+        // actor's own company scope; the TenantId predicate keeps this tenant-contained.
+        return await _db.Employees.IgnoreQueryFilters().AsNoTracking()
+            .Where(e => e.TenantId == tid && e.Id == empId)
+            .Select(e => e.CompanyId)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>POD-B1b — disbursement must be posted at most once per loan. DecideApproval can be hit
+    /// again after every approval step already said "Approved" (LoansController.cs:232), which used to
+    /// re-post the whole disbursement and inflate both the receivable and the cash outflow.</summary>
+    private Task<bool> DisbursementAlreadyPostedAsync(Guid tid, Guid loanId, CancellationToken ct) =>
+        // IgnoreQueryFilters is intentional: a post-once probe must see the loan's existing journal
+        // whatever company it was attributed to; the TenantId + SourceEntityId predicate keeps it
+        // tenant-contained and it reads no other tenant.
+        _db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
+            .AnyAsync(x => x.TenantId == tid && x.SourceModule == "Loan"
+                        && x.SourceEntityId == loanId && x.EventType == "Disbursement" && !x.IsReversed, ct);
 
     private async Task WriteLoanAudit(Guid tid, Guid? uid, Guid loanId, string action, string? oldVal, string newVal, CancellationToken ct)
     {

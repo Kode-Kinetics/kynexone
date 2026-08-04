@@ -32,10 +32,14 @@ public static class PeriodCloseGuard
 
     /// <summary>
     /// Throwing variant for posting paths that funnel through a shared, non-IActionResult helper
-    /// (Loans/Advances PostGlEntry, Bonus inline inserts). The thrown <see cref="PeriodClosedException"/>
-    /// is mapped to a 422 gl_period_closed by the global exception handler, and — because it throws
-    /// BEFORE SaveChanges — no partial write is committed. Passing companyId=null guards against a
-    /// group-wide (tenant) close only; per-company attribution for these modules is POD-B1b.
+    /// (Loans/Advances PostGlEntry, Bonus accrual/payment/reversal inserts). The thrown
+    /// <see cref="PeriodClosedException"/> is mapped to a 422 gl_period_closed by the global exception
+    /// handler, and — because it throws BEFORE SaveChanges — no partial write is committed.
+    ///
+    /// POD-B1b: those callers now pass the posting's OWN company (resolved from the employee) instead of
+    /// null, so a company-specific close blocks only that entity's bonus/loan/advance postings. A
+    /// group-wide close still blocks every company — the predicate above ORs CompanyId IS NULL. Passing
+    /// companyId=null remains valid and means "group-level posting" (legacy, unattributed rows).
     /// </summary>
     public static async Task ThrowIfClosedAsync(
         ZayraDbContext db, Guid tenantId, Guid? companyId, string period, CancellationToken ct = default)

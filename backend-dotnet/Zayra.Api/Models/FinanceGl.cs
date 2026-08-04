@@ -130,6 +130,15 @@ public static class PayrollGlCatalog
         // string the Loans/Advances/Bonus modules already post to (AdvancesController.cs:336,
         // BonusesController.cs:588) so the whole product books cash to ONE consolidated account.
         new Driver("CASH_BANK",             "Cash / Bank",                   "1000", "Cash/Bank",                       "Asset"),
+        // POD-B1b — control accounts owned by the bonus / loan / advance modules. Codes+names are
+        // byte-identical to the string literals those controllers hard-coded before this pod
+        // (BonusesController.cs:517 "2300 - Bonus Payable", LoansController.cs:181
+        // "1400 - Employee Loans Receivable", AdvancesController.cs:183 "1410 - Employee Salary
+        // Advances"), so routing them through ResolveGlAccount resolves the SAME account label for
+        // every existing tenant via the compiled fallback — with the added ability to remap per company.
+        new Driver("BONUS_PAYABLE",         "Bonus Payable",                 "2300", "Bonus Payable",                   "Liability"),
+        new Driver("LOAN_RECEIVABLE",       "Employee Loans Receivable",     "1400", "Employee Loans Receivable",       "Asset"),
+        new Driver("ADVANCE_RECEIVABLE",    "Employee Salary Advances",      "1410", "Employee Salary Advances",        "Asset"),
     };
 
     public static IReadOnlyDictionary<string, (string Code, string Name)> Defaults { get; } =
@@ -165,6 +174,15 @@ public static class PayrollGlCatalog
         // exactly like NET_PAYABLE. Adding it here auto-populates PayrollGlCatalog.Defaults so posting
         // resolves "1000 - Cash/Bank" for every tenant via the compiled fallback with no data migration.
         Sys(tenantId, "CASH_BANK",             "Cash / Bank",                   GlDriverCategories.Balancing, "CR", "Asset",     "1000", "Cash/Bank",                        null,        "Any",    null,               102),
+        // POD-B1b — bonus/loan/advance control accounts. Category=Balancing for the same reason as
+        // CASH_BANK: ResolveDriverForComponent only ever considers Earning/Deduction rows, so a payroll
+        // component can NEVER be routed here by accident. They are resolved exclusively by explicit
+        // ResolveGlAccount("BONUS_PAYABLE"/"LOAN_RECEIVABLE"/"ADVANCE_RECEIVABLE", …) from the bonus,
+        // loan and advance posting paths. Listing them in PayrollGlCatalog.Drivers auto-populates
+        // Defaults, so every tenant resolves the historical account label with zero data migration.
+        Sys(tenantId, "BONUS_PAYABLE",         "Bonus Payable",                 GlDriverCategories.Balancing, "CR", "Liability", "2300", "Bonus Payable",                    null,        "Any",    null,               103),
+        Sys(tenantId, "LOAN_RECEIVABLE",       "Employee Loans Receivable",     GlDriverCategories.Balancing, "DR", "Asset",     "1400", "Employee Loans Receivable",        null,        "Any",    null,               104),
+        Sys(tenantId, "ADVANCE_RECEIVABLE",    "Employee Salary Advances",      GlDriverCategories.Balancing, "DR", "Asset",     "1410", "Employee Salary Advances",         null,        "Any",    null,               105),
     };
 
     private static GlDriver Sys(
@@ -203,6 +221,43 @@ public static class GlEventTypes
 
     public static string Remit(string group)         => RemitPrefix + group;
     public static string RemitReversal(string group) => RemitReversalPrefix + group;
+
+    // ── POD-B1b — bonus lifecycle ────────────────────────────────────────────────────────────────
+    // Expense is recognised ONCE, at accrual. Every later event only moves the payable.
+    /// <summary>Approve: DR bonus expense / CR Bonus Payable (gross).</summary>
+    public const string BonusAccrual = "BonusAccrual";
+    /// <summary>Legacy accrual tag written by ApproveBatch before POD-B1b. Read (never written) so
+    /// batches approved on the old model are still recognised + cleared by the payroll clearing path.</summary>
+    public const string BonusAccrualLegacy = "BonusApproval";
+    /// <summary>Contra of an accrual when an approved batch is cancelled.</summary>
+    public const string BonusAccrualReversal = "BonusAccrualReversal";
+    /// <summary>Paid through payroll: the Lock journal DRs the stored accrual account instead of
+    /// re-expensing the bonus. Emitted as part of the payroll accrual journal, not a separate one.</summary>
+    public const string BonusPayrollClearing = "BonusPayrollClearing";
+    /// <summary>Paid outside payroll (MarkBatchPaid): DR Bonus Payable / CR tax + cash.</summary>
+    public const string BonusPayment = "BonusPayment";
+
+    /// <summary>Every event that DEBITS (clears) the bonus payable. Used to compute how much of an
+    /// accrual is still outstanding so a batch can never be cleared twice.</summary>
+    public static readonly string[] BonusClearingEvents =
+        { BonusPayrollClearing, BonusPayment, BonusAccrualReversal };
+}
+
+/// <summary>Stable, remap-immune identifiers embedded in bonus/loan/advance line Descriptions —
+/// the bonus counterpart of <see cref="PayrollGlDescriptions"/>. The payroll clearing path locates a
+/// batch's accrual by (SourceModule, SourceEntityId, EventType, CompanyId) and then DRs its STORED
+/// account, so these strings are for humans + reporting, never for balance arithmetic.</summary>
+public static class BonusGlDescriptions
+{
+    public const string AccrualPrefix        = "Bonus accrual: ";
+    public const string PayrollClearingPrefix = "Bonus payable cleared via payroll: ";
+    public const string PaymentPrefix        = "Bonus payment: ";
+    public const string TaxWithheldPrefix    = "Bonus tax withheld: ";
+    public const string ReversalPrefix       = "Bonus accrual reversal: ";
+    /// <summary>Deduction component code for the tax withheld on a bonus paid through payroll.
+    /// Source="Tax" ⇒ routes to DED:TAX (2102) and remits with the TAX group like any other PIT.</summary>
+    public const string PayrollTaxComponentCode = "BONUS_TAX";
+    public const string PayrollTaxComponentName = "Bonus tax withheld";
 }
 
 /// <summary>Stable, remap-immune identifiers embedded in the accrual line Descriptions. The settlement

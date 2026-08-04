@@ -179,8 +179,8 @@ public class AdvancesController : ControllerBase
             adv.OutstandingBalance = req.RequestedAmount;
             adv.Status = "Active";
             GenerateAdvanceInstallments(tid, adv, req.RepaymentStartDate);
-            await PostGlEntry(tid, uid, adv.Id, adv.AdvanceNumber, "Advance", "Disbursement",
-                "1410 - Employee Salary Advances", "1000 - Cash/Bank", adv.ApprovedAmount, null, ct);
+            await PostGlEntry(tid, uid, await ResolveAdvanceCompanyAsync(tid, adv, ct), adv.Id, adv.AdvanceNumber,
+                "Advance", "Disbursement", "ADVANCE_RECEIVABLE", "CASH_BANK", adv.ApprovedAmount, null, ct);
         }
 
         _db.SalaryAdvances.Add(adv);
@@ -218,8 +218,10 @@ public class AdvancesController : ControllerBase
         };
         _db.AdvanceApprovals.Add(approval);
 
-        await PostGlEntry(tid, uid, adv.Id, adv.AdvanceNumber, "Advance", "Disbursement",
-            "1410 - Employee Salary Advances", "1000 - Cash/Bank", req.ApprovedAmount, null, ct);
+        // POD-B1b — post-once so a repeated approve can never disburse (and credit cash) twice.
+        if (!await DisbursementAlreadyPostedAsync(tid, id, ct))
+            await PostGlEntry(tid, uid, await ResolveAdvanceCompanyAsync(tid, adv, ct), adv.Id, adv.AdvanceNumber,
+                "Advance", "Disbursement", "ADVANCE_RECEIVABLE", "CASH_BANK", req.ApprovedAmount, null, ct);
 
         await _db.SaveChangesAsync(ct);
         await WriteAdvanceAudit(tid, uid, id, "AdvanceApproved",
@@ -267,8 +269,8 @@ public class AdvancesController : ControllerBase
         if (adv.OutstandingBalance == 0) adv.Status = "Settled";
         adv.UpdatedAtUtc = DateTime.UtcNow; adv.UpdatedBy = uid;
 
-        await PostGlEntry(tid, uid, adv.Id, adv.AdvanceNumber, "Advance", "Repayment",
-            "1000 - Cash/Bank", "1410 - Employee Salary Advances", req.AmountPaid, null, ct);
+        await PostGlEntry(tid, uid, await ResolveAdvanceCompanyAsync(tid, adv, ct), adv.Id, adv.AdvanceNumber,
+            "Advance", "Repayment", "CASH_BANK", "ADVANCE_RECEIVABLE", req.AmountPaid, null, ct);
 
         await _db.SaveChangesAsync(ct);
         await WriteAdvanceAudit(tid, uid, id, "InstallmentPaid", null,
@@ -322,29 +324,65 @@ public class AdvancesController : ControllerBase
         }
     }
 
-    private async Task PostGlEntry(Guid tid, Guid? uid, Guid entityId, string entityRef,
-        string module, string eventType, string debitAccount, string creditAccount,
+    /// <summary>
+    /// Posts one balanced salary-advance journal line.
+    ///
+    /// <para>POD-B1b — accounts are DRIVER KEYS resolved company-first through the same
+    /// <see cref="GlAccountResolver"/> payroll uses (was: hard-coded "1410 - Employee Salary Advances" /
+    /// "1000 - Cash/Bank" labels + the tenant currency, which posted to the wrong entity's account in a
+    /// multi-company tenant). Driver defaults reproduce the identical labels, so a single-company tenant
+    /// sees no change.</para>
+    /// </summary>
+    private async Task PostGlEntry(Guid tid, Guid? uid, Guid? companyId, Guid entityId, string entityRef,
+        string module, string eventType, string debitDriverKey, string creditDriverKey,
         decimal amount, string? currency, CancellationToken ct)
     {
         var resolvedCurrency = string.IsNullOrWhiteSpace(currency)
-            ? await _db.ResolveTenantCurrencyAsync(tid, ct)
+            ? await GlAccountResolver.ResolveCurrencyAsync(_db, tid, companyId, ct)
             : currency;
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         // POD-B1 (req-4) — no GL posting into a closed period. Single choke point covers every advance
-        // disbursement/repayment post. companyId=null → guarded by a tenant-wide close (per-company
-        // advance attribution is POD-B1b). Throws BEFORE the Add so nothing is persisted.
-        await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, null, today.ToString("yyyy-MM"), ct);
+        // disbursement/repayment post. POD-B1b tightens it from a group-wide close to the advance's OWN
+        // company (a group-wide close still blocks — PeriodCloseGuard.cs:31). Throws BEFORE the Add so
+        // nothing is persisted.
+        await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, companyId, today.ToString("yyyy-MM"), ct);
+        var glCtx = await GlAccountResolver.LoadAsync(_db, tid, companyId, ct);
         _db.FinanceGlEntries.Add(new FinanceGlEntry
         {
-            TenantId = tid, SourceModule = module, SourceEntityId = entityId,
+            TenantId = tid, CompanyId = companyId, SourceModule = module, SourceEntityId = entityId,
             SourceEntityRef = entityRef, EventType = eventType,
-            DebitAccount = debitAccount, CreditAccount = creditAccount,
+            DebitAccount = GlAccountResolver.AccountLabel(debitDriverKey, glCtx),
+            CreditAccount = GlAccountResolver.AccountLabel(creditDriverKey, glCtx),
             Amount = amount, Currency = resolvedCurrency,
             EntryDate = today, Period = today.ToString("yyyy-MM"),
             Description = $"{module} {eventType}: {entityRef}",
             PostedBy = uid, PostedByName = GetUserName(),
         });
     }
+
+    /// <summary>POD-B1b — legal entity for an advance journal; see LoansController.ResolveLoanCompanyAsync
+    /// for why the employee fallback is needed (the create path posts before CompanyId is stamped).</summary>
+    private async Task<Guid?> ResolveAdvanceCompanyAsync(Guid tid, SalaryAdvance adv, CancellationToken ct)
+    {
+        if (adv.CompanyId is Guid cid) return cid;
+        if (adv.EmployeeIntId is not int empId) return null;
+        // IgnoreQueryFilters: server-side attribution must see the employee row regardless of the
+        // actor's own company scope; the TenantId predicate keeps this tenant-contained.
+        return await _db.Employees.IgnoreQueryFilters().AsNoTracking()
+            .Where(e => e.TenantId == tid && e.Id == empId)
+            .Select(e => e.CompanyId)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>POD-B1b — an advance may only be disbursed to GL once; Approve() could otherwise be
+    /// replayed and credit Cash/Bank twice.</summary>
+    private Task<bool> DisbursementAlreadyPostedAsync(Guid tid, Guid advanceId, CancellationToken ct) =>
+        // IgnoreQueryFilters is intentional: a post-once probe must see the advance's existing journal
+        // whatever company it was attributed to; the TenantId + SourceEntityId predicate keeps it
+        // tenant-contained and it reads no other tenant.
+        _db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
+            .AnyAsync(x => x.TenantId == tid && x.SourceModule == "Advance"
+                        && x.SourceEntityId == advanceId && x.EventType == "Disbursement" && !x.IsReversed, ct);
 
     private async Task WriteAdvanceAudit(Guid tid, Guid? uid, Guid advId, string action, string? oldVal, string newVal, CancellationToken ct)
     {

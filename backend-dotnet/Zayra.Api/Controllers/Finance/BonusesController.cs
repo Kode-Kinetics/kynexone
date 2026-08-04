@@ -489,6 +489,13 @@ public class BonusesController : ControllerBase
         var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (batch == null) return NotFound();
         if (batch.Status != "PendingApproval") return BadRequest("Batch is not pending approval.");
+
+        // POD-B1b-FIX (P1-6) — approving accrues per company; a company-scoped approver used to see only
+        // their own slice, accrue only that, and still flip the whole batch to Approved, stranding the
+        // other entities' bonuses in a batch nothing would ever accrue for. Checked BEFORE any mutation.
+        var (bonuses, scopeRefusal) = await LoadWholeBatchBonusesAsync(tid, id, ct);
+        if (scopeRefusal is not null) return scopeRefusal;
+
         batch.Status = "Approved"; batch.UpdatedAtUtc = DateTime.UtcNow; batch.UpdatedBy = uid;
 
         var approval = new BonusApproval
@@ -500,26 +507,58 @@ public class BonusesController : ControllerBase
         };
         _db.BonusApprovals.Add(approval);
 
-        var bonuses = await _db.EmployeeBonuses.Where(x => x.BonusBatchId == id && !x.IsDeleted).ToListAsync(ct);
         foreach (var b in bonuses) b.Status = "Approved";
 
-        // GL: Bonus Expense Dr / Bonus Payable Cr
+        // ── GL: accrue the bonus, ONCE, at GROSS ──────────────────────────────────────────────────
+        // POD-B1b. Two things changed here and both are required for the ledger to tie out:
+        //
+        //  1. GROSS, not batch.TotalAmount (which accumulates NET — see :305/:401-408/:443). The payroll
+        //     run pays the bonus GROSS and withholds the tax as its own deduction, so accruing net left
+        //     the payable permanently short by Σ TaxWithheld. For GCC tenants tax is 0, so the amount is
+        //     numerically identical to before.
+        //  2. PER COMPANY, through the same company-first resolution payroll uses
+        //     (GlAccountResolver.LoadAsync + ResolveGlAccount). A batch may span legal entities; each
+        //     entity gets its own journal, on its own accounts, in its own currency, guarded by its own
+        //     period close, and stamped with CompanyId so the payroll clearing can find it exactly.
+        //
+        // Idempotent: an accrual already posted for (batch, company) is never posted twice.
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var bonusApprovalCurrency = await _db.ResolveTenantCurrencyAsync(tid, ct);
-        // POD-B1 (req-4) — no GL posting into a closed period (companyId=null → tenant-wide close;
-        // per-company bonus attribution is POD-B1b). Throws BEFORE the Add/SaveChanges so nothing commits.
-        await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, null, batch.PaymentPeriod, ct);
-        _db.FinanceGlEntries.Add(new FinanceGlEntry
+        // IgnoreQueryFilters is intentional: an idempotency probe over the ledger must see accruals
+        // booked for ANY company in this batch, including unattributed legacy rows, regardless of the
+        // approver's own company claims; the TenantId + SourceEntityId predicate keeps it tenant-contained.
+        var existingAccrualCompanies = await _db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.TenantId == tid && x.SourceModule == BonusGlLedger.SourceModule && x.SourceEntityId == id
+                     && (x.EventType == GlEventTypes.BonusAccrual || x.EventType == GlEventTypes.BonusAccrualLegacy))
+            .Select(x => x.CompanyId)
+            .ToListAsync(ct);
+        var alreadyAccrued = existingAccrualCompanies.ToHashSet();
+
+        foreach (var group in bonuses.GroupBy(b => b.CompanyId).OrderBy(g => g.Key))
         {
-            TenantId = tid, SourceModule = "Bonus", SourceEntityId = id,
-            SourceEntityRef = batch.BatchNumber, EventType = "BonusApproval",
-            DebitAccount = "6100 - Employee Bonus Expense",
-            CreditAccount = "2300 - Bonus Payable",
-            Amount = batch.TotalAmount, Currency = bonusApprovalCurrency,
-            EntryDate = today, Period = batch.PaymentPeriod,
-            Description = $"Bonus approval: {batch.BatchName} ({batch.BatchNumber})",
-            PostedBy = uid, PostedByName = GetUserName(),
-        });
+            var companyId = group.Key;
+            if (alreadyAccrued.Contains(companyId)) continue;
+            var grossTotal = Math.Round(group.Sum(b => b.GrossBonusAmount), 2);
+            if (grossTotal <= 0m) continue;
+
+            // Throws BEFORE the Add/SaveChanges so nothing commits into a closed period. Per-company now
+            // that attribution exists; PeriodCloseGuard still ORs the group-wide close (PeriodCloseGuard.cs:31).
+            await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, companyId, batch.PaymentPeriod, ct);
+
+            var glCtx = await GlAccountResolver.LoadAsync(_db, tid, companyId, ct);
+            _db.FinanceGlEntries.Add(new FinanceGlEntry
+            {
+                TenantId = tid, CompanyId = companyId,
+                SourceModule = BonusGlLedger.SourceModule, SourceEntityId = id,
+                SourceEntityRef = batch.BatchNumber, EventType = GlEventTypes.BonusAccrual,
+                DebitAccount = GlAccountResolver.AccountLabel("EARN:BONUS", glCtx),
+                CreditAccount = GlAccountResolver.AccountLabel("BONUS_PAYABLE", glCtx),
+                Amount = grossTotal,
+                Currency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, companyId, ct),
+                EntryDate = today, Period = batch.PaymentPeriod,
+                Description = $"{BonusGlDescriptions.AccrualPrefix}{batch.BatchName} ({batch.BatchNumber})",
+                PostedBy = uid, PostedByName = GetUserName(),
+            });
+        }
 
         await _db.SaveChangesAsync(ct);
         await WriteBonusAudit(tid, uid, id, null, "BatchApproved", "PendingApproval",
@@ -536,10 +575,116 @@ public class BonusesController : ControllerBase
         var uid = GetUserId();
         var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (batch == null) return NotFound();
+
+        // ── POD-B1b-FIX (P1-5) — this endpoint is now an ACCRUAL-REVERSAL path, so it must be guarded ──
+        // It used to set Status="Cancelled" from ANY status. Cancelling a Paid batch contra'd nothing but
+        // rewrote history; cancelling an already-Cancelled one could contra a second time; and cancelling
+        // mid-payroll raced the run that was consuming it. Only a batch that has not been paid and is not
+        // being paid may be cancelled. ("Approved" is the accrued state; Draft/PendingApproval carry no
+        // GL at all and keep the endpoint's original reject-a-submission purpose.)
+        if (batch.IsLockedByPayroll)
+            return Conflict(new
+            {
+                error   = "locked_by_payroll",
+                message = "This batch is locked by a payroll run and cannot be cancelled. Void the payroll " +
+                          "run first — that re-opens the bonuses and the Bonus Payable.",
+            });
+        if (batch.Status is not ("Draft" or "PendingApproval" or "Approved"))
+            return BadRequest(new
+            {
+                error   = "invalid_status",
+                message = $"A '{batch.Status}' batch cannot be cancelled. Only Draft, PendingApproval or " +
+                          "Approved batches can be.",
+            });
+
+        // P1-6 — cancelling flips BATCH-level state and contras EVERY company's accrual, so it must never
+        // run from a partial, company-filtered view of the children. Checked BEFORE any mutation.
+        var (childBonuses, scopeRefusal) = await LoadWholeBatchBonusesAsync(tid, id, ct);
+        if (scopeRefusal is not null) return scopeRefusal;
+
+        // ── POD-B1b-FIX (re-audit #2) — refuse while ANY child is held by a payroll run ───────────────
+        // IsLockedByPayroll above only catches a FULLY consumed batch: PayrollController.cs:1161-1169
+        // locks the batch only when no approved bonus is left, so a partially consumed batch is still
+        // Approved / unlocked. Cancelling it contra'd the outstanding accrual and cancelled the unpaid
+        // children, but left the consumed ones attached to the run — and if that run was later VOIDED,
+        // the void's P1-4 re-open put them back to Approved / PayrollRunId = null under a Cancelled
+        // parent, where PayrollController.cs:670-677 (which keys on the bonus status alone) had the next
+        // run pay them. Voiding the run FIRST releases those children (they return to Approved under an
+        // Approved batch) and the cancel then behaves exactly as it does for an untouched batch.
+        var heldByRun = childBonuses.Where(b => b.Status == "PaidInPayroll" || b.PayrollRunId != null).ToList();
+        if (heldByRun.Count > 0)
+            return Conflict(new
+            {
+                error   = "locked_by_payroll",
+                message = "Part of this batch has already been consumed by a payroll run and cannot be " +
+                          "cancelled. Void that payroll run first — that re-opens the bonuses and the " +
+                          "Bonus Payable — then cancel the batch.",
+                batchId = id,
+                consumedEmployeeBonuses = heldByRun.Count,
+                payrollRunIds = heldByRun.Select(b => b.PayrollRunId).Where(r => r != null).Distinct().ToList(),
+            });
+
+        var previousStatus = batch.Status;
         batch.Status = "Cancelled"; batch.UpdatedAtUtc = DateTime.UtcNow; batch.UpdatedBy = uid;
+
+        // POD-B1b-FIX (P1-5) — cancel the CHILDREN too. PayrollController.cs:670-677 selects pending
+        // bonuses on the BONUS status alone and ignores the batch, so leaving them "Approved" meant the
+        // next payroll run happily paid a cancelled batch's bonuses — after this method had already
+        // contra'd their accrual. The consumed-child filter is now unreachable (the heldByRun refusal
+        // above rejects the whole request in that case) and is kept as a belt-and-braces invariant: a
+        // bonus a run is holding is never rewritten from here, and the contra below only ever reverses
+        // what is still OUTSTANDING on the accrual.
+        var cancelledChildren = 0;
+        foreach (var b in childBonuses.Where(x => x.Status != "PaidInPayroll" && x.PayrollRunId == null))
+        {
+            b.Status = "Cancelled";
+            b.UpdatedAtUtc = DateTime.UtcNow; b.UpdatedBy = uid;
+            cancelledChildren++;
+        }
+
+        // POD-B1b — cancelling an ALREADY-APPROVED batch used to leave its accrual standing forever:
+        // the expense and the Bonus Payable both stayed on the books for a bonus nobody would ever be
+        // paid. Post a contra for whatever is still outstanding (swap DR/CR, dated into the accrual
+        // period, ReversalOfEntryId set — the BuildContraGl / PayrollVoidService pattern) so both the
+        // expense and the payable return to zero. Nothing outstanding ⇒ nothing posted.
+        var reversalToday = DateOnly.FromDateTime(DateTime.UtcNow);
+        var openPositions = await BonusGlLedger.LoadPositionsAsync(_db, tid, new[] { id }, ct);
+        if (openPositions.Any(p => p.Remaining > 0m))
+        {
+            // IgnoreQueryFilters is intentional: the contra must reverse the accrual lines exactly as
+            // posted, for every company in the batch; TenantId + SourceEntityId keeps it tenant-contained.
+            var accrualEntries = await _db.FinanceGlEntries.IgnoreQueryFilters()
+                .Where(x => x.TenantId == tid && x.SourceModule == BonusGlLedger.SourceModule && x.SourceEntityId == id
+                         && !x.IsReversed
+                         && (x.EventType == GlEventTypes.BonusAccrual || x.EventType == GlEventTypes.BonusAccrualLegacy))
+                .ToListAsync(ct);
+            foreach (var position in openPositions.Where(p => p.Remaining > 0m))
+            {
+                await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, position.CompanyId, batch.PaymentPeriod, ct);
+                var origin = accrualEntries.FirstOrDefault(
+                    x => x.CompanyId == position.CompanyId && x.CreditAccount == position.AccrualAccount);
+                if (origin is null) continue;
+                _db.FinanceGlEntries.Add(new FinanceGlEntry
+                {
+                    TenantId = tid, CompanyId = position.CompanyId,
+                    SourceModule = BonusGlLedger.SourceModule, SourceEntityId = id,
+                    SourceEntityRef = batch.BatchNumber, EventType = GlEventTypes.BonusAccrualReversal,
+                    DebitAccount = origin.CreditAccount, CreditAccount = origin.DebitAccount,
+                    Amount = position.Remaining, Currency = position.Currency,
+                    EntryDate = reversalToday, Period = origin.Period,
+                    Description = $"{BonusGlDescriptions.ReversalPrefix}{batch.BatchName} ({batch.BatchNumber}) — {req.Reason}",
+                    PostedBy = uid, PostedByName = GetUserName(),
+                    ReversalOfEntryId = origin.Id,
+                });
+                // Only flag the original spent when the contra closes it out completely; a partially
+                // consumed accrual must stay visible to the payable sub-ledger.
+                if (position.Remaining >= position.Accrued) origin.IsReversed = true;
+            }
+        }
+
         await _db.SaveChangesAsync(ct);
-        await WriteBonusAudit(tid, uid, id, null, "BatchRejected", "PendingApproval",
-            $"Cancelled: {req.Reason}", ct);
+        await WriteBonusAudit(tid, uid, id, null, "BatchRejected", previousStatus,
+            JsonSerializer.Serialize(new { Status = "Cancelled", req.Reason, cancelledChildren }), ct);
         // SAFE-SERIALIZATION: BonusBatch is a workflow aggregate (total amounts, batch metadata) — no per-employee PII.
         return Ok(batch);
     }
@@ -563,41 +708,170 @@ public class BonusesController : ControllerBase
             });
         if (batch.Status != "Approved") return BadRequest("Only Approved batches can be marked as paid.");
 
+        // POD-B1b-FIX (P1-6) — this method sets batch.Status="Paid" + IsLockedByPayroll=true for the WHOLE
+        // batch, which is irreversible (the :631 409 blocks every retry). Reading the children through the
+        // company filter therefore let a company-A-scoped user pay A's slice and permanently lock B out of
+        // ever being paid or cleared. Refuse rather than half-process. Checked BEFORE any mutation.
+        var (allBonuses, scopeRefusal) = await LoadWholeBatchBonusesAsync(tid, id, ct);
+        if (scopeRefusal is not null) return scopeRefusal;
+
         batch.Status = "Paid"; batch.IsLockedByPayroll = true;
         batch.UpdatedAtUtc = DateTime.UtcNow; batch.UpdatedBy = uid;
 
         // Only mark bonuses that are still "Approved" — already-consumed bonuses (PaidInPayroll
         // via a payroll run) must not have their Status or PayrollRunId clobbered. This makes
         // MarkBatchPaid safe to call on a partially-consumed batch.
-        var unpaidBonuses = await _db.EmployeeBonuses
-            .Where(x => x.BonusBatchId == id && !x.IsDeleted && x.Status == "Approved")
-            .ToListAsync(ct);
+        var unpaidBonuses = allBonuses.Where(x => x.Status == "Approved").ToList();
         foreach (var b in unpaidBonuses)
         {
             b.Status = "PaidInPayroll";
             if (req.PayrollRunId.HasValue) b.PayrollRunId = req.PayrollRunId;
         }
 
-        // GL amount covers only the remaining (previously-unpaid) bonuses so that the
-        // payroll-consumed portion is not double-counted in the bonus GL.
-        var remainingGlAmount = unpaidBonuses.Sum(b => b.BonusAmount);
+        // ── GL: pay the bonus OUTSIDE payroll ─────────────────────────────────────────────────────
+        // Covers only the remaining (previously-unpaid) bonuses so the payroll-consumed portion is never
+        // double-counted. POD-B1b: per company, gross basis —
+        //     DR Bonus Payable (the accrual's STORED account, capped by what is still outstanding)
+        //     CR Income Tax Payable  (withheld)
+        //     CR Cash/Bank           (net actually paid out)
+        // Expense is NOT touched: it was recognised once, at approval. Any un-accrued remainder (a batch
+        // paid without ever being accrued) debits the bonus expense here instead, so the expense still
+        // lands exactly once and the journal is balanced either way.
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var bonusPayCurrency = await _db.ResolveTenantCurrencyAsync(tid, ct);
-        // POD-B1 (req-4) — no cash GL posting into a closed period (companyId=null → tenant-wide close).
-        if (remainingGlAmount > 0)
-            await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, null, batch.PaymentPeriod, ct);
-        if (remainingGlAmount > 0)
-            _db.FinanceGlEntries.Add(new FinanceGlEntry
+        var positions = await BonusGlLedger.LoadPositionsAsync(_db, tid, new[] { id }, ct);
+
+        // ── POD-B1b-FIX (P0-1) — METER the accrual across company groups ──────────────────────────────
+        // `positions` is an immutable snapshot taken ONCE, and BonusGlLedger.PositionFor falls back to the
+        // unattributed (CompanyId == null) accrual for any company without an exact match — which is EVERY
+        // company on all ~55 live tenants, because every pre-B1b accrual is CompanyId=NULL. Re-reading the
+        // snapshot per group therefore handed the same 1,000 accrual to company A (600) and company B
+        // (600): DR 2300 = 1,200, a 200 DEBIT balance on a liability, and 200 of bonus expense never
+        // recognised — silently, because Remaining clamps at 0 (BonusGlLedger.cs:16). The cursor deducts
+        // what this call has already reserved, so the second group sees only the 400 that is really left
+        // and books its remaining 200 to bonus expense as un-accrued. Nothing is written by Take(), so a
+        // period-close throw or a failed guard below still leaves the ledger untouched.
+        var cursor = new BonusAccrualCursor(positions);
+        // Independent re-derivation for the P0-3 assertion: what we ACTUALLY debited, per accrual.
+        var payableDebited = new Dictionary<(Guid, Guid?, string), decimal>();
+
+        foreach (var group in unpaidBonuses.GroupBy(b => b.CompanyId).OrderBy(g => g.Key))
+        {
+            var companyId = group.Key;
+            var grossTotal = Math.Round(group.Sum(b => b.GrossBonusAmount), 2);
+            var taxTotal   = Math.Round(group.Sum(b => b.TaxWithheld), 2);
+            var netTotal   = Math.Round(grossTotal - taxTotal, 2);
+            if (grossTotal <= 0m) continue;
+
+            // Throws BEFORE the Add/SaveChanges so nothing commits into a closed period. Per-company.
+            await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, companyId, batch.PaymentPeriod, ct);
+
+            var glCtx = await GlAccountResolver.LoadAsync(_db, tid, companyId, ct);
+            var currency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, companyId, ct);
+            var (position, clearable) = cursor.Take(id, companyId, grossTotal);
+            // Remap-immune: DR the account the accrual actually credited, never a re-resolved one.
+            var payableAccount = position?.AccrualAccount ?? GlAccountResolver.AccountLabel("BONUS_PAYABLE", glCtx);
+            var unaccrued = Math.Round(grossTotal - clearable, 2);
+            if (position is not null && clearable > 0m)
+                payableDebited[position.Key] = payableDebited.GetValueOrDefault(position.Key) + clearable;
+
+            var label = $"{batch.BatchName} ({batch.BatchNumber})";
+            var debits = new List<(string Account, decimal Amount, string Note)>();
+            var credits = new List<(string Account, decimal Amount, string Note)>();
+            if (clearable > 0m) debits.Add((payableAccount, clearable, BonusGlDescriptions.PaymentPrefix + label));
+            if (unaccrued > 0m) debits.Add((GlAccountResolver.AccountLabel("EARN:BONUS", glCtx), unaccrued,
+                $"{BonusGlDescriptions.PaymentPrefix}{label} (un-accrued)"));
+            if (taxTotal > 0m) credits.Add((GlAccountResolver.AccountLabel("DED:TAX", glCtx), taxTotal,
+                BonusGlDescriptions.TaxWithheldPrefix + label));
+            if (netTotal > 0m) credits.Add((GlAccountResolver.AccountLabel("CASH_BANK", glCtx), netTotal,
+                BonusGlDescriptions.PaymentPrefix + label));
+
+            // Emit TWO-SIDED rows (DebitAccount + CreditAccount on one row) — the format this module has
+            // always used, unlike payroll's one-sided lines. The debit and credit legs are equal in total
+            // and are walked in lockstep, so an untaxed single-company payment stays exactly ONE row just
+            // like before, and a taxed one splits into DR payable→CR tax + DR payable→CR cash.
+            var lines = new List<FinanceGlEntry>();
+            int di = 0, ci = 0;
+            decimal dRem = debits.Count > 0 ? debits[0].Amount : 0m;
+            decimal cRem = credits.Count > 0 ? credits[0].Amount : 0m;
+            while (di < debits.Count && ci < credits.Count)
             {
-                TenantId = tid, SourceModule = "Bonus", SourceEntityId = id,
-                SourceEntityRef = batch.BatchNumber, EventType = "BonusPayment",
-                DebitAccount = "2300 - Bonus Payable",
-                CreditAccount = "1000 - Cash/Bank",
-                Amount = remainingGlAmount, Currency = bonusPayCurrency,
-                EntryDate = today, Period = batch.PaymentPeriod,
-                Description = $"Bonus payment: {batch.BatchName} ({batch.BatchNumber})",
-                PostedBy = uid, PostedByName = GetUserName(),
-            });
+                var chunk = Math.Min(dRem, cRem);
+                if (chunk > 0m)
+                    lines.Add(new FinanceGlEntry
+                    {
+                        TenantId = tid, CompanyId = companyId,
+                        SourceModule = BonusGlLedger.SourceModule, SourceEntityId = id,
+                        SourceEntityRef = batch.BatchNumber, EventType = GlEventTypes.BonusPayment,
+                        DebitAccount = debits[di].Account, CreditAccount = credits[ci].Account,
+                        Amount = chunk, Currency = currency,
+                        EntryDate = today, Period = batch.PaymentPeriod,
+                        Description = credits[ci].Account.Contains("Tax", StringComparison.OrdinalIgnoreCase)
+                            ? credits[ci].Note : debits[di].Note,
+                        PostedBy = uid, PostedByName = GetUserName(),
+                    });
+                dRem -= chunk; cRem -= chunk;
+                if (dRem <= 0m && ++di < debits.Count) dRem = debits[di].Amount;
+                if (cRem <= 0m && ++ci < credits.Count) cRem = credits[ci].Amount;
+            }
+
+            // ── POD-B1b-FIX (P0-3 + re-audit #4) — assert the TWO LEGS against each other ─────────────
+            // The original check compared `clearable + unaccrued` with `taxTotal + netTotal`: both are
+            // grossTotal by definition (:750 and :739), so it was algebraically 0 == 0 and could never
+            // fire. Comparing the EMITTED rows to grossTotal was no better — the lockstep walker emits
+            // min(Σdebits, Σcredits) and both legs are again grossTotal by construction.
+            //
+            // What is NOT a restatement is comparing the debit leg to the credit leg, because they are
+            // built from different inputs and are only equal while netTotal >= 0. A row with
+            // TaxWithheld > GrossBonusAmount (a mis-keyed tax, or a gross edited down after the tax was
+            // computed) makes netTotal negative, drops the cash leg entirely (:762) and leaves
+            // Σcredits = taxTotal > Σdebits = grossTotal — the walker still emits exactly grossTotal, so
+            // the tax payable is silently UNDER-credited and the ledger is short. That case fires here,
+            // and so does any drift the walker introduces between what was planned and what was built.
+            var debitTotal  = debits.Sum(d => d.Amount);
+            var creditTotal = credits.Sum(c => c.Amount);
+            var emitted     = lines.Sum(l => l.Amount);
+            if (Math.Abs(debitTotal - creditTotal) > 0.01m
+                || Math.Abs(emitted - debitTotal) > 0.01m
+                || Math.Abs(emitted - grossTotal) > 0.01m)
+                return UnprocessableEntity(new
+                {
+                    error = "gl_unbalanced",
+                    message = netTotal < 0m
+                        ? "Bonus tax withheld exceeds the gross bonus for this company, so the payment " +
+                          "journal cannot balance. Correct the bonus rows; nothing was posted."
+                        : "Bonus payment GL does not tie to the gross being paid; nothing was posted.",
+                    emittedTotal = emitted, totalDebits = debitTotal, totalCredits = creditTotal,
+                    grossTotal, taxTotal, netTotal,
+                    clearedFromPayable = clearable, expensedUnaccrued = unaccrued, companyId,
+                });
+            _db.FinanceGlEntries.AddRange(lines);
+        }
+
+        // ── POD-B1b-FIX (P0-3/P0-1) — the sub-ledger assertion, across ALL company groups ─────────────
+        // Re-derived from what was actually debited (payableDebited), compared against the accrual as
+        // LOADED FROM THE DATABASE (position.Remaining, untouched by the cursor). No batch may ever debit
+        // Bonus Payable for more than is outstanding on it: that is exactly the invariant P0-1 broke.
+        //
+        // HONESTLY SCOPED (re-audit #4): `payableDebited` accumulates the cursor's own output, so this is
+        // a REGRESSION NET over the cursor, not an independent re-derivation — it fires when a future
+        // edit debits the payable around the cursor (a second Take path, a hand-rolled clearable, a
+        // snapshot re-read per group, i.e. the exact shape of P0-1), not when the cursor's own arithmetic
+        // is wrong. That is still the check whose absence let P0-1 ship. Fails loudly with 422 and
+        // nothing is persisted (SaveChanges is below).
+        foreach (var position in positions)
+        {
+            var debited = payableDebited.GetValueOrDefault(position.Key);
+            if (debited - position.Remaining > 0.01m)
+                return UnprocessableEntity(new
+                {
+                    error = "gl_overclears_accrual",
+                    message = "Bonus payment would debit Bonus Payable for more than the batch has accrued, " +
+                              "driving the liability to a debit balance. Nothing was posted.",
+                    batchId = position.BatchId, accrualCompanyId = position.CompanyId,
+                    account = position.AccrualAccount,
+                    outstanding = position.Remaining, attemptedDebit = debited,
+                });
+        }
 
         await _db.SaveChangesAsync(ct);
         await WriteBonusAudit(tid, uid, id, null, "BatchPaid", "Approved",
@@ -640,6 +914,13 @@ public class BonusesController : ControllerBase
             .Select(g => new { Department = g.Key, Count = g.Count(), TotalAmount = g.Sum(b => b.BonusAmount) })
             .ToListAsync(ct);
 
+        // POD-B1b-FIX (re-audit #7) — the control-account SIGN invariants, on this tenant's own resolved
+        // accounts. A DEBIT balance on Bonus Payable means an accrual was cleared for more than it holds
+        // (P0-1's fingerprint); a CREDIT balance on a receivable means one was relieved without ever
+        // being disbursed (P0-2's). Surfaced HERE because this report is where bonuses are reconciled —
+        // otherwise the invariant is only ever asserted in tests and a live break is invisible.
+        var controlAccounts = await GlControlAccounts.CheckAsync(_db, tid, null, ct);
+
         return Ok(new
         {
             GeneratedAtUtc = DateTime.UtcNow,
@@ -651,6 +932,12 @@ public class BonusesController : ControllerBase
             PaidAmount = batches.Where(x => x.Status == "Paid").Sum(x => x.TotalAmount),
             PendingPaymentAmount = batches.Where(x => x.Status == "Approved").Sum(x => x.TotalAmount),
             GlEntriesCount = glEntries.Count,
+            ControlAccountsHealthy = controlAccounts.All(a => a.IsHealthy),
+            ControlAccountViolations = controlAccounts.Where(a => !a.IsHealthy).Select(a => a.Violation).ToList(),
+            ControlAccounts = controlAccounts.Select(a => new
+            {
+                a.Driver, a.Account, a.Nature, a.TenantBalance, a.IsHealthy,
+            }).ToList(),
             ByDepartment = bonusSummary,
             Batches = batches.Select(b => new
             {
@@ -659,6 +946,69 @@ public class BonusesController : ControllerBase
                 b.TotalAmount, b.Status, b.IsLockedByPayroll,
             }).ToList(),
         });
+    }
+
+    /// <summary>
+    /// POD-B1b-FIX (P1-6) — loads EVERY EmployeeBonus in a batch, and refuses the operation outright when
+    /// the caller's company scope cannot see all of them.
+    ///
+    /// <para>WHY. ApproveBatch / RejectBatch / MarkBatchPaid all flip BATCH-level state
+    /// (<c>Status</c>, <c>IsLockedByPayroll</c>) unconditionally, but they used to read their children
+    /// through the EmployeeBonus company query filter (ICompanyScopedOperational,
+    /// ZayraDbContext.cs:3369-3374). For a batch spanning companies A and B, a company-A-scoped user
+    /// therefore accrued/paid only A's slice and then permanently marked the WHOLE batch
+    /// Paid + IsLockedByPayroll — after which MarkBatchPaid 409s (BonusesController.cs:637) and B's
+    /// employees are never paid, B's Bonus Payable can never clear, and no error was ever surfaced.</para>
+    ///
+    /// <para>Failing loudly beats silently half-processing: a group-scope approver (or a company switch)
+    /// completes the batch correctly, and the ledger is never left in a state only a DBA can repair.
+    /// IgnoreQueryFilters is intentional on the full read — batch integrity is a SYSTEM question — and
+    /// the explicit TenantId predicate re-applies exact tenant scope, so this never reads another tenant.</para>
+    /// </summary>
+    private async Task<(List<EmployeeBonus> Bonuses, IActionResult? Refusal)> LoadWholeBatchBonusesAsync(
+        Guid tid, Guid batchId, CancellationToken ct)
+    {
+        var all = await _db.EmployeeBonuses.IgnoreQueryFilters()
+            .Where(x => x.TenantId == tid && x.BonusBatchId == batchId && !x.IsDeleted)
+            .ToListAsync(ct);
+
+        // The same set as the caller's own scope sees. Equal ⇒ full visibility ⇒ safe to proceed.
+        var visibleIds = (await _db.EmployeeBonuses.AsNoTracking()
+            .Where(x => x.BonusBatchId == batchId && !x.IsDeleted)
+            .Select(x => x.Id)
+            .ToListAsync(ct)).ToHashSet();
+
+        var hidden = all.Where(b => !visibleIds.Contains(b.Id)).ToList();
+        if (hidden.Count == 0) return (all, null);
+
+        // POD-B1b-FIX (re-audit #8) — distinguish the two causes, because the remedies differ.
+        // EmployeeBonus is ICompanyScopedOperational, so a row with CompanyId == null is visible to GROUP
+        // scope only (ZayraDbContext.cs:3369-3374). Every pre-company-layer bonus row is null, which would
+        // make this refusal read as "spans other entities" when it really means "not yet attributed".
+        // CompanyScopeBackfill.RunAsync (Program.cs:679, Infrastructure/Boot/CompanyScopeBackfill.cs:111)
+        // stamps those rows from the owning employee on every boot and is idempotent — but it is
+        // non-fatal and can be switched off (CompanyScope:Backfill=false), so a tenant CAN still be
+        // sitting on unattributed rows. Say which it is.
+        var unattributed = hidden.Count(b => b.CompanyId is null);
+        return (all, StatusCode(403, new
+        {
+            error = "company_scope_partial",
+            message = unattributed == hidden.Count
+                ? "Some bonuses in this batch are not assigned to a legal entity yet, so they are visible " +
+                  "to group scope only. Completing the batch from a partial view would lock the whole " +
+                  "batch after processing only your slice, leaving the rest unpaid and their Bonus " +
+                  "Payable permanently open. Retry in group scope; the company backfill assigns these " +
+                  "rows on the next restart (or a re-run of CompanyScopeBackfill)."
+                : "This bonus batch spans legal entities outside your company scope. Completing it " +
+                  "from a partial view would lock the whole batch after processing only your slice, " +
+                  "leaving the other entities unpaid and their Bonus Payable permanently open. " +
+                  "Switch to group scope (or a scope covering every company in the batch) and retry.",
+            batchId,
+            totalEmployeeBonuses = all.Count,
+            visibleEmployeeBonuses = visibleIds.Count,
+            unattributedEmployeeBonuses = unattributed,
+            outOfScopeCompanyIds = hidden.Select(b => b.CompanyId).Distinct().ToList(),
+        }));
     }
 
     private async Task WriteBonusAudit(Guid tid, Guid? uid, Guid? batchId, Guid? bonusId, string action, string? oldVal, string newVal, CancellationToken ct)

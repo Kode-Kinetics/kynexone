@@ -3220,6 +3220,12 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.SourceModule, x.SourceEntityId });
             entity.HasIndex(x => new { x.TenantId, x.Period });
             entity.HasIndex(x => new { x.TenantId, x.ErpPostingStatus });
+            // POD-B1b — per-company trial balance + the bonus accrual→clearing lookup. Plain dimension:
+            // no global query filter (see FinanceGlEntry.CompanyId), so no existing row is ever hidden.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
+            // POD-B1b — resolves "how much of this bonus batch has already been cleared?" in one seek;
+            // payroll clearing lines live in the PAYROLL journal and carry the batch id in SourceEntityRef.
+            entity.HasIndex(x => new { x.TenantId, x.EventType, x.SourceEntityRef });
         });
 
         // ── Reports & Analytics ────────────────────────────────────────────────

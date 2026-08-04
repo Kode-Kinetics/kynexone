@@ -36,6 +36,14 @@ public static class CompanyScopeBootAssertion
         ["UserEntityAccess"] = "Access-grant record: CompanyId IS the grant payload. Filtering " +
                                "grants by company scope would be circular (grants define the scope) " +
                                "and would hide grant administration from group admins.",
+        // POD-B1b.
+        ["FinanceGlEntry"] = "Immutable ledger line: CompanyId is a reporting DIMENSION added by " +
+                             "POD-B1b (per-company trial balance / period close / bonus accrual " +
+                             "matching), not an ownership scope. Every row posted before B1b is NULL, " +
+                             "so attaching the company query filter would retroactively hide the " +
+                             "entire existing general ledger from the finance module that reads it. " +
+                             "Tenant isolation is unaffected (ITenantOwned still applies), and GL " +
+                             "reads are already gated by the finance.gl.* permissions.",
     };
 
     public static IReadOnlyList<string> FindViolations(DbContext db)

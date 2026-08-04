@@ -346,6 +346,15 @@ public class FinanceGlEntry : ITenantOwned
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
 
+    /// <summary>
+    /// POD-B1b — legal-entity attribution for this journal line (per-company trial balance, per-company
+    /// period close, and the exact accrual→clearing match the bonus payable needs when a batch spans
+    /// companies). Deliberately a PLAIN DIMENSION and NOT <c>ICompanyScoped</c>: adding a global query
+    /// filter here would hide every pre-B1b row (they are all NULL) from the GL reports the whole
+    /// finance module reads. Null = unattributed / group-level (all historical rows).
+    /// </summary>
+    public Guid? CompanyId { get; set; }
+
     // Source reference
     public string SourceModule { get; set; } = string.Empty;  // Loan, Advance, Bonus
     public Guid SourceEntityId { get; set; }

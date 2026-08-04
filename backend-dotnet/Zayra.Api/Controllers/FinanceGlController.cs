@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Seed;
 using Zayra.Api.Models;
 
@@ -355,6 +356,51 @@ public class FinanceGlController : ControllerBase
             new { accounts = seeded.Accounts, mappings = seeded.Mappings, drivers = seeded.Drivers, rateDefs = seeded.RateDefinitions, payComponents = seededComponents.Components }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(new { accounts = seeded.Accounts, mappings = seeded.Mappings, drivers = seeded.Drivers, rateDefinitions = seeded.RateDefinitions, payComponents = seededComponents.Components });
+    }
+
+    // ── Control-account health ───────────────────────────────────────────────
+
+    /// <summary>
+    /// POD-B1b-FIX (re-audit #7) — the SIGN invariants of the control accounts the payroll / bonus /
+    /// loan / advance journals move, evaluated against the live ledger.
+    ///
+    /// <para>Bonus Payable is a LIABILITY and may never carry a DEBIT balance (the fingerprint of one
+    /// accrual being cleared twice); Loans / Advances Receivable are ASSETS and may never carry a CREDIT
+    /// balance (the fingerprint of a receivable relieved on remittance that was never debited at
+    /// disbursement). Both invariants existed only inside the test project until now, so neither failure
+    /// was detectable on a live tenant — a broken control account would simply sit there.</para>
+    ///
+    /// <para>Accounts are resolved through <see cref="GlAccountResolver"/> for the requested entity, so a
+    /// tenant that remapped them per company is checked on ITS accounts, not the shipped defaults.
+    /// Read-only: computes nothing, writes nothing, and 200s with <c>healthy: false</c> rather than
+    /// erroring, so a monitor can poll it.</para>
+    ///
+    /// <para><c>healthy</c> is judged on <c>tenantBalance</c> — the whole-tenant carrying balance, which
+    /// is the view the cap arithmetic actually guarantees. <c>scopedBalance</c> is informational: it is
+    /// the requested company's own rows plus the unattributed (CompanyId == null) pool every pre-POD-B1b
+    /// posting carries (with <c>companyId</c> omitted it is that unattributed pool alone), and because
+    /// that pool is shared, a legitimate posting order can leave one entity's slice net-negative without
+    /// anything being wrong.</para>
+    /// </summary>
+    [HttpGet("control-accounts/health")]
+    public async Task<IActionResult> ControlAccountHealth([FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.read") && !HasPermission("finance.gl.manage")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (ScopeError(companyId) is { } err) return err;
+
+        var rows = await GlControlAccounts.CheckAsync(_db, tid.Value, companyId, ct);
+        return Ok(new
+        {
+            generatedAtUtc = DateTime.UtcNow,
+            companyId,
+            healthy = rows.All(r => r.IsHealthy),
+            violations = rows.Where(r => !r.IsHealthy).Select(r => r.Violation).ToList(),
+            accounts = rows.Select(r => new
+            {
+                r.Driver, r.Account, r.Nature, r.ScopedBalance, r.TenantBalance, r.IsHealthy, r.Violation,
+            }).ToList(),
+        });
     }
 
     // ── GL period-close / reopen ─────────────────────────────────────────────
