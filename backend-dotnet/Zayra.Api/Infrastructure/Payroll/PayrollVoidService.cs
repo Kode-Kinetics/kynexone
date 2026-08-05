@@ -263,6 +263,34 @@ public sealed class PayrollVoidService
         var dispositions  = new List<object>();
         decimal employeeReceivableRecognised = 0m, statutoryPrepaidRecognised = 0m;
 
+        // ── POD-C3: PER-EMPLOYEE ATTRIBUTION FOR THE 1420 RECEIVABLE ──────────────────────────────
+        // FinanceGlEntry has NO employee dimension, so the aggregate DR 1420 this void is about to post
+        // can never be netted into a replacement run on its own — that is the gap POD-B3 explicitly
+        // handed to C3. The only place per-employee attribution still exists is PayrollPaymentRecord, and
+        // only BEFORE step 8 cancels them, which is why it is captured here.
+        //
+        // Restricted to records whose status means THE MONEY MOVED. A Rejected/Cancelled record sits in
+        // the batch but not in the cash, and attributing it would over-recover from an employee who was
+        // never paid.
+        var paymentBatchIds = await _db.PayrollPaymentBatches.AsNoTracking()
+            .Where(b => b.TenantId == tenantId && b.PayrollRunId == runId)
+            .Select(b => b.Id).ToListAsync(ct);
+        var settledPaymentRecords = paymentBatchIds.Count == 0
+            ? new List<(int EmployeeId, decimal Amount)>()
+            : (await _db.PayrollPaymentRecords.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && paymentBatchIds.Contains(r.PaymentBatchId)
+                         && r.Status != "Rejected" && r.Status != "Cancelled" && r.Status != "Returned"
+                         && r.Amount > 0m)
+                .Select(r => new { r.EmployeeId, r.Amount })
+                .ToListAsync(ct))
+              .Select(r => (r.EmployeeId, r.Amount)).ToList();
+        var employeeCodes = settledPaymentRecords.Count == 0
+            ? new Dictionary<int, string>()
+            : await _db.Employees.AsNoTracking()
+                .Where(e => settledPaymentRecords.Select(r => r.EmployeeId).Contains(e.Id))
+                .ToDictionaryAsync(e => e.Id, e => e.EmployeeCode, ct);
+        var receivableSubLedger = new List<PayrollEmployeeReceivable>();
+
         // ── 5a. CASH ELECTIONS — ask for EVERY missing one AT ONCE ─────────────────────────────────
         //
         // This pre-scan exists because the elections used to be evaluated INSIDE the unwind loop, which
@@ -449,6 +477,56 @@ public sealed class PayrollVoidService
                     actorId, actorName, linkToOriginal: false));
                 if (receivableAccount == employeeReceivable) employeeReceivableRecognised += notReversed;
                 else                                          statutoryPrepaidRecognised   += notReversed;
+
+                // ── POD-C3: build the per-employee sub-ledger behind THIS 1420 debit ─────────────────
+                // Only the EMPLOYEE receivable is attributable — 1430 Prepaid Statutory is money held by
+                // the authority, not by a person, and netting it belongs to the remittance path.
+                if (receivableAccount == employeeReceivable)
+                {
+                    if (settledPaymentRecords.Count == 0)
+                    {
+                        // A pre-batch / legacy settlement journal: the 1420 debit is real but no payment
+                        // record exists to attribute it. Carried EXPLICITLY as Unattributed and reported
+                        // on the ageing view rather than lost — and, critically, NOT treated as a
+                        // mismatch, so B3's existing behaviour for such runs is unchanged.
+                        receivableSubLedger.Add(new PayrollEmployeeReceivable
+                        {
+                            TenantId = tenantId, CompanyId = run.CompanyId, EmployeeId = 0, EmployeeCode = string.Empty,
+                            SourceRunId = runId, EventType = unwindEvent, Period = targetPeriod,
+                            Amount = notReversed, Status = PayrollReceivableStatuses.Unattributed,
+                        });
+                    }
+                    else
+                    {
+                        var attributed = Math.Round(settledPaymentRecords.Sum(r => r.Amount), 2);
+                        // HARD ASSERTION, not a best effort. Degrading to "one unattributed row for the
+                        // difference" would under-recover by exactly that slice — which IS the failure B3
+                        // handed to C3, so re-creating it here would be pointless. Refuse instead.
+                        if (Math.Abs(attributed - Math.Round(notReversed, 2)) > 0.01m)
+                            return VoidRunResult.Blocked("receivable_attribution_incomplete",
+                                $"This void would recognise {notReversed:N2} as recoverable from employees, but the run's " +
+                                $"settled payment records account for {attributed:N2}. Without exact per-employee " +
+                                "attribution the receivable can never be netted into a replacement run and would age " +
+                                "forever on 1420. Reconcile the payment batch (retry or mark the failed/returned " +
+                                "records) and re-submit the void.",
+                                new
+                                {
+                                    receivableAmount = Math.Round(notReversed, 2), attributedAmount = attributed,
+                                    unattributed = Math.Round(notReversed, 2) - attributed,
+                                    paymentRecordCount = settledPaymentRecords.Count,
+                                    eventType = journal.Key.EventType, period = journal.Key.Period,
+                                });
+                        foreach (var g in settledPaymentRecords.GroupBy(r => r.EmployeeId))
+                            receivableSubLedger.Add(new PayrollEmployeeReceivable
+                            {
+                                TenantId = tenantId, CompanyId = run.CompanyId,
+                                EmployeeId = g.Key, EmployeeCode = employeeCodes.GetValueOrDefault(g.Key, string.Empty),
+                                SourceRunId = runId, EventType = unwindEvent, Period = targetPeriod,
+                                Amount = Math.Round(g.Sum(r => r.Amount), 2),
+                                Status = PayrollReceivableStatuses.Outstanding,
+                            });
+                    }
+                }
             }
         }
 
@@ -469,6 +547,9 @@ public sealed class PayrollVoidService
         foreach (var orig in reversedLines) orig.IsReversed = true;
         _db.FinanceGlEntries.AddRange(contras);
         var glReversed = contras.Count;
+        // POD-C3 — the sub-ledger is written in the SAME unit of work as the 1420 debit it explains, so
+        // the aggregate and the attribution can never disagree.
+        if (receivableSubLedger.Count > 0) _db.PayrollEmployeeReceivables.AddRange(receivableSubLedger);
 
         // ── 7. Payslips — voided AND un-published from ESS ─────────────────────────────────────────
         await _db.PayrollSlips
@@ -757,11 +838,42 @@ public sealed class PayrollVoidService
                     .SetProperty(p => p.Status, WpsStatuses.Voided), ct);
         }
 
+        // ── POD-C3: RELEASE THE ARREARS THIS RUN SETTLED ──────────────────────────────────────────
+        // A voided run did not pay them, so they must become DUE AGAIN on the replacement. Flipping the
+        // status (rather than deleting) keeps the forensic trail and is exactly what the arrears
+        // engine's "Σ previously settled" term reads: it filters Status == Settled, so a Voided line
+        // contributes nothing and the amount is re-derived from first principles next time.
+        result.ArrearsLinesReleased = await _db.PayrollArrearsLines
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == runId && a.Status == PayrollArrearsStatuses.Settled)
+            .ExecuteUpdateAsync(s => s.SetProperty(a => a.Status, PayrollArrearsStatuses.Voided), ct);
+
         // ── Consumption witnesses ─────────────────────────────────────────────────────────────────
         var witnesses = await _db.PayrollRunConsumptions
             .Where(c => c.TenantId == tenantId && c.PayrollRunId == runId)
             .ToListAsync(ct);
         result.WitnessRowCount = witnesses.Count;
+
+        // POD-C3 — restore any 1420 receivable this run NETTED. The witness carries the prior
+        // RecoveredAmount, so a recovery is undone exactly, using B3's own replay machinery. Without
+        // this, voiding a replacement run would leave the receivable recorded as recovered by a run that
+        // no longer exists and the money would silently stop being collectable.
+        var receivableIds = witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.EmployeeReceivable)
+                                     .Select(w => w.ArtifactId).ToList();
+        if (receivableIds.Count > 0)
+        {
+            var rows = await _db.PayrollEmployeeReceivables
+                .Where(r => r.TenantId == tenantId && receivableIds.Contains(r.Id)).ToListAsync(ct);
+            foreach (var w in witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.EmployeeReceivable))
+            {
+                var row = rows.FirstOrDefault(r => r.Id == w.ArtifactId);
+                if (row is null) continue;
+                row.RecoveredAmount = w.PriorAmountPaid ?? Math.Max(0m, row.RecoveredAmount - w.Amount);
+                if (!string.IsNullOrWhiteSpace(w.PriorStatus)) row.Status = w.PriorStatus!;
+                row.RecoveredByRunId = null;
+                row.UpdatedAtUtc = DateTime.UtcNow;
+                result.ReceivablesRestored++;
+            }
+        }
 
         // Loans / advances — restore the RECORDED prior values, never a recomputed installment. The
         // aggregate LOAN_EMI deduction on the slip cannot attribute an employee's two loans, and
@@ -948,6 +1060,10 @@ public sealed class PayrollVoidService
         public int ImpactsReleased { get; set; }
         public int AdjustmentsReleased { get; set; }
         public int WitnessRowCount { get; set; }
+        /// <summary>POD-C3 — arrears lines flipped Settled → Voided, i.e. made due again.</summary>
+        public int ArrearsLinesReleased { get; set; }
+        /// <summary>POD-C3 — 1420 receivable rows whose recovery by this run was undone.</summary>
+        public int ReceivablesRestored { get; set; }
         public List<object> LoanRestoreDetail { get; } = new();
     }
 }

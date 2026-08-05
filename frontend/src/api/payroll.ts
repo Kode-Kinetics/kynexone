@@ -93,6 +93,19 @@ export interface PayrollSlip {
   ytdGross: number;
   ytdDeductions: number;
   ytdNet: number;
+  // POD-C3 — why a wage is what it is. All null on a slip processed before proration shipped, and on
+  // every employee who was employed for the whole period (factor 1). The register grid renders
+  // paidDays/prorationBasis so a halved wage is never an unexplained halving.
+  paidFromDate?: string | null;
+  paidToDate?: string | null;
+  paidDays?: number | null;
+  prorationDenominatorDays?: number | null;
+  prorationBasis?: string | null;
+  prorationFactor?: number | null;
+  /** Retro/backdated arrears settled on this slip. Already inside grossSalary/otherAllowances. */
+  arrearsAmount?: number | null;
+  /** This slip pays the employee's LAST wage month (the POD-C1 settlement handoff). */
+  isFinalWageMonth?: boolean;
 }
 
 export interface PayrollValidationResult {

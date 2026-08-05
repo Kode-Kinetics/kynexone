@@ -27,6 +27,15 @@ public class PayrollRun : ITenantOwned, ICompanyScopedOperational
     // "post into the run's own period". A prior-period correction booked into the current open month sets
     // this; the run still REPORTS under Year/Month, only the journal moves.
     public string? GlPostingPeriod { get; set; }
+    // POD-C3 — does this run SETTLE retro/arrears? Default true for the period-owning types (Regular,
+    // Replacement); a Supplementary/OffCycle run may opt in, which is the natural vehicle for paying a
+    // backdated increment out of band. With no retro-effective salary assignment in existence the engine
+    // produces ZERO lines, so a run with this flag on is byte-identical to one with it off.
+    public bool SettlesArrears { get; set; } = true;
+    // POD-C3 — does this run NET the 1420 Employee Overpayment Receivable a prior void recognised?
+    // Explicit and default-OFF: recovering an overpayment out of someone's salary is an act an operator
+    // must choose, never a side effect of re-running a month.
+    public bool NetsPriorReceivable { get; set; }
     public decimal TotalGrossSalary { get; set; }
     public decimal TotalDeductions { get; set; }
     public decimal TotalNetSalary { get; set; }
@@ -220,4 +229,44 @@ public class PayrollSlip : ITenantOwned, ICompanyScopedOperational
     public decimal YtdNet { get; set; }
     // Compliance: loan/advance deductions this period (for payslip line-item)
     public decimal LoanDeductions { get; set; }
+
+    // ── POD-C3: PRORATION WITNESSES ───────────────────────────────────────────────────────────────
+    // Every column here is NULLABLE and every pre-C3 slip carries null, which is exactly what keeps the
+    // A1 reconstruction byte-identical for them (see GosiReconciliationService: a null GosiBasePolicy
+    // rebuilds from BasicSalary/HousingAllowance, the pre-C3 behaviour).
+    //
+    // THESE ARE NOT DECORATION. Under the KSA default `proration_gosi_base = FullMonth` the statutory
+    // base is the FULL monthly package while BasicSalary/HousingAllowance carry the PRORATED wage, so the
+    // covered wage is NOT reconstructible from the slip's money columns alone. POD-A1's guarantee is
+    // "reconstruct expected from the run's own persisted outputs" — these columns are what makes that
+    // guarantee survive proration, under either policy value.
+
+    /// <summary>First day of the employment window inside this period (max(periodStart, joining date)).</summary>
+    public DateOnly? PaidFromDate { get; set; }
+    /// <summary>Last day paid inside this period (min(periodEnd, last working day)). POD-C1 reads this to
+    /// know the WAGE side of a leaver's final month is already settled; everything after it is C1's.</summary>
+    public DateOnly? PaidToDate { get; set; }
+    /// <summary>Numerator actually used (days paid).</summary>
+    public int? PaidDays { get; set; }
+    /// <summary>Denominator actually used (30 under Calendar30, days-in-month, or scheduled working days).</summary>
+    public int? ProrationDenominatorDays { get; set; }
+    /// <summary>Calendar length of the period, for display.</summary>
+    public int? PeriodDays { get; set; }
+    /// <summary>The NAMED basis this slip was prorated on — see <c>ProrationBases</c>.</summary>
+    public string? ProrationBasis { get; set; }
+    /// <summary>Entitlement factor applied (1.000000 when not prorated).</summary>
+    public decimal? ProrationFactor { get; set; }
+    /// <summary>The FULL monthly package, before proration — the statutory base under
+    /// <c>proration_gosi_base = FullMonth</c>, and the rate basis for OT and LOP.</summary>
+    public decimal? FullBasicSalary { get; set; }
+    public decimal? FullHousingAllowance { get; set; }
+    public decimal? FullTransportAllowance { get; set; }
+    /// <summary><c>FullMonth</c> | <c>Prorated</c> — which base the run fed the statutory pack. Null on
+    /// every pre-C3 slip, which is the flag that keeps their reconstruction unchanged.</summary>
+    public string? GosiBasePolicy { get; set; }
+    /// <summary>Total arrears settled on this slip (already inside GrossSalary/OtherAllowances).</summary>
+    public decimal ArrearsAmount { get; set; }
+    /// <summary>This slip pays the employee's LAST wage month. Emitted exactly once per offboarding; the
+    /// POD-C1 settlement pipeline reads it as the handoff that the wage side is done.</summary>
+    public bool IsFinalWageMonth { get; set; }
 }

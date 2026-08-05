@@ -579,6 +579,9 @@ public static class PayrollConsumptionArtifacts
     public const string LeaveImpact        = "LeaveImpact";
     public const string OvertimeImpact     = "OvertimeImpact";
     public const string Adjustment         = "Adjustment";
+    /// <summary>POD-C3 — a PayrollEmployeeReceivable this run NETTED, with its prior RecoveredAmount in
+    /// PriorAmountPaid, so a void of the recovering run restores the receivable exactly.</summary>
+    public const string EmployeeReceivable = "EmployeeReceivable";
 }
 
 public class PayrollException : ITenantOwned

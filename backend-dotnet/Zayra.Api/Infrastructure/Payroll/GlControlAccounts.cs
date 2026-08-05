@@ -53,6 +53,13 @@ public static class GlControlAccounts
     public const string BonusPayableDriver      = "BONUS_PAYABLE";
     public const string LoanReceivableDriver    = "LOAN_RECEIVABLE";
     public const string AdvanceReceivableDriver = "ADVANCE_RECEIVABLE";
+    /// <summary>POD-C3 — the recovery receivables POD-B3 created (1420 / 1430) were NEVER asserted. Now
+    /// that C3 CREDITS 1420 to net an overpayment out of a replacement run, an unasserted sign is a live
+    /// hole: recovering more than was ever recognised would drive an ASSET into credit and nothing would
+    /// report it. Balance() is already net (Σ DR − Σ CR), so clearing by credit is legal and only a NET
+    /// credit is a violation. A tightening, never a relaxation.</summary>
+    public const string EmployeeReceivableDriver = "EMPLOYEE_RECEIVABLE";
+    public const string StatutoryPrepaidDriver   = "STATUTORY_PREPAID";
 
     /// <summary>
     /// Loads both views of one persisted account LABEL. See <see cref="ControlAccountBalance"/> for what
@@ -120,7 +127,10 @@ public static class GlControlAccounts
         IEnumerable<FinanceGlEntry> ledger,
         string bonusPayableAccount = "2300 - Bonus Payable",
         string loanReceivableAccount = "1400 - Employee Loans Receivable",
-        string advanceReceivableAccount = "1410 - Employee Salary Advances")
+        string advanceReceivableAccount = "1410 - Employee Salary Advances",
+        // POD-C3 — asserted for the first time. See EmployeeReceivableDriver for why.
+        string employeeReceivableAccount = "1420 - Employee Overpayment Receivable",
+        string statutoryPrepaidAccount = "1430 - Prepaid Statutory Remittance")
     {
         var rows = ledger.ToList();
         var violations = new List<string>();
@@ -143,6 +153,11 @@ public static class GlControlAccounts
         Liability(bonusPayableAccount);
         Asset(loanReceivableAccount);
         Asset(advanceReceivableAccount);
+        // POD-C3 — the recovery receivables. A credit balance on 1420 means a run recovered more
+        // overpayment than any void ever recognised; on 1430, that a statutory prepayment was relieved
+        // twice. Both were previously invisible.
+        Asset(employeeReceivableAccount);
+        Asset(statutoryPrepaidAccount);
         return violations;
     }
 
@@ -181,6 +196,9 @@ public static class GlControlAccounts
             (BonusPayableDriver,      "Liability"),
             (LoanReceivableDriver,    "Asset"),
             (AdvanceReceivableDriver, "Asset"),
+            // POD-C3 — B3's recovery receivables, now that C3 credits them.
+            (EmployeeReceivableDriver, "Asset"),
+            (StatutoryPrepaidDriver,   "Asset"),
         };
 
         var results = new List<ControlAccountHealth>();

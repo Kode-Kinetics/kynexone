@@ -1131,8 +1131,24 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                             <p className="text-xs text-slate-400">{s.employeeCode}</p>
                           </td>
                           <td className="px-3 py-2.5 text-xs text-slate-500">{s.department || '—'}</td>
-                          <td className="px-3 py-2.5 text-right text-slate-700 dark:text-slate-300">{fmt(s.basicSalary)}</td>
-                          <td className="px-3 py-2.5 text-right font-semibold text-slate-900 dark:text-white">{fmt(s.grossSalary)}</td>
+                          <td className="px-3 py-2.5 text-right text-slate-700 dark:text-slate-300">
+                            {fmt(s.basicSalary)}
+                            {/* POD-C3 — a prorated wage must never look like an unexplained halving. */}
+                            {s.prorationFactor != null && s.prorationFactor !== 1 && (
+                              <p className="text-[10px] leading-tight text-sky-600 dark:text-sky-400">
+                                {s.paidDays}/{s.prorationDenominatorDays} d
+                                {s.isFinalWageMonth ? ' · final month' : s.paidFromDate ? ` · from ${s.paidFromDate}` : ''}
+                              </p>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-semibold text-slate-900 dark:text-white">
+                            {fmt(s.grossSalary)}
+                            {s.arrearsAmount != null && s.arrearsAmount > 0 && (
+                              <p className="text-[10px] font-normal leading-tight text-violet-600 dark:text-violet-400">
+                                incl. arrears {fmt(s.arrearsAmount)}
+                              </p>
+                            )}
+                          </td>
                           <td className="px-3 py-2.5 text-right text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? `(${fmt(s.loanDeductions)})` : '—'}</td>
                           <td className="px-3 py-2.5 text-right text-rose-500">
                             ({fmt(s.deductions)})

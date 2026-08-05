@@ -683,6 +683,13 @@ public class ZayraDbContext : DbContext
     public DbSet<PayrollValidationOverride> PayrollValidationOverrides => Set<PayrollValidationOverride>();
     /// <summary>POD-B3 — the persisted witness of what each run CONSUMED, replayed by the void/reopen unwind.</summary>
     public DbSet<PayrollRunConsumption> PayrollRunConsumptions => Set<PayrollRunConsumption>();
+    /// <summary>POD-C3 — the retro/arrears sub-ledger: one line per (settling run, employee, covered
+    /// period, component), with the entitled/paid/previously-settled arithmetic that produced it.</summary>
+    public DbSet<PayrollArrearsLine> PayrollArrearsLines => Set<PayrollArrearsLine>();
+    /// <summary>POD-C3 — the per-employee sub-ledger behind the aggregate 1420 receivable a
+    /// FundsDisbursed void posts. FinanceGlEntry has no employee dimension, so without this the
+    /// receivable can never be netted into a replacement run.</summary>
+    public DbSet<PayrollEmployeeReceivable> PayrollEmployeeReceivables => Set<PayrollEmployeeReceivable>();
     public DbSet<PayrollException> PayrollExceptions => Set<PayrollException>();
     public DbSet<Payslip> Payslips => Set<Payslip>();
     public DbSet<PayslipComponent> PayslipComponents => Set<PayslipComponent>();
@@ -1849,6 +1856,49 @@ public class ZayraDbContext : DbContext
             // Idempotent re-Process: one witness per (run, artifact type, artifact).
             entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.ArtifactType, x.ArtifactId }).IsUnique();
         });
+        // ── POD-C3: the retro/arrears sub-ledger ──────────────────────────────────────────────────────
+        // ITenantOwned + ICompanyScopedOperational, so it inherits the fail-closed tenant read filter AND
+        // the company write guard; CompanyId is always stamped from the settling run.
+        modelBuilder.Entity<PayrollArrearsLine>(entity =>
+        {
+            entity.ToTable("payroll_arrears_lines");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.EmployeeCode).HasMaxLength(50);
+            entity.Property(x => x.ComponentCode).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.Basis).HasMaxLength(40);
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.EntitledAmount).HasPrecision(14, 2);
+            entity.Property(x => x.PaidAmount).HasPrecision(14, 2);
+            entity.Property(x => x.PreviouslySettledAmount).HasPrecision(14, 2);
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.EarnedBasisGosiDelta).HasPrecision(14, 2);
+            entity.Property(x => x.ProrationFactor).HasPrecision(12, 6);
+            // The A1 reconstruction's dominant read: every GOSI-bearing line a run settled.
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
+            // The self-correcting formula's read: everything already settled for a covered period.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.CoveredYear, x.CoveredMonth });
+            // ONE line per (run, employee, covered period, component). This is the true invariant and the
+            // idempotency backstop for a re-Process. Deliberately NOT a global unique on (employee,
+            // period, component): two SUCCESSIVE backdated increments for the same covered period,
+            // settled in two different months, are legitimate and must not be refused by an index.
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId, x.CoveredYear, x.CoveredMonth, x.ComponentCode })
+                  .IsUnique();
+        });
+        // ── POD-C3: the per-employee 1420 sub-ledger ──────────────────────────────────────────────────
+        modelBuilder.Entity<PayrollEmployeeReceivable>(entity =>
+        {
+            entity.ToTable("payroll_employee_receivables");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.EmployeeCode).HasMaxLength(50);
+            entity.Property(x => x.EventType).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.Period).HasMaxLength(7);
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.RecoveredAmount).HasPrecision(14, 2);
+            entity.Ignore(x => x.Outstanding);
+            entity.HasIndex(x => new { x.TenantId, x.SourceRunId });
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+        });
         modelBuilder.Entity<PayrollException>(entity => { entity.ToTable("payroll_exceptions"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.Status }); });
         modelBuilder.Entity<Payslip>(entity => { entity.ToTable("payslips"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
         modelBuilder.Entity<PayslipTemplate>(entity =>
@@ -1999,6 +2049,15 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.YtdDeductions).HasPrecision(14, 2);
             entity.Property(x => x.YtdNet).HasPrecision(14, 2);
             entity.Property(x => x.LoanDeductions).HasPrecision(14, 2);
+            // POD-C3 — the proration witnesses. All nullable (or defaulted), so every pre-C3 row is
+            // untouched and the A1 reconstruction keeps its pre-C3 behaviour for them by construction.
+            entity.Property(x => x.ProrationBasis).HasMaxLength(40);
+            entity.Property(x => x.GosiBasePolicy).HasMaxLength(20);
+            entity.Property(x => x.ProrationFactor).HasPrecision(12, 6);
+            entity.Property(x => x.FullBasicSalary).HasPrecision(12, 2);
+            entity.Property(x => x.FullHousingAllowance).HasPrecision(12, 2);
+            entity.Property(x => x.FullTransportAllowance).HasPrecision(12, 2);
+            entity.Property(x => x.ArrearsAmount).HasPrecision(12, 2);
             entity.HasIndex(x => new { x.TenantId, x.RunId, x.EmployeeId }).IsUnique();
         });
 

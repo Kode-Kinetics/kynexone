@@ -162,7 +162,21 @@ public record PayrollSlipDto(
     // EmployeeStatutoryTotal is included in Deductions. EmployerStatutoryTotal is NOT.
     decimal? EmployeeStatutoryTotal,
     decimal? EmployerStatutoryTotal,
-    IReadOnlyList<PayrollDeductionLineDto>? DeductionLines)
+    IReadOnlyList<PayrollDeductionLineDto>? DeductionLines,
+    // ── POD-C3-FIX: the proration/arrears witnesses, on the AUDITOR's surface ────────────────────
+    // Requirement 7 is "an employee AND an auditor must both be able to see why the number is what it
+    // is". The employee's half shipped (ESS renders the stored PayslipComponent narrative); the payroll
+    // register grid behind GET runs/{id}/slips projected none of it, so a wage that halved looked like
+    // an unexplained halving. These are read straight off the persisted slip — no recompute, so the
+    // grid can never disagree with the payslip — and are null on every pre-C3 slip.
+    DateOnly? PaidFromDate = null,
+    DateOnly? PaidToDate = null,
+    int? PaidDays = null,
+    int? ProrationDenominatorDays = null,
+    string? ProrationBasis = null,
+    decimal? ProrationFactor = null,
+    decimal? ArrearsAmount = null,
+    bool IsFinalWageMonth = false)
 {
     public static PayrollSlipDto Project(
         PayrollSlip s, bool includeSensitive,
@@ -183,7 +197,15 @@ public record PayrollSlipDto(
         s.Status,
         includeSensitive ? s.EmployeeStatutoryTotal   : null,
         includeSensitive ? s.EmployerStatutoryTotal   : null,
-        includeSensitive ? lines                      : null);
+        includeSensitive ? lines                      : null,
+        // The employment WINDOW and the basis are not salary figures — they are the explanation of one,
+        // and are shown whether or not the caller may see money, so a masked grid still says "15/30 days"
+        // rather than presenting a halved-but-hidden number as if it were a full month. ArrearsAmount IS
+        // money and is gated like every other money column.
+        s.PaidFromDate, s.PaidToDate, s.PaidDays, s.ProrationDenominatorDays,
+        s.ProrationBasis, s.ProrationFactor,
+        includeSensitive ? s.ArrearsAmount : null,
+        s.IsFinalWageMonth);
 }
 
 // ── EOSB Calculations ─────────────────────────────────────────────────────────

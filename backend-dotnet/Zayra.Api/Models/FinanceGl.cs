@@ -122,6 +122,11 @@ public static class PayrollGlCatalog
         new Driver("DED:LEAVE",             "Deduction — Leave",             "2105", "Leave Deduction Payable",         "Liability"),
         new Driver("DED:FIXED_DEDUCTION",   "Deduction — Fixed",             "2103", "Fixed Deductions Payable",        "Liability"),
         new Driver("DED:OTHER",             "Deduction — Other",             "2199", "Other Deductions",                "Liability"),
+        // POD-C3 — recovery of a prior void's ALREADY-DISBURSED net pay. It credits the 1420 ASSET the
+        // void debited, NOT a payable: net then equals "what we should have paid − what we already paid",
+        // which is the definition of a recovery. Routing it to DED:OTHER (2199) instead would credit a
+        // liability nobody owes and leave 1420 ageing forever — the exact gap POD-B3 handed to C3.
+        new Driver("DED:RECEIVABLE_RECOVERY","Deduction — Overpayment Recovery","1420","Employee Overpayment Receivable","Asset"),
         // Balancing entries
         new Driver("EMPLOYER_STATUTORY_EXPENSE", "Employer Statutory Expense", "5101", "Employer Social Insurance Expense", "Expense"),
         new Driver("NET_PAYABLE",           "Net Salaries Payable",          "2100", "Salaries Payable",                "Liability"),
@@ -172,6 +177,10 @@ public static class PayrollGlCatalog
         Sys(tenantId, "DED:LEAVE",             "Deduction — Leave",             GlDriverCategories.Deduction, "CR", "Liability", "2105", "Leave Deduction Payable",          "Leave",     "Any",    null,               25),
         Sys(tenantId, "DED:FIXED_DEDUCTION",   "Deduction — Fixed",             GlDriverCategories.Deduction, "CR", "Liability", "2103", "Fixed Deductions Payable",         null,        "Exact",  "FIXED_DEDUCTION",  26),
         Sys(tenantId, "DED:OTHER",             "Deduction — Other",             GlDriverCategories.Deduction, "CR", "Liability", "2199", "Other Deductions",                 null,        "Any",    null,               98),
+        // POD-C3 — Exact match on the RECEIVABLE_RECOVERY component code so it is selected ahead of the
+        // catch-all DED:OTHER, exactly the way DED:FIXED_DEDUCTION is. AccountType is Asset: the credit
+        // RELIEVES the 1420 receivable the void recognised.
+        Sys(tenantId, "DED:RECEIVABLE_RECOVERY","Deduction — Overpayment Recovery",GlDriverCategories.Deduction,"CR","Asset",  "1420", "Employee Overpayment Receivable",  null,        "Exact",  "RECEIVABLE_RECOVERY", 27),
         Sys(tenantId, "EMPLOYER_STATUTORY_EXPENSE", "Employer Statutory Expense",GlDriverCategories.Balancing,"DR", "Expense",   "5101", "Employer Social Insurance Expense",null,        "Any",    null,               100),
         Sys(tenantId, "NET_PAYABLE",           "Net Salaries Payable",          GlDriverCategories.Balancing, "CR", "Liability", "2100", "Salaries Payable",                 null,        "Any",    null,               101),
         // POD-B1 — Cash/Bank disbursement account. Category=Balancing so component routing

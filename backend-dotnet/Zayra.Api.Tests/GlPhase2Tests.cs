@@ -186,12 +186,21 @@ public class GlPhase2Tests
         var drivers = await db.GlDrivers.IgnoreQueryFilters().Where(d => d.TenantId == tid).ToListAsync();
         // 17 original + POD-B1 CASH_BANK + POD-B1b BONUS_PAYABLE / LOAN_RECEIVABLE / ADVANCE_RECEIVABLE
         // + POD-B3 EMPLOYEE_RECEIVABLE / STATUTORY_PREPAID (where a voided run's already-disbursed cash
-        // is carried). All six additions are Category=Balancing, so the component ROUTING assertions below
-        // are unaffected — ResolveDriverForComponent only ever considers Earning/Deduction rows, which is
-        // exactly what makes it safe to keep adding control accounts here.
-        drivers.Should().HaveCount(23);
+        // is carried). All six of those additions are Category=Balancing, so the component ROUTING
+        // assertions below are unaffected — ResolveDriverForComponent only ever considers Earning/Deduction
+        // rows, which is exactly what makes it safe to keep adding control accounts here.
+        //
+        // POD-C3 adds ONE more: DED:RECEIVABLE_RECOVERY, which is deliberately Category=DEDUCTION (not
+        // Balancing) because it IS a payroll component — the line that nets a prior voided run's
+        // already-disbursed net pay out of a replacement run. It matches Exact on RECEIVABLE_RECOVERY so
+        // it is selected ahead of the DED:OTHER catch-all, exactly the way DED:FIXED_DEDUCTION is; the
+        // catch-all assertion below proves no OTHER component was pulled onto it.
+        drivers.Should().HaveCount(24);
         drivers.Where(d => d.Category == GlDriverCategories.Balancing).Should().HaveCount(6 + 2,
             "NET_PAYABLE + EMPLOYER_STATUTORY_EXPENSE + the six control accounts are the only Balancing drivers");
+        Route(drivers, "RECEIVABLE_RECOVERY", "Recovery", GlDriverCategories.Deduction)
+            .Should().Be("DED:RECEIVABLE_RECOVERY", "POD-C3 — an overpayment recovery credits the 1420 " +
+                "receivable, never the 2199 Other Deductions liability");
         // Golden checks against the compiled switch semantics.
         Route(drivers, "BASIC", "Salary", GlDriverCategories.Earning).Should().Be("EARN:BASIC");
         Route(drivers, "HOUSING", "Salary", GlDriverCategories.Earning).Should().Be("EARN:HOUSING");

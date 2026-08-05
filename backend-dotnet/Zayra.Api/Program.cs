@@ -279,6 +279,9 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeDuplicate
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IStatutoryRateResolver, Zayra.Api.Infrastructure.Payroll.StatutoryRateResolver>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ICompanyRatePolicyResolver, Zayra.Api.Infrastructure.Payroll.CompanyRatePolicyResolver>();
 builder.Services.AddScoped<Zayra.Api.Application.WorkWeek.IWorkWeekService, Zayra.Api.Infrastructure.WorkWeek.WorkWeekService>();
+// POD-C3 — the per-company mid-month proration + retro/arrears policy, resolved through the SAME
+// CompanyRatePolicy chain (company row → tenant default → compiled default) registered above.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IProrationPolicyResolver, Zayra.Api.Infrastructure.Payroll.ProrationPolicyResolver>();
 builder.Services.AddScoped<IHrmHierarchyService, HrmHierarchyService>();
 builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
 builder.Services.AddScoped<IApprovalPolicyService, ApprovalPolicyService>();

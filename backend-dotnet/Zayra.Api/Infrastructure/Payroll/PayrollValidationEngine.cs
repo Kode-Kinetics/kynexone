@@ -142,6 +142,15 @@ public static class PayrollValidationEngine
             .GroupBy(d => d.EmployeeId)
             .ToDictionary(g => g.Key, g => g.Sum(d => d.Amount));
 
+        // ── POD-C3-FIX: the 1420 recovery each slip carries ───────────────────────
+        // Needed by Rule 3 below to tell an OVER-DEDUCTION apart from a NON-DUPLICATION OF PAYMENT.
+        // See the carve-out there for why the difference is not cosmetic.
+        var recoveryByEmp = ctx.Deductions
+            .Where(d => d.Source == PayrollRecoveryComponents.RecoverySource
+                     || d.ComponentCode == PayrollRecoveryComponents.ReceivableRecovery)
+            .GroupBy(d => d.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Sum(d => d.Amount));
+
         // ── Per-slip rules ────────────────────────────────────────────────────
         foreach (var slip in ctx.Slips.GroupBy(s => s.EmployeeId).Select(g => g.First()))
         {
@@ -160,11 +169,47 @@ public static class PayrollValidationEngine
             // balances — blocking it as an Error would leave an unlockable, undeletable run whose only
             // exit is Void. Demoted to Warning for supplemental basis ONLY; unchanged for Regular runs.
             // A genuinely NEGATIVE raw net is refused earlier, at Process, with 422 negative_net_unsupported.
+            var slipRecovery = recoveryByEmp.GetValueOrDefault(slip.EmployeeId);
+
             if (slip.NetSalary == 0m && slip.GrossSalary > 0m && !paysRecurring)
                 Warn("ZERO_NET_WITH_GROSS",
                     $"Employee {slip.EmployeeCode} net salary is zero but gross is {slip.GrossSalary:N2}. " +
                     "On a supplemental run this normally means the supplemental amount was fully consumed by " +
                     "withholding tax and statutory contributions. Verify the deduction amounts.",
+                    slip.EmployeeId);
+            // ── POD-C3-FIX: zero net EXPLAINED BY A 1420 RECOVERY is not an over-deduction ────────
+            // The B3→C3 handoff: a run voided with settlementDisposition=FundsDisbursed leaves a
+            // per-employee 1420 Employee Overpayment Receivable equal to the net ALREADY IN THE
+            // EMPLOYEE'S BANK ACCOUNT. The replacement run re-pays the SAME period, so when its net
+            // equals what was disbursed the correct answer IS zero: the employee has already been paid
+            // once, the expense is re-recognised, and 1420 is relieved. That is the ORDINARY correction
+            // ("wrong cost centre / wrong attendance code, same salary"), not an edge case.
+            //
+            // Raising the non-overridable ZERO_NET_WITH_GROSS Error there dead-ended the entire
+            // handoff: Approve 422s, Lock refuses, the only exit is to void the replacement — which
+            // RESTORES the receivable. A loop, with 1420 never relieved. The Error is diagnosing an
+            // "over-deduction" that did not happen; a recovery is a NON-DUPLICATION OF PAYMENT, not a
+            // deduction from wages.
+            //
+            // Deliberately a DISTINCT code, not a demotion of ZERO_NET_WITH_GROSS: the genuine
+            // over-deduction case on a recurring run keeps its non-overridable Error verbatim (an
+            // LOP-exceeds-salary month still blocks, PayrollOvertimeLopTests.cs:147). The carve-out is
+            // gated on the recovery ACCOUNTING FOR THE WHOLE GAP — a slip that is zero for any other
+            // reason, with a recovery merely also present, still raises the Error. The guard is that the
+            // slip's arithmetic is EXACT — gross − deductions == net, with nothing swallowed by the
+            // net-cannot-go-negative clamp (PayrollController.cs:2243-2267). A slip whose deductions
+            // genuinely exceed its gross reads 0 only because it was clamped, and that shortfall is a real
+            // over-deduction the recovery does not explain, so the Error below still fires.
+            else if (slip.NetSalary == 0m && slip.GrossSalary > 0m
+                     && slipRecovery > 0m && slip.GrossSalary - slip.Deductions == slip.NetSalary)
+                Warn("ZERO_NET_FROM_RECEIVABLE_RECOVERY",
+                    $"Employee {slip.EmployeeCode} nets zero because {slipRecovery:N2} of a prior voided run's " +
+                    $"ALREADY-DISBURSED net pay was recovered on this run (gross {slip.GrossSalary:N2}). No cash is " +
+                    "due: they were paid once, this run re-recognises the expense and relieves the 1420 Employee " +
+                    "Overpayment Receivable. Nothing is owed and nothing is forgiven — any un-recovered remainder " +
+                    "is reported separately as WARN_RECEIVABLE_RESIDUAL and still ages on " +
+                    "GET /api/payroll/receivables. A zero-net employee has no payable line: exclude them from the " +
+                    "WPS file (WpsSifValidator blocks a non-positive net by design).",
                     slip.EmployeeId);
             else if (slip.NetSalary == 0m && slip.GrossSalary > 0m)
                 Err("ZERO_NET_WITH_GROSS",
@@ -393,13 +438,21 @@ public static class PayrollValidationEngine
                 $"Reason: {x.Reason}",
                 x.EmployeeId);
 
-        // Include rows naming someone outside the eligible set — the operator's intent could NOT be
-        // honoured, which is a different (and more dangerous) fact than a deliberate exclusion.
+        // Someone the run would otherwise have paid but could NOT — the operator's intent (or the
+        // default "everyone eligible") was not honoured, which is a different and more dangerous fact
+        // than a deliberate exclusion.
+        //
+        // POD-C3-FIX — the message no longer ASSERTS where the row came from. It used to open "was named
+        // in this run's population selector", which is simply untrue for the channel C3 added: a
+        // post-period joiner is auto-excluded by Process (PayrollController.cs:1456) on an AllEligible
+        // run where no selector row exists at all. The recorded Reason, which is the part that actually
+        // identifies the cause, was and remains correct — so the fix is to stop stating a provenance this
+        // rule cannot know rather than to add a second code.
         foreach (var x in ctx.NotEligibleSelections)
             Warn("EMPLOYEE_SELECTION_NOT_ELIGIBLE",
-                $"Employee {x.EmployeeCode} ({x.EmployeeName}) was named in this run's population selector " +
-                "but is not eligible for it (not Active, deleted, or belongs to another legal entity), so " +
-                $"they were NOT paid by this run. Reason recorded: {x.Reason}",
+                $"Employee {x.EmployeeCode} ({x.EmployeeName}) is in scope for this run but was NOT paid by it: " +
+                "they are not eligible (not Active, deleted, belongs to another legal entity, or not employed " +
+                $"during this period). Reason recorded: {x.Reason}",
                 x.EmployeeId);
 
         // ── Rule 14 (POD-B2 / M8): the period holds more than one run ─────────────

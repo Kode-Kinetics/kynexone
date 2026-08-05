@@ -76,6 +76,17 @@ public static class StatutoryRateGuard
         Def(tenantId, "eosb.enhancement_days_per_year",      "EOSB",         "decimal", "days",       0m,        365m, "EXTRA end-of-service days per year granted ABOVE the statutory floor"),
         Def(tenantId, "payparameter.probation_ot_multiplier","PayParameter", "decimal", "multiplier", 0m,          5m, "Overtime multiplier applied during probation (company policy, at or above statutory)"),
         Def(tenantId, "payparameter.notice_period_days",     "PayParameter", "decimal", "days",       0m,        365m, "Company standard notice period in days"),
+        // ── POD-C3: mid-month proration + retro/arrears ───────────────────────────────────────────
+        // Registered here because RatesController's allow-list REFUSES any key that is not in this
+        // registry — without these rows the policy would be unwritable and every tenant would be stuck on
+        // the compiled default forever. The three enum keys are DataType "string" and their allowed
+        // values come from ProrationRateKeys.AllowedValues, so an unrecognised basis 400s at the write
+        // surface instead of 422-ing every future payroll run.
+        Def(tenantId, "payparameter.proration_basis",            "PayParameter", "string",  "enum",  null, null, "Mid-month proration basis: Calendar30 (default, day-rate = monthly/30) | CalendarActual | WorkingDays | None"),
+        Def(tenantId, "payparameter.proration_gosi_base",        "PayParameter", "string",  "enum",  null, null, "Social-insurance base in a joining/leaving month: FullMonth (KSA default) | Prorated"),
+        Def(tenantId, "payparameter.arrears_gosi_treatment",     "PayParameter", "string",  "enum",  null, null, "Statutory treatment of retro arrears: PeriodPaid (default) | None | PeriodEarned (refused — needs an amended-declaration workflow)"),
+        Def(tenantId, "payparameter.arrears_max_lookback_months","PayParameter", "decimal", "months",   0m,  120m, "How many past periods a retro/arrears settlement may reach back over (default 24)"),
+        Def(tenantId, "payparameter.prorated_components",        "PayParameter", "string",  "list",  null, null, "Comma-separated components proration applies to. Default BASIC,HOUSING,TRANSPORT,OTHER_ALLOWANCES,FIXED_DEDUCTION"),
     };
 
     private static ClientRateDefinition Def(

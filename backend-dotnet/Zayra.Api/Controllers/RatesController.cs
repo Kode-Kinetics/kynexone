@@ -336,6 +336,37 @@ public class RatesController : ControllerBase
             if (def.MinValue is { } min && v < min) return (BadRequest(new { message = $"Value below the allowed minimum ({min})." }), null);
             if (def.MaxValue is { } max && v > max) return (BadRequest(new { message = $"Value above the allowed maximum ({max})." }), null);
         }
+        // POD-C3 — STRING-typed client rates. The typed branch above handled "decimal" ONLY, so a
+        // string-valued policy (the proration basis, the GOSI base, the arrears treatment) was accepted
+        // unvalidated and an unrecognised value would land in the database and 422 every future payroll
+        // run. An enum key is now checked against its OWN allowed set and 400s here — a silent fallback
+        // is exactly how a tenant ends up paying on a basis nobody chose.
+        else if (string.Equals(def.DataType, "string", StringComparison.OrdinalIgnoreCase))
+        {
+            var value = (req.RateValue ?? string.Empty).Trim();
+            if (value.Length == 0) return (BadRequest(new { message = $"'{key}' expects a non-empty value." }), null);
+            if (ProrationRateKeys.AllowedValues.TryGetValue(key, out var allowed))
+            {
+                if (!allowed.Contains(value, StringComparer.OrdinalIgnoreCase))
+                    return (BadRequest(new
+                    {
+                        message = $"'{value}' is not a valid value for '{key}'. Allowed: {string.Join(", ", allowed)}.",
+                        rateKey = key, allowedValues = allowed,
+                    }), null);
+            }
+            else if (string.Equals(key, ProrationRateKeys.ProratedComponents, StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var unknown = parts.Where(p => !ProratedComponentCodes.All.Contains(p, StringComparer.OrdinalIgnoreCase)).ToList();
+                if (parts.Length == 0 || unknown.Count > 0)
+                    return (BadRequest(new
+                    {
+                        message = $"'{key}' expects a comma-separated subset of {string.Join(", ", ProratedComponentCodes.All)}." +
+                                  (unknown.Count > 0 ? $" Unknown: {string.Join(", ", unknown)}." : string.Empty),
+                        rateKey = key, allowedValues = ProratedComponentCodes.All,
+                    }), null);
+            }
+        }
         return (null, def);
     }
 
