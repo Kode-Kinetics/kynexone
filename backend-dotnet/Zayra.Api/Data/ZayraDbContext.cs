@@ -678,6 +678,11 @@ public class ZayraDbContext : DbContext
     public DbSet<PayrollAdjustment> PayrollAdjustments => Set<PayrollAdjustment>();
     public DbSet<PayrollApproval> PayrollApprovals => Set<PayrollApproval>();
     public DbSet<PayrollValidationResult> PayrollValidationResults => Set<PayrollValidationResult>();
+    /// <summary>POD-B3 — durable, audited overrides of blocking validation codes (survive /validate's
+    /// delete-and-rebuild of the result rows).</summary>
+    public DbSet<PayrollValidationOverride> PayrollValidationOverrides => Set<PayrollValidationOverride>();
+    /// <summary>POD-B3 — the persisted witness of what each run CONSUMED, replayed by the void/reopen unwind.</summary>
+    public DbSet<PayrollRunConsumption> PayrollRunConsumptions => Set<PayrollRunConsumption>();
     public DbSet<PayrollException> PayrollExceptions => Set<PayrollException>();
     public DbSet<Payslip> Payslips => Set<Payslip>();
     public DbSet<PayslipComponent> PayslipComponents => Set<PayslipComponent>();
@@ -1801,7 +1806,49 @@ public class ZayraDbContext : DbContext
         modelBuilder.Entity<PayrollAllowance>(entity => { entity.ToTable("payroll_allowances"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); });
         modelBuilder.Entity<PayrollAdjustment>(entity => { entity.ToTable("payroll_adjustments"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
         modelBuilder.Entity<PayrollApproval>(entity => { entity.ToTable("payroll_approvals"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId }); });
-        modelBuilder.Entity<PayrollValidationResult>(entity => { entity.ToTable("payroll_validation_results"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.Severity }); });
+        modelBuilder.Entity<PayrollValidationResult>(entity =>
+        {
+            entity.ToTable("payroll_validation_results");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.Severity });
+            // POD-B3 — override attribution. Nullable throughout: an un-overridden result carries none.
+            entity.Property(x => x.ResolvedByName).HasMaxLength(200);
+            entity.Property(x => x.ResolvedReason).HasMaxLength(1000);
+        });
+        // POD-B3 — the DURABLE record of an override. Kept in its own table because /validate deletes and
+        // rebuilds every payroll_validation_results row for a run, which would erase a flag stored there
+        // and silently re-stick the run. ITenantOwned + ICompanyScopedOperational, so it inherits the
+        // fail-closed tenant read filter AND the company write guard; CompanyId is always stamped from the
+        // run, so only the "CompanyId set → actor must have access" branch of the guard applies.
+        modelBuilder.Entity<PayrollValidationOverride>(entity =>
+        {
+            entity.ToTable("payroll_validation_overrides");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Code).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.Reason).HasMaxLength(1000).IsRequired();
+            entity.Property(x => x.OverriddenByName).HasMaxLength(200);
+            // One override per (run, code, employee). Postgres treats NULLs as distinct, so this is exact
+            // for per-employee codes and advisory for run-level ones — the endpoint re-reads by the same
+            // predicate before inserting, so a run-level code is upserted rather than duplicated.
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.Code, x.EmployeeId }).IsUnique();
+        });
+        // POD-B3 — the consumption witness. Written by Process inside the run transaction, replayed in
+        // reverse by the void / reopen unwind, deleted once replayed. See PayrollRunConsumption for why
+        // the unwind cannot be recomputed from the run's own outputs.
+        modelBuilder.Entity<PayrollRunConsumption>(entity =>
+        {
+            entity.ToTable("payroll_run_consumptions");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ArtifactType).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.PriorStatus).HasMaxLength(40);
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.PriorOutstandingBalance).HasPrecision(14, 2);
+            entity.Property(x => x.PriorTotalRepaid).HasPrecision(14, 2);
+            entity.Property(x => x.PriorAmountPaid).HasPrecision(14, 2);
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
+            // Idempotent re-Process: one witness per (run, artifact type, artifact).
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.ArtifactType, x.ArtifactId }).IsUnique();
+        });
         modelBuilder.Entity<PayrollException>(entity => { entity.ToTable("payroll_exceptions"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.Status }); });
         modelBuilder.Entity<Payslip>(entity => { entity.ToTable("payslips"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
         modelBuilder.Entity<PayslipTemplate>(entity =>
@@ -1896,13 +1943,18 @@ public class ZayraDbContext : DbContext
             // tenant+period first and company second (or not at all).
             entity.HasIndex(x => new { x.TenantId, x.Year, x.Month, x.CompanyId })
                 .HasDatabaseName("IX_payroll_runs_period_lookup");
-            // POD-B2 — uniqueness now applies ONLY to Regular runs: exactly one non-voided REGULAR run per
-            // (tenant, company, year, month); any number of OffCycle/Supplementary/Correction runs coexist.
+            // POD-B2 — uniqueness applies only to the PERIOD-OWNING run types: exactly one non-voided
+            // Regular-or-Replacement run per (tenant, company, year, month); any number of
+            // OffCycle/Supplementary/Correction runs coexist.
+            // POD-B3 widened the predicate from `= 'Regular'` to `IN ('Regular','Replacement')`. A
+            // Replacement IS the month — it takes the voided run's place — so leaving it outside the index
+            // would let two live monthly runs exist for one period with only the API check between them.
+            // Safe to widen on the ~55 live tenants: zero Replacement rows exist anywhere yet.
             // The filter string must stay byte-identical to the migration SQL predicate (`!=`, not `<>`,
             // double-quoted column names) or EF will diff it every time.
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Year, x.Month }).IsUnique()
                 .HasDatabaseName("IX_payroll_runs_tenant_id_company_id_year_month")
-                .HasFilter("\"status\" != 'Voided' AND \"run_type\" = 'Regular'");
+                .HasFilter("\"status\" != 'Voided' AND \"run_type\" IN ('Regular', 'Replacement')");
             // POD-B2 (M1) — the null-company companion. Postgres treats NULL as distinct, so the index
             // above constrains NOTHING when company_id IS NULL, and both seeders (AuthSeeder /
             // DemoDataSeeder) create null-company runs. Without this a seeded tenant-wide Regular run does
@@ -1911,7 +1963,7 @@ public class ZayraDbContext : DbContext
             // to unscoped Regular rows only.
             entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }).IsUnique()
                 .HasDatabaseName("IX_payroll_runs_tenant_id_year_month")
-                .HasFilter("\"company_id\" IS NULL AND \"status\" != 'Voided' AND \"run_type\" = 'Regular'");
+                .HasFilter("\"company_id\" IS NULL AND \"status\" != 'Voided' AND \"run_type\" IN ('Regular', 'Replacement')");
         });
 
         // POD-B2 — audited include/exclude intent for a run's population. ITenantOwned +

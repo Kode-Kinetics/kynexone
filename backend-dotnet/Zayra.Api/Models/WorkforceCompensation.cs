@@ -487,6 +487,98 @@ public class PayrollValidationResult : ITenantOwned
     public string Message { get; set; } = string.Empty;
     public bool IsResolved { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    // ── POD-B3: who cleared this blocking error, when, and why ────────────────────────────────────
+    // Before B3 nothing in the codebase ever SET IsResolved (it was read at Approve/Lock/overview and
+    // written nowhere), so any blocking Error on a Processed run was exit-only-via-Void. These columns
+    // are the attribution for the override; the DURABLE record lives in PayrollValidationOverride,
+    // because /validate deletes and rebuilds every result row wholesale.
+    public Guid? ResolvedByUserId { get; set; }
+    public string? ResolvedByName { get; set; }
+    public DateTime? ResolvedAtUtc { get; set; }
+    public string? ResolvedReason { get; set; }
+}
+
+/// <summary>
+/// POD-B3 — a DURABLE, audited override of one blocking validation code on one run.
+///
+/// <para>Why this is not a flag on <see cref="PayrollValidationResult"/>: <c>POST runs/{id}/validate</c>
+/// <c>ExecuteDelete</c>s every stored result for the run and re-adds the engine's fresh output, so an
+/// override recorded on the result row is silently erased by the next validate and the run re-sticks.
+/// Process and Validate both re-apply <c>IsResolved</c> from these rows after writing results, so an
+/// override survives any number of re-validations — and is wiped by a re-Process, because a re-processed
+/// run's FACTS have changed and a judgement made about the old figures no longer applies.</para>
+///
+/// <para>Keyed (TenantId, PayrollRunId, Code, EmployeeId). EmployeeId is nullable: a run-level code (e.g.
+/// TOTALS_*) has no employee. Postgres treats NULLs as distinct in a unique index, so the uniqueness is
+/// advisory for run-level codes — the upsert in the endpoint re-reads by the same predicate first.</para>
+/// </summary>
+public class PayrollValidationOverride : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope, stamped from the run.</summary>
+    public Guid? CompanyId { get; set; }
+    public Guid PayrollRunId { get; set; }
+    public int? EmployeeId { get; set; }
+    public string Code { get; set; } = string.Empty;
+    /// <summary>Mandatory, non-blank. The reason a compliance error was consciously accepted.</summary>
+    public string Reason { get; set; } = string.Empty;
+    public Guid? OverriddenByUserId { get; set; }
+    public string OverriddenByName { get; set; } = string.Empty;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// POD-B3 — the PERSISTED WITNESS of everything a payroll run CONSUMED, written by Process inside the run
+/// transaction and replayed in reverse by the void / reopen unwind.
+///
+/// <para>WHY THIS EXISTS. The unwind cannot be recomputed from the run's outputs:</para>
+/// <list type="bullet">
+/// <item>Loans: Process writes ONE aggregate <c>LOAN_EMI</c> deduction per EMPLOYEE
+///   (<c>empLoans.Sum(...)</c>), so an employee with two loans has no per-loan attribution; and the
+///   <c>LoanInstallment</c> stamp is written only <c>if (inst is not null)</c>, so a loan with no
+///   schedule row is decremented with no witness at all. Recomputing from
+///   <c>InstallmentAmount</c> is not a fallback — a mid-period schedule change would corrupt the
+///   reversal, restoring a different number than was taken.</item>
+/// <item>Attendance and Leave impacts carry NO PayrollRunId, so "which run marked this Processed?" is
+///   otherwise unanswerable and a re-run of the month would silently drop LOP, absence and OT.</item>
+/// </list>
+///
+/// <para>Every row records the artifact's state BEFORE the run touched it, so the restore puts back what
+/// was actually there rather than what the current configuration implies.</para>
+/// </summary>
+public class PayrollRunConsumption : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Guid PayrollRunId { get; set; }
+    /// <summary>See <see cref="PayrollConsumptionArtifacts"/>.</summary>
+    public string ArtifactType { get; set; } = string.Empty;
+    public Guid ArtifactId { get; set; }
+    public int EmployeeId { get; set; }
+    /// <summary>The amount this run consumed (EMI taken, impact amount). Zero for non-monetary artifacts.</summary>
+    public decimal Amount { get; set; }
+    public string? PriorStatus { get; set; }
+    public decimal? PriorOutstandingBalance { get; set; }
+    public decimal? PriorTotalRepaid { get; set; }
+    public decimal? PriorAmountPaid { get; set; }
+    public Guid? PriorPayrollRunId { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>POD-B3 — artifact vocabulary for <see cref="PayrollRunConsumption.ArtifactType"/>.</summary>
+public static class PayrollConsumptionArtifacts
+{
+    public const string Loan               = "Loan";
+    public const string LoanInstallment    = "LoanInstallment";
+    public const string Advance            = "Advance";
+    public const string AdvanceInstallment = "AdvanceInstallment";
+    public const string AttendanceImpact   = "AttendanceImpact";
+    public const string LeaveImpact        = "LeaveImpact";
+    public const string OvertimeImpact     = "OvertimeImpact";
+    public const string Adjustment         = "Adjustment";
 }
 
 public class PayrollException : ITenantOwned
@@ -561,9 +653,24 @@ public static class WpsStatuses
     // net-pay GL settlement journal posted, clearing 2100 Salaries Payable against Cash/Bank).
     public const string Paid       = "Paid";
     public const string Reconciled = "Reconciled";
+    // POD-B3 — TERMINAL, void-only. The run this batch belongs to was voided, so the batch and its SIF
+    // filing are withdrawn: no further WPS transition, no settlement, no reconciliation.
+    //
+    // DELIBERATELY NOT IN `All`. `All` is the set UpdateWpsStatus accepts from a caller, and a batch must
+    // never be driven to Voided by hand — it is set by PayrollVoidService alongside the ledger unwind, in
+    // the same transaction, so status and GL can never disagree. WpsTransitions likewise has no edge to
+    // or from it: the ONLY writer is the void.
+    public const string Voided     = "Voided";
 
     public static readonly string[] All =
         { Draft, Generated, Downloaded, Submitted, Accepted, Rejected, Paid, Reconciled };
+
+    /// <summary>
+    /// POD-B3 — has the bank/Mudad been given a file for this batch? Drives the void's "did money actually
+    /// move?" question and the Replacement run's duplicate-SIF probe against its voided parent.
+    /// </summary>
+    public static bool IsFiled(string? status) =>
+        status is Submitted or Accepted or Paid or Reconciled;
 }
 
 /// <summary>

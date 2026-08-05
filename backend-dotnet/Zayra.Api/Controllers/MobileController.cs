@@ -254,9 +254,18 @@ public class MobileController : ControllerBase
         if (employeeId != callerId.Value) return Forbid();
         employeeId = callerId.Value;
 
+        // POD-B3 — VOIDED runs and UNPUBLISHED payslips are excluded.
+        //
+        // Two separate leaks, both live before B3. The join carried no run-status filter, so an employee
+        // kept seeing a month the company had voided — and, once a Replacement run existed, TWO payslips
+        // for one month with different net pay. And although the projection returned IsPublishedToEss, it
+        // never FILTERED on it, so a payslip generated before Lock was visible on mobile while the web ESS
+        // (which filters PayrollSlip.Status == "Final") correctly hid it. The void now un-publishes the
+        // flag as well; this read filter is the belt to that brace, because a filter is what protects the
+        // rows that were published by code paths written before the flag meant anything.
         var heads = await _db.Payslips
-            .Where(p => p.TenantId == tenantId && p.EmployeeId == employeeId)
-            .Join(_db.PayrollRuns.Where(r => r.TenantId == tenantId),
+            .Where(p => p.TenantId == tenantId && p.EmployeeId == employeeId && p.IsPublishedToEss)
+            .Join(_db.PayrollRuns.Where(r => r.TenantId == tenantId && r.Status != "Voided"),
                 p => p.PayrollRunId, r => r.Id,
                 (p, r) => new { p.Id, r.Year, r.Month, p.IsPublishedToEss, p.CreatedAtUtc })
             .OrderByDescending(x => x.Year)

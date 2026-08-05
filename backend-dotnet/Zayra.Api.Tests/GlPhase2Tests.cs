@@ -184,10 +184,14 @@ public class GlPhase2Tests
         await db.SaveChangesAsync();
 
         var drivers = await db.GlDrivers.IgnoreQueryFilters().Where(d => d.TenantId == tid).ToListAsync();
-        // 17 original + POD-B1 CASH_BANK + POD-B1b BONUS_PAYABLE / LOAN_RECEIVABLE / ADVANCE_RECEIVABLE.
-        // All four additions are Category=Balancing, so the component ROUTING assertions below are
-        // unaffected — ResolveDriverForComponent only ever considers Earning/Deduction rows.
-        drivers.Should().HaveCount(21);
+        // 17 original + POD-B1 CASH_BANK + POD-B1b BONUS_PAYABLE / LOAN_RECEIVABLE / ADVANCE_RECEIVABLE
+        // + POD-B3 EMPLOYEE_RECEIVABLE / STATUTORY_PREPAID (where a voided run's already-disbursed cash
+        // is carried). All six additions are Category=Balancing, so the component ROUTING assertions below
+        // are unaffected — ResolveDriverForComponent only ever considers Earning/Deduction rows, which is
+        // exactly what makes it safe to keep adding control accounts here.
+        drivers.Should().HaveCount(23);
+        drivers.Where(d => d.Category == GlDriverCategories.Balancing).Should().HaveCount(6 + 2,
+            "NET_PAYABLE + EMPLOYER_STATUTORY_EXPENSE + the six control accounts are the only Balancing drivers");
         // Golden checks against the compiled switch semantics.
         Route(drivers, "BASIC", "Salary", GlDriverCategories.Earning).Should().Be("EARN:BASIC");
         Route(drivers, "HOUSING", "Salary", GlDriverCategories.Earning).Should().Be("EARN:HOUSING");

@@ -1053,8 +1053,15 @@ public class PayrollRunTypeSmeTests
         NetLiability(parentGl, SalariesPayable).Should().BeGreaterThan(0m);
     }
 
+    /// <summary>
+    /// POD-B3 supersedes B2's "report, do not cascade". B2 deliberately left a correction chain dangling
+    /// and said so in the response; that was the honest half-measure while cascade recovery was out of
+    /// scope. It is in scope now, and a LIVE correction hanging off a voided parent double-counts against
+    /// the replacement — so the void REFUSES until the operator elects the cascade, and then voids the
+    /// chain deepest-first. The orphan report is still there (it is what the operator acknowledges).
+    /// </summary>
     [Fact]
-    public async Task F3_VoidingAParentRun_ReportsTheCorrectionRunsItOrphans_WithoutCascading()
+    public async Task F3_VoidingAParentRun_RefusesUntilTheCorrectionChainIsCascaded()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
@@ -1067,14 +1074,61 @@ public class PayrollRunTypeSmeTests
         await ProcessApproveLock(db, tid, parent.Id);
         var child = await CreateRun(db, ctrl, 2026, 6, co.Id, PayrollRunTypes.Correction, parentRunId: parent.Id);
 
-        var res = (OkObjectResult)await Payroll(db, tid, Checker)
+        var refused = await Payroll(db, tid, Checker)
             .VoidRun(parent.Id, new PayrollDecisionRequest("re-run required"), CancellationToken.None);
-        JsonSerializer.Serialize(res.Value).Should().Contain(child.Id.ToString(),
-            "the operator must be told which correction runs they have just orphaned");
+        refused.Should().BeOfType<UnprocessableEntityObjectResult>("a live child must not be silently orphaned");
+        var refusedBody = JsonSerializer.Serialize(refused.As<UnprocessableEntityObjectResult>().Value);
+        refusedBody.Should().Contain("child_runs_live");
+        refusedBody.Should().Contain(child.Id.ToString(),
+            "the operator must be told which correction runs are in the way");
         db.ChangeTracker.Clear();
 
+        // Nothing was written on the refusal — the run is still live and un-voided.
+        (await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == parent.Id)).Status.Should().Be("Locked");
+        (await RunGl(db, parent.Id)).Should().OnlyContain(l => !l.IsReversed);
+
+        var res = (OkObjectResult)await Payroll(db, tid, Checker).VoidRun(
+            parent.Id, new PayrollDecisionRequest("re-run required"), CancellationToken.None,
+            cascade: true, expectedChildRunIds: child.Id.ToString());
+        JsonSerializer.Serialize(res.Value).Should().Contain(child.Id.ToString());
+        db.ChangeTracker.Clear();
+
+        (await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == parent.Id)).Status.Should().Be("Voided");
         (await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == child.Id)).Status
-            .Should().Be("Draft", "cascade recovery of a correction chain is POD-B3, not B2");
+            .Should().Be("Voided", "the chain is cascaded deepest-first so nothing counts against a run that is gone");
+    }
+
+    /// <summary>POD-B3 (M2) — cascade alone is too blunt for money: the caller must echo the exact child
+    /// set they read, so a correction created between the read and the void cannot ride along unseen.</summary>
+    [Fact]
+    public async Task F3b_Cascade_RefusesWhenTheAcknowledgedChildSetIsStale()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "E001");
+        var ctrl = Payroll(db, tid, Maker);
+
+        var parent = await CreateRun(db, ctrl, 2026, 6, co.Id);
+        await ProcessApproveLock(db, tid, parent.Id);
+        var child1 = await CreateRun(db, ctrl, 2026, 6, co.Id, PayrollRunTypes.Correction, parentRunId: parent.Id);
+        var child2 = await CreateRun(db, ctrl, 2026, 6, co.Id, PayrollRunTypes.Supplementary, parentRunId: parent.Id);
+
+        // The operator read the chain when it held only child1.
+        var stale = await Payroll(db, tid, Checker).VoidRun(
+            parent.Id, new PayrollDecisionRequest("re-run required"), CancellationToken.None,
+            cascade: true, expectedChildRunIds: child1.Id.ToString());
+        stale.Should().BeOfType<UnprocessableEntityObjectResult>();
+        JsonSerializer.Serialize(stale.As<UnprocessableEntityObjectResult>().Value)
+            .Should().Contain("child_runs_not_acknowledged");
+        db.ChangeTracker.Clear();
+        (await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == parent.Id)).Status.Should().Be("Locked");
+
+        (await Payroll(db, tid, Checker).VoidRun(
+            parent.Id, new PayrollDecisionRequest("re-run required"), CancellationToken.None,
+            cascade: true, expectedChildRunIds: $"{child1.Id},{child2.Id}"))
+            .Should().BeOfType<OkObjectResult>();
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

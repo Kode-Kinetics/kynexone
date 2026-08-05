@@ -231,9 +231,15 @@ public class SettlementPeriodCloseTests
     }
 
     // ── 5. Void after settle+remit reverses EVERYTHING (P1-5 linkage) ───────────
+    //
+    // POD-B3 amends the CONTRACT this test pins, and the amendment is the point of the pod: a void may no
+    // longer contra a disbursement whose funds actually left without the operator stating that they came
+    // back. `FundsRecalled` + a recall reference is exactly the scenario the original test described
+    // ("wrong run", full reversal, Cash/Bank returns to zero), so the assertions below are unchanged apart
+    // from the election and the terminal batch state.
 
     [Fact]
-    public async Task Void_AfterSettleAndRemit_ReversesAll_AndRevertsBatch()
+    public async Task Void_AfterSettleAndRemit_WithFundsRecalled_ReversesAll_AndVoidsBatch()
     {
         var (db, conn) = CreateSqliteDb();
         await using var _ = conn; await using var __ = db;
@@ -244,8 +250,23 @@ public class SettlementPeriodCloseTests
         await ctrl.SettlePaymentBatch(batch.Id, new SettlePaymentBatchRequest(), CancellationToken.None);
         await ctrl.RemitStatutory(run.Id, new RemitStatutoryRequest("All"), CancellationToken.None);
 
-        (await ctrl.VoidRun(run.Id, new PayrollDecisionRequest("wrong run"), CancellationToken.None))
+        // Without a disposition the void REFUSES: crediting cash back that never came back would make the
+        // books disagree with the bank statement, permanently, and fund a second payment.
+        var refused = await ctrl.VoidRun(run.Id, new PayrollDecisionRequest("wrong run"), CancellationToken.None);
+        refused.Should().BeOfType<UnprocessableEntityObjectResult>();
+        // Money-out is unwound first (remittance → settlement → clearing → accrual), so whichever
+        // disbursement is reached first is the one that demands a disposition.
+        System.Text.Json.JsonSerializer.Serialize(refused.As<UnprocessableEntityObjectResult>().Value)
+            .Should().Contain("disposition_required");
+        db.ChangeTracker.Clear();
+        (await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == run.Id)).Status
+            .Should().Be("Locked", "a refused void must leave the run untouched");
+
+        (await ctrl.VoidRun(run.Id, new PayrollDecisionRequest("wrong run"), CancellationToken.None,
+            settlementDisposition: "FundsRecalled", settlementReference: "RECALL-001",
+            remittanceDisposition: "FundsRecalled", remittanceReference: "GOSI-REFUND-001"))
             .Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
 
         var gl = await RunGl(db, run.Id);
         var (dr, cr) = Totals(gl);
@@ -253,9 +274,84 @@ public class SettlementPeriodCloseTests
         // Nothing live remains on any account.
         foreach (var acct in new[] { "2100", "2101", "2106", "1000 - Cash/Bank", "5101" })
             NetLiability(gl, acct).Should().Be(0m, $"void must fully unwind {acct}");
-        // P1-5 — operational state matches the returned-to-zero ledger.
+        // No receivable is recognised when the funds genuinely came back.
+        NetLiability(gl, "1420").Should().Be(0m);
+        // POD-B3 — the batch is TERMINAL, not merely reverted to Accepted: "Accepted" asserts the bank
+        // accepted an instruction for a run that no longer exists, and it parked the batch on the legal
+        // Accepted → Paid edge, which UpdateWpsStatus would have taken with zero live GL behind it.
         (await db.PayrollPaymentBatches.AsNoTracking().FirstAsync(b => b.Id == batch.Id))
-            .WpsStatus.Should().Be(WpsStatuses.Accepted);
+            .WpsStatus.Should().Be(WpsStatuses.Voided);
+    }
+
+    /// <summary>
+    /// POD-B3 (consultant C1/C2) — the money REALLY LEFT and was not recalled. The disbursement journals
+    /// STAND, so 1000 Cash/Bank keeps the true outflow; the control liabilities still close to zero; and
+    /// what each party actually holds is carried as recoverable (1420 employee overpayment, 1430 prepaid
+    /// statutory). This is the case a plain contra would have got catastrophically wrong: it would have
+    /// put a month's net pay back on the books as cash the bank does not have, and the replacement run
+    /// would then have disbursed it a second time with no receivable against the first.
+    /// </summary>
+    [Fact]
+    public async Task Void_AfterSettleAndRemit_WithFundsDisbursed_KeepsCashOut_AndRecognisesReceivables()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn; await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var ctrl = MakeKsaPayrollCtrl(db, tenantId);
+        var (run, batch) = await SeedLockedRunWithAcceptedBatch(db, tenantId, ctrl);
+
+        await ctrl.SettlePaymentBatch(batch.Id, new SettlePaymentBatchRequest(), CancellationToken.None);
+        await ctrl.RemitStatutory(run.Id, new RemitStatutoryRequest("All"), CancellationToken.None);
+        db.ChangeTracker.Clear();
+
+        var beforeVoid = await RunGl(db, run.Id);
+        // NetLiability is CR − DR, and a disbursement CREDITS Cash/Bank, so "cash out" reads positive here.
+        var cashOutBefore = NetLiability(beforeVoid, "1000 - Cash/Bank");
+        cashOutBefore.Should().BeGreaterThan(0m, "settle + remit moved real money out");
+
+        (await ctrl.VoidRun(run.Id, new PayrollDecisionRequest("employee data was wrong"), CancellationToken.None,
+            settlementDisposition: "FundsDisbursed", remittanceDisposition: "FundsDisbursed"))
+            .Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var gl = await RunGl(db, run.Id);
+        var (dr, cr) = Totals(gl);
+        dr.Should().Be(cr, "the reclassification journal balances like any other");
+
+        // Cash is UNCHANGED — the outflow really happened and the bank statement still shows it.
+        NetLiability(gl, "1000 - Cash/Bank").Should().Be(cashOutBefore,
+            "a void must never credit back cash that did not come back");
+        // Every control liability still closes to zero.
+        foreach (var acct in new[] { "2100", "2101", "2106", "5101" })
+            NetLiability(gl, acct).Should().Be(0m, $"{acct} must still close to zero");
+        // And the difference is carried as recoverable, split by who holds it.
+        var employeeReceivable = -NetLiability(gl, "1420");
+        var statutoryPrepaid   = -NetLiability(gl, "1430");
+        employeeReceivable.Should().BeGreaterThan(0m, "net pay reached the employees and is recoverable from them");
+        statutoryPrepaid.Should().BeGreaterThan(0m, "GOSI holds the money and a prepaid must be recognised");
+        (employeeReceivable + statutoryPrepaid).Should().Be(cashOutBefore,
+            "everything that left the bank is accounted for as recoverable — nothing evaporates");
+    }
+
+    /// <summary>POD-B3 — a recall CLAIMS the money came back; without a reference that claim is
+    /// unsupported, so the void refuses rather than restoring cash on the strength of an assertion.</summary>
+    [Fact]
+    public async Task Void_FundsRecalled_WithoutAReference_IsRefused()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn; await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var ctrl = MakeKsaPayrollCtrl(db, tenantId);
+        var (run, batch) = await SeedLockedRunWithAcceptedBatch(db, tenantId, ctrl);
+        await ctrl.SettlePaymentBatch(batch.Id, new SettlePaymentBatchRequest(), CancellationToken.None);
+
+        var res = await ctrl.VoidRun(run.Id, new PayrollDecisionRequest("wrong run"), CancellationToken.None,
+            settlementDisposition: "FundsRecalled");
+        res.Should().BeOfType<UnprocessableEntityObjectResult>();
+        System.Text.Json.JsonSerializer.Serialize(res.As<UnprocessableEntityObjectResult>().Value)
+            .Should().Contain("settlement_recall_reference_required");
+        db.ChangeTracker.Clear();
+        (await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == run.Id)).Status.Should().Be("Locked");
     }
 
     // ── 6. Remit GOSI clears only 2101+2106; idempotent ─────────────────────────

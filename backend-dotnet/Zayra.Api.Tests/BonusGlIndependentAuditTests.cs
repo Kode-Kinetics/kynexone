@@ -414,7 +414,13 @@ public class BonusGlIndependentAuditTests
 
         Liability(await Ledger(db, tid), "2300").Should().Be(0m, "pre-condition: the bonus was paid");
 
-        (await payroll.VoidRun(run.Id, new PayrollDecisionRequest("wrong run"), CancellationToken.None))
+        // POD-B3 — this run has DISBURSED net pay and remitted statutory cash, so the void refuses until
+        // the operator states what happened to the money. The assertions below expect every account
+        // (including 1000 Cash/Bank) back at zero, i.e. the funds genuinely came back: FundsRecalled with
+        // the recall references that evidence it.
+        (await payroll.VoidRun(run.Id, new PayrollDecisionRequest("wrong run"), CancellationToken.None,
+            settlementDisposition: "FundsRecalled", settlementReference: "RECALL-BON-1",
+            remittanceDisposition: "FundsRecalled", remittanceReference: "GOSI-REFUND-BON-1"))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 

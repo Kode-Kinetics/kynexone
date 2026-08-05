@@ -223,7 +223,15 @@ public class SecurityAuditBatch2Tests
             TotalGrossSalary = 999_999m, TotalNetSalary = 888_888m, // company-wide — must NOT leak
         };
         db.PayrollRuns.Add(run);
-        var slip = new Payslip { TenantId = tenant, EmployeeId = me.Id, PayrollRunId = run.Id };
+        // POD-B3 — the mobile payslip list now filters on IsPublishedToEss (it projected the flag but
+        // never filtered on it, so an unpublished payslip was visible on mobile while the web ESS
+        // correctly hid it) and excludes voided runs. Publishing the slip keeps this test on its own
+        // subject: that the figures returned are the EMPLOYEE'S, never the company-wide run totals.
+        var slip = new Payslip
+        {
+            TenantId = tenant, EmployeeId = me.Id, PayrollRunId = run.Id,
+            IsPublishedToEss = true, PublishedAtUtc = DateTime.UtcNow,
+        };
         db.Payslips.Add(slip);
         db.PayslipComponents.AddRange(
             new PayslipComponent { TenantId = tenant, PayslipId = slip.Id, ComponentType = "Earning", ComponentName = "Basic", Amount = 5_000m },

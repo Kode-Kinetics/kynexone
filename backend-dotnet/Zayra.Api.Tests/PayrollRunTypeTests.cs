@@ -169,11 +169,40 @@ public class PayrollRunTypeTests
 
     [Theory]
     [InlineData("Reglar")]
-    [InlineData("Replacement")]
     [InlineData("off-cycle")]
+    [InlineData("Replacment")]
     public void Normalize_UnknownType_ReturnsNull_NeverSilentlyCoercesToRegular(string input) =>
         PayrollRunTypes.Normalize(input).Should().BeNull(
             "a typo'd run type must 400, never become the tenant's monthly run");
+
+    /// <summary>
+    /// POD-B3 — "Replacement" was B2's RESERVED slot (Normalize returned null, CreateRun 400'd on it), and
+    /// this test used to pin it shut. B3 fills the slot, so the assertion is INVERTED rather than deleted:
+    /// the reserved-slot contract becomes the live-type contract. A Replacement is period-OWNING and
+    /// full-recurring — it takes the voided run's place in the monthly cycle — and its basis is fixed.
+    /// </summary>
+    [Theory]
+    [InlineData("Replacement")]
+    [InlineData("replacement")]
+    [InlineData("  REPLACEMENT  ")]
+    public void Normalize_Replacement_IsARecognisedType(string input) =>
+        PayrollRunTypes.Normalize(input).Should().Be(PayrollRunTypes.Replacement);
+
+    [Fact]
+    public void Replacement_IsPeriodOwning_FullRecurring_AndFixedBasis()
+    {
+        PayrollRunTypes.All.Should().Contain(PayrollRunTypes.Replacement);
+        PayrollRunTypes.IsPeriodOwning(PayrollRunTypes.Replacement).Should().BeTrue(
+            "a Replacement IS the month, so it competes for the period's unique slot exactly as Regular does");
+        PayrollRunTypes.DefaultIncludesRecurringPay(PayrollRunTypes.Replacement).Should().BeTrue(
+            "a supplemental Replacement would re-pay the month with no salary in it");
+        PayrollRunTypes.AllowsBasisOverride(PayrollRunTypes.Replacement).Should().BeFalse();
+        PayrollRunTypes.RequiresExplicitPopulation(PayrollRunTypes.Replacement).Should().BeFalse(
+            "'everyone eligible' is the right default for the month; the supplemental types are the ones " +
+            "that must state a population so they cannot consume the Regular run's bonuses");
+        foreach (var t in new[] { PayrollRunTypes.OffCycle, PayrollRunTypes.Supplementary, PayrollRunTypes.Correction })
+            PayrollRunTypes.RequiresExplicitPopulation(t).Should().BeTrue($"{t} is supplemental");
+    }
 
     // ── 2. CreateRun: type-aware conflict ───────────────────────────────────────
 
@@ -214,9 +243,77 @@ public class PayrollRunTypeTests
         var (companyId, _, _) = await SeedCompanyAndEmployees(db, tenantId);
         var ctrl = MakeCtrl(db, tenantId);
 
-        var res = await ctrl.CreateRun(new CreatePayrollRunRequest(2026, 6, companyId, "Replacement"), CancellationToken.None);
+        // POD-B3 — "Replacement" is now a real type, so the unknown-type case uses a genuine typo.
+        var res = await ctrl.CreateRun(new CreatePayrollRunRequest(2026, 6, companyId, "Replacment"), CancellationToken.None);
         res.Should().BeOfType<BadRequestObjectResult>();
         res.As<BadRequestObjectResult>().Value!.ToString().Should().Contain("invalid_run_type");
+    }
+
+    /// <summary>
+    /// POD-B3 — a Replacement without a parent is refused, and so is one whose parent is still LIVE. The
+    /// ordering IS the contract: void first (that is what unwinds the ledger, the payments and the
+    /// consumed balances), then replace. Without it a "replacement" would simply accrue and pay the month
+    /// a second time.
+    /// </summary>
+    [Fact]
+    public async Task CreateRun_Replacement_RequiresAVoidedParent()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn; await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var (companyId, _, _) = await SeedCompanyAndEmployees(db, tenantId);
+        var ctrl = MakeCtrl(db, tenantId);
+
+        var noParent = await ctrl.CreateRun(
+            new CreatePayrollRunRequest(2026, 6, companyId, PayrollRunTypes.Replacement), CancellationToken.None);
+        noParent.Should().BeOfType<BadRequestObjectResult>();
+        noParent.As<BadRequestObjectResult>().Value!.ToString().Should().Contain("parent_required");
+
+        var original = (await ctrl.CreateRun(new CreatePayrollRunRequest(2026, 6, companyId), CancellationToken.None))
+            .As<CreatedResult>().Value.As<PayrollRun>();
+
+        var liveParent = await ctrl.CreateRun(
+            new CreatePayrollRunRequest(2026, 6, companyId, PayrollRunTypes.Replacement, original.Id), CancellationToken.None);
+        liveParent.Should().BeOfType<BadRequestObjectResult>();
+        liveParent.As<BadRequestObjectResult>().Value!.ToString().Should().Contain("parent_not_voided");
+
+        (await ctrl.VoidRun(original.Id, new PayrollDecisionRequest("bad inputs"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+
+        var ok = await ctrl.CreateRun(
+            new CreatePayrollRunRequest(2026, 6, companyId, PayrollRunTypes.Replacement, original.Id), CancellationToken.None);
+        ok.Should().BeOfType<CreatedResult>();
+        var replacement = ok.As<CreatedResult>().Value.As<PayrollRun>();
+        replacement.RunType.Should().Be(PayrollRunTypes.Replacement);
+        replacement.ParentRunId.Should().Be(original.Id);
+        replacement.IncludesRecurringPay.Should().BeTrue();
+
+        // The period slot is genuinely OWNED: a second live period-owning run is refused.
+        var second = await ctrl.CreateRun(new CreatePayrollRunRequest(2026, 6, companyId), CancellationToken.None);
+        second.Should().BeOfType<ConflictObjectResult>();
+        second.As<ConflictObjectResult>().Value!.ToString().Should().Contain("regular_run_exists");
+    }
+
+    /// <summary>POD-B3 — a Replacement must cover the SAME period as the run it replaces; a difference
+    /// settled in a later month is a Correction, not a replacement.</summary>
+    [Fact]
+    public async Task CreateRun_Replacement_MustMatchTheReplacedPeriod()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn; await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var (companyId, _, _) = await SeedCompanyAndEmployees(db, tenantId);
+        var ctrl = MakeCtrl(db, tenantId);
+
+        var original = (await ctrl.CreateRun(new CreatePayrollRunRequest(2026, 6, companyId), CancellationToken.None))
+            .As<CreatedResult>().Value.As<PayrollRun>();
+        (await ctrl.VoidRun(original.Id, new PayrollDecisionRequest("bad inputs"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+
+        var wrongPeriod = await ctrl.CreateRun(
+            new CreatePayrollRunRequest(2026, 7, companyId, PayrollRunTypes.Replacement, original.Id), CancellationToken.None);
+        wrongPeriod.Should().BeOfType<BadRequestObjectResult>();
+        wrongPeriod.As<BadRequestObjectResult>().Value!.ToString().Should().Contain("parent_period_mismatch");
     }
 
     /// <summary>D1 — the 409 had NO status predicate, so a voided run bricked the period forever even

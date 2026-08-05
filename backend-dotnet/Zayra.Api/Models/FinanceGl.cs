@@ -139,6 +139,12 @@ public static class PayrollGlCatalog
         new Driver("BONUS_PAYABLE",         "Bonus Payable",                 "2300", "Bonus Payable",                   "Liability"),
         new Driver("LOAN_RECEIVABLE",       "Employee Loans Receivable",     "1400", "Employee Loans Receivable",       "Asset"),
         new Driver("ADVANCE_RECEIVABLE",    "Employee Salary Advances",      "1410", "Employee Salary Advances",        "Asset"),
+        // POD-B3 RECOVERY — where a voided run's ALREADY-DISBURSED cash is carried. Both are ASSETS: the
+        // money left the bank, the run that justified it no longer exists, so what each party holds is
+        // recoverable. Without them a void of a settled/remitted month could only be expressed by
+        // crediting Cash/Bank back, which is a lie the bank statement disproves.
+        new Driver("EMPLOYEE_RECEIVABLE",   "Employee Overpayment Receivable","1420", "Employee Overpayment Receivable","Asset"),
+        new Driver("STATUTORY_PREPAID",     "Prepaid Statutory Remittance",  "1430", "Prepaid Statutory Remittance",    "Asset"),
     };
 
     public static IReadOnlyDictionary<string, (string Code, string Name)> Defaults { get; } =
@@ -183,6 +189,11 @@ public static class PayrollGlCatalog
         Sys(tenantId, "BONUS_PAYABLE",         "Bonus Payable",                 GlDriverCategories.Balancing, "CR", "Liability", "2300", "Bonus Payable",                    null,        "Any",    null,               103),
         Sys(tenantId, "LOAN_RECEIVABLE",       "Employee Loans Receivable",     GlDriverCategories.Balancing, "DR", "Asset",     "1400", "Employee Loans Receivable",        null,        "Any",    null,               104),
         Sys(tenantId, "ADVANCE_RECEIVABLE",    "Employee Salary Advances",      GlDriverCategories.Balancing, "DR", "Asset",     "1410", "Employee Salary Advances",         null,        "Any",    null,               105),
+        // POD-B3 — recovery receivables. Category=Balancing for the same reason as CASH_BANK: component
+        // routing only ever considers Earning/Deduction rows, so no payroll component can land here by
+        // accident; they are resolved exclusively by explicit ResolveGlAccount from the void path.
+        Sys(tenantId, "EMPLOYEE_RECEIVABLE",   "Employee Overpayment Receivable",GlDriverCategories.Balancing,"DR","Asset",     "1420", "Employee Overpayment Receivable",  null,        "Any",    null,               106),
+        Sys(tenantId, "STATUTORY_PREPAID",     "Prepaid Statutory Remittance",  GlDriverCategories.Balancing, "DR", "Asset",     "1430", "Prepaid Statutory Remittance",     null,        "Any",    null,               107),
     };
 
     private static GlDriver Sys(
@@ -219,8 +230,50 @@ public static class GlEventTypes
     public const string RemitPrefix           = "PayrollRemit:";                // + group (GOSI/TAX/LOAN)
     public const string RemitReversalPrefix   = "PayrollRemitReversal:";        // + group
 
+    // ── POD-B3 — RECLASSIFICATION on a void whose CASH ALREADY LEFT ─────────────────────────────────
+    // A void must NEVER contra a disbursement whose funds really moved: crediting Cash/Bank back would
+    // put money on the books that the bank statement does not have, and the Replacement run would then
+    // disburse a second time with no receivable recognised against the first. When the operator states
+    // the funds were DISBURSED (not recalled), the void leaves the settlement/remittance journal standing
+    // and posts a reclassification instead — CR the control liability (so it still closes to zero) / DR a
+    // receivable — so Cash/Bank keeps the true outflow and what was actually paid out is carried as
+    // recoverable. Netting that receivable into the replacement is retro/arrears work (POD-C3).
+    /// <summary>Net pay left the bank on a run that is now voided: DR Employee Overpayment Receivable / CR 2100.</summary>
+    public const string NetSettlementReclass  = "PayrollNetSettlementReclass";
+    /// <summary>Statutory cash left the bank on a run that is now voided: DR Prepaid Statutory / CR 2101-2106-2102.</summary>
+    public const string RemitReclassPrefix    = "PayrollRemitReclass:";         // + group
+
     public static string Remit(string group)         => RemitPrefix + group;
     public static string RemitReversal(string group) => RemitReversalPrefix + group;
+    public static string RemitReclass(string group)  => RemitReclassPrefix + group;
+
+    /// <summary>
+    /// POD-B3 — is this event itself the UNDOING of a payroll journal (a contra or a reclassification)?
+    /// </summary>
+    public static bool IsPayrollUnwindContra(string? eventType) =>
+        eventType == Void
+     || eventType == NetSettlementReversal
+     || eventType == NetSettlementReclass
+     || (eventType is not null && (eventType.StartsWith(RemitReversalPrefix, StringComparison.Ordinal)
+                                || eventType.StartsWith(RemitReclassPrefix, StringComparison.Ordinal)));
+
+    /// <summary>
+    /// POD-B3 — is this event an ORIGINATING payroll journal (something a later reversal may act on), as
+    /// opposed to a contra / reclassification that is itself the undoing of one?
+    ///
+    /// <para>Load-bearing for the void. Before B3 the void contra'd EVERY live Payroll row for the run,
+    /// which included the contras written by <c>settle/reverse</c> and <c>remit/reverse</c> (those are
+    /// persisted with <c>IsReversed = false</c>, because nothing has reversed THEM). Reversing a reversal
+    /// RE-APPLIES the original: a run whose settlement had been reversed and was then voided had its net
+    /// pay silently re-settled by the void, moving cash on the books a second time. Only originating
+    /// journals are ever unwound now.</para>
+    ///
+    /// <para>Defined as "NOT a contra" rather than as a list of known originating tags, and that direction
+    /// is deliberate: payroll GL rows written before the EventType vocabulary existed carry an EMPTY tag,
+    /// and an allow-list would silently stop reversing them — on the ~55 live tenants, whose oldest locked
+    /// runs are exactly those rows. Default-reverse, explicitly skip the undo events.</para>
+    /// </summary>
+    public static bool IsOriginatingPayrollJournal(string? eventType) => !IsPayrollUnwindContra(eventType);
 
     // ── POD-B1b — bonus lifecycle ────────────────────────────────────────────────────────────────
     // Expense is recognised ONCE, at accrual. Every later event only moves the payable.

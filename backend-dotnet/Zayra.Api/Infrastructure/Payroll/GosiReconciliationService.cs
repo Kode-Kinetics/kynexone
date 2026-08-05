@@ -215,10 +215,33 @@ public sealed class GosiReconciliationService
         }
 
         // ── GL liability tie-out (requirement #3) — account-agnostic, matched by component code ──
+        //
+        // POD-B3 — the filter is the control, not an optimisation. Pre-B3 this read EVERY Payroll row for
+        // the run, live or reversed, of any EventType. It survived only by ACCIDENT: a void contra's
+        // Description is rewritten ("VOID — reversal of …"), so it failed the `DED:` prefix test below.
+        // That is not a control — it is a string coincidence. The moment a run can carry a second accrual
+        // (a re-lock after a void) or a remittance that DEBITS the same statutory account, glEe/glEr
+        // double and POD-A1's "deducted == report == GL" bar breaks silently on a STATUTORY FILING source.
+        // Only the LIVE accrual is the liability this run created.
         var glEntries = await _db.FinanceGlEntries.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.SourceModule == "Payroll" && e.SourceEntityId == run.Id)
+            .Where(e => e.TenantId == tenantId && e.SourceModule == "Payroll" && e.SourceEntityId == run.Id
+                     && e.EventType == GlEventTypes.Accrual && !e.IsReversed)
             .ToListAsync(ct);
         var glPosted = glEntries.Count > 0;
+
+        // POD-B3 — a VOIDED run is not a filing source. GosiController resolves a run by id with no status
+        // filter, so before B3 the per-run endpoints reported a voided run as fully posted and tied out.
+        // Surfaced explicitly (rather than refused) because reconciling a voided run is a legitimate
+        // FORENSIC question — "what did the month we unwound say?" — but must never be mistaken for the
+        // live filing. The surviving Replacement, if one exists, is named as the successor.
+        var isVoided = run.Status == "Voided";
+        var supersededByRunId = isVoided
+            ? await _db.PayrollRuns.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && r.ParentRunId == run.Id
+                         && r.RunType == PayrollRunTypes.Replacement && r.Status != "Voided")
+                .Select(r => (Guid?)r.Id)
+                .FirstOrDefaultAsync(ct)
+            : null;
 
         decimal glEe = 0m, glEr = 0m;
         string? glEeAccount = null, glErAccount = null;
@@ -276,6 +299,10 @@ public sealed class GosiReconciliationService
             // which is not persisted — so the honest contract is: per-run expected is meaningful for a
             // single-run period, and ReconcilePeriodAsync is the tie-out that always holds.
             SiblingRunCount = siblingRunCount,
+            // POD-B3 — recovery awareness. See the isVoided/supersededByRunId derivation above.
+            RunStatus         = run.Status,
+            IsVoided          = isVoided,
+            SupersededByRunId = supersededByRunId,
         };
     }
 
@@ -503,6 +530,32 @@ public sealed record GosiRunReconciliation(
           $"GET /api/gosi/periods/{Period[..4]}/{Period[5..].TrimStart('0')}/contribution-summary as the " +
           "filing source and the authoritative tie-out."
         : null;
+
+    // ── POD-B3: recovery awareness ────────────────────────────────────────────────────────────────
+
+    /// <summary>The run's lifecycle status at the time of reconciliation.</summary>
+    public string RunStatus { get; init; } = string.Empty;
+
+    /// <summary>
+    /// POD-B3 — this run has been VOIDED. Its statutory figures are historical, not filable: the accrual
+    /// was contra'd, the GL tie-out below reads zero, and the period's real position lives on the
+    /// surviving run. Before B3 the per-run GOSI endpoints reported a voided run as live and tied-out,
+    /// which is the worst possible failure mode for a statutory filing source.
+    /// </summary>
+    public bool IsVoided { get; init; }
+
+    /// <summary>POD-B3 — the Replacement run that took this voided run's place, when one exists.</summary>
+    public Guid? SupersededByRunId { get; init; }
+
+    /// <summary>POD-B3 — human-readable filing status; null for a live run (i.e. unchanged for every
+    /// pre-B3 reconciliation).</summary>
+    public string? FilingStatusNote => !IsVoided
+        ? null
+        : SupersededByRunId is Guid r
+            ? $"This run was VOIDED and SUPERSEDED by replacement run {r}. Its GOSI figures are historical; " +
+              "file from the replacement (or from the period rollup)."
+            : "This run was VOIDED. Its GOSI figures are historical and must not be filed; its accrual has " +
+              "been reversed in the ledger. Create a replacement run for the period, then file from it.";
 }
 
 // ── POD-B2 (M8): period-level result types ──────────────────────────────────────
