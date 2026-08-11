@@ -130,6 +130,151 @@ jobs:
         run: npm audit --audit-level=high
         working-directory: frontend
 
+  # ── G5: schema safety gates ───────────────────────────────────────────────────
+  # Wave 0 proved these by hand: model/migration drift, a fresh deployment from zero, an
+  # upgrade from the previous release with real data, and that both paths converge on the
+  # SAME schema. Proving something once is not a control, so each proof runs here on every PR.
+  #
+  # The drift check is the one that matters most: entity properties added without a migration
+  # are what produce tenant-wide 42703 outages, and that is exactly what Wave 0 found sitting
+  # uncommitted in the tree.
+  schema-gates:
+    name: Schema Gates (drift, fresh deploy, upgrade)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install EF tools
+        run: dotnet tool install --global dotnet-ef --version 8.*
+
+      # Build ONCE, then never pass --no-build to an ef command below. `dotnet ef --no-build`
+      # reads the STALE compiled snapshot, so drift is reported that does not exist and
+      # `migrations add` regenerates the same delta forever. This bit us in Wave 0.
+      - name: Build API
+        run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Debug
+
+      - name: Gate — no EF model/migration drift
+        working-directory: backend-dotnet/Zayra.Api
+        env:
+          ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=ci'
+        run: |
+          set -euo pipefail
+          out=$(dotnet ef migrations has-pending-model-changes --no-build 2>&1 || true)
+          echo "$out"
+          if echo "$out" | grep -q "Changes have been made to the model"; then
+            echo "::error::EF model drift — an entity changed with no migration. Run 'dotnet ef migrations add <Name>'."
+            exit 1
+          fi
+
+      - name: Gate — fresh deployment from zero
+        working-directory: backend-dotnet/Zayra.Api
+        env:
+          ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=zayra_fresh;Username=postgres;Password=ci'
+        run: |
+          set -euo pipefail
+          PGPASSWORD=ci psql -h localhost -U postgres -c 'CREATE DATABASE zayra_fresh;'
+          dotnet ef database update --no-build
+
+      # The previous accepted release = the last migration present on the merge base. Applying
+      # only up to it, seeding, then upgrading is what proves an EXISTING customer survives the
+      # deploy — a fresh-deploy test alone never exercises that path.
+      - name: Gate — upgrade from previous release, with data
+        working-directory: backend-dotnet/Zayra.Api
+        env:
+          ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=zayra_upgrade;Username=postgres;Password=ci'
+        run: |
+          set -euo pipefail
+          PGPASSWORD=ci psql -h localhost -U postgres -c 'CREATE DATABASE zayra_upgrade;'
+          base=$(git merge-base HEAD origin/${{ github.base_ref || 'main' }})
+          prev=$(git ls-tree -r --name-only "$base" -- Migrations \
+                 | grep -E 'Migrations/[0-9]{14}_.*\.cs$' | grep -v Designer \
+                 | sed 's|.*/||; s|\.cs$||' | sort | tail -1 || true)
+          if [ -z "$prev" ]; then
+            echo "No migrations on the merge base; fresh-deploy gate already covers this."
+            exit 0
+          fi
+          echo "Previous accepted release migration: $prev"
+          dotnet ef database update "$prev" --no-build
+          PGPASSWORD=ci psql -h localhost -U postgres -d zayra_upgrade -v ON_ERROR_STOP=1 -c "
+            INSERT INTO tenants (id,name,slug,is_active,created_at_utc,account_type,company_creation_mode)
+            VALUES (gen_random_uuid(),'Upgrade Gate','upgrade-gate',true,now(),'Group','Multi');"
+          before=$(PGPASSWORD=ci psql -h localhost -U postgres -d zayra_upgrade -t -A -c 'SELECT count(*) FROM tenants;')
+          dotnet ef database update --no-build
+          after=$(PGPASSWORD=ci psql -h localhost -U postgres -d zayra_upgrade -t -A -c 'SELECT count(*) FROM tenants;')
+          if [ "$before" != "$after" ]; then
+            echo "::error::Upgrade destroyed data — tenants went from $before to $after."
+            exit 1
+          fi
+
+      # If these diverge, a migrated customer and a new customer are permanently on different
+      # schemas, and every later migration is authored against only one of them.
+      - name: Gate — fresh and upgrade converge on the same schema
+        run: |
+          set -euo pipefail
+          q="SELECT table_name||'.'||column_name||':'||data_type||':'||is_nullable FROM information_schema.columns WHERE table_schema='public' ORDER BY 1;"
+          qi="SELECT tablename||' :: '||indexdef FROM pg_indexes WHERE schemaname='public' ORDER BY 1;"
+          for db in zayra_fresh zayra_upgrade; do
+            PGPASSWORD=ci psql -h localhost -U postgres -d $db -t -A -c "$q"  > "cols_$db.txt"
+            PGPASSWORD=ci psql -h localhost -U postgres -d $db -t -A -c "$qi" > "idx_$db.txt"
+          done
+          diff cols_zayra_fresh.txt cols_zayra_upgrade.txt || { echo "::error::Column drift between fresh and upgrade."; exit 1; }
+          diff idx_zayra_fresh.txt  idx_zayra_upgrade.txt  || { echo "::error::Index drift between fresh and upgrade."; exit 1; }
+          echo "Schemas converge: $(wc -l < cols_zayra_fresh.txt) columns, $(wc -l < idx_zayra_fresh.txt) indexes."
+
+      # ValidateOnBuild/ValidateScopes only protect production if something actually BOOTS.
+      # A missing registration or a Singleton capturing a Scoped DbContext fails here.
+      - name: Gate — application startup and DI validation
+        working-directory: backend-dotnet/Zayra.Api
+        env:
+          ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=zayra_fresh;Username=postgres;Password=ci'
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: 'http://localhost:5117'
+        run: |
+          set -euo pipefail
+          dotnet run --no-build --no-launch-profile > boot.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf -m 5 http://localhost:5117/health/ready > ready.json; then break; fi
+            sleep 2
+          done
+          cat ready.json
+          grep -q '"status":"ready"' ready.json || { echo "::error::API did not reach ready."; tail -60 boot.log; exit 1; }
+          grep -q '"pendingMigrations":0' ready.json || { echo "::error::Schema behind code at boot."; exit 1; }
+          if grep -qE "ValidateOnBuild|Cannot consume scoped|Unable to resolve|Some services are not able" boot.log; then
+            echo "::error::DI container validation failed."; grep -nE "Cannot consume scoped|Unable to resolve" boot.log | head; exit 1
+          fi
+
+  # ── G5: frontend production build ─────────────────────────────────────────────
+  # Typecheck alone never catches a build-time failure (bad import, server/client boundary,
+  # env misuse). The deployed artifact is the build, so the build is what must be gated.
+  frontend-build:
+    name: Frontend Production Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npx next build
+        working-directory: frontend
+
   # ── Migrate: apply EF Core migrations to the production DB BEFORE the deploy hook (P0-4) ──
   # render.yaml sets autoDeploy:false, so the deploy hook is the sole trigger and this job gates
   # it: schema is always applied ahead of the new code, preventing 42703/42P01 tenant-wide. Uses
@@ -137,7 +282,7 @@ jobs:
   migrate-backend:
     name: Apply DB Migrations (deploy gate)
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-typecheck, secret-scan, dependency-scan]
+    needs: [backend-tests, frontend-typecheck, frontend-build, schema-gates, secret-scan, dependency-scan]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
@@ -168,7 +313,7 @@ jobs:
   build-image:
     name: Build & push backend image (GHCR)
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-typecheck, secret-scan, dependency-scan]
+    needs: [backend-tests, frontend-typecheck, frontend-build, schema-gates, secret-scan, dependency-scan]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: read
