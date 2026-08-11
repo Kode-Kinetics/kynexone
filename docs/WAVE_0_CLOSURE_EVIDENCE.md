@@ -18,7 +18,22 @@ does not establish pilot or production readiness. Wave 1 establishes the operati
 |---|---|---|---|---|
 | 1 | `9d7e1d9ea3dc4b9c8247c9e5bd2f6a0faac5a814` | POD-D month-end hand-off + Wave 0 baseline repairs | 57 | +79,634 / −357 |
 | 2 | `cf3f9d7e8a720e632807b0010e5581732a82e8df` | Wave 0 governance: freeze bypass surface + startup contract | 3 | +262 |
-| 3 | _(this document + registers)_ | Wave 0 evidence and registers | — | — |
+| 3 | `6acbad7` | Wave 0 registers: capability baseline, bypass register, closure evidence | 3 | docs |
+| 4 | `7d14b06` | Wave 0 review round: fix two self-inflicted defects, correct falsified claims | 8 | +410 / −60 |
+| 5 | `811f8a5` | Wave 1 plan: operational durability foundation | 1 | docs |
+
+**PR:** [#43](https://github.com/Kode-Kinetics/zayra-ai-workforce/pull/43) → `main`. **Not merged** —
+held pending review sign-off, per the Wave 0 rule.
+
+**CI on head commit (`811f8a5`):**
+
+| Job | Result |
+|---|---|
+| Backend Tests (security gate) | **pass** (4m29s) |
+| Frontend Typecheck | **pass** (43s) |
+| Secret Scan (gitleaks) | **pass** (15s) |
+| Dependency Vulnerability Scan | **pass** (28s) |
+| Deploy / migration jobs | correctly **skipped** on a PR |
 
 Commit 1's insertion count is dominated by regenerated EF `*.Designer.cs` and the model snapshot
 (auto-generated). Hand-written change is ~4,500 lines.
@@ -41,7 +56,7 @@ the guards, which are independently green, are commit 2.
 | Whitespace/conflict | `git diff --check` | **Clean** |
 | Build — API | `dotnet build Zayra.Api` | **0 errors** |
 | Build — Tests | `dotnet build Zayra.Api.Tests` | **0 errors** |
-| Backend tests (final) | `dotnet test` full suite | **1604 passed / 0 failed / 0 skipped** |
+| Backend tests (final) | `dotnet test` full suite | **1616 passed / 0 failed / 0 skipped** |
 | Postgres integration tests | Testcontainers, within full run | **Executed, not skipped** — verified per class (see §3) |
 | Skipped/excluded tests | `Skip=` scan + `Skipped` count | **0 skip attributes, 0 skipped tests** |
 | Test projects enumerated | `find *.csproj` | **2 projects total** (`Zayra.Api`, `Zayra.Api.Tests`) — one test project; nothing silently excluded |
@@ -51,8 +66,9 @@ the guards, which are independently green, are commit 2.
 | EF model drift | `dotnet ef migrations has-pending-model-changes` | **No changes** |
 | DI container | boot with `ValidateOnBuild` + `ValidateScopes` | **Valid — no resolution or captive-scope errors** |
 
-**Baseline movement:** 1600 → 1604. The four added tests are the two ratchet guards and the two
-startup-contract lints. No pre-existing test was deleted or weakened.
+**Baseline movement:** 1600 → 1616. The sixteen added tests are two ratchet guards, two
+startup-contract lints, and twelve `ScopedBypass` tests added after review found the helper had shipped
+with none. No pre-existing test was deleted or weakened.
 
 ---
 
