@@ -175,3 +175,85 @@ gate in §6 runs on every PR.
 
 **Wave 1 establishes the operational floor. It does not certify the HRM.** No capability may move to
 VERIFIED COMPLETE until its zero-state journey has actually been run.
+
+
+---
+
+## 10. Wave 1 progress — evidence log
+
+Recorded as it happens, so the plan and the state never diverge. **Nothing below certifies a
+capability; each line is one proof performed.**
+
+### 10.1 Browser smoke — the battery item Wave 0 skipped
+
+Wave 0's battery listed browser smoke tests but never ran them. Run for the first time here,
+against a real stack (Postgres 16 container, API on 5117 with demo seeding, `next start` on 5173):
+
+**All 27 tests failed.** The cause was not the routes:
+
+- `platformLogin` ran in `beforeEach`, so a 17-route sanity spec issued 17 logins within seconds.
+- The API rate-limits platform login to `RateLimiting:PlatformLoginPermitLimit` (**default 5**) per
+  window, so most were correctly rejected.
+- Every failure was inside the login helper (`helpers.ts:33`), not on the page under test.
+
+The limiter was doing its job; **re-authenticating per test was the defect.** A separate finding
+surfaced first: the platform admin is bootstrapped from `PLATFORM_ADMIN_EMAIL` /
+`PLATFORM_ADMIN_PASSWORD` **environment variables**, not from any seeder, and `platform_users` is
+empty without them — so the suite cannot run at all unless CI provides them.
+
+**Fixed for the platform half** with the standard pattern: `auth.setup.ts` authenticates once and
+persists storage state; the chromium project depends on it and reuses the session.
+
+| | Before | After |
+|---|---|---|
+| Platform smoke | 2 failed + 2 flaky, 2m | **14 passed, 11.8s** |
+
+Every platform route was then proven to load clean — they were never broken.
+
+**Still red:** the tenant half of `demo-sanity` calls `tenantLogin` per test against a 10/window
+limit. It needs per-tenant storage states. Recorded as outstanding work for the browser-smoke gate
+rather than left looking like a product failure.
+
+### 10.2 D14 — the isolation guards passed vacuously
+
+`BypassLintTests`, `QueryFilterBypassRatchetTests` and `StartupContractLintTests` resolved their
+source root by walking up six directories and **`return`ed (passed)** when that failed. Any CI
+output-layout change would have silently disabled every isolation lint while reporting green. They
+now throw: an unresolvable source root is a build failure, never a skip.
+
+### 10.3 D5 — PII in logs, fixed before instrumenting anything
+
+`SmtpEmailService` logged the full recipient address and the message subject at Information on every
+send, while the same wave masked that destination in the delivery ledger. Recipient is now masked;
+the subject is dropped entirely (a template subject routinely carries the employee name or payroll
+period). `PiiLoggingLintTests` scans for a raw recipient, phone or IBAN passed as a log argument.
+
+**Negative-tested:** restoring the old call produces `SmtpEmailService.cs:72 — logs 'toAddress'`.
+
+This deliberately lands **before** G3. Instrumenting a system that leaks PII into logs means the
+first thing observability does is centralise the leak.
+
+### 10.4 G5 — gates implemented
+
+| Gate | Status |
+|---|---|
+| EF model/migration drift | **implemented** |
+| Fresh Postgres deployment from zero | **implemented** |
+| Upgrade from previous accepted release, with data, asserted non-destructive | **implemented** |
+| Fresh vs upgrade schema convergence (columns + indexes) | **implemented** |
+| App startup + DI validation (`/health/ready`, `pendingMigrations:0`, no captive scope) | **implemented** |
+| Frontend production build | **implemented** — CI previously ran typecheck only |
+| Backend tests · secrets scan · dependency scan | already present |
+| Query-filter bypass ratchet | runs inside the backend test job |
+| Browser smoke | **not yet gated** — blocked on §10.1 tenant-half work + CI credentials |
+
+The first run of the schema gates **failed on its own bootstrap** (the runner image ships no
+`psql`). Fixed by installing `postgresql-client` and dropping the manual `CREATE DATABASE`, which
+`ef database update` performs anyway. That is the gate earning its keep on day one.
+
+### 10.5 Not started
+
+**G1** (durable storage), **G2** (durable jobs), **G3** (observability instrumentation itself), and
+**G4** (restore drill + DataProtection keys) are **not started**. The three P0 carry-overs from Wave 0
+(D1 unsettleable terminate, D2 cross-company GL exposure, D3 unauthorized bank-confirmation writes)
+are **not fixed**.
