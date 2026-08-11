@@ -247,9 +247,33 @@ first thing observability does is centralise the leak.
 | Query-filter bypass ratchet | runs inside the backend test job |
 | Browser smoke | **not yet gated** — blocked on §10.1 tenant-half work + CI credentials |
 
-The first run of the schema gates **failed on its own bootstrap** (the runner image ships no
-`psql`). Fixed by installing `postgresql-client` and dropping the manual `CREATE DATABASE`, which
-`ef database update` performs anyway. That is the gate earning its keep on day one.
+**Green in CI** on run `31451297130`:
+
+| Job | Result |
+|---|---|
+| Schema Gates (drift, fresh deploy, upgrade) | **pass** (4m35s) |
+| Backend Tests (security gate) | **pass** (5m00s) |
+| Frontend Production Build | **pass** (1m22s) |
+| Frontend Typecheck · Secret Scan · Dependency Scan | pass |
+
+The gate proved real work, not a trivial pass. From its log: it resolved the previous accepted
+release on the merge base (`20260804221216_AddPayrollRecoveryArtifacts`), ran both paths, and
+reported **"Schemas converge: 4295 columns, 834 indexes"** — matching the manual Wave 0 proof
+(834 rather than 835 because the `GlJournalExport` company index was reverted after review).
+
+**It took three runs, and each failure was a defect in the gate itself:**
+
+1. The runner image ships no `psql`. Fixed by installing `postgresql-client` and dropping the
+   manual `CREATE DATABASE`, which `ef database update` performs anyway.
+2. `dotnet-ef` is pinned as a **local** tool (`dotnet-tools.json` at the repo root), so the global
+   install was shadowed and every ef command failed with *"Run 'dotnet tool restore'"*.
+3. **The drift check ran with `|| true`, so it swallowed that failure and reported "no drift".**
+   The gate was green for the wrong reason — the exact class of false assurance this wave exists to
+   remove. It now captures the exit code separately and fails on a non-zero result as well as on
+   detected drift.
+
+Finding (3) is the argument for building gates rather than trusting one-off manual proofs: a check
+that cannot fail is not a check, and only running it revealed that.
 
 ### 10.5 Not started
 
