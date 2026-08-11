@@ -127,7 +127,10 @@ The upgrade path must converge on the fresh schema, or the two populations diver
 - Indexes on `employee_final_settlements`: PK, `(tenant_id, company_id)`, `(tenant_id, employee_id, status)`, `(tenant_id, payroll_run_id)`, plus the live-offboarding guard.
 - **Cannot-settle-twice invariant is enforced in the database**, not only in code:
   `CREATE UNIQUE INDEX ix_employee_final_settlements_live_offboarding ON employee_final_settlements (tenant_id, offboarding_id) WHERE status <> 'Cancelled'`
-- `gl_journal_exports` gained `(tenant_id, company_id)` — the index that follows from making it `ICompanyScopedOperational`.
+- `gl_journal_exports` briefly gained `(tenant_id, company_id)` from the `ICompanyScopedOperational`
+  change; that change was **reverted** after review (§9.1 R2) and migration
+  `DropGlJournalExportCompanyScopeIndex` removes the index again. Model drift re-verified as zero after
+  the revert.
 
 ### 4.5 Application startup against both databases
 API booted against the **upgraded** database:
