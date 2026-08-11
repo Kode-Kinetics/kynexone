@@ -158,8 +158,13 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      # dotnet-ef is pinned as a LOCAL tool (dotnet-tools.json at the repo root), so a global
+      # install is shadowed and `dotnet ef` fails with "Run 'dotnet tool restore'". Install it
+      # globally as a fallback AND restore the manifest, so the pinned 8.0.11 is what runs.
       - name: Install EF tools
-        run: dotnet tool install --global dotnet-ef --version 8.*
+        run: |
+          dotnet tool restore || dotnet tool install --global dotnet-ef --version 8.*
+          dotnet tool run dotnet-ef --version || dotnet ef --version
 
       # The runner image does not ship psql, and the schema-comparison gates below need it.
       - name: Install postgresql-client
@@ -177,10 +182,18 @@ jobs:
           ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=ci'
         run: |
           set -euo pipefail
-          out=$(dotnet ef migrations has-pending-model-changes --no-build 2>&1 || true)
+          # Capture the exit code separately. An earlier version used `|| true`, which swallowed a
+          # genuine tooling failure and reported "no drift" — a gate that cannot fail is not a gate.
+          set +e
+          out=$(dotnet tool run dotnet-ef migrations has-pending-model-changes --no-build 2>&1); rc=$?
+          set -e
           echo "$out"
           if echo "$out" | grep -q "Changes have been made to the model"; then
             echo "::error::EF model drift — an entity changed with no migration. Run 'dotnet ef migrations add <Name>'."
+            exit 1
+          fi
+          if [ $rc -ne 0 ]; then
+            echo "::error::The drift check itself failed (exit $rc) — treat as a gate failure, not a pass."
             exit 1
           fi
 
@@ -191,7 +204,7 @@ jobs:
         run: |
           set -euo pipefail
           # No CREATE DATABASE needed: 'ef database update' creates it when absent.
-          dotnet ef database update --no-build
+          dotnet tool run dotnet-ef database update --no-build
 
       # The previous accepted release = the last migration present on the merge base. Applying
       # only up to it, seeding, then upgrading is what proves an EXISTING customer survives the
@@ -211,12 +224,12 @@ jobs:
             exit 0
           fi
           echo "Previous accepted release migration: $prev"
-          dotnet ef database update "$prev" --no-build
+          dotnet tool run dotnet-ef database update "$prev" --no-build
           PGPASSWORD=ci psql -h localhost -U postgres -d zayra_upgrade -v ON_ERROR_STOP=1 -c "
             INSERT INTO tenants (id,name,slug,is_active,created_at_utc,account_type,company_creation_mode)
             VALUES (gen_random_uuid(),'Upgrade Gate','upgrade-gate',true,now(),'Group','Multi');"
           before=$(PGPASSWORD=ci psql -h localhost -U postgres -d zayra_upgrade -t -A -c 'SELECT count(*) FROM tenants;')
-          dotnet ef database update --no-build
+          dotnet tool run dotnet-ef database update --no-build
           after=$(PGPASSWORD=ci psql -h localhost -U postgres -d zayra_upgrade -t -A -c 'SELECT count(*) FROM tenants;')
           if [ "$before" != "$after" ]; then
             echo "::error::Upgrade destroyed data — tenants went from $before to $after."
