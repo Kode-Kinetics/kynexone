@@ -247,14 +247,21 @@ first thing observability does is centralise the leak.
 | Query-filter bypass ratchet | runs inside the backend test job |
 | Browser smoke | **not yet gated** — blocked on §10.1 tenant-half work + CI credentials |
 
-**Green in CI** on run `31451297130`:
+**Green in CI.** Full check set on head commit `4dc8bce` (run `31451611156` + CodeQL `31451611151`):
 
 | Job | Result |
 |---|---|
-| Schema Gates (drift, fresh deploy, upgrade) | **pass** (4m35s) |
-| Backend Tests (security gate) | **pass** (5m00s) |
-| Frontend Production Build | **pass** (1m22s) |
-| Frontend Typecheck · Secret Scan · Dependency Scan | pass |
+| Schema Gates (drift, fresh deploy, upgrade) | **pass** (4m21s) |
+| Backend Tests (security gate) | **pass** (4m59s) |
+| Frontend Production Build | **pass** (1m15s) |
+| Frontend Typecheck | pass (38s) |
+| Secret Scan (gitleaks) | pass (13s) |
+| Dependency Vulnerability Scan | pass (31s) |
+| CodeQL — Analyze (csharp) | **pass** (13m37s) |
+| CodeQL — Analyze (javascript-typescript) | **pass** (1m23s) |
+| Deploy / migration jobs | correctly **skipped** on a PR |
+
+Every check green, SAST included — no job pending or skipped-by-failure.
 
 The gate proved real work, not a trivial pass. From its log: it resolved the previous accepted
 release on the merge base (`20260804221216_AddPayrollRecoveryArtifacts`), ran both paths, and
