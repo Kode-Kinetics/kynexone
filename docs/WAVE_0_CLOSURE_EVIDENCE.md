@@ -197,4 +197,68 @@ recorded in §9 and are a required input to Wave 1 sequencing.**
 
 ## 9. Reviewer disagreements and resolutions
 
-_Populated from the independent review round; see the follow-up commit._
+Four bounded read-only reviewers challenged this baseline. **They falsified several of its claims,
+including two defects in the Wave 0 work itself.** Every finding below was independently re-verified
+against the code before being accepted; nothing here is taken on the reviewer's word.
+
+### 9.1 ACCEPTED — defects introduced by Wave 0 itself (fixed in this session)
+
+| # | Finding | Verified | Resolution |
+|---|---|---|---|
+| **R1** | `ScopedBypass.SystemWide` applied `Take(n)` **before** the caller's `Where`, so EF emitted `SELECT * FROM (SELECT * FROM t LIMIT n) WHERE …`. An arbitrary n rows were chosen first and filtered after. Once the table exceeds the batch size — i.e. immediately in production — **the lease reclaimer would sweep almost nothing**. The "bounded batch" presented as a safety control was silently a correctness bug | Confirmed by reading the helper and its call site | API redesigned so it **cannot** be composed wrongly: `SystemWide` now takes the predicate **and a required order key**, applying filter → order → bound. Regression test `ClaimsMatchingRows_EvenWhenNonMatchingRowsOutnumberTheBatch` (200 non-matching rows, batch 50, 3 stuck rows → must find 3) |
+| **R2** | Making `GlJournalExport` `ICompanyScopedOperational` **broke group-level exports.** A group export legitimately has `CompanyId = null`; the write guard refuses a null company in a multi-company tenant, so the primary use case threw `company_scope_required`. In a single-company tenant the auto-stamped id broke the supersede probe (which matches `CompanyId == null`), so prior exports were never superseded | Confirmed at `ZayraDbContext.cs:479-482` — group-level actors skip the non-group branch and hit the throw | **Reverted.** The original reasoning was wrong: NULL here is not a backfill transient, it is the *meaning* of a group-wide export. Now a justified `CompanyScopeBootAssertion.AllowList` entry, matching the `FinanceGlEntry` precedent. Compensating control recorded: every endpoint checks an explicit `finance.gl.*` permission **and** `ScopeError` → `CanAccessCompany` |
+| **R3** | `ScopedBypass` shipped with **zero tests** | Confirmed | `ScopedBypassTests` added — 12 tests covering ordering, batch bounds, justification floor, fail-closed empty company set, and tenant/company exclusion |
+
+### 9.2 ACCEPTED — this document's own claims were wrong
+
+| # | Claim as written | Truth | Correction |
+|---|---|---|---|
+| **R4** | "Access revocation on exit is a boolean checkbox" (**G8, ranked P0**) | **False.** `OffboardingController.RevokeEmployeeAccessAsync` performs real revocation — user deactivated, `AccessMode = NoLogin`, every `EmployeeUserAccount` link disabled, **all refresh tokens revoked** — and is covered by `LeaverAccessRevocationTests` | **G8 struck as a P0.** Replaced by narrower, real defects (§9.4 D4) |
+| **R5** | "The lease reclaimer is the ONLY genuinely cross-tenant read in the notification path" | **False.** The main drain query (`NotificationDeliveryWorker.cs:77`) has **no tenant predicate either** | Register corrected. Two cross-tenant reads exist, not one |
+| **R6** | "31 POD-D bypasses, all reviewed" | Undercount — the true POD-D figure is **37**; 6 sites were never enumerated, including the cross-tenant drain | Register corrected; the ratchet's per-file counts were already right |
+| **R7** | "Bypasses only the company filter" on the finance sites | **Inverted risk model.** `FinanceGlEntry`, `GlJournalExportLine`, `NotificationDelivery`, `PayrollPaymentBatch/Record`, `BankPaymentConfirmation` are `ITenantOwned` **only** — they have no company filter. What those calls actually drop is the **tenant** filter, hand-re-applied in the `WHERE` | Register corrected. Predicates are right today, but each is one deleted `Where` from a cross-tenant read with no backstop |
+| **R8** | "Notifications — email: VERIFIED COMPLETE" | Category error. SMTP is unconfigured in `render.yaml`; `SmtpEmailService` logs `"SMTP not configured — dropped"` and returns. **All four channels are unconfigured out of the box** | Reclassified **PRESENT BUT UNPROVEN / CONFIGURE** |
+| **R9** | "Standing risk: ~3,750 lines uncommitted" | Stale — resolved by commit 1 | Removed |
+
+### 9.3 ACCEPTED — VERIFIED COMPLETE ratings that do not survive the code
+
+| # | Row | Finding | New state |
+|---|---|---|---|
+| **R10** | Single authoritative EOSB engine | `ComputeEndOfServiceAsync` hardcodes `const string jur = "mainland"` and is the **only** call site of `ResolveEndOfServiceCalculator`. The DIFC calculator registered under `"ARE:UAE-DIFC"` is therefore **unreachable** — DIFC/DEWS EOSB is dead code for the exact multi-entity GCC profile being sold. Unknown countries fall through to `DefaultEndOfServiceCalculator` → **silent 0 gratuity**, with no fail-closed guard (payroll `Process` and WPS both have one; EOSB does not). Wage base is basic-only, which the code's own comment concedes is not Art. 84 "last wage" and awaits legal sign-off | **PARTIALLY IMPLEMENTED / COMPLETE** |
+| **R11** | Monthly EOSB liability provisioning | `GlEventTypes.EosbProvisionAccrual` is **written by nothing**. `EosbProvisionLedger` consumes a ledger no code produces | **MISSING / BUILD** (was PRESENT BUT UNPROVEN) |
+| **R12** | Settle + remit / control accounts clear | `GlControlAccounts.CheckAsync` covers five drivers and omits both new ones — `SETTLEMENT_PAYABLE` (2320) and `EOSB_PROVISION` (2310) | **PARTIALLY IMPLEMENTED** |
+| **R13** | Constitution #11 "unsupported countries blocked — PASS" | Payroll and WPS block; **EOSB does not** | **VIOLATED** |
+| **R14** | RBAC permission-first "VERIFIED COMPLETE" | Measured: **1,034** `[Http*]` actions, **128** `[HasPermission]`, **371** `[Authorize(Roles=…)]` across 77 of 102 controllers. String-role auth is not permission-first, and a tenant custom role does not satisfy those endpoints | Constitution #9 → **VIOLATED**; row → PARTIALLY IMPLEMENTED |
+| **R15** | Tenant/company isolation **GO** | Not defensible while the register's own text says 179 of 209 sites are "debt, not assurance" with an open recorded risk on two user-reachable controllers. Both guard suites also **pass vacuously** if `ResolveSourceRoot()` returns null | **CONDITIONAL GO** |
+
+### 9.4 ACCEPTED — new defects for the ledger (not fixed in Wave 0)
+
+| # | Sev | Defect |
+|---|---|---|
+| **D1** | **P0** | **Terminate creates an unsettleable dead end.** `POST /employees/{id}/terminate` sets status `Terminated` and creates **no** offboarding record; `POST /api/offboarding` admits only `Active/Offboarded/Suspended`; the hardened `/final-settlement` requires an offboarding record. Anyone terminated via the Employees module can never be settled and cannot be routed back. **This is a regression surfaced by the Wave 0 contract hardening** — pre-C1, `/final-settlement` would settle them. Also blocks migration of already-terminated staff from a prior system |
+| **D2** | **P0** | **Cross-company data exposure via `includeUnattributed=true`.** A query-string flag, validated nowhere against group level, adds all NULL-company `FinanceGlEntry` rows tenant-wide to a company-scoped caller's export. `ScopeError` validates only `companyId` |
+| **D3** | **P0** | **`BankConfirmationsController` has no company authorization at all** — tenant + `payroll.export` only. A Company-A officer can import a bank response against a Company-B batch and flip that company's payment statuses. The voided-run guard also fails open cross-company, because `PayrollRun` *is* company-filtered while the batch is not, so `run` comes back null and the refusal is skipped |
+| **D4** | P1 | Revocation defects (replacing the struck G8): checklist `AccessRevoked` settable by request body with **no revocation performed**; group over-revocation disables the whole `User` across sibling companies; revocation fires at `Complete`, not last working day; issued JWTs stay valid up to 30 min with no revalidation; `terminate` path revokes nothing |
+| **D5** | P1 | **PII in logs.** `SmtpEmailService` logs the full recipient address plus subject at Information on every send, while the same wave masks the destination in the database. The DB is scrubbed; the log aggregator is not |
+| **D6** | P1 | **Exactly-once conversion is worse than "unproven"** — no lineage column exists to key idempotency on; two accept endpoints with divergent guards (one explicitly commented "not idempotent"); no status guard on offer accept, so double-click **double-increments `FilledCount`** and can close a half-open requisition |
+| **D7** | P1 | **EOSB parity holds only because every fixture sets `IsActive = true`.** `/eosb/calculate` filters on `IsActive`; `/final-settlement` does not — and the exit cascade deactivates the salary row. Same employee, same date, two gratuity figures |
+| **D8** | P1 | `GCCComplianceSettings` is read with `FirstOrDefaultAsync(x => x.TenantId == …)` — no company, no country, **no ordering**. A group with KSA and UAE entities picks the labour law by whichever row Postgres returns first |
+| **D9** | P1 | **Leave encashment overpayment**: a **Draft** company policy outranks an Active tenant default and authorises cash; pending `LeaveEncashmentRequest` rows reserve nothing, so the same days can be paid twice |
+| **D10** | P1 | **No return-correction posting path.** `GlEventTypes.NetSettlementReturn` exists only in comments. After a returned salary, Cash/Bank is overstated and 2100 understated with no way to correct — and `ClosePeriod` has no gate, so the month closes over it |
+| **D11** | P1 | **DataProtection keys not persisted** (`AddDataProtection()` with no `PersistKeysTo`). Present in `PILOT_ACCEPTANCE_SPEC.md` 6.4, **lost from this baseline's register**. Already fails on every restart |
+| **D12** | P1 | `SetupPage.tsx` offers **WhatsApp/SMS** in the notification-channel dropdown with no signal they cannot deliver; the honest `/deliveries` ledger the notification pod built is **never called by the frontend** |
+| **D13** | P2 | `EmployeeModuleSchemaBootstrapper` / `MissingTableCreator` are live-registered **MySQL runtime-DDL** paths against Postgres that swallow exceptions — dead code today, and exactly the defect class W0-3 was raised for. **Remove** |
+| **D14** | P2 | Both guard suites `return;` (pass) when path resolution fails — a silent false negative that would disable the isolation lints entirely under a different CI layout. The bypass-lint keyword check also accepts a bare `// SYSTEM CONTEXT` with no reasoning |
+
+### 9.5 REJECTED / MODIFIED
+
+- **"Benefits is the highest ROI — CONNECT."** Rejected on review. Two independent reviewers showed the model cannot represent GCC medical insurance: no enrolment-dependant link (so no census, no mid-year newborn, no per-dependant premium), no insurer/policy number, no renewal or premium model, eligibility **fails open** when no rules exist, no duplicate-enrolment constraint, payroll integration is annotation-only, and no exit cascade (a leaver stays enrolled and the premium keeps being paid). Reclassified **INCORRECTLY DESIGNED / REDESIGN**; disposition for pilot is **feature-flag off**, not "build the UI".
+- **Rehire "PRESENT BUT UNPROVEN"** → **MISSING / BUILD.** `RehireEligible` is written, displayed, and **read by nothing**; no rehire endpoint exists; the recruitment→draft→approve path has no duplicate-person probe. Certifying it on one unread boolean is the "a field is never a capability" error §0 forbids.
+- **Gap ordering changed.** G3 observability moves **before** G2 (the baseline's own rationale — "what makes every later wave debuggable" — contradicted sequencing it third). G7 WPS acceptance moves to **day 1 as a lead-time track** owned by BD, since it is weeks of counterparty calendar and zero engineering days. G1 merges with G6 (residency is one assertion in the same function, not a workstream). G4 merges with D11. G5 demoted to P1 and reduced to "404 the SAML/OIDC metadata routes" — there is no SSO UI anywhere, so it is a procurement exposure, not a pilot one.
+- **Two scoping questions promoted above all engineering**, because they are free and change the plan: does the design partner have a **Kuwait/Oman/Bahrain entity** (payroll 422s — that entity silently drops out of the pilot), and does it need **multi-currency group consolidation** (no FX translation exists, so a group figure spanning SAR and AED is meaningless)?
+
+### 9.6 Effect on the Wave 0 verdict
+
+The engineering-baseline verdict **stands at GO**, on a narrower basis than first written: builds clean, **1616/1616 with zero skipped**, zero model drift, fresh and upgrade migrations converge on identical schema, DI validated at boot, secret scan clean, and the two Wave 0 self-inflicted defects (R1, R2) found by review are fixed and regression-tested.
+
+**Tenant/company isolation is downgraded GO → CONDITIONAL GO.** The other corrections change the *capability baseline*, not the engineering baseline: they are claims about product completeness, and every one of them moves a rating **downward**. None of the 14 new defects was introduced by Wave 0 except **D1**, which Wave 0's contract hardening surfaced and which is now the top carry-over item.

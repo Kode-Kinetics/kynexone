@@ -29,19 +29,28 @@ namespace Zayra.Api.Models;
 /// would make the file already handed to the ERP permanently un-reproducible, which is precisely the
 /// proof an audit asks for six months later.</para>
 /// </summary>
-public class GlJournalExport : ITenantOwned, ICompanyScopedOperational
+public class GlJournalExport : ITenantOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
 
     /// <summary>Legal-entity filter this export was taken under. Null = whole tenant (group-level caller).
-    /// <para>SCOPING: this is an OPERATIONAL record, not a ledger dimension. The
-    /// <see cref="FinanceGlEntry"/> exemption exists only because every pre-POD-B1b ledger row has a
-    /// NULL CompanyId, so filtering would retroactively hide the existing general ledger; this table is
-    /// new and has no such legacy rows, so that justification does not carry over. Under
-    /// <see cref="ICompanyScopedOperational"/> a company-scoped user sees only their own entity's
-    /// exports and never a NULL (group-wide) one — which is the correct reading of a file that
-    /// aggregates every legal entity in the group — while group-scope users continue to see both.</para></summary>
+    /// <para>SCOPING — a reporting DIMENSION, mirroring <see cref="FinanceGlEntry"/>, and registered in
+    /// <c>CompanyScopeBootAssertion.AllowList</c> rather than carrying <see cref="ICompanyScoped"/>.</para>
+    /// <para>Wave 0 initially made this <see cref="ICompanyScopedOperational"/> on the reasoning that
+    /// FinanceGlEntry's exemption (legacy NULL rows) did not transfer to a new table. Independent review
+    /// showed that change was WRONG, for a reason the original argument missed: a NULL CompanyId here is
+    /// not a backfill transient, it is the MEANING of a group-level export that deliberately spans every
+    /// legal entity. Under the operational interface the write guard
+    /// (<c>ZayraDbContext.EnforceCompanyScopeOnWritesAsync</c>) refuses a null CompanyId in a
+    /// multi-company tenant, so a group-level export — the primary use case — threw
+    /// <c>company_scope_required</c>, and in a single-company tenant the auto-stamped id broke the
+    /// supersede probe, which matches on <c>CompanyId == null</c>, so prior exports were never
+    /// superseded and duplicates accumulated.</para>
+    /// <para>The read control is therefore enforced in the controller rather than by a query filter, and
+    /// this is the compensating control on the record: every endpoint checks an explicit permission
+    /// (<c>finance.gl.read</c> / <c>.export</c> / <c>finance.erp.confirm</c>) and then <c>ScopeError</c>,
+    /// which requires group level for a tenant-wide request and <c>CanAccessCompany</c> otherwise.</para></summary>
     public Guid? CompanyId { get; set; }
     /// <summary>Legal-entity code AS EMITTED into the file. Frozen here rather than re-derived, because
     /// renaming/re-registering the company later must not change the bytes of a file already handed over.</summary>

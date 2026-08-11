@@ -40,17 +40,21 @@ program's confidence rests on had not run against the in-flight work.
 | # | Defect found | Severity | Root cause | Resolution | Evidence |
 |---|---|---|---|---|---|
 | W0-1 | Test project failed to compile (16 errors) | **P0** | `NotificationService` moved to `IServiceScopeFactory` + `INotificationRecipientResolver`; 8 direct-construction sites in tests never updated | Added one `TestNotifications.For(db)` seam (`TestHelpers/TestNotificationService.cs`); all 8 sites routed through it | Test project builds, 0 errors |
-| W0-2 | `GlJournalExport` carried `CompanyId` **without** `ICompanyScoped` | **P0 (isolation)** | New table modelled on `FinanceGlEntry`'s allow-list exemption; that exemption exists only because pre-B1b ledger rows are all NULL — reasoning does not transfer to a new table | Implemented `ICompanyScopedOperational`; company filter now applies | `CompanyScopeBootAssertionTests` green |
+| W0-2 | `GlJournalExport` carried `CompanyId` **without** `ICompanyScoped` | **P0 (isolation)** | New table modelled on `FinanceGlEntry`'s allow-list exemption; that exemption exists only because pre-B1b ledger rows are all NULL — reasoning does not transfer to a new table | ⚠︎ **REVERTED after review** — the fix was wrong. A NULL CompanyId here is not a backfill transient, it is the *meaning* of a group-wide export, so the scoped interface made group exports throw `company_scope_required`. Now a justified allow-list entry; read control is the controller's permission + `ScopeError` | `CompanyScopeBootAssertionTests` green; see closure evidence §9.1 R2 |
 | W0-3 | **EF migration drift** — `employee_final_settlements`, `final_settlement_lines`, `payroll_runs.settles_final_settlements` had **no migration** | **P0** | Entities added without `ef migrations add`; identical failure mode to the documented 42703 tenant-wide outage class | Rebuilt snapshot from last migration's Designer model, generated `AddFinalSettlementPersistenceAndExportScope` | `has-pending-model-changes` → *No changes* |
-| W0-4 | **31 unjustified `IgnoreQueryFilters()`** calls in new finance/notification code | **P1** | Bypass-justification discipline not applied to POD-D work | Verified each: 30 re-apply `TenantId` explicitly (company-filter bypass only); 1 is a genuine cross-tenant **system** sweep (delivery-lease reclaimer) and is now declared `SYSTEM CONTEXT`. All annotated with specific reasons | `BypassLintTests` green |
+| W0-4 | **31 unjustified `IgnoreQueryFilters()`** calls in new finance/notification code | **P1** | Bypass-justification discipline not applied to POD-D work | ⚠︎ **PARTLY WRONG** — the true POD-D figure is **37**, not 31; there are **two** cross-tenant reads, not one (the delivery drain also lacks a tenant predicate); and on the finance tables what is dropped is the **tenant** filter, not the company one, since those entities have no company filter at all. Annotations stand; the risk model was inverted | `BypassLintTests` green; see closure evidence §9.2 R5–R7 |
 | W0-5 | 23 EOSB parity tests failing | **P1** | `/final-settlement` was deliberately hardened (cannot settle a non-leaver; entity must resolve; EOSB must be enabled). POD-A2 tests encoded the older, weaker contract | Fixtures now record the separation and legal entity they always implied; the contract change is documented in-test as a decision of record. **All EOSB figures unchanged** | 34/34 EOSB tests green |
 | W0-6 | GL driver count assertion stale (24 vs 30) | **P2** | POD-D added 3 settlement earnings, 1 settlement deduction, 2 control accounts | Updated ledger comment **and added 4 routing goldens** proving settlement expense cannot collapse onto `EARN:OTHER` | `GlPhase2Tests` green |
 | W0-7 | Period-close reconcile test stale | **P2** | POD-D4 added a second terminal gate (bank must confirm every record) | Test now proves *both* gates, plus a **new** test that a returned payment blocks close | `SettlementPeriodCloseTests` 18/18 |
 
-**Wave 0 verdict: CLOSED.** 1600/1600 tests pass; zero model drift; both isolation lints green.
+**Wave 0 verdict: CLOSED** (engineering baseline only). **1616/1616** tests pass with zero skipped; zero
+model drift; isolation guards green and negative-tested. Two defects in the Wave 0 work itself (a
+`Take`-before-`Where` bug in the new bypass helper, and the W0-2 over-correction) were found by
+independent review and are fixed with regression tests.
 
-> **Standing risk:** ~3,750 lines of POD-D work remain **uncommitted** in the working tree. It is now
-> green and drift-free, but it is unprotected. Committing it is the first recommended action.
+> **Resolved.** The POD-D work is committed on `wave0/engineering-baseline` (PR #43). See
+> `docs/WAVE_0_CLOSURE_EVIDENCE.md` — and note §9 there, where independent review **falsified several
+> ratings in this document**. Rows corrected below are marked ⚠︎ REVISED.
 
 ---
 
@@ -141,15 +145,15 @@ program's confidence rests on had not run against the in-flight work.
 | Maker-checker separation of duties | VERIFIED COMPLETE | PRESERVE | Self-approve 403 |
 | Deterministic component pay engine | VERIFIED COMPLETE | PRESERVE | Golden-master + engine-equivalence tests |
 | GOSI/statutory reconciliation | VERIFIED COMPLETE | PRESERVE | **POD-A1** unified Source/codes — deducted == report == GL |
-| Single authoritative EOSB engine | VERIFIED COMPLETE | PRESERVE | **POD-A2**; 34 parity tests incl. fractional tenure + leap |
+| Single authoritative EOSB engine | ⚠︎ REVISED — **PARTIALLY IMPLEMENTED** | **COMPLETE** | Formula is shared, but `ComputeEndOfServiceAsync` hardcodes `jur = "mainland"` and is the only caller, so the registered **DIFC calculator is unreachable**; unknown countries fall through to a silent **0 gratuity** with no fail-closed guard; wage base is basic-only, which the code concedes is not Art. 84 "last wage". Parity tests pass only because every fixture sets `IsActive = true` (D7) |
 | Payroll trail on immutable hash chain | VERIFIED COMPLETE | PRESERVE | **POD-A3** |
 | Balanced GL, idempotent posting, contra-on-void | VERIFIED COMPLETE | PRESERVE | Lock gate 422 `gl_unbalanced` |
-| Settle + remit (control accounts clear) | VERIFIED COMPLETE | PRESERVE | **POD-B1/B1b** |
+| Settle + remit (control accounts clear) | ⚠︎ REVISED — **PARTIALLY IMPLEMENTED** | COMPLETE | `GlControlAccounts.CheckAsync` omits both new control accounts — `SETTLEMENT_PAYABLE` (2320) and `EOSB_PROVISION` (2310) |
 | Off-cycle / supplementary / correction runs + hold-out | VERIFIED COMPLETE | PRESERVE | **POD-B2** |
 | Void → replacement recovery | VERIFIED COMPLETE | PRESERVE | **POD-B3** |
 | Mid-month proration + retro arrears | VERIFIED COMPLETE | PRESERVE | **POD-C3** |
 | Final settlement → payable → GL → payment | PRESENT BUT UNPROVEN | TEST | **POD-C1/D** persisted, entity-resolved, leaver-gated. Needs a real termination journey |
-| Monthly EOSB liability provisioning to GL | PRESENT BUT UNPROVEN | TEST | `EosbProvisionLedger` (2310) — new, uncertified |
+| Monthly EOSB liability provisioning to GL | ⚠︎ REVISED — **MISSING** | **BUILD** | `GlEventTypes.EosbProvisionAccrual` is written by **nothing**; the ledger consumes a stream no code produces |
 | GL/ERP journal export (CSV/IIF/Oracle) | PRESENT BUT UNPROVEN | TEST | 3 formatters + frozen-line-set regeneration |
 | Bank/WPS confirmation import + reconciliation | PRESENT BUT UNPROVEN | TEST | `BankConfirmationService` + 2 parsers; blocks close on returns |
 | **WPS/Mudad real acceptance** | **PRESENT BUT UNPROVEN** | **TEST** | Layout self-labelled `SIF_SA_V1`; **no bank/ministry has ever accepted a file** |
@@ -172,7 +176,7 @@ program's confidence rests on had not run against the in-flight work.
 |---|---|---|---|
 | Loans & advances | VERIFIED COMPLETE | PRESERVE | GL-posting, post-once probes |
 | Performance (competency, calibration, PIP, 360) | PRESENT BUT UNPROVEN | TEST | 11 controllers, genuinely deep |
-| **Benefits / GCC medical insurance** | **DISCONNECTED** | **CONNECT** | 8 endpoints, 260 lines, 10 DbContext refs, **no UI, not in nav**. Highest ROI on the board |
+| **Benefits / GCC medical insurance** | ⚠︎ REVISED — **INCORRECTLY DESIGNED** | **REDESIGN** | Backend is real, but the model cannot represent GCC medical: no enrolment↔dependant link, no insurer/policy, no renewal or premium model, eligibility **fails open**, no duplicate-enrolment constraint, payroll link is annotation-only, no exit cascade. Pilot disposition: **feature-flag off**, not "connect" |
 | **Expenses & reimbursement** | **MISSING** | **BUILD** | 0 files |
 | **Assets / equipment custody** | **MISSING** | **BUILD** | 0 files |
 | **Learning / LMS + certification expiry** | **MISSING** | **BUILD** | 0 files |
@@ -189,8 +193,8 @@ program's confidence rests on had not run against the in-flight work.
 |---|---|---|---|
 | Offboarding lifecycle + exit cascade | PRESENT BUT UNPROVEN | TEST | `OffboardingController`, ex-employee archive |
 | Final settlement (see Wave 6) | PRESENT BUT UNPROVEN | TEST | Now leaver-gated and entity-resolved |
-| **Access revocation on exit** | PARTIALLY IMPLEMENTED | COMPLETE | `AccessRevoked` is a **boolean checkbox**, not an enforced revocation |
-| Historical retention + rehire | PRESENT BUT UNPROVEN | TEST | `RehireEligible` flag; no rehire journey evidence |
+| **Access revocation on exit** | ⚠︎ REVISED — **PRESENT BUT UNPROVEN** | TEST | Earlier claim was **wrong**. Real revocation exists and is tested: user deactivated, `AccessMode = NoLogin`, all links disabled, **all refresh tokens revoked**. Narrower defects remain (D4) |
+| Historical retention + rehire | ⚠︎ REVISED — **MISSING** | **BUILD** | `RehireEligible` is written and displayed but **read by nothing**; no rehire endpoint; the recruitment→draft→approve path has no duplicate-person probe |
 
 ### Wave 10 — Reports, mobile, integrations, AI, certification
 
@@ -200,7 +204,7 @@ program's confidence rests on had not run against the in-flight work.
 | **Report reconciliation to source** | PRESENT BUT UNPROVEN | TEST | Constitution #12; only GOSI tie-out proven |
 | Self-serve BI / pivot builder | MISSING | DEFER | No report builder |
 | **Mobile app / PWA** | **DISCONNECTED** | **CONNECT** | `MobileController` BFF is real; **no client exists** |
-| Notifications — email | VERIFIED COMPLETE | PRESERVE | Templates, enqueue-only, no request-thread I/O |
+| Notifications — email | ⚠︎ REVISED — **PRESENT BUT UNPROVEN** | **CONFIGURE** | Enqueue-only design is sound, but SMTP is unconfigured in `render.yaml` and sends are silently dropped. **All four channels are unconfigured out of the box** |
 | Notifications — SMS / WhatsApp / push | **DISCONNECTED** | **CONNECT** | Dispatchers + worker + ledger built; **all three providers are `Null*` stubs** reporting `not_configured` |
 | Public API / webhooks | MISSING | DEFER | Ecosystem play |
 | Accounting/ERP + bank connectors | PARTIALLY IMPLEMENTED | COMPLETE | Journal export + confirmation import exist; no live connector |
@@ -256,9 +260,9 @@ Kuwait/Oman/Bahrain country packs · multi-currency · garnishments · i18n/RTL 
 | 6 | Payroll deterministic + reconcilable | **PASS** — A1/A2/A3/B1–B3/C3 closed the divergences |
 | 7 | Retries cannot duplicate | PASS in payroll/GL; **unproven** in recruitment conversion |
 | 8 | Candidate→employee exactly once | **UNPROVEN** |
-| 9 | Permissions cover all surfaces | PARTIAL — fields/exports incomplete |
+| 9 | Permissions cover all surfaces | ⚠︎ **VIOLATED** — 1,034 `[Http*]` actions vs **128** `[HasPermission]` and **371** `[Authorize(Roles=…)]` across 77 of 102 controllers. String-role auth is not permission-first, and tenant custom roles do not satisfy it |
 | 10 | Entitlements backend-enforced | PASS (unproven by journey) |
-| 11 | Country rules versioned + fail safe | PASS — tiered honest-pack model; unsupported countries blocked |
+| 11 | Country rules versioned + fail safe | ⚠︎ **VIOLATED** — payroll and WPS block unsupported countries; **EOSB does not**, and silently pays 0 |
 | 12 | Reports reconcile | PARTIAL — only GOSI proven |
 | 13 | No integration shown live without evidence | **VIOLATED** — WPS is self-labelled; SSO reads as shipped at 501 |
 | 14 | No frontend-only or backend-only completeness | **VIOLATED** — Benefits, Mobile, notification channels |
@@ -279,7 +283,7 @@ Kuwait/Oman/Bahrain country packs · multi-currency · garnishments · i18n/RTL 
 | Functional correctness | **CONDITIONAL GO** | 1600/1600 green, but coverage ≠ journey evidence |
 | **Payroll correctness** | **CONDITIONAL GO** | Strongest area. Blocked only on G7 (no real WPS acceptance) and G2 (scale) |
 | Security | **CONDITIONAL GO** | Isolation strong and now lint-clean; G5/G8 open |
-| Tenant/company isolation | **GO** | Fail-closed + two boot/lint guards, both green |
+| Tenant/company isolation | ⚠︎ REVISED — **CONDITIONAL GO** | Guards are green and negative-tested, but 179 of 209 bypasses are the register's own "debt, not assurance", two user-reachable controllers carry open risk, and both guard suites pass vacuously if path resolution fails (D14) |
 | Data integrity | **GO** | Hash-chained audit, idempotent GL, zero drift |
 | Performance | **NO-GO** | No scale evidence; in-request payroll |
 | Reliability & recovery | **NO-GO** | G2, G3, G4 |

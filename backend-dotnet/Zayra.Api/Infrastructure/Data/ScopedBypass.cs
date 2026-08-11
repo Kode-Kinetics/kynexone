@@ -90,7 +90,26 @@ public static class ScopedBypass
     /// as it turns one poisoned row into a whole-platform stall.</para>
     /// </summary>
     /// <param name="batchSize">Maximum rows this sweep may claim in one pass. Must be 1..1000.</param>
-    public static IQueryable<T> SystemWide<T>(DbSet<T> set, int batchSize, string justification)
+    /// <param name="predicate">Which rows the sweep is for. Taken as a parameter, NOT composed by the
+    /// caller afterwards — see the ordering note below.</param>
+    /// <param name="orderBy">
+    /// Required. An unordered <c>Take</c> lets the database return an arbitrary window, so a sweep with
+    /// a backlog larger than one batch can starve the oldest rows forever. Ordering makes the sweep
+    /// deterministic and fair.
+    /// </param>
+    /// <remarks>
+    /// WHY THE PREDICATE IS A PARAMETER. An earlier version of this helper returned
+    /// <c>set.IgnoreQueryFilters().Take(batchSize)</c> and expected the caller to append its own
+    /// <c>Where</c>. That composes in the WRONG ORDER: EF emits
+    /// <c>SELECT * FROM (SELECT * FROM t LIMIT n) WHERE ...</c>, so an arbitrary n rows are chosen
+    /// FIRST and filtered afterwards. With more than n rows in the table — i.e. immediately, in
+    /// production — the sweep matches almost nothing and the bound silently becomes a correctness bug
+    /// rather than a safety control. Taking the predicate here is what makes <c>Take</c> last.
+    /// </remarks>
+    public static IQueryable<T> SystemWide<T, TKey>(
+        DbSet<T> set, int batchSize, string justification,
+        System.Linq.Expressions.Expression<Func<T, bool>> predicate,
+        System.Linq.Expressions.Expression<Func<T, TKey>> orderBy)
         where T : class
     {
         RequireJustification(justification);
@@ -98,9 +117,11 @@ public static class ScopedBypass
             throw new ArgumentOutOfRangeException(nameof(batchSize), batchSize,
                 "A cross-tenant system sweep must be bounded (1..1000). An unbounded sweep lets one " +
                 "tenant's backlog stall every other tenant's delivery.");
+        ArgumentNullException.ThrowIfNull(predicate);
+        ArgumentNullException.ThrowIfNull(orderBy);
         // SYSTEM CONTEXT: tenant scope intentionally bypassed — worker-only sweep with no request
-        // principal and no ambient tenant. Restriction is structural: the batch bound is enforced above.
-        return set.IgnoreQueryFilters().Take(batchSize);
+        // principal and no ambient tenant. Restriction is structural: filter, then order, then bound.
+        return set.IgnoreQueryFilters().Where(predicate).OrderBy(orderBy).Take(batchSize);
     }
 
     private static void RequireJustification(string justification)

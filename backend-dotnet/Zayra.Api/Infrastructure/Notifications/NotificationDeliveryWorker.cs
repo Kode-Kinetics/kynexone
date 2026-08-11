@@ -266,9 +266,12 @@ public sealed class NotificationDeliveryWorker : BackgroundService
         // this method is private to the worker, so no user request path can reach it.
         var stale = await ScopedBypass.SystemWide(db.NotificationDeliveries, BatchSize,
                 "Lease reclaim across tenants: a hosted service has no ambient tenant, and stuck rows " +
-                "belong to whichever tenants the crashed instance was serving.")
-            .Where(d => d.Outcome == DeliveryOutcomes.Sending
-                && d.LeaseExpiresAtUtc != null && d.LeaseExpiresAtUtc < now)
+                "belong to whichever tenants the crashed instance was serving.",
+                d => d.Outcome == DeliveryOutcomes.Sending
+                  && d.LeaseExpiresAtUtc != null && d.LeaseExpiresAtUtc < now,
+                // Oldest expired lease first: a backlog larger than one batch must drain in age order,
+                // or the earliest-stuck rows starve behind whatever the database happens to return.
+                d => d.LeaseExpiresAtUtc!)
             .ToListAsync(ct);
         if (stale.Count == 0) return;
 
