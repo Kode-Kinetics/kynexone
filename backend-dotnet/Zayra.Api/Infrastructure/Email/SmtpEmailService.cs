@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Notifications;
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using Microsoft.EntityFrameworkCore;
@@ -40,7 +41,11 @@ public class SmtpEmailService : IEmailService
         {
             // Still logged, but the caller is no longer the only witness: NotificationDeliveryWorker
             // turns a false IsConfiguredAsync into a durable "not_configured" delivery row.
-            _log.LogWarning("SMTP not configured — email to {To} dropped.", toAddress);
+            // D5: MASKED. The delivery ledger already scrubs the destination; logging the raw address
+            // here would re-introduce the PII the same wave removed, in the one place it is hardest
+            // to purge later — a centralised log sink.
+            _log.LogWarning("SMTP not configured — email to {To} dropped.",
+                NotificationBodyPolicy.MaskEmail(toAddress));
             return;
         }
 
@@ -61,7 +66,10 @@ public class SmtpEmailService : IEmailService
             await client.AuthenticateAsync(cfg.Username, cfg.Password, cancellationToken);
         await client.SendAsync(message, cancellationToken);
         await client.DisconnectAsync(true, cancellationToken);
-        _log.LogInformation("Email sent to {To} — subject: {Subject}", toAddress, subject);
+        // D5: MASKED recipient, and the SUBJECT is dropped entirely. A template subject routinely
+        // carries the employee name or the payroll period ("Payslip for Ahmed — July 2026"), so it
+        // is PII in its own right; the template code identifies the message without disclosing it.
+        _log.LogInformation("Email sent to {To}.", NotificationBodyPolicy.MaskEmail(toAddress));
     }
 
     /// <summary>
