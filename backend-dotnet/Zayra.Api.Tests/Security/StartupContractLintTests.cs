@@ -54,7 +54,13 @@ public class StartupContractLintTests
     public void Program_MustValidateDiContainerAtBoot()
     {
         var apiRoot = ResolveApiRoot();
-        if (apiRoot is null) return; // path unresolvable in this layout — skip rather than false-negative
+        // D14: a guard that SKIPS when it cannot find the source is a false negative, not a safe
+        // default — a CI layout change would silently disable every isolation lint while still
+        // reporting green. Throwing is the only honest behaviour for a control, and it also
+        // narrows the nullable so the scan below cannot be handed a null root.
+        apiRoot = apiRoot ?? throw new InvalidOperationException(
+            "The Zayra.Api source root could not be resolved, so this guard would check NOTHING. "
+            + "Treat an unresolvable path as a build failure, never a skip.");
 
         var program = File.ReadAllText(Path.Combine(apiRoot, "Program.cs"));
 
@@ -69,7 +75,13 @@ public class StartupContractLintTests
     public void Tests_MustNotHandConstructNotificationService()
     {
         var testsRoot = ResolveTestsRoot();
-        if (testsRoot is null) return;
+        // D14: a guard that SKIPS when it cannot find the source is a false negative, not a safe
+        // default — a CI layout change would silently disable every isolation lint while still
+        // reporting green. Throwing is the only honest behaviour for a control, and it also
+        // narrows the nullable so the scan below cannot be handed a null root.
+        testsRoot = testsRoot ?? throw new InvalidOperationException(
+            "The Zayra.Api.Tests source root could not be resolved, so this guard would check NOTHING. "
+            + "Treat an unresolvable path as a build failure, never a skip.");
 
         // Assembled at runtime so this lint does not match its own source text.
         var forbidden = "new " + nameof(Zayra.Api.Infrastructure.Notifications.NotificationService) + "(";

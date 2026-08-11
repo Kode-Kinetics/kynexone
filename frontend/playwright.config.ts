@@ -13,6 +13,14 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // Authenticates once; every platform spec reuses the session. Prevents the suite from
+    // tripping the API's platform-login rate limit (default 5/window) with a login per test.
+    { name: 'setup', testMatch: /auth\.setup\.ts/ },
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'], storageState: 'e2e/.auth/platform.json' },
+      dependencies: ['setup'],
+      testIgnore: /auth\.setup\.ts/,
+    },
   ],
 });

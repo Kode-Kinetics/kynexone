@@ -3,3 +3,4 @@
 *.tsbuildinfo
 .env.local
 .env.*.local
+e2e/.auth/

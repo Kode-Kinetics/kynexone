@@ -120,7 +120,13 @@ public class QueryFilterBypassRatchetTests
     public void NoNewRawQueryFilterBypassMayBeIntroduced()
     {
         var apiRoot = ResolveApiRoot();
-        if (apiRoot is null) return;
+        // D14: a guard that SKIPS when it cannot find the source is a false negative, not a safe
+        // default — a CI layout change would silently disable every isolation lint while still
+        // reporting green. Throwing is the only honest behaviour for a control, and it also
+        // narrows the nullable so the scan below cannot be handed a null root.
+        apiRoot = apiRoot ?? throw new InvalidOperationException(
+            "The Zayra.Api source root could not be resolved, so this guard would check NOTHING. "
+            + "Treat an unresolvable path as a build failure, never a skip.");
 
         var actual = ScanActual(apiRoot);
         var violations = new List<string>();
@@ -152,7 +158,13 @@ public class QueryFilterBypassRatchetTests
     public void RatchetBaselineMustNotDriftUpwardsSilently()
     {
         var apiRoot = ResolveApiRoot();
-        if (apiRoot is null) return;
+        // D14: a guard that SKIPS when it cannot find the source is a false negative, not a safe
+        // default — a CI layout change would silently disable every isolation lint while still
+        // reporting green. Throwing is the only honest behaviour for a control, and it also
+        // narrows the nullable so the scan below cannot be handed a null root.
+        apiRoot = apiRoot ?? throw new InvalidOperationException(
+            "The Zayra.Api source root could not be resolved, so this guard would check NOTHING. "
+            + "Treat an unresolvable path as a build failure, never a skip.");
 
         var actual = ScanActual(apiRoot);
         var total = actual.Values.Sum();
