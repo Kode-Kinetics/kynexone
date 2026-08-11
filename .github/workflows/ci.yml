@@ -161,6 +161,10 @@ jobs:
       - name: Install EF tools
         run: dotnet tool install --global dotnet-ef --version 8.*
 
+      # The runner image does not ship psql, and the schema-comparison gates below need it.
+      - name: Install postgresql-client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
       # Build ONCE, then never pass --no-build to an ef command below. `dotnet ef --no-build`
       # reads the STALE compiled snapshot, so drift is reported that does not exist and
       # `migrations add` regenerates the same delta forever. This bit us in Wave 0.
@@ -186,7 +190,7 @@ jobs:
           ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=zayra_fresh;Username=postgres;Password=ci'
         run: |
           set -euo pipefail
-          PGPASSWORD=ci psql -h localhost -U postgres -c 'CREATE DATABASE zayra_fresh;'
+          # No CREATE DATABASE needed: 'ef database update' creates it when absent.
           dotnet ef database update --no-build
 
       # The previous accepted release = the last migration present on the merge base. Applying
@@ -198,7 +202,6 @@ jobs:
           ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=zayra_upgrade;Username=postgres;Password=ci'
         run: |
           set -euo pipefail
-          PGPASSWORD=ci psql -h localhost -U postgres -c 'CREATE DATABASE zayra_upgrade;'
           base=$(git merge-base HEAD origin/${{ github.base_ref || 'main' }})
           prev=$(git ls-tree -r --name-only "$base" -- Migrations \
                  | grep -E 'Migrations/[0-9]{14}_.*\.cs$' | grep -v Designer \
