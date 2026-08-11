@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
@@ -63,13 +64,19 @@ public class SetupSettingsController : ControllerBase
     // Reads replace the value with this sentinel; the upsert treats the sentinel as
     // "unchanged" so a round-tripped admin form cannot clobber the real secret with the mask.
     private const string SecretValueMask = "********";
-    private static bool IsSecretSetting(string settingKey) =>
+    // POD-D5: the substring match below does NOT catch every notification-provider credential —
+    // "Push.ServiceAccountJson" (a Firebase service account containing a PEM private key) and
+    // "Push.P8Key" (an APNs signing key) both contain none of these words and would have been
+    // returned in PLAINTEXT. NotificationProviderSecrets.Keys is an explicit allow-list that a
+    // test asserts covers every registered provider credential key.
+    internal static bool IsSecretSetting(string settingKey) =>
         settingKey.Contains("password", StringComparison.OrdinalIgnoreCase)
         || settingKey.Contains("secret", StringComparison.OrdinalIgnoreCase)
         || settingKey.Contains("apikey", StringComparison.OrdinalIgnoreCase)
         || settingKey.Contains("api_key", StringComparison.OrdinalIgnoreCase)
         || settingKey.Contains("token", StringComparison.OrdinalIgnoreCase)
-        || settingKey.Contains("connectionstring", StringComparison.OrdinalIgnoreCase);
+        || settingKey.Contains("connectionstring", StringComparison.OrdinalIgnoreCase)
+        || Zayra.Api.Infrastructure.Notifications.NotificationProviderSecrets.IsSecretKey(settingKey);
 
     [HttpGet("api/admin/system-settings")]
     [Authorize(Roles = "Admin")]
@@ -89,10 +96,22 @@ public class SetupSettingsController : ControllerBase
 
     [HttpPost("api/admin/system-settings")]
     [HasPermission("security.manage")]
-    public async Task<IActionResult> UpsertSystemSetting([FromBody] SystemSettingRequest req, CancellationToken ct)
+    public async Task<IActionResult> UpsertSystemSetting([FromBody] SystemSettingRequest req,
+        [FromServices] Microsoft.AspNetCore.DataProtection.IDataProtectionProvider protection, CancellationToken ct)
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+
+        // POD-D5: notification-provider credentials are encrypted at rest with IDataProtection —
+        // the same prior art QiwaIntegrationService uses. SystemSetting.IsEncrypted is decorative
+        // in this codebase (declared, never read, never written), so it is not the mechanism.
+        var protectNotificationSecret =
+            string.Equals(req.Category, Zayra.Api.Infrastructure.Notifications.NotificationProviderConfigReader.SettingsCategory, StringComparison.OrdinalIgnoreCase)
+            && Zayra.Api.Infrastructure.Notifications.NotificationProviderSecrets.IsSecretKey(req.SettingKey);
+        string Store(string value) => protectNotificationSecret && !string.IsNullOrEmpty(value)
+            ? protection.CreateProtector(Zayra.Api.Infrastructure.Notifications.NotificationProviderSecrets.ProtectorPurpose).Protect(value)
+            : value;
+
         var existing = await _db.SystemSettings.FirstOrDefaultAsync(
             x => x.TenantId == tid && x.Category == req.Category && x.SettingKey == req.SettingKey, ct);
         if (existing != null)
@@ -100,7 +119,8 @@ public class SetupSettingsController : ControllerBase
             if (existing.IsReadOnly) return BadRequest("This setting is read-only.");
             // The masked sentinel means "unchanged" — never overwrite a real secret with the mask.
             if (!(IsSecretSetting(existing.SettingKey) && req.SettingValue == SecretValueMask))
-                existing.SettingValue = req.SettingValue;
+                existing.SettingValue = Store(req.SettingValue);
+            existing.IsEncrypted = existing.IsEncrypted || protectNotificationSecret;
             existing.UpdatedAtUtc = DateTime.UtcNow; existing.UpdatedBy = uid;
             await _db.SaveChangesAsync(ct);
             if (IsSecretSetting(existing.SettingKey) && !string.IsNullOrEmpty(existing.SettingValue))
@@ -110,11 +130,17 @@ public class SetupSettingsController : ControllerBase
         var s = new SystemSetting
         {
             TenantId = tid, Category = req.Category, SettingKey = req.SettingKey,
-            SettingValue = req.SettingValue, DataType = req.DataType ?? "string",
+            SettingValue = Store(req.SettingValue), DataType = req.DataType ?? "string",
             Description = req.Description ?? string.Empty, UpdatedBy = uid,
+            IsEncrypted = protectNotificationSecret,
         };
         _db.SystemSettings.Add(s);
         await _db.SaveChangesAsync(ct);
+        // A freshly-created secret was previously echoed back in plaintext. Detach first so the
+        // serialization-only mutation can never be persisted.
+        _db.Entry(s).State = EntityState.Detached;
+        if (IsSecretSetting(s.SettingKey) && !string.IsNullOrEmpty(s.SettingValue))
+            s.SettingValue = SecretValueMask;
         return Ok(s);
     }
 
@@ -124,7 +150,9 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("security.manage")]
     public async Task<IActionResult> TestSmtp([FromServices] IEmailService email, CancellationToken ct)
     {
-        if (!await email.IsConfiguredAsync(ct))
+        // Tenant-explicit overload (POD-D5): the ambient-filter form only happened to be correct
+        // because this runs under an HTTP principal.
+        if (!await email.IsConfiguredAsync(GetTenantId(), ct))
             return Ok(new { ok = false, message = "SMTP is not configured. Enter and save the host and from-address first." });
 
         var to = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
@@ -134,7 +162,7 @@ public class SetupSettingsController : ControllerBase
 
         try
         {
-            await email.SendAsync(to, "KynexOne Admin", "KynexOne — SMTP test",
+            await email.SendAsync(GetTenantId(), to, "KynexOne Admin", "KynexOne — SMTP test",
                 "<p>This is a test message confirming your KynexOne SMTP settings are working.</p>"
                 + "<p>If you received this, outbound email (payslips, alerts, letters) is configured correctly.</p>",
                 null, ct);

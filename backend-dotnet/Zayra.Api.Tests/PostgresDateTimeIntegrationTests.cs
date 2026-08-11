@@ -281,7 +281,7 @@ public class PostgresDateTimeIntegrationTests : IClassFixture<PostgresFixture>
                 db,
                 new AuditService(db),
                 new PgFakeDocumentStorage(),
-                new NotificationService(db, new PgFakeEmailService(), NullLogger<NotificationService>.Instance)),
+                TestNotifications.For(db)),
             CancellationToken.None);
 
         var created = Assert.IsType<EmployeeDetailDto>(Assert.IsType<CreatedAtActionResult>(result.Result).Value);
@@ -298,7 +298,7 @@ public class PostgresDateTimeIntegrationTests : IClassFixture<PostgresFixture>
             new Pbkdf2PasswordHasher(),
             new AuditService(db),
             new PgFakeDocumentStorage(),
-            new NotificationService(db, new PgFakeEmailService(), NullLogger<NotificationService>.Instance),
+            TestNotifications.For(db),
             new PgFakeHijriDateService(),
             new Zayra.Api.Infrastructure.Common.DataScopeService(db),
             new PgFakeLetterService());

@@ -219,6 +219,27 @@ public class OffboardingController : ControllerBase
         var off = await Find(id, ct);
         if (off is null) return NotFound();
         if (off.Status != "InProgress") return BadRequest(new { message = "Only an in-progress offboarding can be cancelled." });
+        // ── POD-C1 — a LIVE SETTLEMENT blocks the rescind ────────────────────────────────────────────
+        // The settlement pipeline reads the offboarding once, at creation, and keys its uniqueness on it.
+        // Cancelling it underneath an Approved settlement would leave a real payable (2320 credited, and
+        // possibly already disbursed) attached to a separation the system says never happened — and it
+        // would silently re-activate an employee the payroll has already paid out and de-registered.
+        var liveSettlement = await _db.EmployeeFinalSettlements.AsNoTracking()
+            .Where(s => s.TenantId == off.TenantId && s.OffboardingId == off.Id
+                     && s.Status != FinalSettlementStatuses.Cancelled)
+            .Select(s => new { s.Id, s.Status, s.NetPayable })
+            .FirstOrDefaultAsync(ct);
+        if (liveSettlement is not null)
+            return Conflict(new
+            {
+                error   = "final_settlement_live",
+                message = $"A final settlement for this separation exists in '{liveSettlement.Status}' status " +
+                          $"({liveSettlement.NetPayable:N2}). Cancel the settlement first " +
+                          $"(POST /api/payroll/final-settlements/{liveSettlement.Id}/cancel), which contras its GL " +
+                          "accrual, before rescinding the offboarding.",
+                settlementId = liveSettlement.Id,
+                settlementStatus = liveSettlement.Status,
+            });
         off.Status = "Cancelled";
         off.UpdatedAtUtc = DateTime.UtcNow;
         var emp = await _db.Employees.FirstOrDefaultAsync(e => e.Id == off.EmployeeId && e.TenantId == off.TenantId, ct);

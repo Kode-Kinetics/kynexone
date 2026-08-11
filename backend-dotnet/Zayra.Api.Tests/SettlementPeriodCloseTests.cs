@@ -591,10 +591,52 @@ public class SettlementPeriodCloseTests
         (await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Reconciled, null, "ACK"), CancellationToken.None))
             .Should().BeOfType<UnprocessableEntityObjectResult>("cannot reconcile with Salaries Payable still open");
 
-        // Settle → Paid, then Paid → Reconciled is allowed.
+        // Settle → Paid. Settlement alone is no longer sufficient: POD-D4 added a SECOND terminal gate —
+        // the bank must also have spoken for every record. Reconciling while a payment is still Pending
+        // would close the month over money nobody has confirmed ever landed.
         await ctrl.SettlePaymentBatch(batch.Id, new SettlePaymentBatchRequest(), CancellationToken.None);
         (await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Reconciled, null, "ACK"), CancellationToken.None))
+            .Should().BeOfType<UnprocessableEntityObjectResult>(
+                "settled but bank-unconfirmed payments must still block the terminal state");
+
+        // Once the bank confirms every record, Paid → Reconciled is allowed.
+        foreach (var rec in await db.PayrollPaymentRecords
+                     .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batch.Id).ToListAsync())
+            rec.Status = PaymentRecordStatuses.Paid;
+        await db.SaveChangesAsync();
+
+        (await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Reconciled, null, "ACK"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
+    }
+
+    // ── 15b. A returned payment keeps the month open (POD-D4) ───────────────────
+
+    [Fact]
+    public async Task Reconcile_IsBlocked_WhileAnyPaymentWasReturnedByTheBank()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn; await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var ctrl = MakeKsaPayrollCtrl(db, tenantId);
+        var (run, batch) = await SeedLockedRunWithAcceptedBatch(db, tenantId, ctrl);
+        db.WPSFileBatches.Add(new WPSFileBatch { TenantId = tenantId, PaymentBatchId = batch.Id, Status = WpsStatuses.Accepted, SifFileName = "f.sif" });
+        await db.SaveChangesAsync();
+
+        await ctrl.SettlePaymentBatch(batch.Id, new SettlePaymentBatchRequest(), CancellationToken.None);
+
+        // The bank has spoken — and sent the money back. Cash/Bank is overstated for that employee.
+        foreach (var rec in await db.PayrollPaymentRecords
+                     .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batch.Id).ToListAsync())
+            rec.Status = PaymentRecordStatuses.Returned;
+        await db.SaveChangesAsync();
+
+        var result = await ctrl.UpdateWpsStatus(
+            batch.Id, new WpsStatusRequest(WpsStatuses.Reconciled, null, "ACK"), CancellationToken.None);
+
+        var unprocessable = result.Should().BeOfType<UnprocessableEntityObjectResult>(
+            "a returned salary means the money came back — the month cannot be closed over it").Subject;
+        unprocessable.Value!.GetType().GetProperty("error")!.GetValue(unprocessable.Value)
+            .Should().Be("payments_not_reconciled");
     }
 
     // ── Shared seed helpers (mirrors FinanceP1BonusGlTests) ─────────────────────

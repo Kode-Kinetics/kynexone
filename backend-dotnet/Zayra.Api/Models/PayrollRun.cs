@@ -36,6 +36,22 @@ public class PayrollRun : ITenantOwned, ICompanyScopedOperational
     // Explicit and default-OFF: recovering an overpayment out of someone's salary is an act an operator
     // must choose, never a side effect of re-running a month.
     public bool NetsPriorReceivable { get; set; }
+    /// <summary>
+    /// POD-C1 — is this run the DISBURSEMENT VEHICLE for approved termination settlements?
+    ///
+    /// <para>It is carried here, and NOT folded into <see cref="IncludesRecurringPay"/>, because the two
+    /// answer opposite questions and combining them is a live double-pay hazard: an OffCycle run may
+    /// legitimately pay full recurring salary (the missed-joiner case), and attaching a settlement to such
+    /// a run in a month AFTER the last working day would pay the leaver a whole extra month's wage and
+    /// charge a whole extra month's GOSI. Process refuses that combination outright.</para>
+    ///
+    /// <para>It is also what OPENS the disbursement rail: a leaver is <c>Offboarded</c>/<c>Terminated</c>
+    /// and has a non-voided <c>IsFinalWageMonth</c> slip, so all three of
+    /// <c>LoadEligibleWithLeaversAsync</c>'s gates exclude them from every subsequent run. Without an
+    /// explicit settlement purpose on the run, an approved settlement could accrue to 2320 and never reach
+    /// anybody. Default false, so every existing run is unchanged.</para>
+    /// </summary>
+    public bool SettlesFinalSettlements { get; set; }
     public decimal TotalGrossSalary { get; set; }
     public decimal TotalDeductions { get; set; }
     public decimal TotalNetSalary { get; set; }

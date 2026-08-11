@@ -43,6 +43,22 @@ using Zayra.Api.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ── DI validation at startup (Wave 0 / G5) ───────────────────────────────────
+// ValidateOnBuild resolves every registered service AT BOOT, so a missing or mistyped
+// registration becomes a failed deploy instead of a 500 the first time some endpoint is
+// hit in production. ValidateScopes catches captive dependencies — a Singleton (e.g. a
+// hosted worker) capturing a Scoped DbContext, which produces a pooled context shared
+// across threads and is the classic source of "random" concurrency corruption.
+//
+// This is deliberately ON IN EVERY ENVIRONMENT, not just Development. The failure mode it
+// guards is precisely what went unnoticed when NotificationService's constructor changed:
+// nothing resolved the graph until a request did.
+builder.Host.UseDefaultServiceProvider(options =>
+{
+    options.ValidateOnBuild = true;
+    options.ValidateScopes  = true;
+});
+
 // ── P3: JWT audience prod fail-fast ──────────────────────────────────────────
 // Dev defaults are intentionally left in appsettings.json for zero-config local dev.
 // In Production they MUST be overridden via environment variables (Jwt__TenantAudience,
@@ -296,6 +312,19 @@ builder.Services.AddScoped<Zayra.Api.Application.Localization.ITransliterationSe
     Zayra.Api.Infrastructure.Localization.TransliterationService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IEmailService, SmtpEmailService>();
+// POD-D5 — notification delivery. Channel dispatchers sit behind one abstraction; the vendor seam
+// is the provider port below. NO vendor credential lives in code or in a config default: the Null*
+// providers report "not_configured" (a visible delivery row), and a real Twilio / Unifonic / Meta
+// WhatsApp / FCM / APNs adapter drops in by replacing exactly one of these three lines.
+builder.Services.AddScoped<INotificationRecipientResolver, NotificationRecipientResolver>();
+builder.Services.AddScoped<INotificationProviderConfigReader, NotificationProviderConfigReader>();
+builder.Services.AddScoped<ISmsProvider, NullSmsProvider>();
+builder.Services.AddScoped<IWhatsAppProvider, NullWhatsAppProvider>();
+builder.Services.AddScoped<IPushProvider, NullPushProvider>();
+builder.Services.AddScoped<INotificationChannelDispatcher, EmailChannelDispatcher>();
+builder.Services.AddScoped<INotificationChannelDispatcher, SmsChannelDispatcher>();
+builder.Services.AddScoped<INotificationChannelDispatcher, WhatsAppChannelDispatcher>();
+builder.Services.AddScoped<INotificationChannelDispatcher, PushChannelDispatcher>();
 builder.Services.AddScoped<ILetterService, LetterService>();
 var pdfCapacity = builder.Configuration.GetValue("Pdf:MaxConcurrentRenders", 3);
 builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Documents.PdfRenderGate(pdfCapacity));
@@ -322,6 +351,23 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.GosiReadinessRepo
 // compliance dashboard variance count). Scoped so it shares the request's memoized IStatutoryRuleReader.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.GosiReconciliationService>();
 
+// ── POD-D4 — month-end hand-off (GL/ERP journal artifact + bank/WPS payment confirmation) ────────
+// Formatters and parsers are registered as IEnumerable<> and resolved BY KEY at the endpoint, so an
+// additional ERP shape or a bank's own response layout is one AddSingleton and no other code change.
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.GenericCsvJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.QuickBooksIifJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.OracleGlInterfaceCsvFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
+    Zayra.Api.Infrastructure.Finance.GenericCsvBankConfirmationParser>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
+    Zayra.Api.Infrastructure.Finance.WpsAckBankConfirmationParser>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.JournalExportService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.BankConfirmationService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler>();
+
 // Data protection — encrypts Qiwa client secrets at rest.
 builder.Services.AddDataProtection();
 
@@ -334,6 +380,9 @@ else
     builder.Services.AddSingleton<IQiwaApiAdapter, SandboxQiwaApiAdapter>();
 builder.Services.AddHostedService<QiwaSyncWorker>();
 builder.Services.AddHostedService<AiInsightEngine>();
+// POD-D5: the ONLY place a notification provider is called. Keeping every send off the request
+// thread is what makes "a notification can never fail OR HANG a payroll operation" true.
+builder.Services.AddHostedService<NotificationDeliveryWorker>();
 
 builder.Services.AddHttpClient<ILlmClient, LlmClient>();
 builder.Services.AddHttpContextAccessor();

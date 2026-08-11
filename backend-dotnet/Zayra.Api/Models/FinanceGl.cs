@@ -150,6 +150,28 @@ public static class PayrollGlCatalog
         // crediting Cash/Bank back, which is a lie the bank statement disproves.
         new Driver("EMPLOYEE_RECEIVABLE",   "Employee Overpayment Receivable","1420", "Employee Overpayment Receivable","Asset"),
         new Driver("STATUTORY_PREPAID",     "Prepaid Statutory Remittance",  "1430", "Prepaid Statutory Remittance",    "Asset"),
+        // ── POD-C1 TERMINATION SETTLEMENT ────────────────────────────────────────────────────────
+        // Before this pod there was NO end-of-service account and NO driver anywhere in the catalog, so
+        // the gratuity liability never reached the books at all. Codes 5110/5111/5112/5113 sit next to
+        // 5101 (the other employer-borne people cost) and 2310/2320 next to 2300 Bonus Payable.
+        // 5006/5007 were deliberately AVOIDED: gl_accounts carries a real UNIQUE (tenant, company, code)
+        // and the shipped GlPhase2Tests create custom client drivers on exactly those two codes, so
+        // seeding tenant defaults there would collide.
+        new Driver("EARN:EOSB",             "Earning — End of Service",      "5110", "End of Service Benefit Expense",  "Expense"),
+        new Driver("EARN:LEAVE_ENCASHMENT", "Earning — Leave Encashment",    "5111", "Leave Encashment Expense",        "Expense"),
+        new Driver("EARN:NOTICE_PAY",       "Earning — Notice Pay in Lieu",  "5112", "Payment in Lieu of Notice",       "Expense"),
+        // A settlement-side deduction (notice shortfall, other final deductions) is NOT a debt owed to a
+        // third party — it REDUCES what the employer owes. Routing it to DED:OTHER (2199) would credit a
+        // payable that RemitGroups.ForSource has no remittance path for, leaving permanent junk on the
+        // balance sheet. It credits a CONTRA-EXPENSE instead, so net employment cost is right and every
+        // account this pod touches provably returns to zero.
+        new Driver("DED:SETTLEMENT_RECOVERY","Deduction — Final Settlement Recovery","5113","Final Settlement Deductions (contra)","Expense"),
+        // The gratuity PROVISION POD-C2 will accrue monthly. C1 only CONSUMES it (see EosbProvisionLedger)
+        // and posts nothing to it until C2 exists, so today every settlement expenses the full gratuity.
+        new Driver("EOSB_PROVISION",        "End of Service Benefit Provision","2310","End of Service Benefit Provision","Liability"),
+        // What the leaver is owed between approval and disbursement. Cleared by the payroll run's own
+        // Lock journal, exactly the way POD-B1b clears Bonus Payable.
+        new Driver("SETTLEMENT_PAYABLE",    "Final Settlement Payable",      "2320", "Final Settlement Payable",        "Liability"),
     };
 
     public static IReadOnlyDictionary<string, (string Code, string Name)> Defaults { get; } =
@@ -203,6 +225,24 @@ public static class PayrollGlCatalog
         // accident; they are resolved exclusively by explicit ResolveGlAccount from the void path.
         Sys(tenantId, "EMPLOYEE_RECEIVABLE",   "Employee Overpayment Receivable",GlDriverCategories.Balancing,"DR","Asset",     "1420", "Employee Overpayment Receivable",  null,        "Any",    null,               106),
         Sys(tenantId, "STATUTORY_PREPAID",     "Prepaid Statutory Remittance",  GlDriverCategories.Balancing, "DR", "Asset",     "1430", "Prepaid Statutory Remittance",     null,        "Any",    null,               107),
+        // ── POD-C1 — settlement EARNING drivers, matched EXACTLY on the component code ────────────
+        // Exact (rank 3) so they are selected ahead of the catch-all EARN:OTHER, which is seeded `Any`
+        // (:171) and would otherwise CLAIM every settlement code and route the gratuity to 5099 Other
+        // Earnings — the same defect POD-C3 had to fix for ARREARS_*. EarningDriverKeyFor carries the
+        // matching precedence rule for tenants that have gl_drivers rows but have not re-seeded yet.
+        Sys(tenantId, "EARN:EOSB",             "Earning — End of Service",      GlDriverCategories.Earning,   "DR", "Expense",   "5110", "End of Service Benefit Expense",   null,        "Exact",  "EOSB_GRATUITY",    15),
+        Sys(tenantId, "EARN:LEAVE_ENCASHMENT", "Earning — Leave Encashment",    GlDriverCategories.Earning,   "DR", "Expense",   "5111", "Leave Encashment Expense",         null,        "Exact",  "LEAVE_ENCASHMENT", 16),
+        Sys(tenantId, "EARN:NOTICE_PAY",       "Earning — Notice Pay in Lieu",  GlDriverCategories.Earning,   "DR", "Expense",   "5112", "Payment in Lieu of Notice",        null,        "Exact",  "NOTICE_PAY",       17),
+        // Matched on the SOURCE rather than a code list, so a client that adds its own settlement-side
+        // deduction code still lands on the contra-expense instead of 2199. `Any` + a non-null MatchSource
+        // outranks DED:OTHER (`Any`, MatchSource null) on ResolveDriverForComponent's
+        // ThenByDescending(MatchSource != null) tie-break.
+        Sys(tenantId, "DED:SETTLEMENT_RECOVERY","Deduction — Final Settlement Recovery",GlDriverCategories.Deduction,"CR","Expense","5113","Final Settlement Deductions (contra)","Settlement","Any",null,            28),
+        // Category=Balancing for the same reason as CASH_BANK / BONUS_PAYABLE: ResolveDriverForComponent
+        // only ever considers Earning/Deduction rows, so no payroll component can be routed to a control
+        // account by accident. They are resolved EXCLUSIVELY by explicit GlAccountResolver.AccountLabel.
+        Sys(tenantId, "EOSB_PROVISION",        "End of Service Benefit Provision",GlDriverCategories.Balancing,"CR","Liability","2310", "End of Service Benefit Provision", null,        "Any",    null,               108),
+        Sys(tenantId, "SETTLEMENT_PAYABLE",    "Final Settlement Payable",      GlDriverCategories.Balancing, "CR", "Liability", "2320", "Final Settlement Payable",         null,        "Any",    null,               109),
     };
 
     private static GlDriver Sys(
@@ -263,6 +303,14 @@ public static class GlEventTypes
         eventType == Void
      || eventType == NetSettlementReversal
      || eventType == NetSettlementReclass
+     // POD-C1 — the settlement accrual's contra is an UNDO and must never itself be reversed: a run void
+     // that reversed a cancellation contra would silently RE-APPLY a settlement the operator cancelled,
+     // putting 2320 back on the books with nothing to disburse it. Its sibling
+     // SettlementPayrollClearing is deliberately NOT here — that one is an ORIGINATING journal (it is
+     // what DEBITS 2320 inside the Lock accrual), so IsOriginatingPayrollJournal must keep returning
+     // true for it or a void could not re-open the payable it consumed.
+     || eventType == SettlementAccrualReversal
+     || eventType == EosbProvisionConsumptionReversal
      || (eventType is not null && (eventType.StartsWith(RemitReversalPrefix, StringComparison.Ordinal)
                                 || eventType.StartsWith(RemitReclassPrefix, StringComparison.Ordinal)));
 
@@ -303,6 +351,33 @@ public static class GlEventTypes
     /// accrual is still outstanding so a batch can never be cleared twice.</summary>
     public static readonly string[] BonusClearingEvents =
         { BonusPayrollClearing, BonusPayment, BonusAccrualReversal };
+
+    // ── POD-C1 — TERMINATION SETTLEMENT lifecycle ────────────────────────────────────────────────
+    // Expense is recognised ONCE, at APPROVAL. Every later event only moves the payable — the same
+    // doctrine POD-B1b established for bonuses, and the reason 2320 provably returns to zero.
+    /// <summary>Approve: DR gratuity/encashment/notice expense (net of any POD-C2 provision consumed) /
+    /// CR 2320 Final Settlement Payable (GROSS of the settlement's earning lines).</summary>
+    public const string SettlementAccrual = "FinalSettlementAccrual";
+    /// <summary>Contra of the accrual when an approved settlement is cancelled.</summary>
+    public const string SettlementAccrualReversal = "FinalSettlementAccrualReversal";
+    /// <summary>Disbursed through payroll: the run's Lock journal DEBITS the settlement's STORED payable
+    /// account instead of re-expensing the settlement. Emitted INSIDE the payroll accrual journal (like
+    /// BonusPayrollClearing), never as a journal of its own.</summary>
+    public const string SettlementPayrollClearing = "FinalSettlementPayrollClearing";
+    /// <summary>POD-C1 (F2) — residual employee debt reclassified on payment: DR 1420 / CR 1400|1410.</summary>
+    public const string SettlementResidualReclass = "FinalSettlementResidualReclass";
+
+    // ── POD-C2 SEAM — the monthly EOSB liability accrual ─────────────────────────────────────────
+    // C1 builds and READS this sub-ledger; it never WRITES an accrual. POD-C2 posts
+    // EosbProvisionAccrual (DR 5110 expense / CR 2310 provision) monthly per employee, and this pod's
+    // approve path then consumes the position first and expenses only the shortfall — with no rework.
+    /// <summary>POD-C2 (not written here): DR EOSB expense / CR 2310 provision, per employee per month.</summary>
+    public const string EosbProvisionAccrual = "EosbProvisionAccrual";
+    /// <summary>POD-C1: DR 2310 provision — the settlement CONSUMES what C2 provided for this employee.</summary>
+    public const string EosbProvisionConsumption = "EosbProvisionConsumption";
+    /// <summary>Contra of a consumption when the settlement that took it is cancelled (re-opens the
+    /// provision for the same employee).</summary>
+    public const string EosbProvisionConsumptionReversal = "EosbProvisionConsumptionReversal";
 }
 
 /// <summary>Stable, remap-immune identifiers embedded in bonus/loan/advance line Descriptions —

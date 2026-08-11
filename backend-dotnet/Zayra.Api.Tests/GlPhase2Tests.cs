@@ -195,9 +195,29 @@ public class GlPhase2Tests
         // already-disbursed net pay out of a replacement run. It matches Exact on RECEIVABLE_RECOVERY so
         // it is selected ahead of the DED:OTHER catch-all, exactly the way DED:FIXED_DEDUCTION is; the
         // catch-all assertion below proves no OTHER component was pulled onto it.
-        drivers.Should().HaveCount(24);
-        drivers.Where(d => d.Category == GlDriverCategories.Balancing).Should().HaveCount(6 + 2,
-            "NET_PAYABLE + EMPLOYER_STATUTORY_EXPENSE + the six control accounts are the only Balancing drivers");
+        //
+        // POD-D adds SIX for the final-settlement / EOSB-provision journal: three EARNINGS that each
+        // match Exact on their own component code (EARN:EOSB → EOSB_GRATUITY, EARN:LEAVE_ENCASHMENT →
+        // LEAVE_ENCASHMENT, EARN:NOTICE_PAY → NOTICE_PAY), one DEDUCTION matched on Source="Settlement"
+        // (DED:SETTLEMENT_RECOVERY), and two Balancing control accounts (EOSB_PROVISION 2310,
+        // SETTLEMENT_PAYABLE 2320). None of them can steal an existing component: the three earnings are
+        // Exact-matched on codes no prior component uses, and the deduction only fires for a Settlement
+        // source — which the two catch-all assertions at the end of this test continue to prove.
+        drivers.Should().HaveCount(30);
+        drivers.Where(d => d.Category == GlDriverCategories.Balancing).Should().HaveCount(6 + 2 + 2,
+            "NET_PAYABLE + EMPLOYER_STATUTORY_EXPENSE + the six control accounts + POD-D's EOSB_PROVISION " +
+            "and SETTLEMENT_PAYABLE are the only Balancing drivers");
+
+        // POD-D routing goldens — a settlement's expense lines must never collapse onto EARN:OTHER,
+        // which would bury end-of-service cost inside general payroll expense on the P&L.
+        Route(drivers, "EOSB_GRATUITY", "Settlement", GlDriverCategories.Earning)
+            .Should().Be("EARN:EOSB", "end-of-service expense books to 5110, not the earnings catch-all");
+        Route(drivers, "LEAVE_ENCASHMENT", "Settlement", GlDriverCategories.Earning)
+            .Should().Be("EARN:LEAVE_ENCASHMENT", "leave encashment books to its own 5111 expense");
+        Route(drivers, "NOTICE_PAY", "Settlement", GlDriverCategories.Earning)
+            .Should().Be("EARN:NOTICE_PAY", "payment in lieu of notice books to its own 5112 expense");
+        Route(drivers, "ANY_RECOVERY", "Settlement", GlDriverCategories.Deduction)
+            .Should().Be("DED:SETTLEMENT_RECOVERY", "a settlement deduction is a contra, not DED:OTHER");
         Route(drivers, "RECEIVABLE_RECOVERY", "Recovery", GlDriverCategories.Deduction)
             .Should().Be("DED:RECEIVABLE_RECOVERY", "POD-C3 — an overpayment recovery credits the 1420 " +
                 "receivable, never the 2199 Other Deductions liability");

@@ -875,6 +875,64 @@ public sealed class PayrollVoidService
             }
         }
 
+        // ── POD-C1 — RESTORE THE SETTLEMENTS THIS RUN DISBURSED ──────────────────────────────────
+        // A void contras the run's SettlementPayrollClearing line (it is an ORIGINATING payroll journal,
+        // GlEventTypes.IsOriginatingPayrollJournal), so 2320 Final Settlement Payable automatically
+        // re-opens. Without this block the settlement itself would stay stranded in Disbursing/Paid with a
+        // PayrollRunId pointing at a run that no longer exists — a re-opened payable nothing could ever
+        // consume, because the eligibility predicate everywhere is (Approved && PayrollRunId == null).
+        // Restoring the RECORDED prior status (always Approved) is what makes the settlement re-disbursable
+        // on a fresh OffCycle run.
+        var settlementWitnesses = witnesses
+            .Where(w => w.ArtifactType == PayrollConsumptionArtifacts.FinalSettlement).ToList();
+        if (settlementWitnesses.Count > 0)
+        {
+            var settlementIds = settlementWitnesses.Select(w => w.ArtifactId).ToList();
+            // IgnoreQueryFilters: the restore is a SYSTEM correction that must reach every company's
+            // settlements (the platform remediation sweep carries no company claims); the TenantId +
+            // id-set predicate re-applies exact tenant scope and never reads another tenant.
+            var settlements = await _db.EmployeeFinalSettlements.IgnoreQueryFilters()
+                .Where(s => s.TenantId == tenantId && settlementIds.Contains(s.Id)).ToListAsync(ct);
+            foreach (var w in settlementWitnesses)
+            {
+                var s = settlements.FirstOrDefault(x => x.Id == w.ArtifactId);
+                if (s is null) continue;
+                s.Status = string.IsNullOrWhiteSpace(w.PriorStatus)
+                    ? FinalSettlementStatuses.Approved
+                    : w.PriorStatus!;
+                s.PayrollRunId = null;
+                s.PaymentBatchId = null;
+                s.PaidAtUtc = null;
+                s.UpdatedAtUtc = DateTime.UtcNow;
+                result.SettlementsRestored++;
+            }
+        }
+
+        // ── POD-C1 — RESTORE LEAVE ENCASHED DAYS ─────────────────────────────────────────────────
+        // Distinct from LeaveImpact, which restores an unpaid-leave DEDUCTION on a completely different
+        // entity. The witness carries the PRIOR Encashed value, so the balance is put back exactly rather
+        // than by subtracting a re-derived number — the same rule as the loan restore below, and for the
+        // same reason: a balance edited between the run and the void must not corrupt the restore.
+        var encashmentWitnesses = witnesses
+            .Where(w => w.ArtifactType == PayrollConsumptionArtifacts.LeaveEncashment).ToList();
+        if (encashmentWitnesses.Count > 0)
+        {
+            var balanceIds = encashmentWitnesses.Select(w => w.ArtifactId).ToList();
+            // IgnoreQueryFilters is intentional: company filter only. A void's contra must reverse the
+            // ORIGINAL entries exactly, including any posted before the row carried a company. Tenant re-
+            // applied in the WHERE.
+            var balances = await _db.EmployeeLeaveBalances.IgnoreQueryFilters()
+                .Where(b => b.TenantId == tenantId && balanceIds.Contains(b.Id)).ToListAsync(ct);
+            foreach (var w in encashmentWitnesses)
+            {
+                var b = balances.FirstOrDefault(x => x.Id == w.ArtifactId);
+                if (b is null) continue;
+                b.Encashed = w.PriorAmountPaid ?? Math.Max(0m, b.Encashed - w.Amount);
+                b.UpdatedAtUtc = DateTime.UtcNow;
+                result.LeaveEncashmentsRestored++;
+            }
+        }
+
         // Loans / advances — restore the RECORDED prior values, never a recomputed installment. The
         // aggregate LOAN_EMI deduction on the slip cannot attribute an employee's two loans, and
         // `Math.Min(InstallmentAmount, OutstandingBalance)` re-evaluated today would silently apply a
@@ -1064,6 +1122,10 @@ public sealed class PayrollVoidService
         public int ArrearsLinesReleased { get; set; }
         /// <summary>POD-C3 — 1420 receivable rows whose recovery by this run was undone.</summary>
         public int ReceivablesRestored { get; set; }
+        /// <summary>POD-C1 — termination settlements put back to Approved (and therefore re-disbursable).</summary>
+        public int SettlementsRestored { get; set; }
+        /// <summary>POD-C1 — leave balances whose encashed days were given back.</summary>
+        public int LeaveEncashmentsRestored { get; set; }
         public List<object> LoanRestoreDetail { get; } = new();
     }
 }

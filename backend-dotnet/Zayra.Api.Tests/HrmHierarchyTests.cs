@@ -566,7 +566,7 @@ public class HrmHierarchyTests
             new Pbkdf2PasswordHasher(),
             new AuditService(db),
             new FakeDocStorage(),
-            new NotificationService(db, new FakeEmailSvc(), NullLogger<NotificationService>.Instance),
+            TestNotifications.For(db),
             new FakeHijriSvc(),
             new Zayra.Api.Infrastructure.Common.DataScopeService(db),
             new FakeLetterSvc());

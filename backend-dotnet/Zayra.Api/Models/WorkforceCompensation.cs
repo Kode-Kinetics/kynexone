@@ -582,6 +582,17 @@ public static class PayrollConsumptionArtifacts
     /// <summary>POD-C3 — a PayrollEmployeeReceivable this run NETTED, with its prior RecoveredAmount in
     /// PriorAmountPaid, so a void of the recovering run restores the receivable exactly.</summary>
     public const string EmployeeReceivable = "EmployeeReceivable";
+    /// <summary>POD-C1 — an EmployeeFinalSettlement this run DISBURSED. PriorStatus carries the status
+    /// before disbursement (always <c>Approved</c>), so a void puts the settlement back where it was and
+    /// it can be re-disbursed on a fresh OffCycle run. Without it a voided settlement run would leave the
+    /// settlement stranded in <c>Disbursing</c>/<c>Paid</c> with its 2320 payable re-opened by the void
+    /// contra and nothing able to consume it.</summary>
+    public const string FinalSettlement = "FinalSettlement";
+    /// <summary>POD-C1 — an EmployeeLeaveBalance whose <c>Encashed</c> this run INCREMENTED to pay a
+    /// leaver's encashment. PriorAmountPaid carries the prior Encashed value so the void restores the row
+    /// exactly rather than subtracting a re-derived number. Distinct from <see cref="LeaveImpact"/>, which
+    /// is an unpaid-leave DEDUCTION artifact and restores a completely different entity.</summary>
+    public const string LeaveEncashment = "LeaveEncashment";
 }
 
 public class PayrollException : ITenantOwned

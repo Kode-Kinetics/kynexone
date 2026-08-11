@@ -414,6 +414,63 @@ public static class TenantProvisioningBundle
             });
             added++;
         }
+
+        added += await InstallShortChannelTemplatesAsync(db, tenantId, ct);
+        return added;
+    }
+
+    // ── 7b. POD-D5: SMS / WhatsApp / Push templates, seeded INACTIVE ─────────────────────────────
+    //
+    // A short-channel template row is the tenant's OPT-IN SWITCH: NotificationService only selects
+    // SMS/WhatsApp/Push when an ACTIVE template exists for (Code, Channel). Seeding them inactive
+    // means (a) no behaviour changes for any existing tenant, and (b) an admin can turn a channel on
+    // from the existing notification-template screen without hand-writing a body.
+    //
+    // The bodies deliberately carry NO payroll figures. "Your payslip is ready" — never what it is
+    // worth. Only allow-listed variables ({Period}, {Status}, …) may appear; NotificationBodyPolicy
+    // drops anything else and a monetary-token guard refuses the send outright.
+
+    private static readonly (string Code, string Event, string SubjectEn, string SubjectAr, string BodyEn, string BodyAr, string Vars)[] ShortChannelSeeds =
+    {
+        ("PAYSLIP_READY", "PayslipReady", "Payslip ready", "قسيمة الراتب جاهزة",
+            "Your payslip for {Period} is ready. Sign in to view it.",
+            "قسيمة راتبك عن {Period} جاهزة. سجّل الدخول للاطلاع عليها.", "Period"),
+        ("LEAVE_APPROVED", "LeaveApproved", "Leave approved", "تمت الموافقة على الإجازة",
+            "Your leave request was approved. Sign in for details.",
+            "تمت الموافقة على طلب إجازتك. سجّل الدخول للتفاصيل.", ""),
+        ("LEAVE_REJECTED", "LeaveRejected", "Leave update", "تحديث الإجازة",
+            "Your leave request was not approved. Sign in for details.",
+            "لم تتم الموافقة على طلب إجازتك. سجّل الدخول للتفاصيل.", ""),
+        ("HR_REQUEST_UPDATE", "HrRequestUpdate", "HR request update", "تحديث طلب الموارد البشرية",
+            "Your HR request status changed. Sign in for details.",
+            "تم تغيير حالة طلبك. سجّل الدخول للتفاصيل.", ""),
+    };
+
+    private static readonly string[] ShortChannels = ["SMS", "WhatsApp", "Push"];
+
+    private static async Task<int> InstallShortChannelTemplatesAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    {
+        // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent.
+        var existing = (await db.NotificationTemplates.IgnoreQueryFilters().AsNoTracking()
+            .Where(t => t.TenantId == tenantId && ShortChannels.Contains(t.Channel))
+            .Select(t => new { t.Code, t.Channel }).ToListAsync(ct))
+            .Select(x => $"{x.Code}|{x.Channel}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var added = 0;
+        foreach (var channel in ShortChannels)
+        foreach (var s in ShortChannelSeeds)
+        {
+            if (!existing.Add($"{s.Code}|{channel}")) continue;
+            db.NotificationTemplates.Add(new NotificationTemplate
+            {
+                TenantId = tenantId, Code = s.Code, EventType = s.Event, Channel = channel,
+                SubjectEn = s.SubjectEn, SubjectAr = s.SubjectAr, BodyEn = s.BodyEn, BodyAr = s.BodyAr,
+                Variables = s.Vars,
+                IsActive = false,   // OFF until the tenant configures a provider and turns it on
+            });
+            added++;
+        }
         return added;
     }
 }
