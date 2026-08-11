@@ -14,6 +14,11 @@ coverage/
 # .NET build artifacts
 backend-dotnet/**/bin/
 backend-dotnet/**/obj/
+# Test run artifacts. Beyond being build output, a .trx embeds base64 blobs that the
+# gitleaks `square-access-token` rule matches — committing one fails the secret gate
+# on a false positive and buries any real finding in the noise.
+backend-dotnet/**/TestResults/
+*.trx
 *.user
 *.suo
 .vercel
