@@ -281,3 +281,88 @@ against the code before being accepted; nothing here is taken on the reviewer's 
 The engineering-baseline verdict **stands at GO**, on a narrower basis than first written: builds clean, **1616/1616 with zero skipped**, zero model drift, fresh and upgrade migrations converge on identical schema, DI validated at boot, secret scan clean, and the two Wave 0 self-inflicted defects (R1, R2) found by review are fixed and regression-tested.
 
 **Tenant/company isolation is downgraded GO → CONDITIONAL GO.** The other corrections change the *capability baseline*, not the engineering baseline: they are claims about product completeness, and every one of them moves a rating **downward**. None of the 14 new defects was introduced by Wave 0 except **D1**, which Wave 0's contract hardening surfaced and which is now the top carry-over item.
+
+
+---
+
+## 10. Wave 0 P0 closure — D1, D2, D3
+
+**Authorized as an explicit follow-on.** These were the three P0 carry-overs recorded in §9.4.
+
+### 10.1 Precondition deviation, recorded before any edit
+
+The brief expected a clean working tree. **It was not clean.** HEAD was `a27a12c` and matched the
+remote (so the branch had not advanced), but the working tree carried **155 modified files, +7,214
+lines** of in-flight work that is not part of Wave 0 — document-storage hardening, `PublicId`
+identity, refresh-token families, transactional HR invariants, e2e fixtures and four unapplied
+migrations. It builds, and its own baseline is **1711 passed / 0 failed / 0 skipped**.
+
+Nothing of it was reset, discarded, stashed or overwritten.
+
+Consequence for D1: both files it must touch (`EmployeeManagementService.cs`,
+`EmployeeManagementDtos.cs`) carry foreign `PublicId` edits whose backing property lives in a *still
+uncommitted* file. Committing them wholesale would have produced **a commit that does not build**. The
+D1 commit was therefore staged as *HEAD content plus this change only*, via `git hash-object` +
+`git update-index`, leaving the working tree untouched. Verified: `git diff --cached` contained **zero**
+`PublicId` lines, and the committed tree builds and tests green in an isolated worktree.
+
+### 10.2 Commits
+
+| Defect | SHA | Changed files |
+|---|---|---|
+| D1 | `576a471` | `EmployeeManagementService.cs`, `EmployeeManagementDtos.cs`, `Security/TerminateSeparationLifecycleTests.cs` |
+| D2 | `2726c6f` | `Finance/GlJournalExportsController.cs`, `Security/GlJournalExportScopeTests.cs` |
+| D3 | `e9aa84c` | `Finance/BankConfirmationsController.cs`, `Security/BankConfirmationScopeTests.cs` |
+
+Starting head `a27a12c` → final head `e9aa84c`.
+
+### 10.3 Root cause and invariant
+
+| | Root cause | Invariant now enforced |
+|---|---|---|
+| **D1** | `terminate` set `Status="Terminated"` and created no separation; `/final-settlement` requires an offboarding with a last working day, and `/api/offboarding` refuses non-occupying statuses — so the employee was unsettleable **and** unroutable | A transition into an exit status always leaves exactly **one live separation**, created inside the existing offboarding domain and committed in the **same transaction** as the status change and both history rows. A live record is preserved verbatim; `Completed` is excluded so a rehire opens a **new** service period; a retry is a no-op |
+| **D2** | `includeUnattributed` added every NULL-company ledger row tenant-wide; `ScopeError` validated only `companyId`, so a caller passing their **own** company passed and the flag widened behind it | `includeUnattributed=true` requires an explicitly **group-scoped** caller, checked at preview, create and reconciliation **before** any query, build, persist, stamp or export |
+| **D3** | Tenant + permission only; the batch tables are `ITenantOwned` with no company filter. The voided-run guard also failed **open** cross-company, because `PayrollRun` *is* filtered so the run read back null and the refusal was skipped | Entity derived from `batch → run → PayrollRun.CompanyId`, never from the client; enforced **before** the uploaded body is read; NULL-company runs are group-only; missing/inconsistent ownership fails closed; cross-tenant returns `NotFound` |
+
+### 10.4 Results
+
+| Check | Result |
+|---|---|
+| Targeted D1 / D2 / D3 | **8 / 6 / 8 passed** |
+| Full suite — working tree | **1733 passed, 0 failed, 0 skipped** (from 1711) |
+| Full suite — **committed tree**, isolated worktree | **1648 passed, 0 failed, 0 skipped** |
+| EF model drift — working tree and committed tree | **None** |
+| Isolation / bypass / startup / PII guards | **26 passed** |
+| Frontend typecheck + production build | **pass** |
+
+Every guard was **negative-tested** rather than trusted: removing D1's separation block fails 6 of 8,
+removing D2's guard fails exactly its 3 negative tests, removing D3's guard fails 5 of 8.
+
+> The two totals differ because the uncommitted foreign work carries ~94 tests of its own. **1639 is the
+> number CI sees**, and it is the one that matters for this PR.
+
+
+### 10.5 Independent review — findings and disposition
+
+Three bounded read-only reviewers (HR/offboarding lifecycle, multi-entity authorization,
+database/transaction/idempotency) challenged the diff. **They found Critical defects in two of the
+three fixes.** Every Critical and High was fixed in `5a664e7`; nothing was waived.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R1 | **Critical** | **D2 covered only half the surface.** The flag reaches the builder from a STORED artifact too — `Get`, `Download`, `Confirm`, `Reject` rebuild a filter from `GlJournalExport.IncludeUnattributed` and checked only the company. A group caller creates an export for company A with the flag; a company-A caller then reads the tenant-wide rows out of the artifact. `Confirm`/`Reject` additionally stamp `ErpPostingStatus` onto sibling-entity rows — a cross-entity **write** | **FIXED.** All four re-check the stored flag; 4 tests added. My original test docstring claimed to pin "EVERY entry point" — it was false and is corrected |
+| R2 | **Critical** | **D1 excluded the population it existed for.** The trigger also required the previous status to be non-exit, so anyone already at Terminated/Archived/Exited with no separation — every pre-existing and migrated leaver — could not be remediated at all | **FIXED.** Clause removed; the liveSeparation lookup already provided idempotency. Test added starting from `Terminated` |
+| R3 | **High** | **Rehire left a stale separation.** Nothing cancels the open offboarding on reactivation, and `Complete` is unreachable without a paid settlement. The next termination would settle against the **prior period's** last working day — a statutory underpayment | **FIXED.** Reactivation closes any open separation with no settlement drafted against it |
+| R4 | **High** | **Idempotency had no database behind it.** Check-then-act with no constraint; settlements de-duplicate by `OffboardingId`, so two concurrent terminates ⇒ **two EOSB accruals** | **FIXED.** Partial unique index `(tenant_id, employee_id) WHERE status NOT IN ('Cancelled','Completed')`, added via the named overload so the plain lookup index survives |
+| R5 | **High** | **`SeparationType` was unvalidated free text deciding a statutory award**, and reachable via `PATCH /status` (`employees.write`) while `/terminate` is `employees.approve` | **FIXED.** Closed vocabulary, fails closed; stripped on the write-level endpoint |
+| R6 | High | `GetEntityScope()` resolves with `strictMode:false` and ignores `NarrowTo`, while the DB layer is strict in production | **RECORDED, not fixed.** A shared auth helper used app-wide; changing it inside this PR without its own review is riskier than the exposure. Logged as a new defect for the next security block |
+| R7 | Medium | Sibling routes on `PayrollController` (`payment-batches/{id}/records`, `wps-status`, `settle/reverse`) are tenant-only and defeat D3's read/write goal from a different URL | **RECORDED, not fixed.** Outside the three authorized defects; the same `BatchScopeErrorAsync` pattern applies and is the obvious next task |
+| R8 | Medium | Legacy runs with `CompanyId == null` become group-only for import/history — a rollout consideration for tenants that never backfilled | **RECORDED.** Intentional per the brief ("a legacy run with CompanyId=null must be group-only"); flagged as a migration/rollout note |
+| R9 | Medium | Other terminal-ish states (`Inactive` via bulk deactivate, free-text statuses) still produce no separation | **RECORDED.** Real, but a vocabulary problem wider than D1 |
+| R10 | Medium | Soft-delete has no guard against deleting a terminated-but-unsettled employee | **RECORDED.** Pre-existing; now more consequential because a live separation always exists |
+| R11 | Low | Audit is written outside the business transaction | **RECORDED.** Pre-existing pattern across the service |
+
+> **Honest note on my own tests.** Two of the original D1 tests passed *for the wrong reason* — the
+> idempotency test only exercised a status short-circuit, and the rehire test hand-built a state the
+> product cannot reach. Both were rewritten to drive the real paths. This is exactly what the
+> independent round was for, and it is why "green" was not treated as done.
