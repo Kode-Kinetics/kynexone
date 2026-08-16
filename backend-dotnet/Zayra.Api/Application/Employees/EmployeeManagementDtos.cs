@@ -86,7 +86,13 @@ public record EmployeeComplianceRecordRequest(
 public record EmployeeStatusChangeRequest(
     [Required, MaxLength(80)] string Status,
     [Required] DateOnly EffectiveDate,
-    [Required, MaxLength(500)] string Reason);
+    [Required, MaxLength(500)] string Reason,
+    // D1 — separation type for a direct termination (Resignation / Termination / Retirement /
+    // EndOfContract / Article80 …). Optional and defaulted, so existing three-argument callers are
+    // unaffected; when omitted a direct termination records "Termination", the conservative reading of
+    // an employer-initiated command. It is stated on the COMMAND rather than guessed later, because
+    // this value decides the gratuity.
+    [MaxLength(60)] string? SeparationType = null);
 
 public record EmployeeDocumentUploadMetadata(
     [Required, MaxLength(80)] string DocumentType,

@@ -258,6 +258,61 @@ public class EmployeeManagementService : IEmployeeManagementService
             ChangedByUserId = context.UserId
         });
         await AddHistory(employee, "StatusChange", "Status", oldStatus, request.Status, request.EffectiveDate, request.Reason, context, cancellationToken);
+
+        // ── D1: A TERMINATION MUST PRODUCE AUTHORITATIVE SEPARATION DATA ─────────────────────────────
+        // Before this, POST /employees/{id}/terminate set Status = "Terminated" and created NOTHING
+        // else. /final-settlement requires an EmployeeOffboarding carrying a LastWorkingDay (400
+        // not_a_leaver otherwise), and POST /api/offboarding refuses a non-occupying employee — and
+        // "Terminated" is not occupying. So a directly-terminated employee could never be settled and
+        // could never be routed back into offboarding: an unsettleable dead end, and a hard blocker for
+        // migrating staff who were already terminated in a prior system.
+        //
+        // The fix reuses the EXISTING offboarding domain rather than introducing a second termination
+        // architecture. The record is staged here, before the first SaveChanges below, so the status
+        // change, the status history, the lifecycle history and the separation all commit in ONE
+        // transaction — a failure cannot leave a Terminated employee with no separation.
+        var separationCreated = false;
+        if (ExitEmployeeStatuses.PayrollDeactivation.Contains(request.Status, StringComparer.OrdinalIgnoreCase)
+            && !ExitEmployeeStatuses.PayrollDeactivation.Contains(oldStatus, StringComparer.OrdinalIgnoreCase))
+        {
+            // PRESERVE, never overwrite. An offboarding already raised through the proper flow carries
+            // approved dates, a notice period and a reason that a status command must not guess over.
+            // "Live" excludes Cancelled AND Completed: a completed separation belongs to a PRIOR service
+            // period, so a rehired employee terminated again correctly gets a NEW record rather than
+            // reopening history. Re-running the same terminate finds the live record and does nothing,
+            // which is what makes the operation idempotent.
+            var liveSeparation = await _db.EmployeeOffboardings
+                .Where(o => o.TenantId == tenantId && o.EmployeeId == id
+                         && o.Status != "Cancelled" && o.Status != "Completed")
+                .OrderByDescending(o => o.CreatedAtUtc)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (liveSeparation is null)
+            {
+                _db.EmployeeOffboardings.Add(new EmployeeOffboarding
+                {
+                    TenantId = tenantId,
+                    EmployeeId = id,
+                    EmployeeName = employee.FullName,
+                    EmployeeCode = employee.EmployeeCode,
+                    Department = employee.Department ?? string.Empty,
+                    Designation = employee.Designation ?? string.Empty,
+                    // Derived from the COMMAND, which is the only authoritative source here: the caller
+                    // stated the effective date, so that is the last working day. A direct termination is
+                    // immediate by construction — there is no notice being served.
+                    SeparationType = string.IsNullOrWhiteSpace(request.SeparationType)
+                        ? "Termination"
+                        : request.SeparationType.Trim(),
+                    Reason = request.Reason,
+                    NoticeDate = request.EffectiveDate,
+                    NoticePeriodDays = 0,
+                    LastWorkingDay = request.EffectiveDate,
+                    Status = "InProgress",
+                    CreatedAtUtc = DateTime.UtcNow,
+                });
+                separationCreated = true;
+            }
+        }
         // Stamp ActivatedAtUtc on the first successful activation (the gate above already passed).
         if (string.Equals(request.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase) && employee.ActivatedAtUtc is null)
             employee.ActivatedAtUtc = DateTime.UtcNow;
@@ -280,7 +335,15 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.status_changed", "Employee", id.ToString(), context, JsonSerializer.Serialize(new { oldStatus, request.Status, request.Reason }), cancellationToken);
+        await _audit.WriteAsync("employee.status_changed", "Employee", id.ToString(), context,
+            JsonSerializer.Serialize(new
+            {
+                oldStatus, request.Status, request.Reason,
+                // D1: the separation is part of the evidence for this transition, not a side effect.
+                separationCreated,
+                separationType = separationCreated ? (string.IsNullOrWhiteSpace(request.SeparationType) ? "Termination" : request.SeparationType.Trim()) : null,
+                lastWorkingDay = separationCreated ? request.EffectiveDate : (DateOnly?)null,
+            }), cancellationToken);
 
         // EXIT CASCADE (terminate / direct status change into a terminal state): deactivate the
         // WPS footprint so an ex-employee cannot be swept into a SIF export. The salary STRUCTURE is
