@@ -2408,7 +2408,13 @@ public class EmployeesController : ControllerBase
     {
         try
         {
-            var employee = await employeeManagement.ChangeStatusAsync(RequireTenant(), id, request, Context(), cancellationToken);
+            // D1 privilege boundary: SeparationType decides the end-of-service award (Article80 forfeits
+            // it entirely), and this endpoint is only employees.write, whereas /terminate — the canonical
+            // separation command — is employees.approve. Accepting it here would let a write-level user
+            // mint a gratuity-determining fact. It is dropped rather than rejected so ordinary status
+            // changes keep working unchanged; a caller who needs to state it uses /terminate.
+            var employee = await employeeManagement.ChangeStatusAsync(
+                RequireTenant(), id, request with { SeparationType = null }, Context(), cancellationToken);
             return employee is null ? NotFound() : Ok(employee);
         }
         // Readiness block MUST be caught before InvalidOperationException (which would swallow the

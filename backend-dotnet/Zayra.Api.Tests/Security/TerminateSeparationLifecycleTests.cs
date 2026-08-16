@@ -134,31 +134,73 @@ public class TerminateSeparationLifecycleTests
     // ── Rehire gets a NEW service period ──────────────────────────────────────
 
     [Fact]
-    public async Task RehireThenTerminate_CreatesANewSeparation_NotReusingTheCompletedOne()
+    public async Task RehireThenTerminate_CreatesANewSeparation_ForTheNewServicePeriod()
     {
         using var db = NewDb();
         var tenantId = Guid.NewGuid();
         var (svc, emp) = Seed(db, tenantId);
 
-        // First service period, closed out.
+        // First separation, left exactly as the product leaves it — InProgress. Deliberately NOT
+        // hand-set to Completed: an earlier version of this test did that, which constructed a state the
+        // rehire path can never actually reach (Complete demands a PAID settlement), so it passed
+        // without exercising the real behaviour.
         await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
-        var first = await db.EmployeeOffboardings.SingleAsync(o => o.EmployeeId == emp.Id);
-        first.Status = "Completed";
-        await db.SaveChangesAsync();
 
-        // Rehired, then separated again later.
+        // Rehired through the ordinary reactivation path.
         await svc.ActivateAsync(tenantId, emp.Id,
             new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 1), "Rehired"),
             Ctx, default);
+
+        (await db.EmployeeOffboardings.SingleAsync(o => o.EmployeeId == emp.Id)).Status
+            .Should().Be("Cancelled", "reactivation closes the prior service period");
+
         await svc.TerminateAsync(tenantId, emp.Id,
             new EmployeeStatusChangeRequest("Terminated", new DateOnly(2027, 3, 31), "Second exit"),
             Ctx, default);
 
         var all = await db.EmployeeOffboardings.Where(o => o.EmployeeId == emp.Id).ToListAsync();
-        all.Should().HaveCount(2, "a new service period must get its own separation, not reopen a closed one");
-        all.Should().ContainSingle(o => o.Status == "Completed" && o.LastWorkingDay == Lwd);
-        all.Should().ContainSingle(o => o.Status == "InProgress" && o.LastWorkingDay == new DateOnly(2027, 3, 31));
+        all.Should().HaveCount(2, "the new service period gets its own separation");
+        var live = all.Single(o => o.Status == "InProgress");
+        live.LastWorkingDay.Should().Be(new DateOnly(2027, 3, 31),
+            "settling the SECOND exit against the FIRST period's last working day would underpay the " +
+            "gratuity, leave encashment and wage proration — with the employer's own settlement as evidence");
     }
+
+    [Fact]
+    public async Task AnAlreadyTerminatedEmployeeWithNoSeparation_IsRemediatedByReRunningTerminate()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+
+        // The migrated / pre-existing population: already Terminated, no separation. An earlier version
+        // of the fix also required the PREVIOUS status to be non-exit, which excluded exactly these
+        // employees and left the dead end permanent for them.
+        emp.Status = EmployeeStatuses.Terminated;
+        await db.SaveChangesAsync();
+
+        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+
+        (await db.EmployeeOffboardings.CountAsync(o => o.EmployeeId == emp.Id))
+            .Should().Be(1, "an already-terminated employee must be recoverable, not permanently stranded");
+    }
+
+    [Fact]
+    public void AnUnknownSeparationType_IsRefused_NotSilentlyPaidAsAFullAward()
+    {
+        // "Article 80" with a space, "Absconding", "Gross Misconduct" — all pass through
+        // NormalizeTerminationReason to a FULL Art.84 award, where the statute forfeits it.
+        var act = () => EmployeeManagementService.NormalizeSeparationType("Article 80");
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*decides the end-of-service award*");
+    }
+
+    [Theory]
+    [InlineData("resignation", "Resignation")]
+    [InlineData("ARTICLE80", "Article80")]
+    [InlineData(null, "Termination")]
+    public void KnownSeparationTypes_NormaliseToTheCanonicalCasing(string? input, string expected)
+        => EmployeeManagementService.NormalizeSeparationType(input).Should().Be(expected);
 
     // ── Atomicity: status and separation cannot disagree ──────────────────────
 

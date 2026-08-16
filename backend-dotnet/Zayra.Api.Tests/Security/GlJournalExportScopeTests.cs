@@ -27,8 +27,11 @@ namespace Zayra.Api.Tests.Security;
 /// valid check. Authorising the company is not the same as authorising the tenant-wide residue, which
 /// is why D2 adds a separate guard rather than modifying the existing one.</para>
 ///
-/// <para>These tests pin the boundary on EVERY entry point that accepts the flag — preview, artifact
-/// creation and reconciliation — and prove a denied request leaves no export artifact behind.</para>
+/// <para>The flag reaches the builder by TWO routes: as a query parameter (preview, create,
+/// reconciliation) and from a STORED artifact (get, download, confirm, reject all rebuild a filter from
+/// <c>GlJournalExport.IncludeUnattributed</c>). Guarding only the first left the second wide open — a
+/// group caller creates an export for company A with the flag, and a company-A-scoped caller then reads
+/// the tenant-wide rows out of the artifact. Both routes are pinned below.</para>
 /// </summary>
 public class GlJournalExportScopeTests
 {
@@ -157,5 +160,99 @@ public class GlJournalExportScopeTests
 
         result.Should().BeOfType<ForbidResult>(
             "company scope is an ADDITIONAL control; it never replaces the finance.gl.* permission gate");
+    }
+
+    // ── The stored-artifact route ─────────────────────────────────────────────
+
+    /// <summary>An export as a GROUP caller would legitimately have created it: scoped to one company,
+    /// but carrying the tenant-wide unattributed residue in its frozen line set.</summary>
+    private static Guid SeedGroupExportWithUnattributed(ZayraDbContext db, Guid tenantId, Guid companyId)
+    {
+        var export = new GlJournalExport
+        {
+            TenantId = tenantId, CompanyId = companyId, Period = "2026-07",
+            IncludeUnattributed = true, FormatKey = "generic-csv", Currency = "SAR",
+            Status = GlJournalExportStatuses.Exported, FileName = "j.csv", FileHash = "abc",
+        };
+        db.GlJournalExports.Add(export);
+        db.SaveChanges();
+        return export.Id;
+    }
+
+    [Fact]
+    public async Task Get_OfAnUnattributedExport_IsDeniedToACompanyScopedCaller()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var mine = Guid.NewGuid();
+        var exportId = SeedGroupExportWithUnattributed(db, tenantId, mine);
+
+        var result = await MakeCtrl(db, tenantId, scopedCompany: mine, "finance.gl.read").Get(exportId, default);
+
+        result.Should().BeOfType<ForbidResult>(
+            "the artifact's frozen lines carry tenant-wide rows — reading them out of the export is the " +
+            "same disclosure as reading them from the query");
+    }
+
+    [Fact]
+    public async Task Download_OfAnUnattributedExport_IsDeniedToACompanyScopedCaller()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var mine = Guid.NewGuid();
+        var exportId = SeedGroupExportWithUnattributed(db, tenantId, mine);
+
+        var result = await MakeCtrl(db, tenantId, scopedCompany: mine, "finance.gl.read").Download(exportId, default);
+
+        result.Should().BeOfType<ForbidResult>("download regenerates the full file from the frozen set");
+    }
+
+    [Fact]
+    public async Task Confirm_OfAnUnattributedExport_IsDeniedToACompanyScopedCaller()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var mine = Guid.NewGuid();
+        var exportId = SeedGroupExportWithUnattributed(db, tenantId, mine);
+
+        var result = await MakeCtrl(db, tenantId, scopedCompany: mine, "finance.gl.manage")
+            .Confirm(exportId, new ErpImportConfirmationRequest("DOC-1"), default);
+
+        result.Should().BeOfType<ForbidResult>(
+            "confirming stamps ErpPostingStatus onto the covered ledger rows — a cross-entity WRITE");
+    }
+
+    [Fact]
+    public async Task List_DoesNotAdvertiseGroupLevelExportsToACompanyScopedCaller()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var mine = Guid.NewGuid();
+        db.GlJournalExports.Add(new GlJournalExport
+        {
+            TenantId = tenantId, CompanyId = null, Period = "2026-07", IncludeUnattributed = true,
+            Status = GlJournalExportStatuses.Exported, TotalDebits = 999_999m,
+        });
+        db.GlJournalExports.Add(new GlJournalExport
+        {
+            TenantId = tenantId, CompanyId = mine, Period = "2026-07",
+            Status = GlJournalExportStatuses.Exported,
+        });
+        db.SaveChanges();
+
+        var ctrl = MakeCtrl(db, tenantId, scopedCompany: mine, "finance.gl.read");
+
+        // A company-scoped caller cannot list tenant-wide at all: ScopeError refuses a null companyId
+        // for non-group callers, which is what made the `CompanyId == null ||` disjunct downstream
+        // unreachable. It is still removed, because a listing filter that admits group-level rows is a
+        // discovery oracle the moment that guard is ever relaxed.
+        (await ctrl.List(null, null, null, null, default))
+            .Should().BeOfType<ForbidResult>("a tenant-wide listing is a group-level request");
+
+        var scoped = await ctrl.List(null, null, mine, null, default);
+        var rows = scoped.Should().BeOfType<OkObjectResult>().Subject.Value as System.Collections.IEnumerable;
+        rows!.Cast<object>().Should().HaveCount(1,
+            "scoped to their own entity, the caller sees their export and never the group-level one " +
+            "whose summary would disclose IncludeUnattributed and tenant-wide totals");
     }
 }

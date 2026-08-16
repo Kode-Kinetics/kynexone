@@ -272,8 +272,14 @@ public class EmployeeManagementService : IEmployeeManagementService
         // change, the status history, the lifecycle history and the separation all commit in ONE
         // transaction — a failure cannot leave a Terminated employee with no separation.
         var separationCreated = false;
-        if (ExitEmployeeStatuses.PayrollDeactivation.Contains(request.Status, StringComparer.OrdinalIgnoreCase)
-            && !ExitEmployeeStatuses.PayrollDeactivation.Contains(oldStatus, StringComparer.OrdinalIgnoreCase))
+        // Deliberately NOT conditioned on oldStatus. An earlier revision also required the PREVIOUS
+        // status to be non-exit, which quietly excluded the exact population this fix exists for:
+        // anyone already sitting at Terminated/Archived/Exited with no separation — every employee
+        // terminated before this shipped, and every leaver migrated in from a prior system. For them
+        // re-running terminate was a no-op, offboarding refused them as non-occupying, and settlement
+        // still returned not_a_leaver, so the dead end was permanent. The liveSeparation lookup below
+        // already supplies idempotency, so the oldStatus clause bought nothing and cost the backlog.
+        if (ExitEmployeeStatuses.PayrollDeactivation.Contains(request.Status, StringComparer.OrdinalIgnoreCase))
         {
             // PRESERVE, never overwrite. An offboarding already raised through the proper flow carries
             // approved dates, a notice period and a reason that a status command must not guess over.
@@ -300,19 +306,52 @@ public class EmployeeManagementService : IEmployeeManagementService
                     // Derived from the COMMAND, which is the only authoritative source here: the caller
                     // stated the effective date, so that is the last working day. A direct termination is
                     // immediate by construction — there is no notice being served.
-                    SeparationType = string.IsNullOrWhiteSpace(request.SeparationType)
-                        ? "Termination"
-                        : request.SeparationType.Trim(),
+                    SeparationType = NormalizeSeparationType(request.SeparationType),
                     Reason = request.Reason,
                     NoticeDate = request.EffectiveDate,
                     NoticePeriodDays = 0,
                     LastWorkingDay = request.EffectiveDate,
                     Status = "InProgress",
+                    // L9: a record that drives a payable must name its author.
+                    CreatedByUserId = context.UserId,
                     CreatedAtUtc = DateTime.UtcNow,
                 });
                 separationCreated = true;
             }
         }
+        // ── D1/H2: A REACTIVATION CLOSES THE PRIOR SERVICE PERIOD ───────────────────────────────────
+        // Nothing on the rehire path (Terminated/Archived/Offboarded → Active) previously cancelled the
+        // open offboarding: Cancel is only ever called explicitly. A stale InProgress record therefore
+        // survived the rehire, and because FinalSettlement takes the NEWEST non-Cancelled offboarding it
+        // would then settle the SECOND separation against the FIRST period's last working day — gratuity,
+        // leave encashment and wage proration all computed to a date that may be years stale. That is a
+        // statutory underpayment carrying the employer's own signed settlement as evidence.
+        //
+        // Closing it here makes the service-period boundary explicit, and is what lets the next
+        // termination create a separation of its own. Only separations with no accrued settlement are
+        // closed; if money has been drafted against one, it is left alone for the settlement-cancel flow
+        // (which posts the GL contra) rather than silently detached.
+        if (string.Equals(request.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
+            && !EstablishmentOccupancy.IsOccupyingStatus(oldStatus))
+        {
+            var settledOffboardingIds = await _db.EmployeeFinalSettlements
+                .Where(f => f.TenantId == tenantId && f.EmployeeId == id)
+                .Select(f => f.OffboardingId)
+                .ToListAsync(cancellationToken);
+            var stale = await _db.EmployeeOffboardings
+                .Where(o => o.TenantId == tenantId && o.EmployeeId == id
+                         && o.Status != "Cancelled" && o.Status != "Completed"
+                         && !settledOffboardingIds.Contains(o.Id))
+                .ToListAsync(cancellationToken);
+            foreach (var open in stale)
+            {
+                open.Status = "Cancelled";
+                open.Reason = $"Superseded: employee reactivated on {request.EffectiveDate:yyyy-MM-dd}. "
+                            + "A new service period starts here and will get its own separation.";
+                open.UpdatedAtUtc = DateTime.UtcNow;
+            }
+        }
+
         // Stamp ActivatedAtUtc on the first successful activation (the gate above already passed).
         if (string.Equals(request.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase) && employee.ActivatedAtUtc is null)
             employee.ActivatedAtUtc = DateTime.UtcNow;
@@ -503,6 +542,38 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.transfer_requested", "EmployeeTransferRequest", transfer.Id.ToString(), context, null, cancellationToken);
         return transfer;
+    }
+
+    /// <summary>
+    /// D1 — the separation type is a STATUTORY input, so it is validated against a closed vocabulary
+    /// rather than persisted as free text.
+    ///
+    /// <para>It flows to <c>PayrollController.NormalizeTerminationReason</c>, which recognises only
+    /// "Resignation" (Art. 85 reduction) and "Article80" (full forfeiture) and passes anything else
+    /// through to a FULL Art. 84 award. So a well-meaning "Article 80" with a space, "Art. 80",
+    /// "Absconding" or "Gross Misconduct" would silently pay a full gratuity where the statute forfeits
+    /// it entirely. Failing closed here means an unrecognised value is refused at the door instead of
+    /// becoming a wrong payment months later.</para>
+    /// </summary>
+    private static readonly string[] AllowedSeparationTypes =
+    [
+        "Termination", "Resignation", "Retirement", "EndOfContract", "Redundancy",
+        "ProbationFailure", "Article80", "Death", "Abscondment",
+    ];
+
+    internal static string NormalizeSeparationType(string? requested)
+    {
+        // Conservative default for an employer-initiated command with nothing stated.
+        if (string.IsNullOrWhiteSpace(requested)) return "Termination";
+        var trimmed = requested.Trim();
+        var match = AllowedSeparationTypes.FirstOrDefault(
+            t => string.Equals(t, trimmed, StringComparison.OrdinalIgnoreCase));
+        if (match is null)
+            throw new InvalidOperationException(
+                $"Unknown separation type '{trimmed}'. This value decides the end-of-service award, so an "
+                + "unrecognised one is refused rather than silently paid as a full award. Allowed: "
+                + string.Join(", ", AllowedSeparationTypes) + ".");
+        return match;
     }
 
     public Task<EmployeeDetailDto?> ActivateAsync(Guid tenantId, int employeeId, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken)

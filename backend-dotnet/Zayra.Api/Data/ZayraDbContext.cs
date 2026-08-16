@@ -2267,6 +2267,20 @@ public class ZayraDbContext : DbContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId });
             entity.HasIndex(x => new { x.TenantId, x.Status });
+            // D1 — AT MOST ONE LIVE SEPARATION PER EMPLOYEE, enforced by the database.
+            // The service checks for a live separation before inserting, but a check-then-act with no
+            // constraint is advisory only: two concurrent terminates (double-click, client retry, two
+            // operators) both read "none" and both insert. That is not cosmetic — final settlements are
+            // de-duplicated by OffboardingId, not by employee, so two separations mean TWO EOSB accruals
+            // for one exit, and the "already settled" guard can be walked past by landing on the other
+            // row. A partial unique index makes the invariant true rather than merely intended;
+            // Cancelled and Completed are excluded because they belong to closed service periods.
+            // Named overload so this coexists with the plain lookup index above rather than replacing
+            // it — EF keys indexes by property set, so an unnamed duplicate would silently drop the
+            // non-unique one and de-optimise reads of closed separations.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId }, "ix_employee_offboardings_live_per_employee")
+                .IsUnique()
+                .HasFilter("status NOT IN ('Cancelled', 'Completed')");
         });
 
         modelBuilder.Entity<Tenant>(entity =>

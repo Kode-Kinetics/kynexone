@@ -153,7 +153,12 @@ public class GlJournalExportsController : ControllerBase
         else if (!this.GetEntityScope().IsGroupLevel)
         {
             var ids = this.GetEntityScope().AccessibleCompanyIds;
-            q = q.Where(x => x.CompanyId == null || ids.Contains(x.CompanyId!.Value));
+            // NOT `CompanyId == null ||` — that disjunct listed GROUP-level exports to a company-scoped
+            // caller, contradicting ScopeError (which forbids a null company for non-group callers) and
+            // acting as a discovery oracle: Summary exposes IncludeUnattributed, TotalDebits and
+            // TotalCredits, so a caller could enumerate tenant-wide totals and pick out precisely which
+            // artifacts carried the flag before trying to download them.
+            q = q.Where(x => x.CompanyId != null && ids.Contains(x.CompanyId!.Value));
         }
         if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
 
@@ -169,6 +174,12 @@ public class GlJournalExportsController : ControllerBase
         var export = await LoadAsync(tid.Value, id, ct);
         if (export is null) return NotFound();
         if (ScopeError(export.CompanyId) is { } err) return err;
+        // D2: the STORED flag matters as much as the stored company. A group caller may legitimately
+        // create an export for company A with includeUnattributed=true; its frozen line set then holds
+        // tenant-wide NULL-company rows. Checking only export.CompanyId would let a company-A-scoped
+        // caller read or re-confirm exactly the rows the flag exists to restrict — via the artifact
+        // instead of the query. Re-checking here closes that indirect route.
+        if (UnattributedScopeError(export.IncludeUnattributed) is { } unattributedErr) return unattributedErr;
 
         // IgnoreQueryFilters is intentional: company filter only — a stored export's lines are read as
         // frozen. Tenant re-applied.
@@ -217,6 +228,12 @@ public class GlJournalExportsController : ControllerBase
         var export = await LoadAsync(tid.Value, id, ct);
         if (export is null) return NotFound();
         if (ScopeError(export.CompanyId) is { } err) return err;
+        // D2: the STORED flag matters as much as the stored company. A group caller may legitimately
+        // create an export for company A with includeUnattributed=true; its frozen line set then holds
+        // tenant-wide NULL-company rows. Checking only export.CompanyId would let a company-A-scoped
+        // caller read or re-confirm exactly the rows the flag exists to restrict — via the artifact
+        // instead of the query. Re-checking here closes that indirect route.
+        if (UnattributedScopeError(export.IncludeUnattributed) is { } unattributedErr) return unattributedErr;
 
         var (bytes, _, formatter, refusal) = await _exports.RegenerateAsync(export, ct);
         if (refusal is not null) return StatusCode(refusal.Status, refusal.Payload);
@@ -245,6 +262,12 @@ public class GlJournalExportsController : ControllerBase
         var export = await LoadAsync(tid.Value, id, ct);
         if (export is null) return NotFound();
         if (ScopeError(export.CompanyId) is { } err) return err;
+        // D2: the STORED flag matters as much as the stored company. A group caller may legitimately
+        // create an export for company A with includeUnattributed=true; its frozen line set then holds
+        // tenant-wide NULL-company rows. Checking only export.CompanyId would let a company-A-scoped
+        // caller read or re-confirm exactly the rows the flag exists to restrict — via the artifact
+        // instead of the query. Re-checking here closes that indirect route.
+        if (UnattributedScopeError(export.IncludeUnattributed) is { } unattributedErr) return unattributedErr;
 
         var reference = (req.ErpDocumentNumber ?? string.Empty).Trim();
         if (reference.Length == 0)
@@ -348,6 +371,12 @@ public class GlJournalExportsController : ControllerBase
         var export = await LoadAsync(tid.Value, id, ct);
         if (export is null) return NotFound();
         if (ScopeError(export.CompanyId) is { } err) return err;
+        // D2: the STORED flag matters as much as the stored company. A group caller may legitimately
+        // create an export for company A with includeUnattributed=true; its frozen line set then holds
+        // tenant-wide NULL-company rows. Checking only export.CompanyId would let a company-A-scoped
+        // caller read or re-confirm exactly the rows the flag exists to restrict — via the artifact
+        // instead of the query. Re-checking here closes that indirect route.
+        if (UnattributedScopeError(export.IncludeUnattributed) is { } unattributedErr) return unattributedErr;
 
         var reason = (req.Reason ?? string.Empty).Trim();
         if (reason.Length == 0)
