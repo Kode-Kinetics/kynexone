@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Models;
 
@@ -72,6 +73,8 @@ public class BankConfirmationsController : ControllerBase
     {
         if (!HasPermission("payroll.export")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        // D3: BEFORE ReadPayloadAsync — an unauthorised caller must not even get their file consumed.
+        if (await BatchScopeErrorAsync(tid.Value, batchId, ct) is { } scopeErr) return scopeErr;
 
         if (allowReturnReversal && string.IsNullOrWhiteSpace(returnReversalReason))
             return BadRequest(new
@@ -105,6 +108,8 @@ public class BankConfirmationsController : ControllerBase
     public async Task<IActionResult> History(Guid batchId, CancellationToken ct)
     {
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        // D3: company authorization before ANY row of this batch is read back to the caller.
+        if (await BatchScopeErrorAsync(tid.Value, batchId, ct) is { } scopeErr) return scopeErr;
         var batch = await _db.PayrollPaymentBatches.AsNoTracking()
             .FirstOrDefaultAsync(b => b.TenantId == tid && b.Id == batchId, ct);
         if (batch is null) return NotFound();
@@ -239,6 +244,66 @@ public class BankConfirmationsController : ControllerBase
                  + "the correction is posted into the return's period.",
         },
     };
+
+    /// <summary>
+    /// D3 — company authorization for a payment batch, derived from the AUTHORITATIVE relationship
+    /// <c>batch → payroll run → PayrollRun.CompanyId</c>.
+    ///
+    /// <para>THE DEFECT. Every batch endpoint checked the tenant and a permission and stopped there.
+    /// <c>PayrollPaymentBatch</c>, <c>PayrollPaymentRecord</c> and <c>BankPaymentConfirmation</c> are
+    /// <c>ITenantOwned</c> ONLY, so no ambient company filter existed to catch it either. A Company-A
+    /// payroll officer could therefore import a bank response against a Company-B batch — flipping that
+    /// company's per-employee payment statuses to Paid or Returned — and read its batch totals,
+    /// per-employee amounts and bank references.</para>
+    ///
+    /// <para>WHY THE RUN AND NOT THE REQUEST. The company is never taken from the caller: it is read from
+    /// the run the batch belongs to. <c>PayrollRun</c> IS <c>ICompanyScopedOperational</c>, so it is the
+    /// one trustworthy carrier of the legal entity on this path.</para>
+    ///
+    /// <para>FAIL-CLOSED CASES, all deliberate:</para>
+    /// <list type="bullet">
+    ///   <item>Batch not found in this tenant → <c>NotFound</c> (never discloses cross-tenant existence).</item>
+    ///   <item>Run missing, or not owned by the same tenant as the batch → refused. Inconsistent
+    ///     ownership is a data-integrity fault, and guessing an entity here would authorise by accident.</item>
+    ///   <item>Run has a NULL CompanyId (legacy, pre-company-dimension) → GROUP callers only. A
+    ///     company-scoped user has no legitimate claim to an unattributed run, exactly as in D2.</item>
+    /// </list>
+    ///
+    /// <para>Called BEFORE the uploaded body is read, before parsing, before matching, before any read is
+    /// returned and before any mutation — so an unauthorised request cannot consume a payload or observe
+    /// data. This is ADDITIONAL to the existing <c>payroll.export</c> permission, never a replacement.</para>
+    /// </summary>
+    private async Task<IActionResult?> BatchScopeErrorAsync(Guid tenantId, Guid batchId, CancellationToken ct)
+    {
+        var batch = await _db.PayrollPaymentBatches.AsNoTracking()
+            .Where(b => b.TenantId == tenantId && b.Id == batchId)
+            .Select(b => new { b.Id, b.PayrollRunId })
+            .FirstOrDefaultAsync(ct);
+        if (batch is null) return NotFound();
+
+        // The COMPANY filter must not apply while we are deciding whether the caller may access this
+        // company: filtering first would turn a cross-company batch into "run not found" and silently
+        // fail OPEN for the null-company case. ScopedBypass.TenantWide drops exactly that one dimension
+        // and re-applies the tenant itself, so this cannot become a cross-tenant read by omission.
+        var run = await ScopedBypass.TenantWide(_db.PayrollRuns, tenantId,
+                "Company scope must be dropped to READ the run's own CompanyId — that value is the input "
+                + "to the authorization decision being made here, so filtering by it first would be circular.")
+            .AsNoTracking()
+            .Where(r => r.Id == batch.PayrollRunId)
+            .Select(r => new { r.Id, r.CompanyId })
+            .FirstOrDefaultAsync(ct);
+        if (run is null)
+            return NotFound(new
+            {
+                error = "batch_run_not_resolvable",
+                message = "The payroll run behind this payment batch could not be resolved in this tenant, "
+                        + "so the batch's legal entity cannot be established. Refused rather than guessed.",
+            });
+
+        var scope = this.GetEntityScope();
+        if (run.CompanyId is null) return scope.IsGroupLevel ? null : Forbid();
+        return scope.CanAccessCompany(run.CompanyId) ? null : Forbid();
+    }
 
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
