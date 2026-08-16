@@ -73,6 +73,7 @@ public class GlJournalExportsController : ControllerBase
         if (!CanRead()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         if (ScopeError(companyId) is { } scopeErr) return scopeErr;
+        if (UnattributedScopeError(includeUnattributed) is { } unattributedErr) return unattributedErr;
         if (FilterError(period, runId) is { } filterErr) return filterErr;
 
         var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs);
@@ -98,6 +99,7 @@ public class GlJournalExportsController : ControllerBase
         if (!CanExport()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         if (ScopeError(companyId) is { } scopeErr) return scopeErr;
+        if (UnattributedScopeError(includeUnattributed) is { } unattributedErr) return unattributedErr;
         if (FilterError(period, runId) is { } filterErr) return filterErr;
 
         var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs);
@@ -388,6 +390,7 @@ public class GlJournalExportsController : ControllerBase
         if (!CanRead()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         if (ScopeError(companyId) is { } scopeErr) return scopeErr;
+        if (UnattributedScopeError(includeUnattributed) is { } unattributedErr) return unattributedErr;
         if (FilterError(period, runId) is { } filterErr) return filterErr;
 
         var filter = new JournalExportFilter(period, runId, companyId, null, includeUnattributed, false);
@@ -489,6 +492,29 @@ public class GlJournalExportsController : ControllerBase
         var scope = this.GetEntityScope();
         if (companyId is null) return scope.IsGroupLevel ? null : Forbid();
         return scope.CanAccessCompany(companyId) ? null : Forbid();
+    }
+
+    /// <summary>
+    /// D2 — <c>includeUnattributed</c> is a GROUP-ONLY privilege.
+    ///
+    /// <para>The flag adds every NULL-company <see cref="FinanceGlEntry"/> in the tenant to the result
+    /// (<c>JournalExportBuilder</c>: <c>if (filter.IncludeUnattributed) scoped.AddRange(unattributed)</c>).
+    /// Those rows are tenant-wide by definition — every pre-POD-B1b ledger line is unattributed — so a
+    /// company-scoped caller who set the flag received amounts, account codes, narratives and source
+    /// references belonging to sibling legal entities.</para>
+    ///
+    /// <para><c>ScopeError</c> does not cover this: it validates only <paramref name="companyId"/>, so a
+    /// caller passing their OWN authorised company still passed, and the flag then widened the result
+    /// behind that valid company check. Authorising the company is not the same as authorising the
+    /// tenant-wide residue, which is why this is a separate guard rather than a change to that one.</para>
+    ///
+    /// <para>Called BEFORE any query, build, persist, stamp or export, so a denied request leaves no
+    /// artifact and mutates no GL or ERP status.</para>
+    /// </summary>
+    private IActionResult? UnattributedScopeError(bool includeUnattributed)
+    {
+        if (!includeUnattributed) return null;
+        return this.GetEntityScope().IsGroupLevel ? null : Forbid();
     }
 
     private bool HasPermission(string permission) =>
