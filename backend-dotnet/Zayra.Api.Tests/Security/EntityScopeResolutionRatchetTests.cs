@@ -26,6 +26,13 @@ public class EntityScopeResolutionRatchetTests
         ["Application/Common/EntityScopeClaims.cs"] = "Token issuance — WRITES the claims.",
         ["Infrastructure/Auth/AuthService.cs"] = "Token issuance — builds the scope descriptor at login.",
         ["Infrastructure/Auth/JwtTokenService.cs"] = "Token issuance — stamps the claims onto the token.",
+        // Arrived on main in PR #47, after this ratchet was written on the Wave 1 branch — the merge,
+        // not either branch, is what put them together. It is an AUDITOR of the claims, not a consumer
+        // of them: IsCurrentAsync re-derives the authoritative scope from the database via
+        // EntityScopeClaims.Resolve and compares it against what the token asserts, so that a token
+        // issued before a grant was revoked stops being current. Reading the claims is the whole point
+        // of the comparison; it never authorizes against them.
+        ["Infrastructure/Auth/TenantSessionSecurity.cs"] = "Session freshness — COMPARES the claims against the database.",
     };
 
     /// <summary>Markers that indicate a file is interpreting scope claims rather than being handed a decision.</summary>

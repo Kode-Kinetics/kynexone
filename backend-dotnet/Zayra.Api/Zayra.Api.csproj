@@ -19,11 +19,21 @@
     <PackageReference Include="System.Security.Cryptography.Xml" Version="8.0.4" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.10" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11" />
-    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.*" />
-    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.*" />
-    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.*" />
-    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.*" />
-    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.*" />
+    <!-- OpenTelemetry is pinned to an EXACT version, never a floating "1.*", and the reason is the
+         same one GAP-G3-1 gives for refusing EF Core instrumentation: an OTel version bump has
+         already REMOVED a redaction switch once. Two things here depend on behaviour that only a
+         pinned version can guarantee. (1) The default redaction of `url.query` is the only thing
+         keeping employee search terms (names, iqama numbers) out of exported spans; a floating
+         minor could change that default and nothing in this repo would fail. (2) The exception
+         handling configured in ObservabilityRegistration relies on RecordException/
+         EnrichWithException keeping their present semantics. A floating range makes both of those a
+         silent, unreviewed change delivered by `dotnet restore`. Bump these deliberately, together,
+         and re-read the release notes for redaction changes when you do. -->
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.18.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.18.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.18.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.18.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.18.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
     <PackageReference Include="PdfPig" Version="0.1.9" />
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.1.0" />

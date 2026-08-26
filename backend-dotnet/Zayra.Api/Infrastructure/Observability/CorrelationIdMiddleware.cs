@@ -55,11 +55,15 @@ public sealed class CorrelationIdMiddleware
             return Task.CompletedTask;
         });
 
-        using (_logger.BeginScope(new Dictionary<string, object>
-        {
-            ["CorrelationId"] = correlationId,
-            ["TraceId"] = Activity.Current?.TraceId.ToString() ?? string.Empty,
-        }))
+        // The scope object is rendered into a console line by ToString(), and a raw
+        // Dictionary<string, object> stringifies to "System.Collections.Generic.Dictionary`2[...]".
+        // That prints a scope line containing no correlation id at all — the same non-outcome as
+        // leaving IncludeScopes off, which is the state this shipped in. The message-template
+        // overload produces a FormattedLogValues instead, which is BOTH an
+        // IReadOnlyList<KeyValuePair<string, object>> (so a structured sink still gets CorrelationId
+        // and TraceId as queryable fields) AND has a ToString() a support engineer can read.
+        var traceId = Activity.Current?.TraceId.ToString() ?? string.Empty;
+        using (_logger.BeginScope("CorrelationId:{CorrelationId} TraceId:{TraceId}", correlationId, traceId))
         {
             await _next(context);
         }

@@ -40,6 +40,15 @@ public static class ZayraTelemetry
         public const string JobId = "zayra.job_id";
         public const string CorrelationId = "zayra.correlation_id";
         public const string FailureCategory = "zayra.failure_category";
+
+        /// <summary>
+        /// The CLR type of a failure — <c>InvalidOperationException</c>, never its message. Exception
+        /// messages in this codebase interpolate IBANs and salary figures; the type name says what
+        /// class of thing broke without saying whose data broke it. Set by the OpenTelemetry
+        /// exception enrichment in <see cref="ObservabilityRegistration"/>, which is why
+        /// <c>RecordException</c> is off.
+        /// </summary>
+        public const string ExceptionType = "zayra.exception_type";
         public const string RecordCount = "zayra.record_count";
         public const string ScopeSource = "zayra.scope_source";
         public const string DenialReason = "zayra.denial_reason";

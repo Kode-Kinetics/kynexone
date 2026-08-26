@@ -649,7 +649,20 @@ var app = builder.Build();
 if (trustForwardedHeaders)
     app.UseForwardedHeaders();
 
-// Global exception handler — must be the outermost middleware.
+// WAVE 1 G3 — the correlation id is established FIRST, ahead of everything that can produce a
+// response on its own. It used to sit below UseCors/UseRateLimiter, which meant the two responses a
+// support engineer is most likely to be asked about carried no X-Correlation-ID at all: the rate
+// limiter's 429 ("why does it say too many requests?") and a rejected CORS preflight both short-
+// circuit the pipeline before the middleware would have run. It is placed above UseExceptionHandler
+// too, so the "Unhandled exception" log line written by the handler below is inside the correlation
+// log scope — a 500 is the other call support actually gets.
+//
+// Safe to sit outside the exception handler: this middleware cannot throw. Sanitize is a pure string
+// check, Items/SetTag/BeginScope do not throw, and Response.OnStarting only throws once the response
+// has started, which cannot have happened at the top of the pipeline.
+app.UseMiddleware<Zayra.Api.Infrastructure.Observability.CorrelationIdMiddleware>();
+
+// Global exception handler — the outermost middleware that produces a response.
 // Converts unhandled exceptions into structured JSON so clients always get a typed error body
 // instead of an empty 500. InvalidOperationException (the service-layer sentinel for bad state)
 // maps to 400; authorization failures map to 403; everything else is 500 with a traceId.
@@ -696,9 +709,6 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
-// WAVE 1 G3 — first in the pipeline that matters, so every log line and span of the request
-// carries the correlation id, including those written by authentication itself.
-app.UseMiddleware<Zayra.Api.Infrastructure.Observability.CorrelationIdMiddleware>();
 app.UseAuthentication();
 // Per-route audience segregation (defence-in-depth): reject platform-audience tokens on tenant
 // /api/* routes so a platform token can never exercise the cross-tenant read bypass on tenant data.

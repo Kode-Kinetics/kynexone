@@ -43,7 +43,7 @@ public static class ObservabilityRegistration
 
         var options = configuration.GetSection("Observability").Get<ObservabilityOptions>() ?? new();
         var endpoint = options.OtlpEndpoint;
-        var hasCollector = !string.IsNullOrWhiteSpace(endpoint) && Uri.TryCreate(endpoint, UriKind.Absolute, out _);
+        var hasCollector = IsUsableOtlpEndpoint(endpoint);
 
         // Production defaults to 10% head sampling; elsewhere everything, because a developer chasing
         // one request should not have to hope it was sampled.
@@ -76,7 +76,35 @@ public static class ObservabilityRegistration
 
                         // Request and response BODIES are never captured. On this product a body is a
                         // payroll payload, a bank file or an employee record.
-                        o.RecordException = true;
+                        //
+                        // AND NEITHER IS AN EXCEPTION MESSAGE. RecordException = true makes the SDK
+                        // attach an `exception` event carrying exception.message and
+                        // exception.stacktrace verbatim, and this codebase interpolates PII straight
+                        // into those messages -- EmployeeManagementService throws
+                        // $"IBAN '{cleanIban}' is invalid ..." and
+                        // $"Salary package {grossSalary:N2} is below grade {grade.Code} minimum ...".
+                        // Exporting them ships IBANs and salary packages to whatever collector
+                        // Observability:OtlpEndpoint happens to name, where they are retained for
+                        // months and read by people who would never be granted access to the payroll
+                        // database. Under PDPL that is a disclosure, and it is one a config change
+                        // alone would trigger -- no code review required.
+                        //
+                        // REJECTED ALTERNATIVE: keep RecordException = true and scrub the message in
+                        // EnrichWithException. It cannot work. The SDK has already recorded the
+                        // exception event by the time enrichment runs, and an ActivityEvent is
+                        // immutable once added -- Activity exposes no API to remove or rewrite one.
+                        // The only way to not export a message is to never record it.
+                        //
+                        // What replaces it is the pattern WorkerHeartbeatReporter already uses on
+                        // main -- exception.GetType().Name. The fact of the failure and its class are
+                        // preserved (an InvalidOperationException is still visibly an
+                        // InvalidOperationException on the span, and the span status is still Error);
+                        // only the operator-authored text, which is the part that carries the data,
+                        // is dropped.
+                        o.RecordException = false;
+                        o.EnrichWithException = (activity, exception) =>
+                            activity.SetTag(ZayraTelemetry.Attr.ExceptionType, exception.GetType().Name);
+
                         o.EnrichWithHttpRequest = (activity, request) =>
                         {
                             var correlationId = request.HttpContext.CorrelationId();
@@ -84,7 +112,14 @@ public static class ObservabilityRegistration
                                 activity.SetTag(ZayraTelemetry.Attr.CorrelationId, correlationId);
                         };
                     })
-                    .AddHttpClientInstrumentation(o => o.RecordException = true);
+                    .AddHttpClientInstrumentation(o =>
+                    {
+                        // Same rule outbound. A failed call to a bank, GOSI or Qiwa endpoint raises an
+                        // exception whose message routinely quotes the request that failed.
+                        o.RecordException = false;
+                        o.EnrichWithException = (activity, exception) =>
+                            activity.SetTag(ZayraTelemetry.Attr.ExceptionType, exception.GetType().Name);
+                    });
 
                 // EF CORE INSTRUMENTATION IS DELIBERATELY ABSENT — see GAP-G3-1.
                 // The package is prerelease-only, and between versions it REMOVED the
@@ -110,4 +145,23 @@ public static class ObservabilityRegistration
 
         return services;
     }
+
+    /// <summary>
+    /// An OTLP endpoint is usable only if it is an absolute URI whose scheme is http or https.
+    ///
+    /// <para>The scheme check is not pedantry. <c>Uri.TryCreate("localhost:4317", Absolute, out _)</c>
+    /// SUCCEEDS — it parses as scheme <c>localhost</c> with path <c>4317</c> — and
+    /// <c>localhost:4317</c> is the single most common way a person writes an OTLP endpoint. Accepting
+    /// it registers an exporter that can never connect: the OTLP exporter then retries on a background
+    /// thread forever, floods the log with transport errors and adds latency to the very requests the
+    /// tracing is meant to observe. That is exactly the failure mode this class's remarks promise to
+    /// avoid, and without this check a one-character configuration slip walks straight into it.</para>
+    ///
+    /// <para>Rejecting is the safe direction: an unusable endpoint degrades to the documented no-op
+    /// (instrumentation runs, nothing is shipped) rather than to a broken exporter.</para>
+    /// </summary>
+    internal static bool IsUsableOtlpEndpoint(string? endpoint) =>
+        !string.IsNullOrWhiteSpace(endpoint)
+        && Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 }
