@@ -394,7 +394,9 @@ public class AttendanceService : IAttendanceService
 
         foreach (var punch in punches)
         {
-            var employee = await ResolveEmployee(tenantId, null, punch.EmployeeCode, ct);
+            // Anonymous device webhook: no principal exists to scope by, so the company filter is
+            // dropped deliberately and the tenant re-applied from the authenticated device's row.
+            var employee = await ResolveEmployee(tenantId, null, punch.EmployeeCode, ct, bypassCompanyFilter: true);
             var direction = NormalizeDirection(punch.PunchDirection);
             // IgnoreQueryFilters: same null-tenantId context as above. Explicit
             // x.TenantId == tenantId predicate (where tenantId == device.TenantId, a DB value)
@@ -877,7 +879,7 @@ public class AttendanceService : IAttendanceService
         daily.ProcessedAtUtc = DateTime.UtcNow;
         daily.UpdatedAtUtc = DateTime.UtcNow;
         foreach (var raw in events) raw.IsProcessed = true;
-        await UpsertLegacyRecord(tenantId, daily, ct);
+        await UpsertLegacyRecord(tenantId, employee.CompanyId, daily, ct);
         await UpsertImpacts(tenantId, daily, ct);
         await UpsertExceptions(tenantId, daily, ct);
     }
@@ -893,7 +895,35 @@ public class AttendanceService : IAttendanceService
         if (daily is not null) daily.ManualCorrectionStatus = "Approved";
     }
 
-    private async Task UpsertLegacyRecord(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)
+    /// <summary>
+    /// WAVE 1 B1 (round 2) — THE SECOND HALF OF THE DEVICE-INGEST DEFECT.
+    ///
+    /// <para><c>AttendanceRecord</c> is <c>ICompanyScopedOperational</c>, so a row whose
+    /// <c>CompanyId</c> is null is invisible to every company-scoped user — the "poison default" the
+    /// operational tier exists to prevent. This method used to resolve that company by RE-QUERYING
+    /// <c>_db.Employees</c> through the ambient filter. On the <c>[AllowAnonymous]</c> device-ingest
+    /// path that filter denies everything (empty company scope), so the lookup returned null and every
+    /// legacy row created from a device punch was born invisible.</para>
+    ///
+    /// <para>Nothing rescued it downstream. <c>ZayraDbContext.EnforceCompanyScopeOnWritesAsync</c>
+    /// returns early when there is no tenant claim — a device webhook has none — so its server-side
+    /// stamping, including the "follow the owning employee's company" branch, never ran on this path.</para>
+    ///
+    /// <para>Before the ingest fix this was latent: device punches matched nothing, so no legacy rows
+    /// were created at all. Fixing the match is what STARTED creating them, which is why both halves
+    /// have to ship together.</para>
+    ///
+    /// <para>The company is now HANDED IN by the caller, taken from the <c>Employee</c> that
+    /// <c>ProcessEmployeeDay</c> already holds — the same entity the punch was matched against. There
+    /// is deliberately no employee query in scope here to re-introduce the bug with, and no new
+    /// <c>IgnoreQueryFilters</c>: the value is already in memory, correctly resolved, on both paths.</para>
+    /// </summary>
+    /// <param name="employeeCompanyId">
+    /// The owning employee's company, from the caller's already-resolved entity. Null is legitimate
+    /// (an employee with no company, or a tenant with no company dimension yet) and passes through
+    /// unchanged — this method must not invent a company it was not given.
+    /// </param>
+    private async Task UpsertLegacyRecord(Guid tenantId, Guid? employeeCompanyId, AttendanceDailyRecord daily, CancellationToken ct)
     {
         var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate, ct);
         if (record is null)
@@ -901,10 +931,10 @@ public class AttendanceService : IAttendanceService
             record = new AttendanceRecord { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate };
             _db.AttendanceRecords.Add(record);
         }
-        record.CompanyId ??= await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.Id == daily.EmployeeId && !e.IsDeleted)
-            .Select(e => e.CompanyId)
-            .FirstOrDefaultAsync(ct);
+        // ??= not =: an existing row's company is never reassigned here. EnforceCompanyScopeOnWritesAsync
+        // throws company_reassignment_blocked on exactly that, and repairing a null is the only
+        // transition this path is allowed to make.
+        record.CompanyId ??= employeeCompanyId;
         record.TimeIn = daily.FirstInUtc is null ? null : TimeOnly.FromDateTime(daily.FirstInUtc.Value);
         record.TimeOut = daily.LastOutUtc is null ? null : TimeOnly.FromDateTime(daily.LastOutUtc.Value);
         record.OvertimeHours = Math.Round(daily.OvertimeMinutes / 60m, 2);
@@ -931,10 +961,54 @@ public class AttendanceService : IAttendanceService
         if (!exists) _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = type, Severity = daily.MissingPunch ? "High" : "Medium", Details = daily.MissingPunch ? "Missing in or out punch." : $"{daily.LateMinutes} late minutes." });
     }
 
-    private async Task<Employee?> ResolveEmployee(Guid tenantId, int? employeeId, string? employeeCode, CancellationToken ct)
+    /// <summary>
+    /// WAVE 1 B1 — DEVICE INGEST WAS SILENTLY MATCHING NOTHING IN PRODUCTION.
+    ///
+    /// <para>This is reached from <c>IngestByDeviceKeyAsync</c>, an <c>[AllowAnonymous]</c> webhook where
+    /// the device API key is the credential and there is no JWT. Two reads on that path already carry a
+    /// documented <c>IgnoreQueryFilters()</c> for exactly that reason — the device lookup and the
+    /// duplicate-event probe. This one was missed, and it is the only read on the path whose entity is
+    /// <c>ICompanyScopedOperational</c> as well as tenant-owned.</para>
+    ///
+    /// <para>That distinction is what made it fail. The COMPANY clause of the read filter is independent
+    /// of the system-scope bypass: it is <c>_isGroupScope || (CompanyId != null &amp;&amp; _companyScopeIds
+    /// .Contains(...))</c>, both of which derive from the request principal. An anonymous request in
+    /// Production — where <c>EntityScopeOptions.ResolveStrictMode</c> forces strict — resolves to an
+    /// EMPTY company scope, so this query matched zero rows for every punch. Every punch was therefore
+    /// recorded as unmatched, <c>processedDays</c> stayed 0, and no daily attendance record was ever
+    /// created from a device. The raw events were stored, so the data is recoverable by reprocessing.</para>
+    ///
+    /// <para>The tenant is <c>device.TenantId</c> — a value read from the database after authenticating
+    /// the device key, never anything the caller supplied — so re-applying it explicitly here is the same
+    /// scope the global filter would have given, and no wider.</para>
+    /// </summary>
+    /// <param name="bypassCompanyFilter">
+    /// TRUE only on the anonymous device-webhook path. This parameter exists because an earlier fix
+    /// applied the bypass unconditionally and thereby created a CROSS-COMPANY WRITE on the
+    /// AUTHENTICATED path: <c>AttendanceController.PushEvent</c> pre-checks with a FILTERED lookup, so a
+    /// target in another company resolved to null, its <c>Forbid()</c> was skipped as a result, and an
+    /// unfiltered lookup here then found the row and recorded a punch against another company's
+    /// employee. Employee ids are sequential ints, so that was trivially enumerable.
+    ///
+    /// <para>The bypass is legitimate ONLY where there is no principal to scope by — the device key is
+    /// the credential and <paramref name="tenantId"/> comes from the authenticated device's own row.
+    /// On any authenticated path the ambient company filter is the control and must stay on.</para>
+    /// </param>
+    private async Task<Employee?> ResolveEmployee(
+        Guid tenantId, int? employeeId, string? employeeCode, CancellationToken ct,
+        bool bypassCompanyFilter = false)
     {
-        if (employeeId is not null) return await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, ct);
-        if (!string.IsNullOrWhiteSpace(employeeCode)) return await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeCode == employeeCode && !x.IsDeleted, ct);
+        // IgnoreQueryFilters is intentional and GATED: only the anonymous device webhook may drop the
+        // company filter, because only there is the absence of a principal the reason it matched nothing.
+        // The tenant is re-applied explicitly in every predicate below.
+        var employees = bypassCompanyFilter ? _db.Employees.IgnoreQueryFilters() : _db.Employees.AsQueryable();
+
+        if (employeeId is not null)
+            return await employees
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, ct);
+        if (!string.IsNullOrWhiteSpace(employeeCode))
+            return await employees
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeCode == employeeCode && !x.IsDeleted, ct);
         return null;
     }
 

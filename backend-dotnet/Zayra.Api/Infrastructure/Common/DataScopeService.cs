@@ -9,7 +9,28 @@ namespace Zayra.Api.Infrastructure.Common;
 public class DataScopeService : IDataScopeService
 {
     private readonly ZayraDbContext _db;
-    public DataScopeService(ZayraDbContext db) => _db = db;
+    private readonly Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver _scopeResolver;
+    private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor? _http;
+
+    /// <summary>
+    /// The resolver and accessor are optional so the many tests that do <c>new DataScopeService(db)</c>
+    /// keep compiling. When absent a directly-constructed resolver is used — same class, same rules,
+    /// just no per-request cache.
+    /// </summary>
+    public DataScopeService(
+        ZayraDbContext db,
+        Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver? scopeResolver = null,
+        Microsoft.AspNetCore.Http.IHttpContextAccessor? http = null,
+        Microsoft.Extensions.Options.IOptions<EntityScopeOptions>? scopeOptions = null,
+        Microsoft.Extensions.Options.IOptions<Zayra.Api.Application.Auth.JwtOptions>? jwtOptions = null)
+    {
+        _db = db;
+        _http = http;
+        // The options are forwarded rather than dropped: a resolver built with scopeOptions:null silently
+        // runs strictMode=false with a dead platform gate, which is the divergence this design removes.
+        _scopeResolver = scopeResolver
+            ?? new Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver(http, scopeOptions, jwtOptions);
+    }
 
     public async Task<DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
         => await ApplyCompanyBoundaryAsync(await ResolvePermissionScopeAsync(caller, tenantId, ct), caller, tenantId, ct);
@@ -25,7 +46,12 @@ public class DataScopeService : IDataScopeService
     /// </summary>
     private async Task<DataScope> ApplyCompanyBoundaryAsync(DataScope scope, ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
     {
-        var entityScope = EntityScopeContext.FromClaims(caller);
+        // WAVE 1 B1: was FromClaims(caller) — non-strict, switcher ignored. Employee-scope
+        // boundaries therefore ignored the company the user had actually selected, so a group user
+        // who switched to Company A still had manager/report trees built across every company.
+        var entityScope = _scopeResolver.ResolveFor(
+            caller, _http?.HttpContext?.Request.Headers[ZayraDbContext.CompanySelectionHeader].FirstOrDefault())
+            .ToEntityScopeContext();
         if (entityScope.IsGroupLevel) return scope;
         if (scope.Level == DataScopeLevel.Own) return scope;
 

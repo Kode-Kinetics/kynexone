@@ -132,6 +132,20 @@ public static class DemoDataSeeder
 
     // ── Platform owner ────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// WAVE 1 B3 — bootstrapping a platform OPERATOR is not the same act as seeding fake demo tenants,
+    /// and coupling them meant you could not have the first without the second. Because demo seeding is
+    /// (correctly) refused on Production and dedicated deployments, that coupling left those
+    /// environments with no seeded platform operator at all, and no supported way to create one.
+    ///
+    /// <para>This is the same routine, callable on its own. It stays safe by construction: it does
+    /// nothing unless an operator explicitly supplies <c>PLATFORM_ADMIN_PASSWORD</c>, and nothing at all
+    /// once any platform user exists — so it can only ever create the FIRST one.</para>
+    /// </summary>
+    public static Task SeedPlatformOwnerOnlyAsync(
+        ZayraDbContext db, IPasswordHasher hasher, ILogger logger, CancellationToken ct = default)
+        => SeedPlatformOwnerAsync(db, hasher, logger, ct);
+
     private static async Task SeedPlatformOwnerAsync(
         ZayraDbContext db,
         IPasswordHasher hasher,

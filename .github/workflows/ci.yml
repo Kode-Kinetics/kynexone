@@ -134,6 +134,119 @@ jobs:
   # The drift check is the one that matters most: entity properties added without a migration
   # are what produce tenant-wide 42703 outages, and that is exactly what Wave 0 found sitting
   # uncommitted in the tree.
+  # ── WAVE 1 B3: real Chrome role + isolation security gate ─────────────────────────────────────
+  # Runs against a REAL stack — Postgres, the real backend with the enterprise-group seed, and a
+  # PRODUCTION frontend build. No mocked business API, no fixtures, no hidden demo data.
+  #
+  # It uses its own Playwright config for one reason: this job must be able to FAIL. The pre-existing
+  # e2e suite is "CI-safe by design" and test.skip()s when the stack is unreachable, so a dead backend
+  # produces a green run. That is fine for an advisory suite and disqualifying for a required check.
+  chrome-security-gate:
+    name: Chrome Security Gate (roles + isolation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_USER: postgres
+          POSTGRES_DB: zayra
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm', cache-dependency-path: frontend/package-lock.json }
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Build backend
+        run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Release
+
+      # The seed passwords below are LOCAL TEST FIXTURES for an ephemeral CI database that is destroyed
+      # with the runner. They are not secrets and grant nothing anywhere else. Real credentials would
+      # belong in GitHub secrets; putting fixtures there would only obscure what the gate authenticates as.
+      - name: Start backend (enterprise-group seed + platform operator)
+        env:
+          ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=zayra;Username=postgres;Password=ci'
+          Jwt__Issuer: 'Zayra.Api'
+          Jwt__TenantAudience: 'kynexone-tenant'
+          Jwt__PlatformAudience: 'kynexone-platform'
+          Jwt__SigningKey: 'CI_ONLY_EPHEMERAL_SIGNING_KEY_NOT_A_PRODUCTION_SECRET_0123456789'
+          SeedAdmin__TenantSlug: 'zayra'
+          SeedAdmin__Email: 'admin@zayra.local'
+          SeedAdmin__Password: 'ChangeMe123!'
+          SeedAdmin__SeedDemoData: 'false'
+          SEED_ENTERPRISE_TEST_DATA: 'true'
+          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
+          PLATFORM_ADMIN_PASSWORD: 'YourPassword123!'
+          ASPNETCORE_ENVIRONMENT: 'Development'
+          ASPNETCORE_URLS: 'http://localhost:5117'
+        run: |
+          set -euo pipefail
+          nohup dotnet run --no-launch-profile --no-build -c Release \
+            --project backend-dotnet/Zayra.Api/Zayra.Api.csproj > /tmp/api.log 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -sf -m 5 http://localhost:5117/health/live > /dev/null; then
+              echo "backend up after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Backend did not become healthy in 90s."
+          tail -80 /tmp/api.log
+          exit 1
+
+      - name: Build and serve the PRODUCTION frontend
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_BASE_URL: 'http://localhost:5117'
+        run: |
+          set -euo pipefail
+          npx next build
+          nohup npx next start -p 5173 > /tmp/fe.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf -m 5 -o /dev/null http://localhost:5173/; then echo "frontend up"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::Frontend did not start in 60s."
+          tail -60 /tmp/fe.log
+          exit 1
+
+      - name: Run the Chrome security gate
+        working-directory: frontend
+        env:
+          PLAYWRIGHT_BASE_URL: 'http://localhost:5173'
+          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
+          PLATFORM_ADMIN_PASSWORD: 'YourPassword123!'
+        run: npx playwright test --config=playwright.security.config.ts
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-security-gate-evidence
+          # Storage states carry live bearer tokens and are NEVER uploaded — e2e/.auth is excluded.
+          path: |
+            frontend/test-results/**
+            frontend/playwright-report/**
+            !frontend/**/.auth/**
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Backend log on failure
+        if: failure()
+        run: tail -200 /tmp/api.log || true
+
   schema-gates:
     name: Schema Gates (drift, fresh deploy, upgrade)
     runs-on: ubuntu-latest

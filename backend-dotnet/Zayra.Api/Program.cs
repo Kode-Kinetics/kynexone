@@ -391,6 +391,11 @@ builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Documents.PdfRenderGa
 builder.Services.AddScoped<IRecruitmentService, RecruitmentService>();
 builder.Services.AddScoped<IPerformanceService, PerformanceService>();
 builder.Services.AddScoped<ILeaveService, LeaveService>();
+// WAVE 1 B1 — THE authoritative entity-scope resolver. Registered before every consumer so that
+// controllers, authorization helpers and ZayraDbContext all read one decision per request instead of
+// three independent ones that disagreed on strict mode and on the X-Company-Id switcher.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver,
+                           Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver>();
 builder.Services.AddScoped<IDataScopeService, DataScopeService>();
 builder.Services.AddSingleton(AiOptions.Load(builder.Configuration));
 builder.Services.AddScoped<AiRedactionService>();
@@ -879,6 +884,51 @@ using (var scope = app.Services.CreateScope())
 
     logger.LogInformation("Demo data seeding: {State} (environment={Env})",
         seedDemoData ? "ENABLED" : "DISABLED", app.Environment.EnvironmentName);
+
+    // ── WAVE 1 B3: bootstrap the FIRST platform operator, independently of demo data ──────────────
+    // This used to run only inside the demo-data block, so a Production or dedicated deployment — where
+    // demo seeding is deliberately refused — could never get a platform operator account seeded at all.
+    // Creating an operator and fabricating demo tenants are different acts and are now gated separately.
+    //
+    // It is inert unless PLATFORM_ADMIN_PASSWORD is explicitly supplied, and it no-ops once ANY platform
+    // user exists, so it can only ever create the first. On Production it additionally requires
+    // PLATFORM_ADMIN_BOOTSTRAP=true, so a password left in the environment cannot silently mint an
+    // operator on a live system.
+    var platformBootstrapRequested =
+        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
+    // Uses the SAME dedicatedDeployment predicate as the demo-seed gate above, not a bare
+    // IsProduction(). A client-hosted slot commonly runs as Staging with CLIENT_DEPLOYMENT=true, and
+    // IsProduction() alone would let PLATFORM_ADMIN_PASSWORD mint a platform OWNER — the omnipotent
+    // cross-tenant actor — on that deployment with no explicit bootstrap flag.
+    var platformBootstrapPermitted =
+        !dedicatedDeployment
+        || string.Equals(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_BOOTSTRAP"), "true",
+                         StringComparison.OrdinalIgnoreCase);
+
+    // The password is the only thing standing between an env var and a cross-tenant superuser, so it is
+    // held to a real bar. SeedAdmin__Password already gets this treatment; this one had none at all,
+    // while docker-compose and CI both ship well-known defaults.
+    if (platformBootstrapRequested && platformBootstrapPermitted && dedicatedDeployment)
+    {
+        var pw = Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD") ?? string.Empty;
+        var weak = pw.Length < 16
+                   || pw.Contains("ChangeMe", StringComparison.OrdinalIgnoreCase)
+                   || pw.Contains("YourPassword", StringComparison.OrdinalIgnoreCase)
+                   || pw.Contains("PlatformAdmin123", StringComparison.OrdinalIgnoreCase);
+        if (weak)
+            throw new InvalidOperationException(
+                "PLATFORM_ADMIN_BOOTSTRAP is enabled on a production/dedicated deployment but "
+                + "PLATFORM_ADMIN_PASSWORD is weak or a known default. Refusing to seed a platform owner: "
+                + "this account has cross-tenant reach over every customer's payroll data.");
+    }
+
+    if (platformBootstrapRequested && platformBootstrapPermitted)
+        await TrySeedAsync("PlatformOwnerBootstrap", () => DemoDataSeeder.SeedPlatformOwnerOnlyAsync(
+            dbContext, scope.ServiceProvider.GetRequiredService<IPasswordHasher>(), logger), logger);
+    else if (platformBootstrapRequested)
+        logger.LogWarning(
+            "Platform owner bootstrap REQUESTED but REFUSED — this is a Production environment and "
+            + "PLATFORM_ADMIN_BOOTSTRAP is not 'true'. No platform operator was created.");
 
     if (seedDemoData)
         await TrySeedAsync("DemoDataSeeder", () => DemoDataSeeder.SeedAsync(

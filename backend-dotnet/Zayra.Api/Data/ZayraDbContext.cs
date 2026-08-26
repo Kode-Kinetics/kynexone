@@ -108,9 +108,25 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         var ctx = _httpContextAccessor?.HttpContext;
         var user = ctx?.User;
         if (user is null) return EntityScopeContext.GroupLevel;
-        var scope = EntityScopeContext.FromClaims(user, _scopeOptions?.Value.StrictMode ?? false);
-        var header = ctx!.Request.Headers[CompanySelectionHeader].FirstOrDefault();
-        return scope.NarrowTo(header);
+
+        // WAVE 1 B1 — read THE authoritative resolution rather than re-deriving it here. This method
+        // and the controllers' GetEntityScope() previously parsed the same claims independently and
+        // disagreed: controllers used strictMode:false and ignored X-Company-Id, this used both. A
+        // controller could therefore authorize against a wider scope than the rows it was about to
+        // read. Resolution is cached on HttpContext.Items, so both sides now receive one decision —
+        // and because the cache lives on the REQUEST, a pooled DbContext cannot serve a previous
+        // request's scope.
+        var resolver = ctx!.RequestServices
+            ?.GetService(typeof(Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver))
+            as Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver;
+        if (resolver is not null)
+            return resolver.Resolve().ToEntityScopeContext();
+
+        // No service provider (tests constructing a context by hand): same class, same rules, no cache.
+        return new Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver(
+                _httpContextAccessor, _scopeOptions, _jwtOptions)
+            .ResolveFor(user, ctx.Request.Headers[CompanySelectionHeader].FirstOrDefault())
+            .ToEntityScopeContext();
     }
 
     // Company scope — derived lazily from JWT claims + switcher header.

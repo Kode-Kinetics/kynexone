@@ -42,7 +42,20 @@ public class QueryFilterBypassRatchetTests
         ["Controllers/RatesController.cs"] = 11,
         ["Controllers/StatutoryRulesController.cs"] = 1,
         ["Data/ZayraDbContext.cs"] = 3,
-        ["Infrastructure/Attendance/AttendanceService.cs"] = 2,
+        // 2 -> 3 (Wave 1 B1). ResolveEmployee gained ONE: the device-ingest webhook is
+        // [AllowAnonymous], and Employee is the only entity on that path that is
+        // ICompanyScopedOperational as well as tenant-owned. The company clause of the read filter
+        // is independent of the system-scope bypass, so in Production (strict mode) an anonymous
+        // request resolved to an EMPTY company scope and this lookup matched zero rows — every
+        // device punch was recorded as unmatched and no daily record was ever created. The new
+        // site re-applies `TenantId == device.TenantId`, a value read from the database after the
+        // device key is authenticated, so the scope is the same one the filter would have applied.
+        //
+        // This was pinned at 4 while the file has only ever held 3 (lines ~381, ~404, ~976). The
+        // ratchet fails only on count > approved, so the surplus slot was a silently pre-authorised
+        // future bypass — the exact thing this table exists to prevent. Pinned to the real count so
+        // the next raw bypass added to this file fails the build.
+        ["Infrastructure/Attendance/AttendanceService.cs"] = 3,
         ["Infrastructure/Auth/AuthService.cs"] = 2,
         ["Infrastructure/Boot/CompanyScopeBackfill.cs"] = 1,
         ["Infrastructure/Boot/PayrollAuditChainBackfill.cs"] = 3,
