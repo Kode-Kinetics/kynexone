@@ -12,7 +12,7 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20260816200334_AddLiveSeparationUniqueIndex")]
+    [Migration("20260816200703_AddLiveSeparationUniqueIndex")]
     partial class AddLiveSeparationUniqueIndex
     {
         /// <inheritdoc />
