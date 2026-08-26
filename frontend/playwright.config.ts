@@ -2,6 +2,11 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
+  // The Wave 1 security gate has its OWN config (playwright.security.config.ts) with retries:0 and a
+  // fail-never-skip setup. Left in scope here it would run nine extra logins on top of this suite's
+  // own — tripping the API's 10-per-60s limiter — and would run the gate specs with retries:1, which
+  // is precisely the retry-hides-a-flaky-authorization-bug behaviour that config exists to forbid.
+  testIgnore: /security-gate\//,
   fullyParallel: false,
   retries: 1,
   workers: 1,
@@ -29,7 +34,12 @@ export default defineConfig({
       name: 'chromium',
       use: { ...devices['Desktop Chrome'], storageState: 'e2e/.auth/platform.json' },
       dependencies: ['setup'],
-      testIgnore: [/auth\.setup\.ts/, /fixture\.teardown\.ts/, /pilot-critical\.spec\.ts/],
+      // A project-level testIgnore REPLACES the top-level one rather than merging with it, so the
+      // root `testIgnore: /security-gate\//` above stops applying the moment this array exists.
+      // Without repeating it here the browser-pilot lane collects the 14 security-gate specs,
+      // which depend on fixtures only the dedicated chrome-security-gate job provisions, and they
+      // fail in milliseconds. Keep these two lists in sync.
+      testIgnore: [/auth\.setup\.ts/, /fixture\.teardown\.ts/, /pilot-critical\.spec\.ts/, /security-gate\//],
     },
     {
       name: 'cleanup',
