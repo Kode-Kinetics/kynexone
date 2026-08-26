@@ -132,7 +132,7 @@ export function LoginPage() {
       if (status === 401)      setError('Invalid credentials. Check your email, password, and workspace.');
       else if (status === 400) setError(err.response?.data?.message ?? 'Please check the details you entered.');
       else if (status === 429) setError('Too many attempts. Please wait a moment and try again.');
-      else if (!err?.response)  setError('Cannot reach the server. Check your connection and try again.');
+      else if (!err?.response) setError('Cannot reach the server. Check your connection and try again.');
       else {
         const traceId = err.response?.data?.traceId;
         setError(
@@ -259,7 +259,7 @@ export function LoginPage() {
         }
       `}</style>
 
-      <div className="grid min-h-[100svh] w-full lg:grid-cols-2">
+      <div className="tenant-login-shell grid min-h-[100svh] w-full lg:grid-cols-2">
         {/* ── Brand panel ───────────────────────────────────────────────── */}
         <section
           onMouseMove={(e) => {
