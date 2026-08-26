@@ -390,7 +390,9 @@ public class AttendanceService : IAttendanceService
 
         foreach (var punch in punches)
         {
-            var employee = await ResolveEmployee(tenantId, null, punch.EmployeeCode, ct);
+            // Anonymous device webhook: no principal exists to scope by, so the company filter is
+            // dropped deliberately and the tenant re-applied from the authenticated device's row.
+            var employee = await ResolveEmployee(tenantId, null, punch.EmployeeCode, ct, bypassCompanyFilter: true);
             var direction = NormalizeDirection(punch.PunchDirection);
             // IgnoreQueryFilters: same null-tenantId context as above. Explicit
             // x.TenantId == tenantId predicate (where tenantId == device.TenantId, a DB value)
@@ -897,19 +899,32 @@ public class AttendanceService : IAttendanceService
     /// the device key, never anything the caller supplied — so re-applying it explicitly here is the same
     /// scope the global filter would have given, and no wider.</para>
     /// </summary>
-    private async Task<Employee?> ResolveEmployee(Guid tenantId, int? employeeId, string? employeeCode, CancellationToken ct)
+    /// <param name="bypassCompanyFilter">
+    /// TRUE only on the anonymous device-webhook path. This parameter exists because an earlier fix
+    /// applied the bypass unconditionally and thereby created a CROSS-COMPANY WRITE on the
+    /// AUTHENTICATED path: <c>AttendanceController.PushEvent</c> pre-checks with a FILTERED lookup, so a
+    /// target in another company resolved to null, its <c>Forbid()</c> was skipped as a result, and an
+    /// unfiltered lookup here then found the row and recorded a punch against another company's
+    /// employee. Employee ids are sequential ints, so that was trivially enumerable.
+    ///
+    /// <para>The bypass is legitimate ONLY where there is no principal to scope by — the device key is
+    /// the credential and <paramref name="tenantId"/> comes from the authenticated device's own row.
+    /// On any authenticated path the ambient company filter is the control and must stay on.</para>
+    /// </param>
+    private async Task<Employee?> ResolveEmployee(
+        Guid tenantId, int? employeeId, string? employeeCode, CancellationToken ct,
+        bool bypassCompanyFilter = false)
     {
+        // IgnoreQueryFilters is intentional and GATED: only the anonymous device webhook may drop the
+        // company filter, because only there is the absence of a principal the reason it matched nothing.
+        // The tenant is re-applied explicitly in every predicate below.
+        var employees = bypassCompanyFilter ? _db.Employees.IgnoreQueryFilters() : _db.Employees.AsQueryable();
+
         if (employeeId is not null)
-            // IgnoreQueryFilters is intentional: anonymous device webhook, so the request principal
-            // carries no company scope and Employee is ICompanyScopedOperational — the ambient filter
-            // matched zero rows. tenantId is device.TenantId, read from the DB after the device key was
-            // authenticated, and is re-applied below.
-            return await _db.Employees.IgnoreQueryFilters()
+            return await employees
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, ct);
         if (!string.IsNullOrWhiteSpace(employeeCode))
-            // IgnoreQueryFilters is intentional: same anonymous device-webhook context as above; the
-            // tenant is re-applied explicitly from the authenticated device's own row.
-            return await _db.Employees.IgnoreQueryFilters()
+            return await employees
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeCode == employeeCode && !x.IsDeleted, ct);
         return null;
     }

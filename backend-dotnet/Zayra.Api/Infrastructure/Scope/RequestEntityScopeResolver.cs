@@ -51,6 +51,14 @@ public sealed class RequestEntityScopeResolver : IRequestEntityScopeResolver
 
     public RequestEntityScope Resolve()
     {
+        // Checked BEFORE the cache, deliberately. If a `using (SystemScopeContext.Begin())` block were
+        // the FIRST caller in a request, caching its System result would pin system scope for the whole
+        // request — including after the block closes — while ZayraDbContext._isSystemScope (uncached)
+        // correctly reverted. That split re-applies the tenant filter while leaving the company filter
+        // permanently bypassed, which is the precise shape of a cross-company leak.
+        if (SystemScopeContext.IsActive)
+            return RequestEntityScope.System(ScopeResolutionSource.ExplicitSystemScope);
+
         var ctx = _http?.HttpContext;
 
         // No HttpContext at all: seeding, migrations, hosted services at startup, unit tests. There is
@@ -100,8 +108,14 @@ public sealed class RequestEntityScopeResolver : IRequestEntityScopeResolver
 
         // Strict is the global cutover flag OR the per-token marker stamped on impersonation and
         // break-glass tokens. Invariant 14: those are ALWAYS strict, whatever the global flag says.
+        // HasClaim compares the VALUE ordinally, so "True" would not match "true" — and this is the one
+        // claim where a case mismatch fails OPEN: on a non-strict deployment an impersonation token with
+        // "True" and no scope claim would resolve to legacy GroupLevel, i.e. tenant-wide. Compared
+        // case-insensitively so the marker means what it says however it was stamped.
         var strict = (_scopeOptions?.Value.StrictMode ?? false)
-                     || user.HasClaim(EntityScopeContext.StrictScopeClaim, "true");
+                     || user.Claims.Any(c =>
+                            string.Equals(c.Type, EntityScopeContext.StrictScopeClaim, StringComparison.OrdinalIgnoreCase)
+                         && string.Equals(c.Value, "true", StringComparison.OrdinalIgnoreCase));
 
         // Authenticated but tenantless, and not a platform admin. Invariant 12: sees nothing. The old
         // behaviour — falling through to a filter that matched null/Guid.Empty tenants — was a leak.
@@ -213,7 +227,14 @@ public sealed class RequestEntityScopeResolver : IRequestEntityScopeResolver
             {
                 var g = JsonSerializer.Deserialize<EntityAccessClaim>(json, JsonOptions);
                 if (g is null) continue;
-                if (g.CompanyId is null) hasGroupGrant = true;
+                if (g.CompanyId is null)
+                {
+                    // A row with an explicit null company is the legacy GROUP grant. A row that merely
+                    // FAILED to carry one ({} or {"r":"Viewer"}) deserializes to exactly the same shape,
+                    // and treating that as a group grant would let an empty object widen a token to
+                    // tenant-wide. Only a row that actually names the "c" key is honoured.
+                    if (json.Contains("\"c\"", StringComparison.Ordinal)) hasGroupGrant = true;
+                }
                 else companyIds.Add(g.CompanyId.Value);
             }
             catch { /* one malformed legacy row is skipped; it cannot widen the result */ }

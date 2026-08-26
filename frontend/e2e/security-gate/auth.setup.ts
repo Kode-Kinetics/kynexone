@@ -70,8 +70,22 @@ for (const [index, role] of ROLES.entries()) {
       );
 
       fs.mkdirSync(path.dirname(storageStatePath(role.key)), { recursive: true });
-      await ctx.storageState({ path: storageStatePath(role.key) });
+      const state = await ctx.storageState({ path: storageStatePath(role.key) });
       await ctx.close();
+
+      // VERIFY THE SESSION IS REAL. Without this the whole gate can go quietly anonymous again: if the
+      // evaluate above ever no-ops (a renamed key, a navigation failure), every browser context is
+      // logged out, and because most browser assertions are NEGATIVE ("sibling data is not visible")
+      // they keep passing — because NO data is visible. That is the exact bug this file already had.
+      const expectedKey = role.tenantSlug === null ? 'platform_access_token' : 'zayra_access_token';
+      const stored = state.origins
+        .flatMap(o => o.localStorage)
+        .find(e => e.name === expectedKey)?.value;
+      expect(
+        stored,
+        `Storage state for '${role.key}' does not contain '${expectedKey}'. Every browser assertion `
+        + `would run anonymously and the negative ones would still pass.`,
+      ).toBe(token);
 
       // The raw token, for the direct-API half of every boundary. Rule 15: a security boundary must be
       // proven through the API as well as the browser, because a hidden menu item is not authorization.

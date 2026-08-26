@@ -814,10 +814,31 @@ using (var scope = app.Services.CreateScope())
     // operator on a live system.
     var platformBootstrapRequested =
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
+    // Uses the SAME dedicatedDeployment predicate as the demo-seed gate above, not a bare
+    // IsProduction(). A client-hosted slot commonly runs as Staging with CLIENT_DEPLOYMENT=true, and
+    // IsProduction() alone would let PLATFORM_ADMIN_PASSWORD mint a platform OWNER — the omnipotent
+    // cross-tenant actor — on that deployment with no explicit bootstrap flag.
     var platformBootstrapPermitted =
-        !app.Environment.IsProduction()
+        !dedicatedDeployment
         || string.Equals(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_BOOTSTRAP"), "true",
                          StringComparison.OrdinalIgnoreCase);
+
+    // The password is the only thing standing between an env var and a cross-tenant superuser, so it is
+    // held to a real bar. SeedAdmin__Password already gets this treatment; this one had none at all,
+    // while docker-compose and CI both ship well-known defaults.
+    if (platformBootstrapRequested && platformBootstrapPermitted && dedicatedDeployment)
+    {
+        var pw = Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD") ?? string.Empty;
+        var weak = pw.Length < 16
+                   || pw.Contains("ChangeMe", StringComparison.OrdinalIgnoreCase)
+                   || pw.Contains("YourPassword", StringComparison.OrdinalIgnoreCase)
+                   || pw.Contains("PlatformAdmin123", StringComparison.OrdinalIgnoreCase);
+        if (weak)
+            throw new InvalidOperationException(
+                "PLATFORM_ADMIN_BOOTSTRAP is enabled on a production/dedicated deployment but "
+                + "PLATFORM_ADMIN_PASSWORD is weak or a known default. Refusing to seed a platform owner: "
+                + "this account has cross-tenant reach over every customer's payroll data.");
+    }
 
     if (platformBootstrapRequested && platformBootstrapPermitted)
         await TrySeedAsync("PlatformOwnerBootstrap", () => DemoDataSeeder.SeedPlatformOwnerOnlyAsync(

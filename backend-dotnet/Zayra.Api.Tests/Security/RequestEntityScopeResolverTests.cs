@@ -418,6 +418,97 @@ public class RequestEntityScopeResolverTests
             "which is why any company-scoped read on an anonymous webhook path must re-apply its own "
             + "server-derived tenant predicate instead of relying on the ambient filter");
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+    // ROUND 2 — regressions found by independent security review of THIS branch.
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// The strict marker is the one claim where a case mismatch fails OPEN: on a non-strict deployment
+    /// an impersonation token with "True" and no scope claim would have resolved to legacy GroupLevel —
+    /// tenant-wide — because ClaimsPrincipal.HasClaim compares the VALUE ordinally.
+    /// </summary>
+    [Theory]
+    [InlineData("true")]
+    [InlineData("True")]
+    [InlineData("TRUE")]
+    public void TheStrictMarkerIsHonouredWhateverItsCasing(string value)
+    {
+        var scope = Resolver(strictMode: false)
+            .ResolveFor(Principal(new Claim(EntityScopeContext.StrictScopeClaim, value)), null);
+
+        scope.IsStrict.Should().BeTrue();
+        scope.SeesNothing.Should().BeTrue("an impersonated session never inherits access by claim omission");
+    }
+
+    /// <summary>
+    /// A legacy row with an explicit null company is the group grant. A row that merely FAILED to carry
+    /// one — `{}` or `{"r":"Viewer"}` — deserializes to the identical shape, and treating it as a grant
+    /// would let an empty object widen a token to tenant-wide.
+    /// </summary>
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"r\":\"Viewer\"}")]
+    public void AnEmptyLegacyAccessRowDoesNotWidenToGroup(string rowJson)
+    {
+        var scope = Resolver().ResolveFor(
+            Principal(new Claim("entity_access", rowJson)), null);
+
+        scope.IsGroupLevel.Should().BeFalse("an empty row is not a group grant");
+        scope.SeesNothing.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AnExplicitLegacyGroupRowStillWorks()
+    {
+        var scope = Resolver().ResolveFor(
+            Principal(new Claim("entity_access", "{\"c\":null}")), null);
+
+        scope.IsGroupLevel.Should().BeTrue("an explicit null company IS the legacy group grant");
+    }
+
+    /// <summary>
+    /// System scope must be resolved BEFORE the per-request cache is consulted. Caching a System result
+    /// would pin system scope for the remainder of the request — including after the block closed —
+    /// while the DbContext's uncached check correctly reverted, leaving the tenant filter re-applied and
+    /// the company filter permanently bypassed.
+    /// </summary>
+    [Fact]
+    public void ASystemScopeBlockDoesNotPoisonTheRequestCache()
+    {
+        var httpCtx = new DefaultHttpContext { User = Principal(V2(EntityScopeModes.Companies, CompanyA)) };
+        var resolver = Resolver(http: new _ScopeHttpAccessor(httpCtx));
+
+        using (Zayra.Api.Infrastructure.Scope.SystemScopeContext.Begin())
+            resolver.Resolve().IsSystemScope.Should().BeTrue();
+
+        // Outside the block the request must be back to its own narrow scope, not the cached System one.
+        var after = resolver.Resolve();
+        after.IsSystemScope.Should().BeFalse("the system result must not have been cached for the request");
+        after.AuthorizedCompanyIds.Should().ContainSingle().Which.Should().Be(CompanyA);
+    }
+
+    /// <summary>
+    /// A pooled DbContext must never answer with a previous request's scope. The previous version of
+    /// this test used two separate resolvers, which proves only that two objects do not share state —
+    /// it would have passed with the cache moved onto a resolver field. This reuses ONE resolver and
+    /// swaps the HttpContext underneath it, which is exactly what IHttpContextAccessor does per request.
+    /// </summary>
+    [Fact]
+    public void OneResolverAcrossTwoRequestsResolvesEachRequestSeparately()
+    {
+        var accessor = new _ScopeHttpAccessor(
+            new DefaultHttpContext { User = Principal(V2(EntityScopeModes.Companies, CompanyA)) });
+        var resolver = Resolver(http: accessor);
+
+        resolver.Resolve().AuthorizedCompanyIds.Should().ContainSingle().Which.Should().Be(CompanyA);
+
+        accessor.HttpContext = new DefaultHttpContext { User = Principal(V2(EntityScopeModes.Companies, CompanyB)) };
+
+        resolver.Resolve().AuthorizedCompanyIds
+            .Should().ContainSingle().Which.Should().Be(CompanyB,
+                "a reused resolver must resolve the CURRENT request, not the one it saw first");
+    }
 }
 
 file sealed class _ScopeHttpAccessor : IHttpContextAccessor
