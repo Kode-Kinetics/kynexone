@@ -23,9 +23,23 @@ public static class DemoDataSeeder
         IPasswordHasher hasher,
         IAuthSeeder authSeeder,
         ILogger logger,
+        bool seedLegacyTenants = true,
         CancellationToken ct = default)
     {
         await SeedPlatformOwnerAsync(db, hasher, logger, ct);
+
+        // The clean pilot startup pipeline owns Ras Al-Manar and the canonical IntelliFlow tenant.
+        // In that mode this legacy seeder is retained only for the optional platform-owner bootstrap.
+        // Running its old tenant specs first would recreate Evostel and Al-Nakheel on every restart;
+        // the later garbage cleanup would deactivate them, and the next restart would rename/recreate
+        // them again, growing tenant history forever.
+        if (!seedLegacyTenants)
+        {
+            logger.LogInformation(
+                "DemoDataSeeder: legacy tenant specs disabled; platform-owner bootstrap only.");
+            return;
+        }
+
         // Pricing config is now seeded unconditionally from Program.cs startup (runs in all
         // environments, not just demo) — see PricingConfigSeeder. Not called here to avoid a
         // double invocation in the same DbContext scope.

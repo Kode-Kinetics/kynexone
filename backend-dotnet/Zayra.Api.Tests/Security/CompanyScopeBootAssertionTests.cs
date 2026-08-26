@@ -48,10 +48,10 @@ public class CompanyScopeBootAssertionTests
         {
             Environment.SetEnvironmentVariable(CompanyScopeBootAssertion.StrictEnvVar, null);
             CompanyScopeBootAssertion.ResolveStrictMode(isProduction: false).Should().BeTrue("dev/test/CI are always strict");
-            CompanyScopeBootAssertion.ResolveStrictMode(isProduction: true).Should().BeFalse("production defaults to log-only");
+            CompanyScopeBootAssertion.ResolveStrictMode(isProduction: true).Should().BeTrue("production must fail closed");
 
             Environment.SetEnvironmentVariable(CompanyScopeBootAssertion.StrictEnvVar, "strict");
-            CompanyScopeBootAssertion.ResolveStrictMode(isProduction: true).Should().BeTrue("production opts into hard-fail via env var");
+            CompanyScopeBootAssertion.ResolveStrictMode(isProduction: true).Should().BeTrue("environment overrides cannot weaken the production guard");
         }
         finally
         {

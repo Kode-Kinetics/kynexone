@@ -1089,6 +1089,19 @@ public sealed class PayrollVoidService
                 adj.Status = w.PriorStatus ?? "Approved";
                 result.AdjustmentsReleased++;
             }
+            var encashmentSourceIds = adjustments
+                .Where(a => a.SourceType == PayrollAdjustmentSources.LeaveEncashment && a.SourceId.HasValue)
+                .Select(a => a.SourceId!.Value)
+                .ToList();
+            if (encashmentSourceIds.Count > 0)
+            {
+                await _db.LeaveEncashmentRequests
+                    .Where(e => e.TenantId == tenantId && encashmentSourceIds.Contains(e.Id)
+                        && e.PayrollRunId == runId && e.Status == LeaveEncashmentStatuses.Processed)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(e => e.Status, LeaveEncashmentStatuses.PayrollApproved)
+                        .SetProperty(e => e.ProcessedAtUtc, (DateTime?)null), ct);
+            }
         }
         else
         {

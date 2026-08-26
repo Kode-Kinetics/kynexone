@@ -2,13 +2,17 @@ using System.Security.Claims;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Zayra.Api.Data;
 using Zayra.Api.Controllers.Localization;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Http;
 using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.Operations;
+using Zayra.Api.Infrastructure.OpenApi;
+using Zayra.Api.Models;
 using Xunit;
 
 namespace Zayra.Api.Tests;
@@ -26,6 +30,14 @@ public class ProductionHardeningUnitTests
     public void Storage_Production_WithoutS3_FailsFast()
     {
         var act = () => DocumentStorageRegistration.ResolveAndValidate(Config(), isDevelopment: false);
+        act.Should().Throw<InvalidOperationException>().WithMessage("*durable object storage*");
+    }
+
+    [Fact]
+    public void Storage_Production_EphemeralEscapeHatchStillFailsClosed()
+    {
+        var cfg = Config(("Storage:Provider", "local"), ("Storage:AllowEphemeral", "true"));
+        var act = () => DocumentStorageRegistration.ResolveAndValidate(cfg, isDevelopment: false);
         act.Should().Throw<InvalidOperationException>().WithMessage("*durable object storage*");
     }
 
@@ -63,8 +75,42 @@ public class ProductionHardeningUnitTests
     [InlineData(true, 1, "not_ready")]
     [InlineData(true, 5, "not_ready")]
     [InlineData(false, 0, "not_ready")]
+    [InlineData(true, -1, "not_ready")]
     public void ReadinessStatus_ReadyOnlyWhenHealthyAndNoPendingMigrations(bool healthy, int pending, string expected)
         => ProductionReadinessEvidence.ResolveStatus(healthy, pending).Should().Be(expected);
+
+    [Fact]
+    public void WorkerReadiness_StaleCriticalHeartbeat_FailsClosed()
+    {
+        var now = DateTime.UtcNow;
+        var rows = ProductionWorkerNames.All.Select(name => new WorkerHeartbeat
+        {
+            WorkerName = name,
+            InstanceId = "instance-1",
+            Status = WorkerHeartbeatStatuses.Healthy,
+            LastSucceededAtUtc = now,
+            UpdatedAtUtc = name == ProductionWorkerNames.Qiwa ? now.AddMinutes(-4) : now
+        }).ToList();
+
+        var workers = ProductionReadinessEvidence.EvaluateWorkers(rows, now);
+
+        workers.Healthy.Should().BeFalse();
+        workers.StaleCount.Should().Be(1);
+        workers.Workers.Single(x => x.Name == ProductionWorkerNames.Qiwa).Status.Should().Be("stale");
+        ProductionReadinessEvidence.ResolveStatus(true, 0, workers.Healthy).Should().Be("not_ready");
+    }
+
+    [Fact]
+    public void RuntimeAssembly_ContainsEfMigrationsRequiredByReadinessGate()
+    {
+        var options = new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql("Host=localhost;Database=unused;Username=unused;Password=unused")
+            .Options;
+        using var db = new ZayraDbContext(options);
+
+        db.Database.GetMigrations().Should().NotBeEmpty(
+            "the production image must retain migration metadata for /health/ready parity checks");
+    }
 
     // ── Headers: CSP/HSTS/Permissions-Policy present; /swagger exempt from CSP ───
 
@@ -87,6 +133,13 @@ public class ProductionHardeningUnitTests
         SecurityHeaders.Apply(headers, "/swagger/index.html");
         headers.ContainsKey("Content-Security-Policy").Should().BeFalse("Swagger's inline bootstrap needs the CSP exemption in dev");
         headers.ContainsKey("Strict-Transport-Security").Should().BeTrue();
+    }
+
+    [Fact]
+    public void SwaggerSchemaIds_DuplicateShortDtoNames_RemainUnique()
+    {
+        SwaggerSchemaIds.For(typeof(Zayra.Api.Application.Attendance.RegularizationDecisionRequest))
+            .Should().NotBe(SwaggerSchemaIds.For(typeof(Zayra.Api.Controllers.Leave.RegularizationDecisionRequest)));
     }
 
     // ── P0-6: offline transliteration (no network) ──────────────────────────────

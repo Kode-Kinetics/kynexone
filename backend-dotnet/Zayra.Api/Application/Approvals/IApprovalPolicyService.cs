@@ -26,4 +26,5 @@ public record ResolvedApprovalStep(
     /// <summary>Null when ApproverType = "Role" or approver employee could not be resolved.</summary>
     int? ApproverEmployeeId,
     string? ApproverEmployeeName,
-    bool IsFinalStep);
+    bool IsFinalStep,
+    string? ApproverRole = null);

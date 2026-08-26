@@ -31,12 +31,9 @@ public class LetterService : ILetterService
         var primaryColor = (string)(IsValidHex(primaryHex) ? $"#{primaryHex}" : Colors.Blue.Darken3);
         var accentColor  = (string)(IsValidHex(accentHex)  ? $"#{accentHex}"  : Colors.Blue.Lighten3);
 
-        // Logo bytes (null if not configured or file not found)
-        byte[]? logoBytes = null;
-        if (!string.IsNullOrEmpty(b.LogoStorageUrl) && System.IO.File.Exists(b.LogoStorageUrl))
-        {
-            try { logoBytes = System.IO.File.ReadAllBytes(b.LogoStorageUrl); } catch { /* non-fatal */ }
-        }
+        // Controllers load tenant-scoped logo bytes through IDocumentStorage. The PDF
+        // renderer must never interpret a persisted, client-controlled key as a local path.
+        var logoBytes = b.LogoBytes;
 
         var earningsLabel   = ar ? "المستحقات"   : "EARNINGS";
         var deductionsLabel = ar ? "الاستقطاعات" : "DEDUCTIONS";

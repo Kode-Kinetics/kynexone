@@ -119,14 +119,15 @@ public class SensitiveFieldMaskingTests
     [Fact]
     public void EmployeeListItemDto_HasExpectedFieldCount()
     {
-        // 14 fields: Id, EmployeeCode, FullName, ArabicName, Department, Designation, Branch,
+        // 15 fields: Id, EmployeeCode, FullName, ArabicName, Department, Designation, Branch,
         // ManagerEmployeeId, Status, ProfileCompletenessScore, VisaExpiryDate, PassportExpiryDate,
-        // ReadinessState, ActivationBlockersCount. The two readiness fields are non-sensitive
-        // (a state enum + a count — no PII). If someone adds a sensitive field, this test breaks.
+        // ReadinessState, ActivationBlockersCount, PublicId. PublicId is an opaque employee locator,
+        // not PII; the two readiness fields are a state enum + count. If someone adds a sensitive
+        // field, this test breaks.
         typeof(EmployeeListItemDto).GetConstructors().Single()
             .GetParameters()
-            .Should().HaveCount(14,
-                "list DTO must contain exactly 14 non-sensitive fields");
+            .Should().HaveCount(15,
+                "list DTO must contain exactly 15 non-sensitive fields");
     }
 
     // ── Detail endpoint — EmployeeManagementService.GetAsync ─────────────────────
@@ -559,12 +560,23 @@ public class SensitiveFieldMaskingTests
             new FakeHijriDateService(),
             new DataScopeService(db),
             new FakeLetterService());
-        var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        var permissions = role switch
+        {
+            "Admin" or "HR Manager" => new[] { "employees.read", "employees.write", "employees.sensitive" },
+            "HR Officer" => new[] { "employees.read", "employees.write" },
+            "Payroll Officer" => new[] { "employees.read", "employees.sensitive" },
+            "Manager" => new[] { "employees.read", "manager.read" },
+            "Auditor" => new[] { "employees.read" },
+            _ => Array.Empty<string>(),
+        };
+        var claims = new List<Claim>
         {
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new Claim(ClaimTypes.Role, role),
-        }, "Test"));
+        };
+        claims.AddRange(permissions.Select(permission => new Claim("permission", permission)));
+        var user = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } };
         return controller;
     }

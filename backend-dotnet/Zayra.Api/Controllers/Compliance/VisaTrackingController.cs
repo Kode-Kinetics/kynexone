@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -74,11 +75,15 @@ public class VisaTrackingController : ControllerBase
     public async Task<IActionResult> Create([FromBody] CreateVisaRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, null, ct);
+        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        var employee = identity.Employee!;
         var record = new VisaRecord
         {
             TenantId = tid,
-            EmployeeId = req.EmployeeId,
-            EmployeeName = req.EmployeeName ?? string.Empty,
+            CompanyId = employee.CompanyId,
+            EmployeeId = employee.PublicId,
+            EmployeeName = employee.FullName,
             VisaType = req.VisaType,
             VisaNumber = req.VisaNumber ?? string.Empty,
             IqamaNumber = req.IqamaNumber ?? string.Empty,
@@ -96,7 +101,7 @@ public class VisaTrackingController : ControllerBase
         var alertDays = 60;
         _db.ComplianceReminders.Add(new ComplianceReminder
         {
-            TenantId = tid, EmployeeId = req.EmployeeId, EmployeeName = req.EmployeeName ?? string.Empty,
+            TenantId = tid, EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
             ReminderType = "VisaExpiry", DocumentType = req.VisaType,
             ExpiryDate = req.ExpiryDate,
             ScheduledAtUtc = req.ExpiryDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddDays(-alertDays),
@@ -105,7 +110,7 @@ public class VisaTrackingController : ControllerBase
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
         {
             TenantId = tid, EntityType = "Visa", EntityId = record.Id.ToString(),
-            EmployeeId = req.EmployeeId,
+            EmployeeId = employee.PublicId,
             Action = "Created", PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
             MetadataJson = System.Text.Json.JsonSerializer.Serialize(new { req.VisaType, req.ExpiryDate }),
         });
@@ -177,9 +182,13 @@ public class VisaTrackingController : ControllerBase
     public async Task<IActionResult> CreatePassport([FromBody] CreatePassportRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, null, ct);
+        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        var employee = identity.Employee!;
         var record = new PassportRecord
         {
-            TenantId = tid, EmployeeId = req.EmployeeId, EmployeeName = req.EmployeeName ?? string.Empty,
+            TenantId = tid, CompanyId = employee.CompanyId,
+            EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
             PassportNumber = req.PassportNumber, Nationality = req.Nationality ?? string.Empty,
             IssuingCountry = req.IssuingCountry ?? string.Empty,
             DateOfBirth = req.DateOfBirth, IssueDate = req.IssueDate, ExpiryDate = req.ExpiryDate,
@@ -192,7 +201,7 @@ public class VisaTrackingController : ControllerBase
 
         _db.ComplianceReminders.Add(new ComplianceReminder
         {
-            TenantId = tid, EmployeeId = req.EmployeeId, EmployeeName = req.EmployeeName ?? string.Empty,
+            TenantId = tid, EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
             ReminderType = "PassportExpiry", DocumentType = "Passport",
             ExpiryDate = req.ExpiryDate,
             ScheduledAtUtc = req.ExpiryDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddDays(-90),
@@ -201,7 +210,7 @@ public class VisaTrackingController : ControllerBase
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
         {
             TenantId = tid, EntityType = "Passport", EntityId = record.Id.ToString(),
-            EmployeeId = req.EmployeeId,
+            EmployeeId = employee.PublicId,
             Action = "Created", PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
         });
 
@@ -244,9 +253,13 @@ public class VisaTrackingController : ControllerBase
     public async Task<IActionResult> CreateWorkPermit([FromBody] CreateWorkPermitRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, null, ct);
+        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        var employee = identity.Employee!;
         var record = new WorkPermitRecord
         {
-            TenantId = tid, EmployeeId = req.EmployeeId, EmployeeName = req.EmployeeName ?? string.Empty,
+            TenantId = tid, CompanyId = employee.CompanyId,
+            EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
             PermitNumber = req.PermitNumber, CountryCode = req.CountryCode,
             PermitType = req.PermitType, IssueDate = req.IssueDate, ExpiryDate = req.ExpiryDate,
             IssuingAuthority = req.IssuingAuthority ?? string.Empty, FileUrl = req.FileUrl ?? string.Empty,
@@ -257,7 +270,7 @@ public class VisaTrackingController : ControllerBase
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
         {
             TenantId = tid, EntityType = "WorkPermit", EntityId = record.Id.ToString(),
-            EmployeeId = req.EmployeeId,
+            EmployeeId = employee.PublicId,
             Action = "Created", PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
         });
 
@@ -293,9 +306,12 @@ public class VisaTrackingController : ControllerBase
     public async Task<IActionResult> CreateRenewal([FromBody] CreateRenewalRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, null, ct);
+        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        var employee = identity.Employee!;
         var renewal = new ComplianceRenewal
         {
-            TenantId = tid, EmployeeId = req.EmployeeId, EmployeeName = req.EmployeeName ?? string.Empty,
+            TenantId = tid, EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
             DocumentType = req.DocumentType, DocumentNumber = req.DocumentNumber ?? string.Empty,
             ExpiryDate = req.ExpiryDate, AssignedToName = req.AssignedToName ?? string.Empty,
             AssignedToUserId = req.AssignedToUserId, Notes = req.Notes ?? string.Empty,

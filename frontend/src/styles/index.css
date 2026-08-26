@@ -195,3 +195,75 @@ textarea:focus-visible {
   .animate-fade-in-up, .animate-fade-in, .animate-slide-in { animation: none; }
   .nav-item-idle:hover, .btn-primary:hover { transform: none; }
 }
+
+/* ── WCAG AA light-theme palette guardrails ───────────────────────────────
+ * slate-400 and several 500/600 status colors are useful decorative tokens,
+ * but do not meet 4.5:1 when used for small text on our white/slate-50
+ * surfaces. Keep the dark-theme palette intact and strengthen only text in
+ * the light theme. These selectors intentionally sit after Tailwind utilities
+ * so a future component cannot accidentally reintroduce unreadable metadata.
+ */
+html:not(.dark) .tenant-app-shell .text-slate-400,
+html:not(.dark) .tenant-app-shell .placeholder\:text-slate-400::placeholder,
+html:not(.dark) .tenant-login-shell .text-slate-400,
+html:not(.dark) .tenant-login-shell .placeholder\:text-slate-400::placeholder {
+  color: #475569 !important; /* slate-600 */
+}
+
+html:not(.dark) .tenant-app-shell .text-sapphire {
+  color: #1d4ed8 !important; /* blue-700 */
+}
+
+html:not(.dark) .tenant-login-shell .text-sapphire {
+  color: #1d4ed8 !important;
+}
+
+html:not(.dark) .tenant-app-shell .text-emerald-600 {
+  color: #047857 !important; /* emerald-700 */
+}
+
+html:not(.dark) .tenant-app-shell .text-amber-600 {
+  color: #92400e !important; /* amber-800 */
+}
+
+html:not(.dark) .tenant-app-shell .text-rose-500 {
+  color: #be123c !important; /* rose-700 */
+}
+
+html:not(.dark) .tenant-app-shell .text-rose-600 {
+  color: #9f1239 !important; /* rose-800 */
+}
+
+html:not(.dark) .tenant-app-shell .bg-slate-100.text-slate-500 {
+  color: #334155 !important; /* slate-700 */
+}
+
+html:not(.dark) .tenant-app-shell .bg-amber-500.text-white {
+  background-color: #b45309 !important; /* amber-700 */
+}
+
+html:not(.dark) .tenant-app-shell .bg-sapphire.text-white {
+  background-color: #1d4ed8 !important; /* blue-700 */
+}
+
+html:not(.dark) .tenant-app-shell .btn-primary {
+  background-color: #1d4ed8 !important;
+}
+
+html:not(.dark) .tenant-app-shell .bg-violet-500.text-white {
+  background-color: #6d28d9 !important; /* violet-700 */
+}
+
+html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
+  background-color: #be123c !important; /* rose-700 */
+}
+
+/* The platform console intentionally uses a permanently dark shell, independent
+ * of the tenant theme toggle. Its former slate-500/600 metadata was below AA on
+ * #0a0e14; promote text tokens while leaving borders/backgrounds unchanged. */
+.platform-shell .text-slate-500,
+.platform-shell .text-slate-600,
+.platform-shell .text-slate-700,
+.platform-shell .placeholder-slate-600::placeholder {
+  color: #94a3b8 !important; /* slate-400 */
+}

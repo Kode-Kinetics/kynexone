@@ -128,6 +128,17 @@ public class LeaveRequestsController : ControllerBase
         if (req.EndDate < req.StartDate)
             return BadRequest(new { message = "End date must be after start date." });
 
+        Employee? delegateEmployee = null;
+        if (req.DelegateEmployeeId.HasValue)
+        {
+            if (req.DelegateEmployeeId.Value == req.EmployeeId)
+                return BadRequest(new { message = "An employee cannot delegate leave duties to themselves." });
+            delegateEmployee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(e =>
+                e.Id == req.DelegateEmployeeId.Value && e.TenantId == tenantId && !e.IsDeleted && e.Status == "Active", ct);
+            if (delegateEmployee is null || (employee.CompanyId.HasValue && delegateEmployee.CompanyId != employee.CompanyId))
+                return BadRequest(new { message = "Delegate employee was not found in the employee's company." });
+        }
+
         var request = new LeaveRequest
         {
             TenantId = tenantId.Value,
@@ -145,12 +156,14 @@ public class LeaveRequestsController : ControllerBase
             Reason = req.Reason ?? string.Empty,
             IsEmergency = req.IsEmergency,
             AttachmentPath = req.AttachmentPath ?? string.Empty,
+            DelegateEmployeeId = delegateEmployee?.Id,
+            DelegateEmployeeName = delegateEmployee?.FullName ?? string.Empty,
             PayrollImpact = leaveType.IsPaid ? "Full" : "None"
         };
 
         try
         {
-            var submitted = await _leaveService.SubmitRequestAsync(tenantId.Value, request, ct);
+            var submitted = await _leaveService.SubmitRequestAsync(tenantId.Value, request, this.GetUserId(), ct);
             await _notifications.NotifyAsync(tenantId.Value, null,
                 "New Leave Request",
                 $"{submitted.EmployeeName} submitted a {submitted.LeaveTypeName} request for {submitted.TotalDays} day(s).",
@@ -264,6 +277,22 @@ public class LeaveRequestsController : ControllerBase
 
         var cancelledByName = User.Identity?.Name ?? this.GetUserId()?.ToString() ?? "Employee";
 
+        if (leaveRequest.Status == "Approved")
+        {
+            if (await _db.LeaveCancellationRequests.AnyAsync(x => x.TenantId == tenantId
+                    && x.LeaveRequestId == id && x.Status == "Pending", ct))
+                return Conflict(new { message = "A cancellation request is already pending." });
+            var cancellation = new LeaveCancellationRequest
+            {
+                TenantId = tenantId.Value, LeaveRequestId = id, EmployeeId = leaveRequest.EmployeeId,
+                Reason = req.Reason ?? string.Empty, Status = "Pending"
+            };
+            leaveRequest.Status = "CancellationRequested";
+            _db.LeaveCancellationRequests.Add(cancellation);
+            await _db.SaveChangesAsync(ct);
+            return Accepted(new { request = leaveRequest, cancellation });
+        }
+
         try
         {
             var result = await _leaveService.CancelRequestAsync(tenantId.Value, id, cancelledByName, req.Reason ?? string.Empty, ct);
@@ -279,6 +308,56 @@ public class LeaveRequestsController : ControllerBase
         }
     }
 
+    [HttpPost("{id:guid}/cancel-approve")]
+    [Authorize(Roles = "Admin,HR Manager,Manager")]
+    public async Task<IActionResult> ApproveCancellation(Guid id, [FromBody] CancellationDecisionRequest req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var cancellation = await _db.LeaveCancellationRequests
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.LeaveRequestId == id && x.Status == "Pending", ct);
+        if (cancellation is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(cancellation.EmployeeId)) return Forbid();
+        if (scope.CallerEmployeeId == cancellation.EmployeeId) return Forbid();
+
+        var reviewer = User.Identity?.Name ?? this.GetUserId()?.ToString() ?? "Approver";
+        try
+        {
+            var leave = await _leaveService.CancelRequestAsync(tenantId.Value, id, reviewer, cancellation.Reason, ct);
+            cancellation.Status = "Approved";
+            cancellation.ReviewedByName = reviewer;
+            cancellation.ReviewNotes = req.Notes ?? string.Empty;
+            cancellation.ReviewedAtUtc = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+            return Ok(leave);
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpPost("{id:guid}/cancel-reject")]
+    [Authorize(Roles = "Admin,HR Manager,Manager")]
+    public async Task<IActionResult> RejectCancellation(Guid id, [FromBody] CancellationDecisionRequest req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var cancellation = await _db.LeaveCancellationRequests
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.LeaveRequestId == id && x.Status == "Pending", ct);
+        if (cancellation is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(cancellation.EmployeeId)) return Forbid();
+        if (scope.CallerEmployeeId == cancellation.EmployeeId) return Forbid();
+        var leave = await _db.LeaveRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+        if (leave is null) return NotFound();
+        cancellation.Status = "Rejected";
+        cancellation.ReviewedByName = User.Identity?.Name ?? "Approver";
+        cancellation.ReviewNotes = req.Notes ?? string.Empty;
+        cancellation.ReviewedAtUtc = DateTime.UtcNow;
+        leave.Status = "Approved";
+        await _db.SaveChangesAsync(ct);
+        return Ok(leave);
+    }
+
     [HttpPost("{id:guid}/withdraw")]
     public async Task<IActionResult> Withdraw(Guid id, [FromBody] WithdrawLeaveRequest req, CancellationToken ct)
     {
@@ -289,25 +368,68 @@ public class LeaveRequestsController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (leaveRequest is null) return NotFound();
 
-        if (leaveRequest.Status != "Draft" && leaveRequest.Status != "Submitted")
-            return BadRequest(new { message = "Only draft or submitted requests can be withdrawn." });
+        var canAdminister = User.IsInRole("Admin") || User.IsInRole("HR Manager");
+        if (!canAdminister)
+        {
+            var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+            if (scope.CallerEmployeeId != leaveRequest.EmployeeId) return Forbid();
+        }
+
+        var withdrawable = new[] { "Draft", "Submitted", "PendingManagerApproval", "PendingHRApproval" };
+        if (!withdrawable.Contains(leaveRequest.Status))
+            return BadRequest(new { message = "Only unapproved requests can be withdrawn." });
 
         var employeeName = User.Identity?.Name ?? this.GetUserId()?.ToString() ?? "Employee";
 
-        var previousStatus = leaveRequest.Status;
         leaveRequest.Status = "Withdrawn";
         leaveRequest.CancellationReason = req.Reason ?? string.Empty;
         leaveRequest.CancelledAtUtc = DateTime.UtcNow;
 
-        var balance = await _db.EmployeeLeaveBalances
-            .FirstOrDefaultAsync(b => b.TenantId == tenantId && b.EmployeeId == leaveRequest.EmployeeId
-                && b.LeaveTypeId == leaveRequest.LeaveTypeId && b.Year == leaveRequest.StartDate.Year, ct);
-
-        if (balance is not null && balance.Pending > 0)
+        // A request may span calendar years. Release the exact reservations recorded during
+        // submission rather than subtracting the aggregate from the start-year balance.
+        var reservations = await _db.LeaveBalanceTransactions.AsNoTracking()
+            .Where(t => t.TenantId == tenantId && t.EmployeeId == leaveRequest.EmployeeId
+                && t.LeaveTypeId == leaveRequest.LeaveTypeId && t.Reference == leaveRequest.Id.ToString()
+                && t.TransactionType == "Pending")
+            .ToListAsync(ct);
+        foreach (var reservation in reservations)
         {
-            balance.Pending = Math.Max(0, balance.Pending - leaveRequest.TotalDays);
+            var balance = await _db.EmployeeLeaveBalances.FirstOrDefaultAsync(b =>
+                b.TenantId == tenantId && b.EmployeeId == leaveRequest.EmployeeId
+                && b.LeaveTypeId == leaveRequest.LeaveTypeId && b.Year == reservation.Year, ct);
+            if (balance is null) continue;
+            var before = balance.Available;
+            balance.Pending = Math.Max(0, balance.Pending - reservation.Amount);
             balance.UpdatedAtUtc = DateTime.UtcNow;
+            _db.LeaveBalanceTransactions.Add(new LeaveBalanceTransaction
+            {
+                TenantId = tenantId.Value,
+                CompanyId = leaveRequest.CompanyId,
+                EmployeeId = leaveRequest.EmployeeId,
+                LeaveTypeId = leaveRequest.LeaveTypeId,
+                Year = reservation.Year,
+                TransactionType = "Reversed",
+                Amount = reservation.Amount,
+                BalanceBefore = before,
+                BalanceAfter = balance.Available,
+                Reference = leaveRequest.Id.ToString(),
+                Reason = "Leave request withdrawn",
+                PerformedByName = employeeName
+            });
         }
+
+        var projection = await _db.ApprovalRequests
+            .FirstOrDefaultAsync(a => a.TenantId == tenantId && a.EntityName == nameof(LeaveRequest)
+                && a.EntityId == leaveRequest.Id.ToString() && a.Status == "Pending", ct);
+        if (projection is not null)
+        {
+            projection.Status = "Cancelled";
+            projection.CompletedAtUtc = DateTime.UtcNow;
+        }
+        var pendingApprovals = await _db.LeaveApprovals
+            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == id && a.Decision == "Pending")
+            .ToListAsync(ct);
+        foreach (var approval in pendingApprovals) approval.Decision = "Cancelled";
 
         await _db.SaveChangesAsync(ct);
         return Ok(leaveRequest);
@@ -323,10 +445,19 @@ public class LeaveRequestsController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (leaveRequest is null) return NotFound();
 
+        var canAdminister = User.IsInRole("Admin") || User.IsInRole("HR Manager");
+        if (!canAdminister)
+        {
+            var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+            if (scope.CallerEmployeeId != leaveRequest.EmployeeId) return Forbid();
+        }
+
         var delegateEmployee = await _db.Employees
             .FirstOrDefaultAsync(e => e.Id == req.DelegateEmployeeId && e.TenantId == tenantId, ct);
         if (delegateEmployee is null)
             return BadRequest(new { message = "Delegate employee not found." });
+        if (delegateEmployee.Id == leaveRequest.EmployeeId)
+            return BadRequest(new { message = "Employee cannot delegate to themselves." });
 
         leaveRequest.DelegateEmployeeId = req.DelegateEmployeeId;
         leaveRequest.DelegateEmployeeName = delegateEmployee.FullName;
@@ -466,7 +597,7 @@ public class LeaveRequestsController : ControllerBase
 
             try
             {
-                await _leaveService.SubmitRequestAsync(tenantId.Value, request, ct);
+                await _leaveService.SubmitRequestAsync(tenantId.Value, request, this.GetUserId(), ct);
                 created++;
             }
             catch (InvalidOperationException ex)
@@ -488,8 +619,19 @@ public class LeaveRequestsController : ControllerBase
             .OrderBy(a => a.StepNumber)
             .FirstOrDefaultAsync(ct);
 
-        if (pendingStep?.ApproverId is null) return true;
-        return pendingStep.ApproverId == approverId;
+        if (pendingStep?.ApproverId is not null) return pendingStep.ApproverId == approverId;
+
+        // Role-routed steps are still owned work. A null concrete user does not mean that every
+        // manager in the tenant may decide it; enforce the routed role (Admin remains an explicit
+        // override above).
+        var requiredRole = pendingStep?.ApproverRole?.Trim();
+        if (string.IsNullOrWhiteSpace(requiredRole)) return User.IsInRole("HR Manager");
+        return requiredRole.ToUpperInvariant() switch
+        {
+            "HR" or "HRBUSINESSPARTNER" => User.IsInRole("HR Manager") || User.IsInRole("HR Officer"),
+            "MANAGER" or "DIRECTMANAGER" or "SUPERVISOR" or "DEPARTMENTHEAD" => User.IsInRole("Manager"),
+            _ => User.IsInRole(requiredRole)
+        };
     }
 }
 
@@ -503,11 +645,14 @@ public record SubmitLeaveRequestRequest(
     decimal? HoursRequested,
     string? Reason,
     bool IsEmergency,
-    string? AttachmentPath);
+    string? AttachmentPath,
+    int? DelegateEmployeeId = null,
+    string? DelegateEmployeeName = null);
 
 public record ApproveLeaveRequest(string? Notes);
 public record RejectLeaveRequestBody(string Reason);
 public record CancelLeaveRequest(string? Reason);
+public record CancellationDecisionRequest(string? Notes);
 public record WithdrawLeaveRequest(string? Reason);
 public record DelegateLeaveRequest(int DelegateEmployeeId, string? DelegationType, string? Notes);
 public record ImportLeaveRequestsRequest(string CsvContent);

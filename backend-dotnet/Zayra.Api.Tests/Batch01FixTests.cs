@@ -101,11 +101,27 @@ public class Batch01FixTests
 
         var packResolver = new _B01KsaPackResolver(new StubRuleReader());
 
+        // EOSB belongs to a legal entity: its country selects the statutory pack and its
+        // component catalog selects the eligible wage.  The production endpoint correctly
+        // refuses to guess this dimension, so keep the fixture explicit rather than bypassing
+        // the company-country invariant.
+        var company = new Company
+        {
+            TenantId = tenantId,
+            LegalNameEn = "Test KSA Entity",
+            CountryCode = "SA",
+            Jurisdiction = Jurisdictions.KsaMainland,
+            DefaultCurrency = "SAR",
+            IsActive = true,
+        };
+        db.Companies.Add(company);
+
         var emp = new Employee
         {
             TenantId = tenantId, EmployeeCode = "E001", FullName = "Ahmed Al-Rashidi",
             Status = "Active", Nationality = "SAU",
             JoiningDate = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            CompanyId = company.Id,
         };
         db.Employees.Add(emp);
 
@@ -118,6 +134,18 @@ public class Batch01FixTests
             TenantId = tenantId, EmployeeId = emp.Id,
             BasicSalary = 10_000m, Currency = "SAR",
             EffectiveDate = new DateOnly(2020, 1, 1), IsActive = true,
+        });
+        db.PayComponents.Add(new PayComponent
+        {
+            TenantId = tenantId,
+            CompanyId = company.Id,
+            Code = "BASIC",
+            NameEn = "Basic salary",
+            ComponentType = PayComponentTypes.Earning,
+            CalcMethod = PayComponentCalcMethods.StructureField,
+            StructureField = PayComponentStructureFields.BasicSalary,
+            EosbIncluded = true,
+            IsActive = true,
         });
         await db.SaveChangesAsync();
 

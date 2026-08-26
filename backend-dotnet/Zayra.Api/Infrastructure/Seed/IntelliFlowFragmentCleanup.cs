@@ -19,7 +19,8 @@ namespace Zayra.Api.Infrastructure.Seed;
 /// </summary>
 public static class IntelliFlowFragmentCleanup
 {
-    // The 5 fragment slugs — used for lookup (avoids partial-UUID matching).
+    // The 5 fragment slugs — used for lookup (avoids partial-UUID matching). The canonical active
+    // "intelliflow" tenant is removed from the candidate set below before any mutation occurs.
     private static readonly string[] FragmentSlugs =
     [
         "intelliflow-system",
@@ -39,6 +40,37 @@ public static class IntelliFlowFragmentCleanup
         var fragments = await db.Tenants
             .Where(t => slugSet.Contains(t.Slug))
             .ToListAsync(ct);
+
+        // The old DemoDataSeeder tenant and the canonical pilot intentionally share the same slug,
+        // tenant name, and admin email, so those fields cannot safely distinguish them. The canonical
+        // seeder owns a stable KSA legal-entity registration marker that the legacy tenant never had.
+        // Once that marker exists, this is the operational pilot: preserve its tenant id, users,
+        // refresh sessions, and all workflow data on every subsequent application start.
+        var fragmentIds = fragments.Select(t => t.Id).ToList();
+        var canonicalTenantIds = fragmentIds.Count == 0
+            ? new HashSet<Guid>()
+            : (await db.Companies
+                .AsNoTracking()
+                .Where(c => fragmentIds.Contains(c.TenantId)
+                         && c.RegistrationNumber == IntelliFlowDemoSeeder.DemoCompanyRegistrationNumber)
+                .Select(c => c.TenantId)
+                .Distinct()
+                .ToListAsync(ct))
+                .ToHashSet();
+
+        var canonicalPilots = fragments
+            .Where(t => t.IsActive
+                     && string.Equals(t.Slug, IntelliFlowDemoSeeder.Slug, StringComparison.OrdinalIgnoreCase)
+                     && canonicalTenantIds.Contains(t.Id))
+            .ToList();
+
+        foreach (var pilot in canonicalPilots)
+        {
+            logger.LogInformation(
+                "IntelliFlowFragmentCleanup: preserving canonical active pilot '{Slug}' ({Id}); cleanup is a no-op for this tenant.",
+                pilot.Slug, pilot.Id.ToString()[..8]);
+            fragments.Remove(pilot);
+        }
 
         if (fragments.Count == 0)
         {

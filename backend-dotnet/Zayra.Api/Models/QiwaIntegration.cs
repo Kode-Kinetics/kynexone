@@ -132,6 +132,7 @@ public class QiwaSyncLog : ITenantOwned
 public static class QiwaSyncLogStatuses
 {
     public const string Pending    = "Pending";
+    public const string Processing = "Processing";
     public const string Success    = "Success";
     public const string Failed     = "Failed";
     public const string Skipped    = "Skipped";

@@ -50,7 +50,11 @@ public class LeaverAccessRevocationTests
             EmployeeId = employee.Id,
             EmployeeCode = employee.EmployeeCode,
             EmployeeName = employee.FullName,
-            Status = "InProgress"
+            Status = "InProgress",
+            LastWorkingDay = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)),
+            AssetsReturned = true,
+            KnowledgeHandover = true,
+            ExitInterviewStatus = "Waived",
         };
 
         db.Employees.Add(employee);
@@ -71,6 +75,18 @@ public class LeaverAccessRevocationTests
             ExpiresAtUtc = DateTime.UtcNow.AddDays(7)
         });
         db.EmployeeOffboardings.Add(offboarding);
+        db.EmployeeFinalSettlements.Add(new EmployeeFinalSettlement
+        {
+            TenantId = tenantId,
+            EmployeeId = employee.Id,
+            EmployeeCode = employee.EmployeeCode,
+            EmployeeName = employee.FullName,
+            OffboardingId = offboarding.Id,
+            LastWorkingDay = offboarding.LastWorkingDay,
+            ServiceStartDate = DateOnly.FromDateTime(employee.JoiningDate),
+            SettlementDueDate = offboarding.LastWorkingDay,
+            Status = FinalSettlementStatuses.Paid,
+        });
         await db.SaveChangesAsync();
 
         var controller = new OffboardingController(db)

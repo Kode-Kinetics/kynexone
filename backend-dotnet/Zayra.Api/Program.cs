@@ -1,4 +1,5 @@
 using System.Text;
+using System.Net;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
 using Zayra.Api.Infrastructure.Observability;
@@ -7,6 +8,8 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.OpenApi.Models;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Attendance;
@@ -43,6 +46,44 @@ using Zayra.Api.Infrastructure.Qiwa;
 using Zayra.Api.Models;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Reverse-proxy headers are trusted only when deployment configuration opts in. Cloud load
+// balancers terminate TLS before the app; without this, generated links and secure redirects use
+// http and audit/rate-limit records see the proxy address. Never trust these headers by default on
+// a directly exposed development host because clients could spoof their IP and scheme.
+var trustForwardedHeaders = builder.Configuration.GetValue<bool>("Proxy:TrustForwardedHeaders");
+if (trustForwardedHeaders)
+{
+    var knownProxyValues = (builder.Configuration["Proxy:KnownProxies"] ?? string.Empty)
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    var knownNetworkValues = (builder.Configuration["Proxy:KnownNetworks"] ?? string.Empty)
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (knownProxyValues.Length == 0 && knownNetworkValues.Length == 0)
+        throw new InvalidOperationException(
+            "Proxy forwarding is enabled but no trusted Proxy:KnownProxies or Proxy:KnownNetworks are configured.");
+
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        options.ForwardLimit = 2;
+        options.KnownNetworks.Clear();
+        options.KnownProxies.Clear();
+        foreach (var value in knownProxyValues)
+        {
+            if (!IPAddress.TryParse(value, out var address))
+                throw new InvalidOperationException($"Invalid trusted proxy IP address '{value}'.");
+            options.KnownProxies.Add(address);
+        }
+        foreach (var value in knownNetworkValues)
+        {
+            var parts = value.Split('/', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length != 2 || !IPAddress.TryParse(parts[0], out var prefix)
+                                  || !int.TryParse(parts[1], out var prefixLength))
+                throw new InvalidOperationException($"Invalid trusted proxy network CIDR '{value}'.");
+            options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(prefix, prefixLength));
+        }
+    });
+}
 
 // ── DI validation at startup (Wave 0 / G5) ───────────────────────────────────
 // ValidateOnBuild resolves every registered service AT BOOT, so a missing or mistyped
@@ -219,7 +260,7 @@ var redisUrl = builder.Configuration["REDIS_URL"] ?? Environment.GetEnvironmentV
 if (!string.IsNullOrEmpty(redisUrl))
     builder.Services.AddStackExchangeRedisCache(options =>
     {
-        options.Configuration = redisUrl;
+        options.ConfigurationOptions = Zayra.Api.Infrastructure.Caching.RedisConfigurationParser.Parse(redisUrl);
         options.InstanceName = "kynexone:";
     });
 else
@@ -240,6 +281,23 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidAudiences = new[] { jwtOptions.TenantAudience, jwtOptions.PlatformAudience },
             IssuerSigningKey = signingKey,
             ClockSkew = TimeSpan.FromMinutes(1)
+        };
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var db = context.HttpContext.RequestServices.GetRequiredService<ZayraDbContext>();
+                if (!await PlatformSessionSecurity.IsCurrentAsync(
+                        context.Principal!, db, context.HttpContext.RequestAborted))
+                {
+                    context.Fail("Platform session is revoked or its authorization is stale.");
+                }
+                else if (!await TenantSessionSecurity.IsCurrentAsync(
+                             context.Principal!, db, context.HttpContext.RequestAborted))
+                {
+                    context.Fail("Tenant session is revoked or its authorization is stale.");
+                }
+            }
         };
     });
 builder.Services.AddAuthorization(options =>
@@ -268,6 +326,8 @@ builder.Services.AddAuthorization(options =>
 // checks effective permissions, not role names. Server-side only; fail-closed.
 builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider, Zayra.Api.Infrastructure.Authorization.PermissionPolicyProvider>();
 builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, Zayra.Api.Infrastructure.Authorization.PermissionAuthorizationHandler>();
+builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, Zayra.Api.Infrastructure.Authorization.PermissionAwareRolesAuthorizationHandler>();
+builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler, Zayra.Api.Infrastructure.Authorization.PermissionAwareAuthorizationResultHandler>();
 
 builder.Services.AddScoped<IPasswordHasher, Pbkdf2PasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
@@ -379,8 +439,13 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.JournalExportService
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.BankConfirmationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler>();
 
-// Data protection — encrypts Qiwa client secrets at rest.
-builder.Services.AddDataProtection();
+// Data protection encrypts MFA, Qiwa, and notification-provider secrets at rest. The key
+// ring MUST outlive a container: ephemeral default keys make every protected value unreadable
+// after a restart and make replicas disagree. PostgreSQL is already the durable shared system
+// of record, so persist the key ring there and use one stable application discriminator.
+builder.Services.AddDataProtection()
+    .SetApplicationName("Zayra.Api")
+    .PersistKeysToDbContext<ZayraDbContext>();
 
 // Qiwa API adapter: live HTTP client when QIWA_USE_LIVE_ADAPTER=true, sandbox mock otherwise.
 builder.Services.AddSingleton<QiwaOAuthTokenCache>();
@@ -390,10 +455,13 @@ if (string.Equals(Environment.GetEnvironmentVariable("QIWA_USE_LIVE_ADAPTER"), "
 else
     builder.Services.AddSingleton<IQiwaApiAdapter, SandboxQiwaApiAdapter>();
 builder.Services.AddHostedService<QiwaSyncWorker>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Operations.WorkerHeartbeatReporter>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Reports.ReportScheduleWorker>();
 builder.Services.AddHostedService<AiInsightEngine>();
 // POD-D5: the ONLY place a notification provider is called. Keeping every send off the request
 // thread is what makes "a notification can never fail OR HANG a payroll operation" true.
 builder.Services.AddHostedService<NotificationDeliveryWorker>();
+builder.Services.AddHostedService<ComplianceReminderWorker>();
 
 builder.Services.AddHttpClient<ILlmClient, LlmClient>();
 builder.Services.AddHttpContextAccessor();
@@ -554,6 +622,7 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo { Title = "KynexOne Workforce API", Version = "v1" });
+    options.CustomSchemaIds(Zayra.Api.Infrastructure.OpenApi.SwaggerSchemaIds.For);
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Description = "JWT Authorization header using the Bearer scheme. Example: Bearer {token}",
@@ -576,6 +645,9 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var app = builder.Build();
+
+if (trustForwardedHeaders)
+    app.UseForwardedHeaders();
 
 // Global exception handler — must be the outermost middleware.
 // Converts unhandled exceptions into structured JSON so clients always get a typed error body
@@ -672,7 +744,7 @@ app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config,
     }
 }).RequireAuthorization();
 
-app.MapGet("/health", async (ZayraDbContext db) =>
+app.MapGet("/health", async (ZayraDbContext db, ILoggerFactory loggerFactory) =>
 {
     // Use raw ADO.NET to bypass EF Core's retry execution strategy in the health path.
     // Fast single-query ping — avoids EF Core retry amplification on health checks.
@@ -688,7 +760,12 @@ app.MapGet("/health", async (ZayraDbContext db) =>
     }
     catch (Exception ex)
     {
-        return Results.Problem($"Database error: {ex.Message}", statusCode: 503);
+        loggerFactory.CreateLogger("PublicHealthCheck")
+            .LogError(ex, "Public database health check failed");
+        return Results.Problem(
+            title: "Service unavailable",
+            detail: "The database health check failed.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 }).AllowAnonymous(); // health check is public; explicit so the default-deny fallback policy allows it
 
@@ -714,8 +791,7 @@ using (var scope = app.Services.CreateScope())
     // Boot assertions — model-level only, no DB I/O
     TenantOwnershipBootAssertion.Assert(dbContext);
     ControllerEntityReturnBootAssertion.Assert(dbContext, typeof(Program).Assembly);
-    // Company dimension: strict (failed boot) outside Production; Production logs errors
-    // until ZAYRA_COMPANY_SCOPE_ASSERT=strict is set after a proven-clean deploy cycle.
+    // Company dimension is fail-closed in every environment, including Production.
     CompanyScopeBootAssertion.Assert(
         dbContext,
         CompanyScopeBootAssertion.ResolveStrictMode(app.Environment.IsProduction()),
@@ -841,7 +917,8 @@ using (var scope = app.Services.CreateScope())
             dbContext,
             scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
             authSeeder,
-            logger), logger);
+            logger,
+            seedLegacyTenants: false), logger);
 
     // Enterprise GROUP demo tenants (ALMARAI_TEST/TATA_TEST/EMAAR_TEST) — E2E/demo only, idempotent,
     // and NEVER enabled in production/dedicated deployments (separate flag from SEED_DEMO_DATA).

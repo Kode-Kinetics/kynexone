@@ -63,6 +63,9 @@ public class AuditLoggingTests
 
         var count = await db.AuditLogs.CountAsync(l => l.TenantId == tenantId);
         count.Should().Be(3);
+        var chain = await db.AuditLogs.Where(l => l.TenantId == tenantId)
+            .OrderBy(l => l.CreatedAtUtc).ThenBy(l => l.Id).ToListAsync();
+        AuditService.VerifyChain(chain).IsValid.Should().BeTrue();
     }
 
     // ── Audit log tenant isolation ────────────────────────────────────────────
@@ -159,5 +162,42 @@ public class AuditLoggingTests
 
         ordered[0].Should().Be("third");
         ordered[2].Should().Be("first");
+    }
+}
+
+[Trait("Category", "Integration")]
+[Collection("Integration")]
+public sealed class CentralAuditChainPostgresTests
+{
+    private readonly PostgresFixture _fixture;
+    public CentralAuditChainPostgresTests(PostgresFixture fixture) => _fixture = fixture;
+
+    [Fact]
+    public async Task ConcurrentWriters_CreateOneForkFreeTenantChain()
+    {
+        var tenantId = Guid.NewGuid();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task Write(string action)
+        {
+            await using var db = _fixture.CreateDb();
+            await gate.Task;
+            await new AuditService(db).WriteAsync(action, "ConcurrencyProbe", action,
+                new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId), null,
+                CancellationToken.None);
+        }
+
+        var first = Write("audit.concurrent.first");
+        var second = Write("audit.concurrent.second");
+        gate.SetResult();
+        await Task.WhenAll(first, second);
+
+        await using var verify = _fixture.CreateDb();
+        var rows = await verify.AuditLogs.AsNoTracking()
+            .Where(x => x.TenantId == tenantId)
+            .OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id)
+            .ToListAsync();
+        rows.Should().HaveCount(2);
+        AuditService.VerifyChain(rows).IsValid.Should().BeTrue();
+        rows.Select(x => x.EntryHash).Should().OnlyHaveUniqueItems();
     }
 }

@@ -1,9 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { platformLogin } from './helpers';
 
 test.describe('Platform tenants', () => {
   test.beforeEach(async ({ page }) => {
-    await platformLogin(page);
     await page.goto('/platform/tenants');
     // Wait for the tenant list to settle
     await page.waitForLoadState('networkidle');

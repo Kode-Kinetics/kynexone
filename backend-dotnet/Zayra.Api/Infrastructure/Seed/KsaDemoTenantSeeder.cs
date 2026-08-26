@@ -715,8 +715,9 @@ public static class KsaDemoTenantSeeder
         var empBonus = new EmployeeBonus
         {
             TenantId           = tenantId,
+            CompanyId          = empKhalid.CompanyId,
             BonusBatchId       = bonusBatch.Id,
-            EmployeeId         = Guid.NewGuid(),  // placeholder Guid per model design
+            EmployeeId         = empKhalid.PublicId,
             EmployeeIntId      = empKhalid.Id,
             EmployeeName       = empKhalid.FullName,
             Department         = empKhalid.Department ?? "Sales",

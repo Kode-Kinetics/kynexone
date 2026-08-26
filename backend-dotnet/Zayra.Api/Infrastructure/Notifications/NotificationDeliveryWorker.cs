@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Operations;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Notifications;
@@ -34,25 +35,39 @@ public sealed class NotificationDeliveryWorker : BackgroundService
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<NotificationDeliveryWorker> _log;
+    private readonly WorkerHeartbeatReporter? _heartbeat;
     private readonly Guid _workerId = Guid.NewGuid();
 
-    public NotificationDeliveryWorker(IServiceScopeFactory scopeFactory, ILogger<NotificationDeliveryWorker> log)
+    public NotificationDeliveryWorker(IServiceScopeFactory scopeFactory, ILogger<NotificationDeliveryWorker> log,
+        WorkerHeartbeatReporter? heartbeat = null)
     {
         _scopeFactory = scopeFactory;
         _log = log;
+        _heartbeat = heartbeat;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (_heartbeat is not null) await _heartbeat.StartedAsync(ProductionWorkerNames.Notifications, stoppingToken);
         // Stagger startup so migrations have applied (mirrors AiInsightEngine).
         try { await Task.Delay(TimeSpan.FromSeconds(45), stoppingToken); }
         catch (OperationCanceledException) { return; }
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            try { await DrainOnceAsync(stoppingToken); }
+            try
+            {
+                await DrainOnceAsync(stoppingToken);
+                if (_heartbeat is not null) await _heartbeat.SucceededAsync(ProductionWorkerNames.Notifications, stoppingToken);
+            }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception ex) { _log.LogError(ex, "NotificationDeliveryWorker iteration failed."); }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "NotificationDeliveryWorker iteration failed.");
+                if (_heartbeat is not null)
+                    try { await _heartbeat.FailedAsync(ProductionWorkerNames.Notifications, ex, stoppingToken); }
+                    catch (Exception heartbeatEx) { _log.LogWarning(heartbeatEx, "Could not persist notification worker failure heartbeat."); }
+            }
 
             try { await Task.Delay(PollInterval, stoppingToken); }
             catch (OperationCanceledException) { break; }

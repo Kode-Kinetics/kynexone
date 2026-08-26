@@ -51,10 +51,14 @@ public class CompOffController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Create([FromBody] CreateCompOffRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+
+        if (req.HoursWorked <= 0 || req.DaysEarned <= 0)
+            return BadRequest(new { message = "Hours worked and days earned must be positive." });
 
         var employee = await _db.Employees
             .FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId, ct);
@@ -89,6 +93,8 @@ public class CompOffController : ControllerBase
         var credit = await _db.CompOffCredits
             .FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId, ct);
         if (credit is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(credit.EmployeeId)) return Forbid();
 
         if (credit.Status != "Pending")
             return BadRequest(new { message = "Only pending comp-off requests can be approved." });
@@ -111,9 +117,25 @@ public class CompOffController : ControllerBase
         var credit = await _db.CompOffCredits
             .FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId, ct);
         if (credit is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!(User.IsInRole("Admin") || User.IsInRole("HR Manager"))
+            && scope.CallerEmployeeId != credit.EmployeeId) return Forbid();
 
         if (credit.Status != "Approved")
             return BadRequest(new { message = "Only approved comp-off credits can be used." });
+        if (credit.ExpiryDate.HasValue && credit.ExpiryDate.Value < DateOnly.FromDateTime(DateTime.UtcNow))
+            return BadRequest(new { message = "This comp-off credit has expired." });
+        if (req.DaysToUse <= 0) return BadRequest(new { message = "Days to use must be positive." });
+        if (req.LeaveRequestId.HasValue && !await _db.LeaveRequests.AnyAsync(x => x.TenantId == tenantId
+                && x.Id == req.LeaveRequestId && x.EmployeeId == credit.EmployeeId, ct))
+            return BadRequest(new { message = "Leave request does not belong to this employee." });
+        if (req.IdempotencyKey.HasValue)
+        {
+            var replay = await _db.CompOffUsages.AsNoTracking().FirstOrDefaultAsync(u =>
+                u.TenantId == tenantId && u.CompOffCreditId == id
+                && u.IdempotencyKey == req.IdempotencyKey, ct);
+            if (replay is not null) return Ok(replay);
+        }
 
         var alreadyUsed = await _db.CompOffUsages
             .Where(u => u.TenantId == tenantId && u.CompOffCreditId == id)
@@ -129,14 +151,32 @@ public class CompOffController : ControllerBase
             EmployeeId = credit.EmployeeId,
             CompOffCreditId = id,
             LeaveRequestId = req.LeaveRequestId,
+            IdempotencyKey = req.IdempotencyKey,
             DaysUsed = req.DaysToUse
         };
         _db.CompOffUsages.Add(usage);
 
+        // Every spend advances the aggregate version, including a partial spend that leaves the
+        // status Approved. EF's concurrency predicate prevents two contexts from both spending the
+        // same observed remainder.
+        credit.UsageVersion++;
         if (remaining - req.DaysToUse <= 0)
             credit.Status = "Used";
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new { message = "This comp-off credit was used concurrently. Refresh its remaining balance and retry." });
+        }
+        catch (DbUpdateException ex) when (
+            ex.InnerException is Npgsql.PostgresException
+                { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+        {
+            return Conflict(new { message = "This comp-off use command has already been processed." });
+        }
         return Ok(usage);
     }
 }
@@ -150,4 +190,4 @@ public record CreateCompOffRequest(
     DateOnly? ExpiryDate);
 
 public record CompOffApproveRequest(string? Notes);
-public record UseCompOffRequest(decimal DaysToUse, Guid? LeaveRequestId);
+public record UseCompOffRequest(decimal DaysToUse, Guid? LeaveRequestId, Guid? IdempotencyKey = null);

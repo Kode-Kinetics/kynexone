@@ -325,12 +325,19 @@ public class ReviewsController : ControllerBase
         var review = await _db.AppraisalReviews
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (review is null) return NotFound();
+        if (review.Status != "FinalApproval")
+            return Conflict(new { error = "review_not_final_approval", message = $"Only a review in FinalApproval can be published (current: {review.Status})." });
+        var cycle = await _db.PerformanceCycles.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == review.CycleId && c.TenantId == tenantId, ct);
+        if (cycle?.Status != "FinalApproval")
+            return Conflict(new { error = "cycle_not_final_approval", message = "The parent cycle must be in FinalApproval before publishing reviews." });
 
+        var oldStatus = review.Status;
         review.Status      = "Published";
         review.PublishedAt = DateTime.UtcNow;
         review.UpdatedAtUtc = DateTime.UtcNow;
         await _svc.LogAuditAsync(tenantId, "AppraisalReview", id.ToString(),
-            "Published", review.Status, "Published", string.Empty, userId, "HR", ct);
+            "Published", oldStatus, "Published", string.Empty, userId, "HR", ct);
         await _db.SaveChangesAsync(ct);
         return Ok(review);
     }
@@ -345,6 +352,10 @@ public class ReviewsController : ControllerBase
         var review = await _db.AppraisalReviews
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (review is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(review.EmployeeId)
+            || (!scope.IsUnrestricted && scope.CallerEmployeeId != review.EmployeeId))
+            return Forbid();
         if (review.Status != "Published")
             return BadRequest(new { message = "Review must be Published before acknowledgement." });
 
@@ -367,8 +378,17 @@ public class ReviewsController : ControllerBase
         var review = await _db.AppraisalReviews
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (review is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(review.EmployeeId)
+            || (!scope.IsUnrestricted && scope.CallerEmployeeId != review.EmployeeId))
+            return Forbid();
         if (review.Status is not ("Published" or "Acknowledged"))
             return BadRequest(new { message = "Appeals can only be submitted after results are published." });
+        if (string.IsNullOrWhiteSpace(req.AppealReason))
+            return BadRequest(new { error = "appeal_reason_required", message = "Appeal reason is required." });
+        if (await _db.AppraisalAppeals.AnyAsync(a => a.TenantId == tenantId && a.ReviewId == id
+                && (a.Status == "Submitted" || a.Status == "UnderReview"), ct))
+            return Conflict(new { error = "appeal_already_open", message = "An appeal is already open for this review." });
 
         var appeal = new AppraisalAppeal
         {
@@ -394,9 +414,13 @@ public class ReviewsController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();
+        if (req.Decision is not ("Upheld" or "Rejected"))
+            return BadRequest(new { error = "invalid_decision", message = "Decision must be Upheld or Rejected." });
         var appeal = await _db.AppraisalAppeals
             .FirstOrDefaultAsync(a => a.Id == appealId && a.TenantId == tenantId, ct);
         if (appeal is null) return NotFound();
+        if (appeal.Status is not ("Submitted" or "UnderReview"))
+            return Conflict(new { error = "appeal_already_decided", message = $"Appeal is already in '{appeal.Status}' status." });
 
         appeal.Status           = req.Decision; // Upheld/Rejected
         appeal.HrResponse       = req.Response;

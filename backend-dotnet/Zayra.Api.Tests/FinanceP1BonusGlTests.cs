@@ -313,7 +313,7 @@ public class FinanceP1BonusGlTests
         var company = new Company
         {
             TenantId = tenantId, LegalNameEn = "Test KSA Co",
-            CountryCode = "SAU", Jurisdiction = "KSA-mainland", IsActive = true,
+            CountryCode = "SAU", Jurisdiction = "KSA-mainland", DefaultCurrency = "SAR", IsActive = true,
         };
         db.Companies.Add(company);
         await db.SaveChangesAsync();
@@ -449,6 +449,7 @@ public class FinanceP1BonusGlTests
 
         var tenantId = Guid.NewGuid();
         var (_, run, _) = await SeedMinimalRun(db, tenantId);
+        await SeedKsaCompany(db, tenantId, run);
 
         var ctrl = MakePayrollCtrl(db, tenantId);
         await ctrl.Process(run.Id, CancellationToken.None);
@@ -822,6 +823,259 @@ public class FinanceP1BonusGlTests
             .CountAsync(x => x.SourceModule == "Payroll" && x.SourceEntityId == run.Id);
         countAfterRelock.Should().Be(glEntries.Count,
             "re-locking a run with employer GOSI lines must not double-post");
+    }
+
+    [Fact]
+    public async Task GlJournal_PostedTwoSidedRows_ExpandsBothSidesAndReportsCompanyCurrency()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "KSA Pilot Co", CountryCode = "SAU",
+            Jurisdiction = "KSA-mainland", DefaultCurrency = "SAR", IsActive = true,
+        };
+        var run = new PayrollRun
+        {
+            TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 7,
+            Status = "Locked", TotalGrossSalary = 100m, TotalDeductions = 10m,
+            TotalNetSalary = 90m,
+        };
+        db.AddRange(company, run);
+        db.FinanceGlEntries.AddRange(
+            new FinanceGlEntry
+            {
+                TenantId = tenantId, CompanyId = company.Id, SourceModule = "Payroll",
+                SourceEntityId = run.Id, EventType = "PayrollPosting",
+                DebitAccount = "5100 - Salaries & Wages", CreditAccount = "2100 - Salaries Payable",
+                Amount = 100m, Currency = "SAR", Period = "2026-07",
+                EntryDate = new DateOnly(2026, 7, 31), Description = "Salary posting",
+            },
+            new FinanceGlEntry
+            {
+                TenantId = tenantId, CompanyId = company.Id, SourceModule = "Payroll",
+                SourceEntityId = run.Id, EventType = "PayrollPosting",
+                DebitAccount = "2100 - Salaries Payable", CreditAccount = "2101 - GOSI Payable",
+                Amount = 10m, Currency = "SAR", Period = "2026-07",
+                EntryDate = new DateOnly(2026, 7, 31), Description = "Deduction posting",
+            });
+        await db.SaveChangesAsync();
+
+        var result = await MakePayrollCtrl(db, tenantId).GlJournal(run.Id, CancellationToken.None);
+        var ok = result.Should().BeOfType<OkObjectResult>().Subject;
+        var json = System.Text.Json.JsonSerializer.SerializeToElement(ok.Value);
+
+        json.GetProperty("currency").GetString().Should().Be("SAR");
+        json.GetProperty("entries").GetArrayLength().Should().Be(4,
+            "each two-sided FinanceGlEntry represents both a debit and a credit journal line");
+        json.GetProperty("totalDebits").GetDecimal().Should().Be(110m);
+        json.GetProperty("totalCredits").GetDecimal().Should().Be(110m);
+        json.GetProperty("isBalanced").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Lock_ExistingOneSidedAccrual_DoesNotClaimFinanceReady()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "KSA Pilot Co", CountryCode = "SAU",
+            Jurisdiction = "KSA-mainland", DefaultCurrency = "SAR", IsActive = true,
+        };
+        var run = new PayrollRun
+        {
+            TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 7,
+            Status = "Approved", TotalGrossSalary = 100m, TotalNetSalary = 100m,
+        };
+        db.AddRange(company, run, new FinanceGlEntry
+        {
+            TenantId = tenantId, CompanyId = company.Id, SourceModule = "Payroll",
+            SourceEntityId = run.Id, EventType = GlEventTypes.Accrual,
+            DebitAccount = "5100 - Salaries & Wages", CreditAccount = string.Empty,
+            Amount = 100m, Currency = "SAR", Period = "2026-07",
+            EntryDate = new DateOnly(2026, 7, 31), Description = "broken legacy accrual",
+        });
+        await db.SaveChangesAsync();
+
+        var result = await MakePayrollCtrl(db, tenantId).Lock(run.Id, CancellationToken.None);
+        result.Should().BeOfType<UnprocessableEntityObjectResult>();
+        db.ChangeTracker.Clear();
+        var persisted = await db.PayrollRuns.SingleAsync(x => x.Id == run.Id);
+        persisted.Status.Should().Be("Approved");
+        persisted.ErpPostingStatus.Should().NotBe(ErpPostingStatuses.ReadyForErp);
+    }
+
+    [Fact]
+    public async Task Lock_NewAccrual_PersistsBalancedJournalInCompanyCurrency()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "KSA Pilot Co", CountryCode = "SAU",
+            Jurisdiction = "KSA-mainland", DefaultCurrency = "SAR", IsActive = true,
+        };
+        var run = new PayrollRun
+        {
+            TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 7,
+            Status = "Approved", TotalGrossSalary = 100m, TotalDeductions = 10m,
+            TotalNetSalary = 90m,
+        };
+        db.AddRange(company, run,
+            new PayrollEarning
+            {
+                TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = 1,
+                ComponentCode = "BASIC", ComponentName = "Basic Salary", Source = "Salary", Amount = 100m,
+            },
+            new PayrollDeduction
+            {
+                TenantId = tenantId, CompanyId = company.Id, PayrollRunId = run.Id, EmployeeId = 1,
+                ComponentCode = "GOSI-EE", ComponentName = "GOSI Employee", Source = "Statutory", Amount = 10m,
+            });
+        await db.SaveChangesAsync();
+
+        var result = await MakePayrollCtrl(db, tenantId).Lock(run.Id, CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>();
+
+        var entries = await db.FinanceGlEntries.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.SourceEntityId == run.Id)
+            .ToListAsync();
+        entries.Should().NotBeEmpty();
+        entries.Should().OnlyContain(x => x.Currency == "SAR");
+        entries.Should().NotContain(x => x.DebitAccount.Contains("UNMAPPED") || x.CreditAccount.Contains("UNMAPPED"));
+        entries.Where(x => !string.IsNullOrWhiteSpace(x.DebitAccount)).Sum(x => x.Amount)
+            .Should().Be(entries.Where(x => !string.IsNullOrWhiteSpace(x.CreditAccount)).Sum(x => x.Amount));
+
+        db.ChangeTracker.Clear();
+        var persisted = await db.PayrollRuns.SingleAsync(x => x.Id == run.Id);
+        persisted.Status.Should().Be("Locked");
+        persisted.ErpPostingStatus.Should().Be(ErpPostingStatuses.ReadyForErp);
+    }
+
+    [Fact]
+    public async Task Lock_CustomDriverWithoutAccountMapping_FailsClosed()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "KSA Pilot Co", CountryCode = "SAU",
+            Jurisdiction = "KSA-mainland", DefaultCurrency = "SAR", IsActive = true,
+        };
+        var run = new PayrollRun
+        {
+            TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 7,
+            Status = "Approved", TotalGrossSalary = 100m, TotalNetSalary = 100m,
+        };
+        db.AddRange(company, run,
+            new PayrollEarning
+            {
+                TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = 1,
+                ComponentCode = "CUSTOM_PAY", ComponentName = "Custom Pay", Source = "Salary", Amount = 100m,
+            },
+            new GlDriver
+            {
+                TenantId = tenantId, CompanyId = company.Id, Key = "EARN:CUSTOM_PAY",
+                Label = "Custom earning", Category = GlDriverCategories.Earning, PostingSide = "DR",
+                AccountType = "Expense", DefaultCode = string.Empty, DefaultName = string.Empty,
+                MatchMode = GlDriverMatchModes.Exact, MatchComponentCode = "CUSTOM_PAY",
+                IsActive = true, IsSystem = false,
+            });
+        await db.SaveChangesAsync();
+
+        var result = await MakePayrollCtrl(db, tenantId).Lock(run.Id, CancellationToken.None);
+        var rejected = result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        var json = System.Text.Json.JsonSerializer.SerializeToElement(rejected.Value);
+        json.GetProperty("error").GetString().Should().Be("gl_mapping_missing");
+        (await db.FinanceGlEntries.CountAsync(x => x.SourceEntityId == run.Id)).Should().Be(0);
+        (await db.PayrollRuns.AsNoTracking().SingleAsync(x => x.Id == run.Id)).Status.Should().Be("Approved");
+    }
+}
+
+/// <summary>
+/// Production-provider proof for the payroll → GL release gate. SQLite tests above give fast controller
+/// coverage; this test exercises Npgsql decimal persistence, ExecuteUpdate, audit sealing, and the real
+/// PostgreSQL model before asserting the finance-ready state.
+/// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
+public class PayrollGlPilotPostgresTests
+{
+    private readonly PostgresFixture _fixture;
+    public PayrollGlPilotPostgresTests(PostgresFixture fixture) => _fixture = fixture;
+
+    [Fact]
+    public async Task Postgres_LockAndJournal_AreBalancedAndUseCompanyCurrency()
+    {
+        await using var db = _fixture.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Postgres KSA Pilot", CountryCode = "SAU",
+            Jurisdiction = "KSA-mainland", DefaultCurrency = "SAR", IsActive = true,
+        };
+        var run = new PayrollRun
+        {
+            TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 7,
+            Status = "Approved", TotalGrossSalary = 205_200m, TotalDeductions = 8_482.50m,
+            TotalNetSalary = 196_717.50m,
+        };
+        db.AddRange(company, run,
+            new PayrollEarning
+            {
+                TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = 1,
+                ComponentCode = "BASIC", ComponentName = "Basic Salary", Source = "Salary", Amount = 205_200m,
+            },
+            new PayrollDeduction
+            {
+                TenantId = tenantId, CompanyId = company.Id, PayrollRunId = run.Id, EmployeeId = 1,
+                ComponentCode = "GOSI-EE", ComponentName = "GOSI Employee", Source = "Statutory", Amount = 8_482.50m,
+            });
+        await db.SaveChangesAsync();
+
+        var claims = new List<Claim>
+        {
+            new("tenant_id", tenantId.ToString()),
+            new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new(ClaimTypes.Name, "postgres-finance-test"),
+        };
+        var http = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")),
+        };
+        var controller = new PayrollController(
+            db, new _P1UnrestrictedScope(), new _P1HttpAccessor(http), new _P1NullNotifications(),
+            new _KsaPackResolver(), KsaPackFactory.Rules, new _P1NullLetterService(),
+            new _P1NullDocStorage(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(4))
+        {
+            ControllerContext = new ControllerContext { HttpContext = http },
+        };
+
+        (await controller.Lock(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var rows = await db.FinanceGlEntries.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.SourceEntityId == run.Id)
+            .ToListAsync();
+        rows.Should().OnlyContain(x => x.Currency == "SAR");
+        rows.Where(x => !string.IsNullOrWhiteSpace(x.DebitAccount)).Sum(x => x.Amount)
+            .Should().Be(rows.Where(x => !string.IsNullOrWhiteSpace(x.CreditAccount)).Sum(x => x.Amount));
+
+        var journal = await controller.GlJournal(run.Id, CancellationToken.None);
+        var ok = journal.Should().BeOfType<OkObjectResult>().Subject;
+        var json = System.Text.Json.JsonSerializer.SerializeToElement(ok.Value);
+        json.GetProperty("currency").GetString().Should().Be("SAR");
+        json.GetProperty("isBalanced").GetBoolean().Should().BeTrue();
+        json.GetProperty("totalDebits").GetDecimal().Should().Be(json.GetProperty("totalCredits").GetDecimal());
     }
 }
 

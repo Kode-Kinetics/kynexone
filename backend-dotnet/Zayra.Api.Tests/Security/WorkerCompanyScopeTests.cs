@@ -113,7 +113,7 @@ public class WorkerCompanyScopeTests
         public string AdapterName => "spy";
         public Task<string?> AcquireAccessTokenAsync(string clientId, string clientSecret, string environment, CancellationToken ct)
             => Task.FromResult<string?>("spy-token");
-        public Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, CancellationToken ct)
+        public Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
         {
             PushedEmployeeCodes.Add(payload.EmployeeCode);
             return Task.FromResult(new QiwaApiResult(true, null, null, "{\"status\":\"synced\"}"));

@@ -55,9 +55,11 @@ export interface EmployeeSalaryStructure {
 
 export interface PayrollRun {
   id: string;
+  companyId: string | null;
   year: number;
   month: number;
   status: string;
+  runType: string;
   totalGrossSalary: number;
   totalDeductions: number;
   totalNetSalary: number;
@@ -175,6 +177,7 @@ export interface PayrollGLEntry {
 export interface PayrollGLJournal {
   runId: string;
   period: string;
+  currency: string;
   entries: PayrollGLEntry[];
   totalDebits: number;
   totalCredits: number;
@@ -241,6 +244,8 @@ export interface FinalSettlementBreakdown {
 }
 
 export interface FinalSettlementResult {
+  settlementId: string;
+  status: string;
   employeeId: number;
   employeeName: string;
   lastWorkingDay: string;
@@ -258,7 +263,38 @@ export interface FinalSettlementResult {
   noticePeriodDaysShort: number;
   noticePeriodDeduction: number;
   totalPayable: number;
+  netPayable: number;
+  settlementDueDate: string;
+  wageBaseDelta: number;
+  wagesPaidByRunId: string | null;
+  warnings: string[];
   breakdown: FinalSettlementBreakdown[];
+}
+
+export interface FinalSettlementListRow {
+  id: string;
+  employeeId: number;
+  employeeCode: string;
+  employeeName: string;
+  companyId: string | null;
+  offboardingId: string;
+  lastWorkingDay: string;
+  settlementDueDate: string;
+  terminationReason: string;
+  status: string;
+  currency: string;
+  netPayable: number;
+  payrollRunId: string | null;
+  paymentBatchId: string | null;
+  paidAtUtc: string | null;
+  isOverdue: boolean;
+  overdueDays: number;
+}
+
+export interface FinalSettlementListResponse {
+  outstandingTotal: number;
+  note: string;
+  rows: FinalSettlementListRow[];
 }
 
 export interface PayrollGroup {
@@ -426,6 +462,28 @@ export const payrollApi = {
     client.post<FinalSettlementResult>('/api/payroll/final-settlement',
       { employeeId, lastWorkingDay, noticePeriodDaysShort, terminationReason: terminationReason || undefined }).then((r) => r.data),
 
+  listFinalSettlements: (params: { employeeId?: number; status?: string } = {}) =>
+    client.get<FinalSettlementListResponse>('/api/payroll/final-settlements', { params }).then((r) => r.data),
+
+  getFinalSettlement: (id: string) =>
+    client.get<FinalSettlementResult>(`/api/payroll/final-settlements/${id}`).then((r) => r.data),
+
+  submitFinalSettlement: (id: string, reason?: string) =>
+    client.post<{ settlementId: string; status: string }>(`/api/payroll/final-settlements/${id}/submit`, { reason }).then((r) => r.data),
+
+  approveFinalSettlement: (id: string, body: {
+    confirmTerminationReason: string;
+    acknowledgeWageBaseFloor?: boolean;
+    acknowledgeWagesUnpaid?: boolean;
+    wagesUnpaidReason?: string;
+    acknowledgeSelfApproval?: boolean;
+    accrualDate?: string;
+    reason?: string;
+  }) => client.post<{ settlementId: string; status: string }>(`/api/payroll/final-settlements/${id}/approve`, body).then((r) => r.data),
+
+  cancelFinalSettlement: (id: string, reason: string) =>
+    client.post<{ settlementId: string; status: string }>(`/api/payroll/final-settlements/${id}/cancel`, { reason }).then((r) => r.data),
+
   slips: (runId: string, params: { page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<PayrollSlip>>(`/api/payroll/runs/${runId}/slips`, { params }).then((r) => r.data),
 
@@ -433,7 +491,7 @@ export const payrollApi = {
     client.post<PayrollValidationResult[]>(`/api/payroll/runs/${id}/validate`).then((r) => r.data),
 
   listValidationResults: (runId: string) =>
-    client.get<PayrollValidationResult[]>(`/api/payroll/runs/${runId}/validate`).then((r) => r.data).catch(() => [] as PayrollValidationResult[]),
+    client.get<PayrollValidationResult[]>(`/api/payroll/runs/${runId}/validate`).then((r) => r.data),
 
   runApprovals: (runId: string) =>
     client.get<PayrollApproval[]>(`/api/payroll/runs/${runId}/approvals`).then((r) => r.data),
@@ -480,6 +538,18 @@ export const payrollApi = {
 
   updateWpsStatus: (batchId: string, body: { status: string; reference?: string; notes?: string }) =>
     client.post<{ batchId: string; wpsStatus: string }>(`/api/payroll/payment-batches/${batchId}/wps-status`, body).then((r) => r.data),
+
+  settlePaymentBatch: (batchId: string, body: { reference?: string; paidDate?: string }) =>
+    client.post<{ batchId: string; runId: string; wpsStatus: string; settled: number }>(`/api/payroll/payment-batches/${batchId}/settle`, body).then((r) => r.data),
+
+  reversePaymentSettlement: (batchId: string, reason: string) =>
+    client.post<{ batchId: string; wpsStatus: string; reversedEntries: number }>(`/api/payroll/payment-batches/${batchId}/settle/reverse`, { reason }).then((r) => r.data),
+
+  remitRun: (runId: string, body: { group: 'GOSI' | 'TAX' | 'LOAN' | 'All'; reference?: string; remitDate?: string }) =>
+    client.post(`/api/payroll/runs/${runId}/remit`, body).then((r) => r.data),
+
+  reverseRemittance: (runId: string, body: { group: 'GOSI' | 'TAX' | 'LOAN'; reason: string }) =>
+    client.post(`/api/payroll/runs/${runId}/remit/reverse`, body).then((r) => r.data),
 
   listSalaryStructures: () =>
     client.get<SalaryStructure[]>('/api/payroll/salary-structures').then((r) => r.data),

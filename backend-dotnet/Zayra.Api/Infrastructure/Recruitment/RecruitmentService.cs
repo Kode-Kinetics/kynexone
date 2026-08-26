@@ -162,20 +162,54 @@ public class RecruitmentService : IRecruitmentService
 
     // ── Onboarding conversion ──────────────────────────────────────────────────
 
-    public async Task<Guid?> ConvertToEmployeeDraftAsync(
-        Guid tenantId, Guid offerId, Guid requestedByUserId, CancellationToken ct = default)
+    public async Task<OfferAcceptanceResult> AcceptOfferAsync(
+        Guid tenantId,
+        Guid offerId,
+        Guid requestedByUserId,
+        string performedByName,
+        CancellationToken ct = default)
     {
-        var offer = await _db.OfferLetters
+        var offer = await _db.OfferLetters.AsNoTracking()
             .FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
-        if (offer is null) return null;
+        if (offer is null)
+            return Result(OfferAcceptanceOutcome.NotFound, offerId, null, null, "Offer not found.");
 
-        var app = await _db.JobApplications
+        var app = await _db.JobApplications.AsNoTracking()
             .FirstOrDefaultAsync(a => a.Id == offer.ApplicationId && a.TenantId == tenantId, ct);
-        if (app is null) return null;
+        if (app is null)
+            return Result(OfferAcceptanceOutcome.IncompleteRecruitmentData, offerId, offer.ApplicationId, null,
+                "The offer is not linked to an application in this tenant.");
 
-        var candidate = await _db.Candidates
+        if (offer.Status == "Accepted" && app.OnboardingDraftId.HasValue)
+            return Result(OfferAcceptanceOutcome.AlreadyAccepted, offerId, app.Id, app.OnboardingDraftId,
+                "Offer was already accepted; the existing onboarding draft was returned.");
+
+        if (offer.Status is not ("Sent" or "Accepted"))
+            return Result(OfferAcceptanceOutcome.InvalidOfferState, offerId, app.Id, app.OnboardingDraftId,
+                $"Offer must be in Sent status (current: {offer.Status}).");
+
+        // An Accepted offer with no linked draft is a recoverable legacy partial write. A Sent
+        // offer, however, may only hire an active application. This also prevents a second offer
+        // for the same application from consuming another head-count seat.
+        var recoveringLegacyAcceptance = offer.Status == "Accepted";
+        if (!recoveringLegacyAcceptance && app.Status != "Active")
+            return Result(OfferAcceptanceOutcome.InvalidApplicationState, offerId, app.Id, app.OnboardingDraftId,
+                $"Only an active application can accept an offer (current: {app.Status}).");
+        if (recoveringLegacyAcceptance && app.Status != "Hired")
+            return Result(OfferAcceptanceOutcome.InvalidApplicationState, offerId, app.Id, app.OnboardingDraftId,
+                "The accepted offer has an inconsistent application state and requires review.");
+
+        var candidate = await _db.Candidates.AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == app.CandidateId && c.TenantId == tenantId, ct);
-        if (candidate is null) return null;
+        if (candidate is null)
+            return Result(OfferAcceptanceOutcome.IncompleteRecruitmentData, offerId, app.Id, null,
+                "The application candidate was not found in this tenant.");
+
+        var opening = await _db.JobOpenings.AsNoTracking()
+            .FirstOrDefaultAsync(j => j.Id == app.JobOpeningId && j.TenantId == tenantId, ct);
+        if (opening is null)
+            return Result(OfferAcceptanceOutcome.IncompleteRecruitmentData, offerId, app.Id, null,
+                "The application job opening was not found in this tenant.");
 
         var fullName = $"{candidate.FirstName} {candidate.LastName}".Trim();
 
@@ -204,10 +238,187 @@ public class RecruitmentService : IRecruitmentService
             ContractType = "Permanent",
             ProbationEndDate = offer.StartDate.AddMonths(offer.ProbationMonths),
         };
-        _db.EmployeeDrafts.Add(draft);
 
-        app.OnboardingDraftId = draft.Id;
+        // Production providers use one transaction plus compare-and-swap writes. Exactly one
+        // request can consume Sent -> Accepted, and exactly one request can claim the application's
+        // null OnboardingDraftId. A losing concurrent request rolls back every side effect.
+        if (_db.Database.IsRelational())
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            try
+            {
+                if (!recoveringLegacyAcceptance)
+                {
+                    var offerWon = await _db.OfferLetters
+                        .Where(o => o.Id == offerId && o.TenantId == tenantId && o.Status == "Sent")
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(o => o.Status, "Accepted")
+                            .SetProperty(o => o.AcceptedAtUtc, DateTime.UtcNow), ct);
+
+                    if (offerWon != 1)
+                    {
+                        await tx.RollbackAsync(ct);
+                        return await ResolveReplayAsync(tenantId, offerId, ct);
+                    }
+                }
+
+                var now = DateTime.UtcNow;
+                var appWon = await _db.JobApplications
+                    .Where(a => a.Id == app.Id && a.TenantId == tenantId
+                        && a.OnboardingDraftId == null
+                        && a.Status == (recoveringLegacyAcceptance ? "Hired" : "Active"))
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(a => a.OnboardingDraftId, draft.Id)
+                        .SetProperty(a => a.Stage, "Hired")
+                        .SetProperty(a => a.StageOrder, 6)
+                        .SetProperty(a => a.Status, "Hired")
+                        .SetProperty(a => a.HiredAtUtc, a => a.HiredAtUtc ?? now)
+                        .SetProperty(a => a.StageChangedAtUtc, a => a.StageChangedAtUtc ?? now), ct);
+
+                if (appWon != 1)
+                {
+                    await tx.RollbackAsync(ct);
+                    return await ResolveReplayAsync(tenantId, offerId, ct);
+                }
+
+                if (!recoveringLegacyAcceptance)
+                {
+                    var openingWon = await _db.JobOpenings
+                        .Where(j => j.Id == opening.Id && j.TenantId == tenantId)
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(j => j.Status,
+                                j => j.FilledCount + 1 >= j.HeadCount ? "Closed" : j.Status)
+                            .SetProperty(j => j.FilledCount, j => j.FilledCount + 1), ct);
+                    if (openingWon != 1)
+                        throw new InvalidOperationException("The job opening disappeared during offer acceptance.");
+                }
+
+                AddAcceptanceRecords(tenantId, offerId, app.Id, requestedByUserId, performedByName,
+                    draft, recoveringLegacyAcceptance);
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+
+                return Result(
+                    recoveringLegacyAcceptance ? OfferAcceptanceOutcome.AlreadyAccepted : OfferAcceptanceOutcome.Accepted,
+                    offerId, app.Id, draft.Id,
+                    recoveringLegacyAcceptance
+                        ? "Recovered the existing accepted offer's missing onboarding draft."
+                        : "Offer accepted and onboarding started.");
+            }
+            catch
+            {
+                await tx.RollbackAsync(CancellationToken.None);
+                throw;
+            }
+        }
+
+        // EF's in-memory provider is used by fast unit tests and cannot execute set-based CAS.
+        // Preserve the same sequential state machine there; concurrency is verified against the
+        // real relational provider in integration coverage.
+        var trackedOffer = await _db.OfferLetters
+            .FirstAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
+        var trackedApp = await _db.JobApplications
+            .FirstAsync(a => a.Id == app.Id && a.TenantId == tenantId, ct);
+        if (trackedOffer.Status == "Accepted" && trackedApp.OnboardingDraftId.HasValue)
+            return Result(OfferAcceptanceOutcome.AlreadyAccepted, offerId, app.Id, trackedApp.OnboardingDraftId,
+                "Offer was already accepted; the existing onboarding draft was returned.");
+        if (!recoveringLegacyAcceptance && (trackedOffer.Status != "Sent" || trackedApp.Status != "Active"))
+            return Result(OfferAcceptanceOutcome.InvalidOfferState, offerId, app.Id, trackedApp.OnboardingDraftId,
+                "Offer or application state changed before acceptance.");
+
+        var trackedOpening = await _db.JobOpenings
+            .FirstAsync(j => j.Id == opening.Id && j.TenantId == tenantId, ct);
+        if (!recoveringLegacyAcceptance)
+        {
+            trackedOffer.Status = "Accepted";
+            trackedOffer.AcceptedAtUtc = DateTime.UtcNow;
+            trackedOpening.FilledCount++;
+            if (trackedOpening.FilledCount >= trackedOpening.HeadCount) trackedOpening.Status = "Closed";
+        }
+        trackedApp.Stage = "Hired";
+        trackedApp.StageOrder = 6;
+        trackedApp.Status = "Hired";
+        trackedApp.HiredAtUtc ??= DateTime.UtcNow;
+        trackedApp.StageChangedAtUtc ??= DateTime.UtcNow;
+        trackedApp.OnboardingDraftId = draft.Id;
+        AddAcceptanceRecords(tenantId, offerId, app.Id, requestedByUserId, performedByName,
+            draft, recoveringLegacyAcceptance);
         await _db.SaveChangesAsync(ct);
-        return draft.Id;
+        return Result(
+            recoveringLegacyAcceptance ? OfferAcceptanceOutcome.AlreadyAccepted : OfferAcceptanceOutcome.Accepted,
+            offerId, app.Id, draft.Id,
+            recoveringLegacyAcceptance
+                ? "Recovered the existing accepted offer's missing onboarding draft."
+                : "Offer accepted and onboarding started.");
     }
+
+    private void AddAcceptanceRecords(
+        Guid tenantId,
+        Guid offerId,
+        Guid applicationId,
+        Guid requestedByUserId,
+        string performedByName,
+        EmployeeDraft draft,
+        bool recoveringLegacyAcceptance)
+    {
+        _db.EmployeeDrafts.Add(draft);
+        _db.ApplicationEvents.Add(new ApplicationEvent
+        {
+            TenantId = tenantId,
+            ApplicationId = applicationId,
+            EventType = recoveringLegacyAcceptance ? "OnboardingRecovered" : "OfferAccepted",
+            Stage = "Hired",
+            Notes = recoveringLegacyAcceptance
+                ? "Recovered missing onboarding draft for an accepted offer."
+                : "Offer accepted by candidate. Initiating onboarding.",
+            PerformedByUserId = requestedByUserId,
+            PerformedByName = performedByName,
+        });
+        _db.RecruitmentAuditLogs.Add(new RecruitmentAuditLog
+        {
+            TenantId = tenantId,
+            EntityType = "Offer",
+            EntityId = offerId.ToString(),
+            Action = recoveringLegacyAcceptance ? "OnboardingRecovered" : "Accepted",
+            PerformedByUserId = requestedByUserId,
+            PerformedByName = performedByName,
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                status = "Accepted",
+                onboardingDraftId = draft.Id,
+            }),
+        });
+    }
+
+    private async Task<OfferAcceptanceResult> ResolveReplayAsync(
+        Guid tenantId, Guid offerId, CancellationToken ct)
+    {
+        _db.ChangeTracker.Clear();
+        var current = await _db.OfferLetters.AsNoTracking()
+            .FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
+        if (current is null)
+            return Result(OfferAcceptanceOutcome.NotFound, offerId, null, null, "Offer not found.");
+
+        var currentApp = await _db.JobApplications.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Id == current.ApplicationId && a.TenantId == tenantId, ct);
+        if (current.Status == "Accepted" && currentApp?.OnboardingDraftId is { } draftId)
+            return Result(OfferAcceptanceOutcome.AlreadyAccepted, offerId, current.ApplicationId, draftId,
+                "Offer was already accepted; the existing onboarding draft was returned.");
+
+        return Result(
+            current.Status == "Sent"
+                ? OfferAcceptanceOutcome.InvalidApplicationState
+                : OfferAcceptanceOutcome.InvalidOfferState,
+            offerId, current.ApplicationId, currentApp?.OnboardingDraftId,
+            current.Status == "Sent"
+                ? "The application was already hired or converted by another offer."
+                : $"Offer cannot be accepted from its current state ({current.Status}).");
+    }
+
+    private static OfferAcceptanceResult Result(
+        OfferAcceptanceOutcome outcome,
+        Guid offerId,
+        Guid? applicationId,
+        Guid? onboardingDraftId,
+        string message) => new(outcome, offerId, applicationId, onboardingDraftId, message);
 }

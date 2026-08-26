@@ -40,7 +40,7 @@ test.describe('Subscription guard enforcement', () => {
     expect(statusHeader ?? '').not.toBe('PastDue');
   });
 
-  // ── Suspend via platform admin then verify 402 ─────────────────────────────────
+  // ── Suspend subscription while tenant identity remains active ────────────────────
 
   test('Suspended tenant receives 402 from protected API', async ({ request }) => {
     const platformToken = await apiPlatformLogin(request);
@@ -57,41 +57,43 @@ test.describe('Subscription guard enforcement', () => {
       return;
     }
 
-    // Suspend Evostel
-    const suspendResp = await request.post(`/api/platform/tenants/${evostel.id}/suspend`, {
-      headers: { Authorization: `Bearer ${platformToken}` },
-      data: { reason: 'Playwright suspension test' },
+    const subscription = (status: 'Suspended' | 'PastDue') => ({
+      plan: 'Starter',
+      status,
+      billingCycle: 'Monthly',
+      monthlyAmount: 299,
+      currencyCode: 'USD',
+      maxEmployees: 50,
+      maxUsers: 10,
+      maxCompanies: 1,
+      maxAdminUsers: 10,
+      billingEmail: 'billing@evostel.com',
+      expiresAtUtc: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     });
-    expect([200, 204]).toContain(suspendResp.status());
 
-    // Evostel token (already obtained before suspension) — should get 402
-    const blockedResp = await request.get('/api/employees', {
-      headers: { Authorization: `Bearer ${evostelToken}` },
+    // Keep Tenant.IsActive true. This ensures authentication succeeds and proves that the
+    // subscription guard itself—not tenant-session validation—returns the 402.
+    const suspendResp = await request.put(`/api/platform/tenants/${evostel.id}/subscription`, {
+      headers: { Authorization: `Bearer ${platformToken}` },
+      data: subscription('Suspended'),
     });
-    expect(blockedResp.status()).toBe(402);
-    const body = await blockedResp.json();
-    expect(JSON.stringify(body)).toContain('subscription_inactive');
+    expect(suspendResp.ok()).toBe(true);
 
-    // Step 1: Reactivate to restore tenant.IsActive=true (sets subscription to Active).
-    // Step 2: Downgrade subscription back to PastDue without touching IsActive.
-    await request.post(`/api/platform/tenants/${evostel.id}/reactivate`, {
-      headers: { Authorization: `Bearer ${platformToken}` },
-      data: { reason: 'Playwright test cleanup' },
-    });
-    await request.put(`/api/platform/tenants/${evostel.id}/subscription`, {
-      headers: { Authorization: `Bearer ${platformToken}` },
-      data: {
-        plan: 'Starter',
-        status: 'PastDue',
-        billingCycle: 'Monthly',
-        monthlyAmount: 299,
-        currencyCode: 'USD',
-        maxEmployees: 50,
-        maxUsers: 10,
-        billingEmail: 'billing@evostel.com',
-        expiresAtUtc: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-      },
-    });
+    try {
+      const blockedResp = await request.get('/api/employees', {
+        headers: { Authorization: `Bearer ${evostelToken}` },
+      });
+      expect(blockedResp.status()).toBe(402);
+      const body = await blockedResp.json();
+      expect(JSON.stringify(body)).toContain('subscription_inactive');
+    } finally {
+      // Always restore the isolated fixture even when an assertion fails.
+      const restoreResp = await request.put(`/api/platform/tenants/${evostel.id}/subscription`, {
+        headers: { Authorization: `Bearer ${platformToken}` },
+        data: subscription('PastDue'),
+      });
+      expect(restoreResp.ok()).toBe(true);
+    }
   });
 
   // ── Auth and platform routes bypass subscription guard ────────────────────────
@@ -101,6 +103,8 @@ test.describe('Subscription guard enforcement', () => {
     const resp = await request.post('/api/auth/login', {
       data: { email: EVOSTEL_ADMIN.email, password: EVOSTEL_ADMIN.password, tenantSlug: EVOSTEL_SLUG },
     });
-    expect([200, 401]).toContain(resp.status()); // 401 = wrong creds, not 402
+    // 429 is an authentication-layer result when setup has consumed the per-IP budget; login
+    // must never be transformed into the protected-route subscription response (402).
+    expect([200, 401, 429]).toContain(resp.status());
   });
 });

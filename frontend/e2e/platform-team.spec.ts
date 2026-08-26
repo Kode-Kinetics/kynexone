@@ -1,9 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { platformLogin, PLATFORM_EMAIL } from './helpers';
 
 test.describe('Platform team management', () => {
   test.beforeEach(async ({ page }) => {
-    await platformLogin(page);
     await page.goto('/platform/team');
     await page.waitForLoadState('networkidle');
   });

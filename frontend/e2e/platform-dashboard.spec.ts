@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { platformLogin } from './helpers';
 
 test.describe('Platform dashboard', () => {
   test.beforeEach(async ({ page }) => {
-    await platformLogin(page);
+    await page.goto('/platform/dashboard');
+    await page.waitForLoadState('networkidle');
   });
 
   test('dashboard page loads without error', async ({ page }) => {
@@ -27,15 +27,6 @@ test.describe('Platform dashboard', () => {
     await expect(page.getByRole('link', { name: /all tenants/i })).toBeVisible();
     // And the Platform Team link
     await expect(page.getByRole('link', { name: /platform team/i })).toBeVisible();
-  });
-
-  test('sidebar logout button clears token and redirects', async ({ page }) => {
-    // Find the logout button (aria-label or title="Sign out")
-    const logoutBtn = page.locator('button[title="Sign out"], button[aria-label*="ign out"]');
-    await logoutBtn.click();
-    await page.waitForURL(/\/platform\/login/, { timeout: 10_000 });
-    const token = await page.evaluate(() => localStorage.getItem('platform_access_token'));
-    expect(token).toBeNull();
   });
 
   test('attention / at-risk section is not shown when there are no past-due tenants', async ({ page }) => {

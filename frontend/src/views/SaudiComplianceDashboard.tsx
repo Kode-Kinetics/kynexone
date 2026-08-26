@@ -141,7 +141,7 @@ function ProgressBar({ percent }: { percent: number }) {
 }
 
 function ScoreRing({ score }: { score: number }) {
-  const colour = score >= 90 ? 'text-emerald-500' : score >= 70 ? 'text-amber-500' : 'text-rose-500';
+  const colour = score >= 90 ? 'text-emerald-700 dark:text-emerald-400' : score >= 70 ? 'text-amber-800 dark:text-amber-400' : 'text-rose-700 dark:text-rose-400';
   const bgRing = score >= 90 ? 'bg-emerald-50 dark:bg-emerald-900/20' : score >= 70 ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-rose-50 dark:bg-rose-900/20';
   return (
     <div className={`flex h-20 w-20 flex-col items-center justify-center rounded-full border-4 ${bgRing} ${score >= 90 ? 'border-emerald-200 dark:border-emerald-700' : score >= 70 ? 'border-amber-200 dark:border-amber-700' : 'border-rose-200 dark:border-rose-700'}`}>

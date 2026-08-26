@@ -1106,7 +1106,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
     try {
       const r = await bonusBatchesApi.addEmployee(selected.batch.id, {
         ...empForm,
-        employeeId: '00000000-0000-0000-0000-000000000000',
+        employeeIntId: selectedBonusEmp.intId,
         employeeName: selectedBonusEmp.fullName,
         department: selectedBonusEmp.department,
       });
