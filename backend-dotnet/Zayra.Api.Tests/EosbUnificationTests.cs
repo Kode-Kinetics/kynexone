@@ -72,10 +72,20 @@ public class EosbUnificationTests
     // Seeds one KSA employee (EOSB enabled) joining on `joiningDate` with basic SAR 10,000.
     private static int SeedKsaEmployee(ZayraDbContext db, Guid tenantId, DateTime joiningDate)
     {
+        // POD-C1 refuses to guess a settlement's legal entity (it decides which chart-of-accounts
+        // overrides apply and which GL period-close row binds), so the fixture now states one
+        // explicitly rather than leaving the employee entity-less.
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Test KSA Entity", CountryCode = "SA",
+            DefaultCurrency = "SAR", IsActive = true,
+        };
+        db.Companies.Add(company);
         var emp = new Employee
         {
             TenantId = tenantId, EmployeeCode = "E001", FullName = "Ahmed Al-Rashidi",
             Status = "Active", Nationality = "SAU", JoiningDate = joiningDate,
+            CompanyId = company.Id,
         };
         db.Employees.Add(emp);
         db.GCCComplianceSettings.Add(new GCCComplianceSetting
@@ -90,6 +100,22 @@ public class EosbUnificationTests
         });
         db.SaveChanges();
         return emp.Id;
+    }
+
+    // POD-C1 hardened /final-settlement so it can only settle a real leaver: the last working day is
+    // now read from the offboarding record and never from the request body ("not_a_leaver" otherwise).
+    // These POD-A2 tests predate that rule, so each records the separation it was always implying.
+    // The EOSB assertions below are unchanged — this only supplies the leaver context the endpoint
+    // now (correctly) insists on before it will accrue a payable.
+    private static void SeedLeaver(ZayraDbContext db, Guid tenantId, int empId, DateOnly lastWorkingDay,
+        string separationType = "Termination")
+    {
+        db.EmployeeOffboardings.Add(new EmployeeOffboarding
+        {
+            TenantId = tenantId, EmployeeId = empId, SeparationType = separationType,
+            Status = "InProgress", LastWorkingDay = lastWorkingDay, CreatedAtUtc = DateTime.UtcNow,
+        });
+        db.SaveChanges();
     }
 
     private static decimal EosbFrom(IActionResult result)
@@ -127,6 +153,7 @@ public class EosbUnificationTests
         var joining = new DateTime(jy, jm, 1, 0, 0, 0, DateTimeKind.Utc);
         var asOf    = new DateTime(ay, am, 1, 0, 0, 0, DateTimeKind.Utc);
         var empId = SeedKsaEmployee(db, tenantId, joining);
+        SeedLeaver(db, tenantId, empId, DateOnly.FromDateTime(asOf), reason);
         var ctrl = MakeCtrl(db, tenantId);
 
         var eosbResult = await ctrl.CalculateEosb(
@@ -146,6 +173,7 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
@@ -161,6 +189,7 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
@@ -176,6 +205,7 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Article80");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
@@ -193,6 +223,7 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 7, 1), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
@@ -209,6 +240,7 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 7, 1), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
@@ -245,7 +277,7 @@ public class EosbUnificationTests
         db.EmployeeOffboardings.Add(new EmployeeOffboarding
         {
             TenantId = tenantId, EmployeeId = empId, SeparationType = "Resignation",
-            Status = "InProgress", CreatedAtUtc = DateTime.UtcNow,
+            Status = "InProgress", LastWorkingDay = new DateOnly(2023, 1, 1), CreatedAtUtc = DateTime.UtcNow,
         });
         await db.SaveChangesAsync();
         var ctrl = MakeCtrl(db, tenantId);
@@ -268,7 +300,7 @@ public class EosbUnificationTests
         db.EmployeeOffboardings.Add(new EmployeeOffboarding
         {
             TenantId = tenantId, EmployeeId = empId, SeparationType = "Resignation",
-            Status = "InProgress", CreatedAtUtc = DateTime.UtcNow,
+            Status = "InProgress", LastWorkingDay = new DateOnly(2023, 1, 1), CreatedAtUtc = DateTime.UtcNow,
         });
         await db.SaveChangesAsync();
         var ctrl = MakeCtrl(db, tenantId);
@@ -281,10 +313,18 @@ public class EosbUnificationTests
         Prop<string>(result, "terminationReason").Should().Be("Termination");
     }
 
-    // ── 5. Backward-compat: no reason + no record → full award; contract intact ────
+    // ── 5. Leaver gate + response-contract compatibility ──────────────────────────
+    //
+    // CONTRACT CHANGE OF RECORD (POD-C1, deliberate — supersedes the POD-A2 expectation):
+    // /final-settlement used to settle ANY employee, including a fully Active one with no separation
+    // on record, defaulting the reason to "Termination" and awarding the full gratuity. Once the
+    // endpoint began accruing a real payable and posting a journal, settling a non-leaver stopped
+    // being a harmless display default and became an unbacked liability. The endpoint now refuses,
+    // and the last working day is sourced from the offboarding record rather than the request body
+    // (so a caller cannot invent one). The two tests below pin BOTH halves of that rule.
 
     [Fact]
-    public async Task FinalSettlement_NoReason_NoRecord_DefaultsToFullTermination_ContractUnchanged()
+    public async Task FinalSettlement_NoOffboardingRecord_IsRefused_RatherThanSettlingANonLeaver()
     {
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
@@ -295,10 +335,29 @@ public class EosbUnificationTests
             new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1)),
             CancellationToken.None);
 
-        EosbFrom(result).Should().Be(15_000m, "conservative default = Termination (full award) when nothing is on record");
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        bad.Value!.GetType().GetProperty("error")!.GetValue(bad.Value)
+            .Should().Be("not_a_leaver", "accruing a payable for someone who is not leaving is an unbacked liability");
+        db.EmployeeFinalSettlements.Should().BeEmpty("a refused settlement must persist nothing");
+    }
+
+    [Fact]
+    public async Task FinalSettlement_NoExplicitReason_DefaultsToRecordedTermination_ContractUnchanged()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Termination");
+        var ctrl = MakeCtrl(db, tenantId);
+
+        var result = await ctrl.FinalSettlement(
+            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1)),
+            CancellationToken.None);
+
+        EosbFrom(result).Should().Be(15_000m, "recorded termination takes the full Art.84 award");
         Prop<string>(result, "terminationReason").Should().Be("Termination");
 
-        // Full response contract still present and populated.
+        // Pre-C1 response contract still present at the SAME paths — this is what downstream callers bind to.
         var ok = Assert.IsType<OkObjectResult>(result);
         var body = ok.Value!;
         var t = body.GetType();
@@ -306,8 +365,13 @@ public class EosbUnificationTests
         t.GetProperty("leaveEncashment").Should().NotBeNull();
         t.GetProperty("noticePeriodDeduction").Should().NotBeNull();
         t.GetProperty("totalYears").Should().NotBeNull();
-        var breakdown = (System.Collections.IEnumerable)t.GetProperty("breakdown")!.GetValue(body)!;
-        breakdown.Cast<object>().Should().HaveCount(4, "pro-rata + EOSB + leave + notice");
+        var breakdown = ((System.Collections.IEnumerable)t.GetProperty("breakdown")!.GetValue(body)!)
+            .Cast<object>().ToList();
+        breakdown.Should().NotBeEmpty("the settlement must itemise what it is paying");
+        breakdown.Select(b => (string)b.GetType().GetProperty("component")!.GetValue(b)!)
+            .Should().Contain(c => c.Contains("Service", StringComparison.OrdinalIgnoreCase)
+                                || c.Contains("Gratuity", StringComparison.OrdinalIgnoreCase),
+                "the gratuity must appear as its own itemised line");
     }
 
     // ── 6. Art.85 exactly-5.0-year boundary (SF-4): 5.0yr resignation → ⅓, not ⅔ ──

@@ -5,6 +5,10 @@ export const PLATFORM_EMAIL    = process.env.PLATFORM_ADMIN_EMAIL    ?? 'admin@p
 export const PLATFORM_PASSWORD = process.env.PLATFORM_ADMIN_PASSWORD ?? 'YourPassword123!';
 export const BASE_URL          = process.env.PLAYWRIGHT_BASE_URL     ?? 'http://localhost:5173';
 
+// Where auth.setup.ts persists the platform-admin session. Reused by every platform spec so the
+// suite authenticates ONCE rather than once per test — see auth.setup.ts for why that matters.
+export const PLATFORM_STATE = 'e2e/.auth/platform.json';
+
 // ── Demo tenant credentials ────────────────────────────────────────────────────
 // IntelliFlow Systems — Enterprise, all features enabled, Active
 export const INTELLIFLOW_SLUG     = 'intelliflow';

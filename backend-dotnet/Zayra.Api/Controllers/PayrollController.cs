@@ -40,12 +40,19 @@ public class PayrollController : ControllerBase
     private readonly PdfRenderGate _pdfGate;
     private readonly ICompanyTaxPolicyResolver _taxResolver;
     private readonly Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard _activationGuard;
+    // POD-C3 — the proration/arrears policy chain (company row → tenant default → compiled default) and
+    // the working-week resolver the WorkingDays basis needs. Optional so every existing test constructor
+    // keeps compiling; DI always supplies the real ones.
+    private readonly IProrationPolicyResolver _prorationPolicy;
+    private readonly Zayra.Api.Application.WorkWeek.IWorkWeekService _workWeek;
 
     public PayrollController(ZayraDbContext db, IDataScopeService scopeService, IHttpContextAccessor http,
         INotificationService notifications, ICountryPackResolver packResolver, IStatutoryRuleReader ruleReader,
         ILetterService letters, IDocumentStorage storage, PdfRenderGate pdfGate,
         ICompanyTaxPolicyResolver? taxResolver = null,
-        Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard? activationGuard = null)
+        Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard? activationGuard = null,
+        IProrationPolicyResolver? prorationPolicy = null,
+        Zayra.Api.Application.WorkWeek.IWorkWeekService? workWeek = null)
     {
         _db = db;
         _scopeService = scopeService;
@@ -59,6 +66,8 @@ public class PayrollController : ControllerBase
         // Optional so existing test constructors keep working; DI always supplies the real one.
         _taxResolver = taxResolver ?? new CompanyTaxPolicyResolver(db);
         _activationGuard = activationGuard ?? new Zayra.Api.Infrastructure.Employees.EmployeeActivationGuard(db);
+        _prorationPolicy = prorationPolicy ?? new ProrationPolicyResolver(new CompanyRatePolicyResolver(db));
+        _workWeek = workWeek ?? new Zayra.Api.Infrastructure.WorkWeek.WorkWeekService(db);
     }
 
     /// <summary>
@@ -573,6 +582,42 @@ public class PayrollController : ControllerBase
             includesRecurringPay = req.IncludesRecurringPay.Value;
         }
 
+        // ── POD-C1: a SETTLEMENT-PURPOSE run ─────────────────────────────────────────────────────
+        // The purpose is carried on the run rather than inferred, for two reasons that both bite.
+        //   (a) IT OPENS THE RAIL. A leaver is Offboarded/Terminated and already has a non-voided
+        //       IsFinalWageMonth slip, so all three gates in LoadEligibleWithLeaversAsync exclude them
+        //       from every subsequent run, and ResolveRunPopulationAsync intersects the selector WITH the
+        //       eligible set — so an Include row for them is stamped NotEligible and paid nothing. Without
+        //       an explicit purpose an approved settlement would accrue to 2320 and never reach anybody.
+        //   (b) IT GIVES GUARD (c) A WALL. An OffCycle run may legitimately pay full recurring salary (the
+        //       missed-joiner case). Attaching a settlement to such a run in a month AFTER the last
+        //       working day is a live double-pay: priorStatutoryByEmp is empty, fullBasic is NOT zeroed
+        //       (Process only zeroes it when includesRecurringPay is false), ProrationCalculator leaves
+        //       paidTo = periodEnd because the offboarding is outside the period, and the leaver draws a
+        //       whole extra month's salary AND a whole extra month's GOSI. Refused outright.
+        var settlesFinalSettlements = req.SettlesFinalSettlements ?? false;
+        if (settlesFinalSettlements)
+        {
+            if (PayrollRunTypes.IsPeriodOwning(runType))
+                return BadRequest(new
+                {
+                    error   = "settlement_run_type_invalid",
+                    message = "A termination settlement is disbursed OUT OF BAND. Use an OffCycle (or " +
+                              "Supplementary) run — a Regular/Replacement run OWNS the month's recurring " +
+                              "payroll and would pay the leaver a second full salary.",
+                    runType,
+                });
+            if (includesRecurringPay)
+                return UnprocessableEntity(new
+                {
+                    error   = "settlement_run_pays_recurring",
+                    message = "A settlement run must NOT pay recurring salary (includesRecurringPay=false). " +
+                              "The leaver's wages through their last working day were already paid by the " +
+                              "run that produced their final-wage-month payslip (POD-C3); paying them again " +
+                              "here would double the wage and charge a second full month of social insurance.",
+                });
+        }
+
         // ── POD-B2 (M7): GL posting period for a prior-period correction ─────────────────────────
         // Once a month is closed, no correction for it can ever post (PeriodCloseGuard, correctly,
         // rejects it). Real payroll shops book a prior-period correction into the CURRENT OPEN period
@@ -770,6 +815,14 @@ public class PayrollController : ControllerBase
             ParentRunId = req.ParentRunId,
             IncludesRecurringPay = includesRecurringPay,
             GlPostingPeriod = glPostingPeriod,
+            // POD-C3 — the retro/arrears math CreateRun's comment above has pointed at since B2.
+            SettlesArrears = req.SettlesArrears ?? PayrollRunTypes.IsPeriodOwning(runType),
+            // POD-C1 — a settlement run defaults to NETTING the leaver's outstanding receivable: a leaver's
+            // debts are settled with them, and this is the LAST payment they will receive. It is still an
+            // explicit flag the operator can turn off, so the C3 doctrine ("recovering an overpayment is an
+            // act you choose") holds; only the default differs, and only for a settlement run.
+            NetsPriorReceivable = req.NetsPriorReceivable ?? settlesFinalSettlements,
+            SettlesFinalSettlements = settlesFinalSettlements,
             CreatedByUserId = GetUserId(),
         };
         _db.PayrollRuns.Add(run);
@@ -812,6 +865,7 @@ public class PayrollController : ControllerBase
             runType,
             parentRunId          = req.ParentRunId,
             includesRecurringPay = includesRecurringPay,
+            settlesFinalSettlements,
             glPostingPeriod,
             year                 = req.Year,
             month                = req.Month,
@@ -951,12 +1005,149 @@ public class PayrollController : ControllerBase
     /// PayrollController.Process's original inline query, including the legacy-unscoped fallback.
     /// </summary>
     private async Task<List<Employee>> LoadEligibleEmployeesAsync(
-        Guid tenantId, Guid companyId, bool allowLegacyUnscopedEmployees, bool asNoTracking, CancellationToken ct)
+        Guid tenantId, Guid companyId, bool allowLegacyUnscopedEmployees, bool asNoTracking, CancellationToken ct,
+        bool includeSettlementLeavers = false)
+        => (await LoadEligibleWithLeaversAsync(tenantId, companyId, allowLegacyUnscopedEmployees, asNoTracking,
+                periodStart: null, periodEnd: null, excludeRunId: null, ct,
+                includeSettlementLeavers)).Employees;
+
+    /// <summary>
+    /// POD-C3 — the SAME eligible query as above, UNIONED with this period's LEAVERS.
+    ///
+    /// <para><b>THE LIVE DEFECT THIS FIXES.</b> <c>OffboardingController</c> sets
+    /// <c>Employee.Status = "Offboarded"</c> at NOTICE time, and the query above filters
+    /// <c>Status == "Active"</c>. So from the day a resignation was keyed, the employee vanished from
+    /// every payroll run and was paid NOTHING for the whole notice period — directly contradicting the
+    /// product's own documented intent ("Excludes Offboarded — notice-period staff may still be paid",
+    /// EmployeesController). Payroll never honoured it. A notice served in August with a last working day
+    /// of 15 October now yields full August, full September, 15/30 October — then nothing.</para>
+    ///
+    /// <para><b>THE UNION IS NARROW ON PURPOSE.</b> The Active set is kept VERBATIM and only added to, so
+    /// for any tenant with no offboarding in flight the population is bit-for-bit what it was. The union
+    /// re-applies the run's COMPANY scope from <c>Employee.CompanyId</c> (EmployeeOffboarding is
+    /// tenant-owned only and carries no company dimension, so without this a group tenant's Company A run
+    /// would pull in Company B's leaver), and it STOPS once the final wage month has been paid: an
+    /// employee who already has a non-voided <c>IsFinalWageMonth</c> slip is excluded, which is what stops
+    /// a settled leaver drawing a second wage through the IsActive-blind salary query.</para>
+    /// </summary>
+    private async Task<(List<Employee> Employees, HashSet<int> LeaverIds, Dictionary<int, DateOnly> LastWorkingDays,
+                        List<(Employee Employee, string Reason)> UnpayableNonActive, HashSet<int> SettlementIds)>
+        LoadEligibleWithLeaversAsync(
+            Guid tenantId, Guid companyId, bool allowLegacyUnscopedEmployees, bool asNoTracking,
+            DateOnly? periodStart, DateOnly? periodEnd, Guid? excludeRunId, CancellationToken ct,
+            bool includeSettlementLeavers = false)
     {
         var q = _db.Employees.Where(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted
             && (e.CompanyId == companyId || (allowLegacyUnscopedEmployees && e.CompanyId == null)));
         if (asNoTracking) q = q.AsNoTracking();
-        return await q.ToListAsync(ct);
+        var active = await q.ToListAsync(ct);
+
+        var leaverIds = new HashSet<int>();
+        var lwdByEmp = new Dictionary<int, DateOnly>();
+        var unpayable = new List<(Employee, string)>();
+        // ── POD-C1: THE DISBURSEMENT RAIL ────────────────────────────────────────────────────────────
+        // A settlement-purpose run pays people the three gates below deliberately exclude, and it must:
+        //   • `Status == "Active"` — a leaver past their last working day is Offboarded/Terminated/Exited;
+        //   • `LastWorkingDay >= periodStart` — a settlement is normally disbursed in the month AFTER the
+        //     LWD, so the leaver union never even considers them;
+        //   • `alreadyFinalised` — the non-voided IsFinalWageMonth slip that Guard 4 REQUIRES before a
+        //     settlement may be approved is the very thing that removes them from every later run.
+        // Without this branch a settlement could accrue to 2320 and never reach anybody: the payable would
+        // age forever and the leaver would still have to be paid by manual bank transfer — i.e. the exact
+        // problem this pod exists to end. It adds ONLY employees with an Approved settlement and no live
+        // disbursement, so for every run that is not a settlement run this is not even queried.
+        var settlementIds = new HashSet<int>();
+        if (includeSettlementLeavers)
+        {
+            var activeIds = active.Select(e => e.Id).ToHashSet();
+            var awaitingIds = await _db.EmployeeFinalSettlements.AsNoTracking()
+                .Where(s => s.TenantId == tenantId
+                         && s.Status == FinalSettlementStatuses.Approved
+                         && s.PayrollRunId == null
+                         && (s.CompanyId == companyId || s.CompanyId == null))
+                .Select(s => s.EmployeeId)
+                .Distinct()
+                .ToListAsync(ct);
+            var toAdd = awaitingIds.Where(eid => !activeIds.Contains(eid)).ToList();
+            if (toAdd.Count > 0)
+            {
+                // COMPANY SCOPE re-applied from the employee, exactly as the Active and leaver queries do.
+                var settlementQ = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted
+                    && toAdd.Contains(e.Id)
+                    && (e.CompanyId == companyId || (allowLegacyUnscopedEmployees && e.CompanyId == null)));
+                if (asNoTracking) settlementQ = settlementQ.AsNoTracking();
+                foreach (var e in await settlementQ.ToListAsync(ct))
+                {
+                    active.Add(e);
+                    settlementIds.Add(e.Id);
+                }
+            }
+            foreach (var eid in awaitingIds.Where(activeIds.Contains)) settlementIds.Add(eid);
+        }
+        if (periodStart is not DateOnly pStart || periodEnd is not DateOnly pEnd)
+            return (active, leaverIds, lwdByEmp, unpayable, settlementIds);
+
+        // Non-cancelled offboardings whose last working day lands on/after this period's start. The
+        // newest record per employee wins (a re-hire may have an older, completed one).
+        var offboardings = await _db.EmployeeOffboardings.AsNoTracking()
+            .Where(o => o.TenantId == tenantId && o.Status != "Cancelled" && o.LastWorkingDay >= pStart)
+            .Select(o => new { o.EmployeeId, o.LastWorkingDay, o.CreatedAtUtc })
+            .ToListAsync(ct);
+        if (offboardings.Count == 0) return (active, leaverIds, lwdByEmp, unpayable, settlementIds);
+
+        foreach (var g in offboardings.GroupBy(o => o.EmployeeId))
+            lwdByEmp[g.Key] = g.OrderByDescending(o => o.CreatedAtUtc).First().LastWorkingDay;
+
+        var candidateIds = lwdByEmp.Keys.ToList();
+        // COMPANY SCOPE re-applied from the employee, exactly as the Active query does.
+        var leaverQ = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted
+            && candidateIds.Contains(e.Id) && e.Status != "Active"
+            && (e.CompanyId == companyId || (allowLegacyUnscopedEmployees && e.CompanyId == null)));
+        if (asNoTracking) leaverQ = leaverQ.AsNoTracking();
+        var leavers = await leaverQ.ToListAsync(ct);
+        if (leavers.Count == 0) return (active, leaverIds, lwdByEmp, unpayable, settlementIds);
+
+        // STOP CONDITION — the final wage month is paid exactly ONCE. Without it, every subsequent
+        // period where periodStart <= LWD would match again and an IsActive-blind salary query would draw
+        // a second (and third) final wage.
+        var leaverIdList = leavers.Select(e => e.Id).ToList();
+        var alreadyFinalised = (await _db.PayrollSlips.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.IsFinalWageMonth && s.Status != "Voided"
+                     && leaverIdList.Contains(s.EmployeeId)
+                     && (excludeRunId == null || s.RunId != excludeRunId))
+            .Select(s => s.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+
+        foreach (var e in leavers)
+        {
+            if (alreadyFinalised.Contains(e.Id)) continue;
+            // POD-C1 — already admitted by the settlement branch above; adding them twice would produce
+            // two identical Employee entries and therefore two payslips for one person.
+            if (settlementIds.Contains(e.Id)) continue;
+            var lwd = lwdByEmp[e.Id];
+            var joined = e.JoiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(e.JoiningDate);
+            if (joined is DateOnly jd && jd > pEnd) continue;   // not employed in this period at all
+            if (lwd < pStart) continue;                          // already left before the period
+            active.Add(e);
+            leaverIds.Add(e.Id);
+        }
+
+        // MF-9(c) — a NON-ACTIVE employee with NO last working day anywhere is paid nothing and nothing
+        // reports it: the same silent-unpay defect re-entering through a different door. Named, capped.
+        var separationStatuses = new[] { EmployeeStatuses.Offboarded, EmployeeStatuses.Terminated, EmployeeStatuses.Exited };
+        var orphanQ = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && separationStatuses.Contains(e.Status)
+                     && !candidateIds.Contains(e.Id)
+                     && (e.CompanyId == companyId || (allowLegacyUnscopedEmployees && e.CompanyId == null)))
+            .OrderBy(e => e.Id)
+            .Take(25)
+            .ToListAsync(ct);
+        // POD-C1 — a leaver being SETTLED by this run is not an "unpayable orphan": their offboarding is
+        // simply outside this period's window (a settlement is normally disbursed after the LWD month).
+        foreach (var e in orphanQ.Where(e => !settlementIds.Contains(e.Id)))
+            unpayable.Add((e, $"Status '{e.Status}' with no offboarding record, so no last working day exists. " +
+                               "They are excluded from this run and will be paid nothing."));
+
+        return (active, leaverIds, lwdByEmp, unpayable, settlementIds);
     }
 
     /// <summary>
@@ -1028,7 +1219,11 @@ public class PayrollController : ControllerBase
         if (company is null)
             return UnprocessableEntity(new { error = "company_not_resolved", message = "The run must be linked to an active legal entity before its population can be scoped." });
 
-        var eligible = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscoped, asNoTracking: true, cancellationToken);
+        // POD-C1 — a settlement run's eligible set INCLUDES its approved leavers, or the selector would
+        // stamp them NotEligible and the run would pay nobody (ResolveRunPopulationAsync intersects
+        // Include rows WITH this set).
+        var eligible = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscoped, asNoTracking: true, cancellationToken,
+            includeSettlementLeavers: run.SettlesFinalSettlements);
         List<int> targetIds;
         if (req.AllEligible)
         {
@@ -1123,7 +1318,11 @@ public class PayrollController : ControllerBase
         if (company is null)
             return UnprocessableEntity(new { error = "company_not_resolved", message = "The run must be linked to an active legal entity." });
 
-        var eligible = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscoped, asNoTracking: true, cancellationToken);
+        // POD-C1 — a settlement run's eligible set INCLUDES its approved leavers, or the selector would
+        // stamp them NotEligible and the run would pay nobody (ResolveRunPopulationAsync intersects
+        // Include rows WITH this set).
+        var eligible = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscoped, asNoTracking: true, cancellationToken,
+            includeSettlementLeavers: run.SettlesFinalSettlements);
         // AsNoTracking selections: this is a preview, the Outcome stamps must not leak into a SaveChanges.
         var pop = await ResolveRunPopulationAsync(tenantId, run, eligible, cancellationToken);
         foreach (var s in pop.Selections) _db.Entry(s).State = EntityState.Detached;
@@ -1282,7 +1481,30 @@ public class PayrollController : ControllerBase
                 });
         }
 
-        var eligibleEmployees = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscopedEmployees, asNoTracking: false, cancellationToken);
+        // ── POD-C3: the NAMED, per-company proration policy for this run ─────────────────────────────
+        // Resolved BEFORE any work is done and refused loudly on a bad value: a silent fallback here is
+        // exactly how a tenant ends up paying joiners and leavers on a basis nobody chose.
+        var workWeekConfig = await _workWeek.ResolveAsync(tenantId, company.Id, company.CountryCode, cancellationToken);
+        var (prorationPolicy, prorationPolicyError) =
+            await _prorationPolicy.ResolveAsync(tenantId, company.Id, periodEnd, workWeekConfig, cancellationToken);
+        if (prorationPolicyError is not null)
+            return UnprocessableEntity(new
+            {
+                error   = prorationPolicyError.Code,
+                message = prorationPolicyError.Message,
+                detail  = prorationPolicyError.Detail,
+            });
+        var policy = prorationPolicy!;
+
+        // POD-C3 — the eligible set is now the Active set UNIONED with this period's leavers. The Active
+        // half is verbatim, so a tenant with no offboarding in flight has a bit-for-bit identical
+        // population. See LoadEligibleWithLeaversAsync for the silent-unpay defect this closes.
+        // POD-C1 — a settlement-purpose run additionally admits leavers whose wage side is already DONE
+        // (see the settlement branch in LoadEligibleWithLeaversAsync); no other run type is affected.
+        var (eligibleEmployees, leaverEmployeeIds, lastWorkingDayByEmp, unpayableNonActive, settlementEligibleIds) =
+            await LoadEligibleWithLeaversAsync(tenantId, company.Id, allowLegacyUnscopedEmployees,
+                asNoTracking: false, periodStart, periodEnd, excludeRunId: id, cancellationToken,
+                includeSettlementLeavers: run.SettlesFinalSettlements);
 
         // ── POD-B2: the operator's include/exclude intent decides who this run pays ──────────────────
         var runPopulation = await ResolveRunPopulationAsync(tenantId, run, eligibleEmployees, cancellationToken);
@@ -1306,6 +1528,49 @@ public class PayrollController : ControllerBase
             });
 
         var employees = runPopulation.Employees;
+
+        // ── POD-C3: EACH EMPLOYEE'S EMPLOYMENT WINDOW INSIDE THIS PERIOD ─────────────────────────────
+        // Computed BEFORE employeeIdsForRun is built, because an employee who had not joined yet is
+        // EXCLUDED from the run entirely — a zero payslip and an empty GL group are not a truthful
+        // representation of "not employed", and marking their attendance/leave impacts Processed would
+        // starve the run that finally does pay them.
+        //
+        // For an employee with JoiningDate before the period and no offboarding the factor is exactly
+        // 1.0 and every emitted line below is byte-identical to pre-C3. That is the ~55-tenant bar.
+        var prorationByEmp = new Dictionary<int, ProrationResult>();
+        foreach (var e in employees)
+        {
+            var joined = e.JoiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(e.JoiningDate);
+            lastWorkingDayByEmp.TryGetValue(e.Id, out var lwdValue);
+            var lwd = lastWorkingDayByEmp.ContainsKey(e.Id) ? lwdValue : (DateOnly?)null;
+            prorationByEmp[e.Id] = ProrationCalculator.Compute(periodStart, periodEnd, joined, lwd, policy.Basis, workWeekConfig);
+        }
+        var excludedJoiners = employees.Where(e => prorationByEmp[e.Id].IsExcluded).ToList();
+        if (excludedJoiners.Count > 0)
+        {
+            // Reported, never silent — an unexplained absence from a run is exactly how the notice-period
+            // unpay defect hid for so long.
+            foreach (var e in excludedJoiners)
+            {
+                var pr = prorationByEmp[e.Id];
+                // POD-C3-FIX — the reason must name the ACTUAL cause. The old text branched on
+                // `pr.PaidTo < pr.PaidFrom`, which is ALSO true for a post-period joiner
+                // (ProrationCalculator.cs:192-193 leaves paidTo = periodEnd when there is no last working
+                // day, so paidFrom = the joining date is already past it). The post-period branch was
+                // therefore unreachable, and operators were told "last day 2026-06-30" — the period end,
+                // dressed up as a real last working day — about someone who had simply not started yet.
+                var joinedOn = e.JoiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(e.JoiningDate);
+                var reason = joinedOn is DateOnly jd && jd > periodEnd
+                    ? $"Employment window is empty for {run.Year}-{run.Month:D2}: joins {jd:yyyy-MM-dd}, which is after " +
+                      $"this period ends ({periodEnd:yyyy-MM-dd}). Nothing is owed for {run.Year}-{run.Month:D2}."
+                    : $"Employment window is empty for {run.Year}-{run.Month:D2}: the last working day " +
+                      $"({pr.PaidTo:yyyy-MM-dd}) precedes the first day of employment in this period " +
+                      $"({pr.PaidFrom:yyyy-MM-dd}). Check the joining date and the offboarding record.";
+                runPopulation.NotEligible.Add(new PayrollRunExclusion(e.Id, e.EmployeeCode, e.FullName, reason));
+                employees.Remove(e);
+            }
+        }
+
         var employeeIdsForRun = employees.Select(e => e.Id).ToHashSet();
         if (employeeIdsForRun.Count == 0)
             return UnprocessableEntity(new
@@ -1320,6 +1585,22 @@ public class PayrollController : ControllerBase
         var salaryAssignments = await _db.EmployeeSalaryStructures.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && x.EffectiveDate <= periodEnd && employeeIdsForRun.Contains(x.EmployeeId))
             .ToListAsync(cancellationToken);
+
+        // ── POD-C3: a LEAVER's salary row survives the offboarding exit cascade ───────────────────────
+        // OffboardingController.Complete → EmployeeManagementService.DeactivatePayrollFootprintAsync sets
+        // EmployeeSalaryStructure.IsActive = false once FinalSettlementDone. The query above filters
+        // x.IsActive, so a leaver re-included by the union would silently fall back to `e.Salary ?? 0m`
+        // and be paid a wrong (usually zero) final wage. A SECOND query, applied ONLY to the leaver set,
+        // fixes that without touching the primary query for anyone else.
+        var leaverIdsForRun = leaverEmployeeIds.Where(employeeIdsForRun.Contains).ToList();
+        if (leaverIdsForRun.Count > 0)
+        {
+            var knownAssignmentIds = salaryAssignments.Select(a => a.Id).ToHashSet();
+            var leaverAssignments = await _db.EmployeeSalaryStructures.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.EffectiveDate <= periodEnd && leaverIdsForRun.Contains(x.EmployeeId))
+                .ToListAsync(cancellationToken);
+            salaryAssignments.AddRange(leaverAssignments.Where(a => !knownAssignmentIds.Contains(a.Id)));
+        }
 
         // Load salary structure components (for IsTaxable-based tax deduction)
         var structureIds = salaryAssignments.Select(x => x.SalaryStructureId).Distinct().ToList();
@@ -1404,12 +1685,22 @@ public class PayrollController : ControllerBase
         {
             var siblingSlips = await _db.PayrollSlips.AsNoTracking()
                 .Where(s => s.TenantId == tenantId && siblingRunIds.Contains(s.RunId) && employeeIdsForRun.Contains(s.EmployeeId))
-                .Select(s => new { s.EmployeeId, s.BasicSalary, s.HousingAllowance })
+                .Select(s => new
+                {
+                    s.EmployeeId, s.BasicSalary, s.HousingAllowance,
+                    // POD-C3 — the sibling's own statutory base, which under `proration_gosi_base =
+                    // FullMonth` is NOT its money columns. Null on every pre-C3 slip, so the fallback
+                    // below reproduces the pre-C3 read exactly.
+                    s.GosiBasePolicy, s.FullBasicSalary, s.FullHousingAllowance,
+                })
                 .ToListAsync(cancellationToken);
             foreach (var s in siblingSlips)
             {
-                priorBasicByEmp[s.EmployeeId]   = priorBasicByEmp.GetValueOrDefault(s.EmployeeId) + s.BasicSalary;
-                priorHousingByEmp[s.EmployeeId] = priorHousingByEmp.GetValueOrDefault(s.EmployeeId) + s.HousingAllowance;
+                var useFull = s.GosiBasePolicy == ProrationGosiBases.FullMonth;
+                var sBasic   = useFull ? s.FullBasicSalary      ?? s.BasicSalary      : s.BasicSalary;
+                var sHousing = useFull ? s.FullHousingAllowance ?? s.HousingAllowance : s.HousingAllowance;
+                priorBasicByEmp[s.EmployeeId]   = priorBasicByEmp.GetValueOrDefault(s.EmployeeId) + sBasic;
+                priorHousingByEmp[s.EmployeeId] = priorHousingByEmp.GetValueOrDefault(s.EmployeeId) + sHousing;
             }
             // GOSI-eligible bonus already covered by a sibling run rides in the housing slot, exactly as
             // this run's own gosiIncludedBonusTotal does below.
@@ -1433,6 +1724,23 @@ public class PayrollController : ControllerBase
                     priorHousingByEmp[eid] = priorHousingByEmp.GetValueOrDefault(eid) + b.GrossBonusAmount;
                 }
             }
+            // ── POD-C3 (MF-1) — GOSI-BEARING ARREARS A SIBLING RUN ALREADY SETTLED ───────────────────
+            // This is the single most dangerous omission a proration/arrears pod can make. Arrears may be
+            // settled by a Supplementary/OffCycle run (B2's natural vehicle for a retro increment), and
+            // the A1 period reconciliation is taught to include them. If they are NOT also added to the
+            // period-to-date base here, the pack is fed an understated base, the 45,000 ceiling nets
+            // wrong, the incremental netting below is wrong — and ReconcilePeriodAsync then computes
+            // `expected` on base+arrears against an `actual` computed WITHOUT them. `expected == actual`
+            // fails for every affected employee, silently, on a STATUTORY FILING source. Mirrors the
+            // sibling-bonus block above exactly, and rides the SAME housing slot.
+            var siblingArrears = await _db.PayrollArrearsLines.AsNoTracking()
+                .Where(a => a.TenantId == tenantId && a.Status == PayrollArrearsStatuses.Settled && a.IsGosiBearing
+                         && a.PayrollRunId != null && siblingRunIds.Contains(a.PayrollRunId!.Value)
+                         && employeeIdsForRun.Contains(a.EmployeeId))
+                .Select(a => new { a.EmployeeId, a.Amount })
+                .ToListAsync(cancellationToken);
+            foreach (var a in siblingArrears)
+                priorHousingByEmp[a.EmployeeId] = priorHousingByEmp.GetValueOrDefault(a.EmployeeId) + a.Amount;
             var siblingStatutory = await _db.PayrollDeductions.AsNoTracking()
                 .Where(d => d.TenantId == tenantId && siblingRunIds.Contains(d.PayrollRunId)
                          && d.Source == "Statutory" && employeeIdsForRun.Contains(d.EmployeeId))
@@ -1556,6 +1864,184 @@ public class PayrollController : ControllerBase
             ? await LoadPayComponentsAsync(tenantId, company.Id, cancellationToken)
             : (IReadOnlyList<PayComponent>)Array.Empty<PayComponent>();
 
+        // ════ POD-C3 ══════════════════════════════════════════════════════════════════════════════
+        // Everything from here to the transaction is INERT for a run with no joiner, no leaver and no
+        // backdated salary change: prorationByEmp is all 1.0, the arrears engine returns zero lines, and
+        // every warning list is empty.
+        // ══════════════════════════════════════════════════════════════════════════════════════════
+
+        // Statutory covered-wage ceiling — used ONLY for the arrears EARNED-BASIS delta, never to
+        // duplicate the pack's own capping (which stays inside KsaDeductionCalculator).
+        var statutoryCeiling = await _ruleReader.GetDecimalAsync(
+            packCc, packJur, "gosi.covered_wage_ceiling_sar", eff, tenantId, cancellationToken) ?? decimal.MaxValue;
+
+        var c3Warnings = new List<(string Code, int? EmployeeId, string Message)>();
+        if (!policy.IsEnabled)
+            c3Warnings.Add(("WARN_PRORATION_DISABLED", null,
+                "Mid-month proration is DISABLED for this legal entity (payparameter.proration_basis = 'None'). " +
+                "A joiner or leaver is being paid a FULL month. This warning fires on every run so the choice " +
+                "can never be silently forgotten."));
+        if (policy.Basis == ProrationBases.Calendar30 && lopDayDivisor != ProrationCalculator.Calendar30Days)
+            c3Warnings.Add(("WARN_PRORATION_BASIS_MISMATCH", null,
+                $"Proration uses a 30-day month but unpaid absence is charged at basic ÷ {lopDayDivisor} " +
+                "(lop.monthly_day_divisor). Two different day-rates on one payslip: a joiner's absent day is " +
+                "valued differently from their unworked days. Align the two before filing."));
+
+        // ── MF-6(b): unpaid-leave days RECOMPUTED against the employment window ──────────────────────
+        // LeavePayrollImpact carries NO dates (only PayPeriod/Days/Amount) and its Amount was SNAPSHOTTED
+        // at approval on the FULL basic ÷ 30. For a prorated joiner/leaver that snapshot can exceed the
+        // wage actually earned. The originating LeaveRequest does carry dates, so the impact is scaled by
+        // the share of the request that falls inside [PaidFrom, PaidTo]. Scale is 1.0 — and the code path
+        // therefore a no-op — for every employee who was employed for the whole period.
+        var leaveImpactScale = new Dictionary<Guid, decimal>();
+        var proratedEmpIds = employees.Where(e => prorationByEmp[e.Id].IsProrated).Select(e => e.Id).ToHashSet();
+        if (proratedEmpIds.Count > 0 && leaveImpacts.Count > 0)
+        {
+            var reqIds = leaveImpacts.Where(x => proratedEmpIds.Contains(x.EmployeeId)).Select(x => x.LeaveRequestId).Distinct().ToList();
+            var reqs = reqIds.Count == 0 ? new List<LeaveRequest>() : await _db.LeaveRequests.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && reqIds.Contains(r.Id)).ToListAsync(cancellationToken);
+            foreach (var imp in leaveImpacts.Where(x => proratedEmpIds.Contains(x.EmployeeId)))
+            {
+                var req = reqs.FirstOrDefault(r => r.Id == imp.LeaveRequestId);
+                if (req is null) continue;
+                var pr = prorationByEmp[imp.EmployeeId];
+                var reqDays = req.EndDate.DayNumber - req.StartDate.DayNumber + 1;
+                if (reqDays <= 0) continue;
+                var from = req.StartDate > pr.PaidFrom ? req.StartDate : pr.PaidFrom;
+                var to   = req.EndDate   < pr.PaidTo   ? req.EndDate   : pr.PaidTo;
+                var inside = to < from ? 0 : to.DayNumber - from.DayNumber + 1;
+                var scale = Math.Round(inside / (decimal)reqDays, 6);
+                if (scale >= 1m) continue;
+                leaveImpactScale[imp.Id] = scale;
+                c3Warnings.Add(("WARN_IMPACT_OUTSIDE_EMPLOYMENT_WINDOW", imp.EmployeeId,
+                    $"Unpaid-leave request {req.StartDate:yyyy-MM-dd}→{req.EndDate:yyyy-MM-dd} extends outside the " +
+                    $"employment window {pr.PaidFrom:yyyy-MM-dd}→{pr.PaidTo:yyyy-MM-dd}. The deduction was reduced to " +
+                    $"{scale:P2} of the approved amount rather than charged against days the employee was not employed."));
+            }
+        }
+
+        // ── THE ARREARS ENGINE ──────────────────────────────────────────────────────────────────────
+        var arrears = ArrearsComputation.Empty;
+        if (run.SettlesArrears)
+        {
+            var arrearsEmployees = employees.Select(e => new ArrearsEmployee(
+                e.Id, e.EmployeeCode, e.FullName,
+                e.JoiningDate == default ? null : DateOnly.FromDateTime(e.JoiningDate),
+                lastWorkingDayByEmp.TryGetValue(e.Id, out var l) ? l : null)).ToList();
+            arrears = await new ArrearsEngine(_db).ComputeAsync(
+                tenantId, company.Id, run, arrearsEmployees, salaryAssignments,
+                policy, workWeekConfig, statutoryCeiling, cancellationToken);
+
+            // ── NEGATIVE ARREARS (a retro DECREASE) — computed, persisted, and REFUSED ───────────────
+            // B2's posture, verbatim: correction runs are ADDITIVE-ONLY and a negative delta (clawback)
+            // has no vehicle here. Netting it would break WPS and the control accounts; dropping it with
+            // an `if (amount > 0)` guard would leave the employee permanently overpaid and INVISIBLE.
+            // The lines are persisted as PendingRecovery so the amount and its covered period survive the
+            // refusal, then the run refuses with a specific 422 naming every employee and period.
+            if (arrears.PendingRecovery.Count > 0)
+            {
+                foreach (var line in arrears.PendingRecovery)
+                {
+                    var exists = await _db.PayrollArrearsLines.AnyAsync(a => a.TenantId == tenantId
+                        && a.EmployeeId == line.EmployeeId && a.CoveredYear == line.CoveredYear
+                        && a.CoveredMonth == line.CoveredMonth && a.ComponentCode == line.ComponentCode
+                        && a.Status == PayrollArrearsStatuses.PendingRecovery, cancellationToken);
+                    if (!exists) _db.PayrollArrearsLines.Add(line);
+                }
+                await _db.SaveChangesAsync(cancellationToken);
+                return UnprocessableEntity(new
+                {
+                    error   = "retro_decrease_unsupported",
+                    message = $"{arrears.PendingRecovery.Select(l => l.EmployeeId).Distinct().Count()} employee(s) have a " +
+                              "BACKDATED SALARY DECREASE affecting an already-locked period. A payroll run is " +
+                              "ADDITIVE-ONLY — a negative earning has no vehicle here and would break the wage file and " +
+                              "the control accounts. The amounts have been recorded as PendingRecovery (visible on " +
+                              $"GET /api/payroll/runs/{run.Id}/arrears) so nothing is lost. Recover them through an " +
+                              "explicit deduction, or correct the effective date of the salary change, then re-process.",
+                    employees = arrears.PendingRecovery
+                        .GroupBy(l => l.EmployeeId)
+                        .Select(g => new
+                        {
+                            employeeId = g.Key,
+                            employeeCode = g.First().EmployeeCode,
+                            periods = g.Select(l => new { period = $"{l.CoveredYear}-{l.CoveredMonth:D2}", l.ComponentCode, l.Amount }).ToList(),
+                        }).ToList(),
+                });
+            }
+            foreach (var w in arrears.Warnings) c3Warnings.Add((w.Code, w.EmployeeId, w.Message));
+            if (arrears.Settled.Count > 0 && policy.ArrearsAreGosiBearing)
+                c3Warnings.Add(("WARN_ARREARS_GOSI_TREATMENT_REQUIRES_SIGNOFF", null,
+                    $"This run settles {arrears.TotalGosiBearing:N2} of GOSI-BEARING arrears in the period PAID. " +
+                    "Whether a retro increment must instead be declared against the months EARNED (an AMENDED GOSI " +
+                    "return) is a statutory question requiring a Saudi compliance officer's sign-off. The earned-basis " +
+                    $"figure is {arrears.TotalEarnedBasisGosiDelta:N2} and is persisted per covered period on every " +
+                    "arrears line. [FLAG-COMPLIANCE-KSA]"));
+        }
+        var arrearsByEmp = arrears.Settled.GroupBy(l => l.EmployeeId).ToDictionary(g => g.Key, g => g.ToList());
+
+        // ── POD-B3 HANDOFF: the 1420 receivable a prior void recognised ──────────────────────────────
+        // Explicit per-run flag, default OFF: recovering an overpayment out of someone's salary is an act
+        // the operator chooses, never a side effect of re-running a month.
+        var receivableByEmp = new Dictionary<int, List<PayrollEmployeeReceivable>>();
+        if (run.NetsPriorReceivable)
+        {
+            var outstanding = await _db.PayrollEmployeeReceivables
+                .Where(r => r.TenantId == tenantId && r.Status == PayrollReceivableStatuses.Outstanding
+                         && (r.CompanyId == company.Id || r.CompanyId == null)
+                         && employeeIdsForRun.Contains(r.EmployeeId) && r.Amount > r.RecoveredAmount)
+                .OrderBy(r => r.CreatedAtUtc)
+                .ToListAsync(cancellationToken);
+            receivableByEmp = outstanding.GroupBy(r => r.EmployeeId).ToDictionary(g => g.Key, g => g.ToList());
+        }
+
+        // ── POD-C1: THE APPROVED SETTLEMENTS THIS RUN DISBURSES ──────────────────────────────────────
+        // The run EMITS the persisted FinalSettlementLine rows VERBATIM. It does not recompute a
+        // gratuity, a proration, an encashment or a notice figure — that is POD-A2's "compute once"
+        // doctrine applied one layer down, and it is what makes the 2320 accrual and the payslip provably
+        // the same numbers rather than two implementations that agree today.
+        var settlementsByEmp = new Dictionary<int, EmployeeFinalSettlement>();
+        var settlementLinesById = new Dictionary<Guid, List<FinalSettlementLine>>();
+        if (run.SettlesFinalSettlements)
+        {
+            // Belt to CreateRun's brace: a run created before this pod (or by a direct write) could carry
+            // the settlement purpose alongside a recurring basis, which is the double-pay hazard in §2.4.
+            if (includesRecurringPay)
+                return UnprocessableEntity(new
+                {
+                    error   = "settlement_run_pays_recurring",
+                    message = "This run is marked as a termination-settlement run but also pays recurring salary. " +
+                              "The leaver's wages through their last working day were already paid by the run that " +
+                              "produced their final-wage-month payslip; paying them again here would double the wage " +
+                              "and charge a second full month of social insurance.",
+                    runId = run.Id,
+                });
+
+            // AsNoTracking on purpose: this is the READ-ONLY plan, loaded before the execution-strategy
+            // transaction opens and therefore safe to reuse across a transient retry (which Clear()s the
+            // tracker). The rows are RE-LOADED as tracked copies inside the transaction before mutation,
+            // exactly as activeLoansMutable / activeAdvMutable are.
+            var approved = await _db.EmployeeFinalSettlements.AsNoTracking()
+                .Where(s => s.TenantId == tenantId
+                         && s.Status == FinalSettlementStatuses.Approved
+                         && s.PayrollRunId == null
+                         && employeeIdsForRun.Contains(s.EmployeeId)
+                         && (s.CompanyId == company.Id || s.CompanyId == null))
+                .OrderBy(s => s.CreatedAtUtc)
+                .ToListAsync(cancellationToken);
+            foreach (var s in approved)
+                if (!settlementsByEmp.ContainsKey(s.EmployeeId)) settlementsByEmp[s.EmployeeId] = s;
+            if (settlementsByEmp.Count > 0)
+            {
+                var settlementIdList = settlementsByEmp.Values.Select(s => s.Id).ToList();
+                settlementLinesById = (await _db.FinalSettlementLines.AsNoTracking()
+                        .Where(l => l.TenantId == tenantId && settlementIdList.Contains(l.SettlementId))
+                        .OrderBy(l => l.SortOrder).ThenBy(l => l.ComponentCode)
+                        .ToListAsync(cancellationToken))
+                    .GroupBy(l => l.SettlementId)
+                    .ToDictionary(g => g.Key, g => g.ToList());
+            }
+        }
+
         // ── P0-2: ALL-OR-NOTHING MUTATION ──────────────────────────────────────────
         // Everything from here (idempotent delete → slip writes → statutory/loan/advance
         // ledger decrements → audit) commits as one transaction, so a cancel/crash/DB error
@@ -1596,6 +2082,12 @@ public class PayrollController : ControllerBase
             // by definition. (Reachable only via POST runs/{id}/reopen, which has already REPLAYED them;
             // this is the belt to that brace and keeps the (run, artifact) unique index clean.)
             _db.PayrollRunConsumptions.RemoveRange(_db.PayrollRunConsumptions.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+            // POD-C3 — this run's arrears lines are removed here, i.e. BEFORE the entitlement arithmetic
+            // is used. Ordering is load-bearing: leave them and a re-Process reads its OWN previous output
+            // as "already settled" and self-cancels every arrears line to zero. (The engine also excludes
+            // PayrollRunId == this run explicitly — belt to this brace, because the engine now runs
+            // BEFORE the transaction opens.)
+            _db.PayrollArrearsLines.RemoveRange(_db.PayrollArrearsLines.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
             // A re-processed run's FACTS have changed, so a judgement recorded about the old figures no
             // longer applies. Overrides are deliberately NOT carried across a re-Process — only across a
             // /validate, which is a read-model refresh of the same facts.
@@ -1606,17 +2098,66 @@ public class PayrollController : ControllerBase
         // transient retry starts clean (the delegate re-runs from here).
         var negativeNetEmployees = new List<object>();
         var statutoryComputedIncrementally = false;
+        // POD-C3 — per-attempt accumulators, declared INSIDE the execution-strategy delegate for the same
+        // reason as the two above: a transient retry re-runs the delegate from here and must start clean.
+        // The per-loan/per-advance maps carry the amount THIS run actually took (which is no longer
+        // Math.Min(Installment, Outstanding) once debt is capped at affordable net), so the mutable
+        // decrement block below and the POD-B3 witness both record the truth rather than a recomputation.
+        var loanTakenByEmployee = new Dictionary<int, Dictionary<Guid, decimal>>();
+        var advTakenByEmployee  = new Dictionary<int, Dictionary<Guid, decimal>>();
+        var deferredEmiEmployees = new List<(int Id, string Code, string Name, decimal Amount)>();
+        var recurringShortfallEmployees = new List<(int Id, string Code, string Name, decimal Shortfall, bool Prorated, decimal StatutoryEe)>();
+        var receivableResidualEmployees = new List<(int Id, string Code, string Name, decimal Amount)>();
+        // POD-C3-FIX — recovery taken out of a period OTHER than the one the receivable arose in. That is
+        // a genuine deduction from wages (KSA Labour Law art. 91's cap on recovering amounts paid in
+        // excess), whereas recovering inside the SAME period is merely declining to pay the same month
+        // twice. The two are collected apart so only the former carries a compliance flag.
+        var receivableCrossPeriodEmployees = new List<(int Id, string Code, string Name, decimal Amount, string Periods)>();
+        var receivableTakenByEmployee = new List<(Guid ReceivableId, int EmployeeId, decimal Amount)>();
+        var arrearsLinesToPersist = new List<PayrollArrearsLine>();
+        // POD-C1 — per-attempt accumulators for the settlements this run disburses, declared INSIDE the
+        // execution-strategy delegate for the same reason as everything above: a transient retry re-runs
+        // the delegate from here and must start clean.
+        var settlementsDisbursed = new List<EmployeeFinalSettlement>();
+        var settlementEncashmentTaken = new List<(Guid BalanceId, int EmployeeId, decimal Days)>();
+        var settlementRecoveryReduced = new List<(int Id, string Code, string Name, decimal Planned, decimal Taken)>();
         foreach (var e in employees)
         {
             var salary = salaryAssignments.Where(x => x.EmployeeId == e.Id && x.EffectiveDate <= periodEnd).OrderByDescending(x => x.EffectiveDate).FirstOrDefault();
-            var basic = salary?.BasicSalary ?? e.Salary ?? 0m;
-            var housing = salary?.HousingAllowance ?? 0m;
-            var transport = salary?.TransportAllowance ?? 0m;
-            var otherAllowances = (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
+            // ── POD-C3: THE FULL PACKAGE (rate basis) vs THE PRORATED PACKAGE (earning basis) ─────────
+            // This split is the single most important correctness point in the pod. `full*` is the
+            // employee's MONTHLY RATE and is what every per-unit rate must be derived from; the prorated
+            // values are what they are ENTITLED to for the days actually employed. Conflating them
+            // under-pays overtime and under-charges absence for every joiner and leaver.
+            var fullBasic     = salary?.BasicSalary ?? e.Salary ?? 0m;
+            var fullHousing   = salary?.HousingAllowance ?? 0m;
+            var fullTransport = salary?.TransportAllowance ?? 0m;
+            var fullOther     = (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
+            var fullFixedDeduction = salary?.FixedDeduction ?? 0m;
+
+            var proration = prorationByEmp.TryGetValue(e.Id, out var pr0) ? pr0
+                : ProrationCalculator.Compute(periodStart, periodEnd, null, null, policy.Basis, workWeekConfig);
+            var factor = proration.Factor;
+            var proratedPkg = ProrationCalculator.Apply(fullBasic, fullHousing, fullTransport, fullOther, factor);
+
+            // The configurable PRORATED SET decides which components the factor actually touches — a
+            // reimbursement-style allowance is commonly paid in full in the joining month, and prorating
+            // a FIXED DEDUCTION *increases* net (right for a canteen charge, wrong for a recovery
+            // instalment). Default set = the whole package, i.e. the GCC convention.
+            var basic     = policy.Prorates(ProratedComponentCodes.Basic)           ? proratedPkg.Basic           : fullBasic;
+            var housing   = policy.Prorates(ProratedComponentCodes.Housing)         ? proratedPkg.Housing         : fullHousing;
+            var transport = policy.Prorates(ProratedComponentCodes.Transport)       ? proratedPkg.Transport       : fullTransport;
+            var otherAllowances = policy.Prorates(ProratedComponentCodes.OtherAllowances) ? proratedPkg.OtherAllowances : fullOther;
             var gross = basic + housing + transport + otherAllowances;
-            var fixedDeduction = salary?.FixedDeduction ?? 0m;
-            // Hourly rate for short-hours (late/early) deductions and OT base — basic ÷ standardMonthlyHours.
-            var hourlyRate = standardMonthlyHours > 0 ? basic / standardMonthlyHours : 0m;
+            var fixedDeduction = policy.Prorates(ProratedComponentCodes.FixedDeduction)
+                ? ProrationCalculator.ApplyScalar(fullFixedDeduction, factor)
+                : fullFixedDeduction;
+            var prorationNote = proration.Narrative;
+
+            // Hourly rate for short-hours (late/early) deductions and OT base — the FULL monthly basic ÷
+            // standardMonthlyHours. Deriving it from the prorated basic would pay a joiner's overtime at
+            // a fraction of their real hourly rate.
+            var hourlyRate = standardMonthlyHours > 0 ? fullBasic / standardMonthlyHours : 0m;
 
             // ── Short-hours deduction (late/early) at hourly rate ─────────────
             var attendanceDeduction = Math.Round(
@@ -1634,10 +2175,15 @@ public class PayrollController : ControllerBase
             var lopDays = lopStdMinutesPerDay > 0 && absenceMinutes > 0
                 ? Math.Round((decimal)absenceMinutes / lopStdMinutesPerDay, 4)
                 : 0m;
-            var lopDayRate = lopDayDivisor > 0 && basic > 0 ? basic / lopDayDivisor : 0m;
+            // POD-C3 — day rate on the FULL monthly basic (an absent day costs the same whenever you
+            // joined), and absent days can never exceed the days actually employed.
+            if (proration.IsProrated && lopDays > proration.PaidDays) lopDays = proration.PaidDays;
+            var lopDayRate = lopDayDivisor > 0 && fullBasic > 0 ? fullBasic / lopDayDivisor : 0m;
             var lopDeduction = Math.Round(lopDays * lopDayRate, 2);
 
-            var leaveDeduction = leaveImpacts.Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("Deduction", StringComparison.OrdinalIgnoreCase)).Sum(x => x.Amount);
+            var leaveDeduction = leaveImpacts
+                .Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("Deduction", StringComparison.OrdinalIgnoreCase))
+                .Sum(x => leaveImpactScale.TryGetValue(x.Id, out var sc) ? Math.Round(x.Amount * sc, 2) : x.Amount);
 
             // ── Overtime pay: approved hours × hourly rate × statutory multiplier ──
             // Recomputed from OvertimePayrollImpacts.Hours (not .Amount) so the statutory
@@ -1659,9 +2205,14 @@ public class PayrollController : ControllerBase
             if (incomeTaxRate > 0 && salary is not null)
             {
                 var structureComponents = salaryComponents.Where(c => c.SalaryStructureId == salary.SalaryStructureId && c.IsTaxable).ToList();
-                // If no explicit taxable components defined, treat basic salary as taxable
+                // If no explicit taxable components defined, treat basic salary as taxable.
+                // POD-C3 — the PERCENTAGE branch already rides the prorated `basic`; the ABSOLUTE branch
+                // is a set of monthly amounts and must be prorated by the same factor, or a joiner would
+                // be taxed on a full month of income they never received.
                 var taxableBase = structureComponents.Count > 0
-                    ? structureComponents.Sum(c => c.CalculationType == "Percentage" ? basic * c.Percentage / 100m : c.Amount)
+                    ? ProrationCalculator.ApplyScalar(
+                        structureComponents.Sum(c => c.CalculationType == "Percentage" ? fullBasic * c.Percentage / 100m : c.Amount),
+                        factor)
                     : basic;
                 taxDeduction = Math.Round(taxableBase * incomeTaxRate / 100m, 2);
             }
@@ -1681,6 +2232,12 @@ public class PayrollController : ControllerBase
                 fixedDeduction = 0m; hourlyRate = 0m;
                 attendanceDeduction = 0m; lopDays = 0m; lopDayRate = 0m; lopDeduction = 0m;
                 leaveDeduction = 0m; overtimePay = 0m; otHours = 0m; taxDeduction = 0m;
+                // POD-C3 — a supplemental run pays no recurring wage, so the FULL package is not its
+                // statutory basis either. Zeroing them here keeps the slip's proration witnesses honest
+                // and stops the FullMonth GOSI branch below re-introducing a whole month's covered wage
+                // on a bonus-only run.
+                fullBasic = 0m; fullHousing = 0m; fullTransport = 0m; fullOther = 0m;
+                prorationNote = string.Empty;
             }
 
             // BONUS: collect this employee's approved bonuses for the period.
@@ -1714,10 +2271,35 @@ public class PayrollController : ControllerBase
             // tenant before B2 — priorBasic/priorHousing are 0 and this is the original call, unchanged.
             var priorBasic   = priorBasicByEmp.GetValueOrDefault(e.Id);
             var priorHousing = priorHousingByEmp.GetValueOrDefault(e.Id);
+
+            // ── POD-C3: ARREARS in the statutory base ────────────────────────────────────────────────
+            // GOSI-bearing arrears ride the SAME housing slot gosiIncludedBonusTotal already uses, so the
+            // 45,000 ceiling is applied to (period base + bonus + arrears) in exactly ONE pack call. The
+            // A1 reconstruction adds them to the same slot from the same sub-ledger, keyed on the same
+            // IsGosiBearing flag — one flag governs both sides, so they cannot drift.
+            // (empArrears is empty unless the run opted into settling arrears — the engine was not even
+            // called otherwise — so no second gate is needed here.)
+            var empArrears = arrearsByEmp.TryGetValue(e.Id, out var al) ? al : new List<PayrollArrearsLine>();
+            var arrearsTotal     = Math.Round(empArrears.Sum(a => a.Amount), 2);
+            var gosiArrearsTotal = Math.Round(empArrears.Where(a => a.IsGosiBearing).Sum(a => a.Amount), 2);
+
+            // ── POD-C3 [FLAG-COMPLIANCE-KSA]: WHICH BASE THE PACK IS FED ─────────────────────────────
+            // DEFAULT `FullMonth`. GOSI assesses a MONTHLY contributory wage: the month an employee is
+            // registered attracts a full month's contribution on the registered wage, and the portal has
+            // no partial-month proration of it. Prorating under-remits in every joining and leaving month
+            // — the penalty-bearing direction — and would also CONTRADICT the treatment already shipped
+            // and tested for unpaid absence, where LOP explicitly does NOT reduce the covered wage. Same
+            // economic fact, opposite treatment, one payslip.
+            //
+            // Under FullMonth the covered wage is NOT recoverable from slip.BasicSalary /
+            // slip.HousingAllowance, which is why the slip persists FullBasicSalary /
+            // FullHousingAllowance / GosiBasePolicy below and BOTH reconciliation paths rebuild from them.
+            var statBasic   = policy.ProratesStatutoryBase ? basic   : fullBasic;
+            var statHousing = policy.ProratesStatutoryBase ? housing : fullHousing;
             var statutoryInput = new StatutoryDeductionInput(
                 EmployeeId:   Guid.Empty, // Employee PK is int; Guid field not used in pack calculations
                 CompanyId:    run.CompanyId ?? Guid.Empty,
-                Salary:       new SalaryBreakdown(priorBasic + basic, priorHousing + housing + gosiIncludedBonusTotal, transport, otherAllowances),
+                Salary:       new SalaryBreakdown(priorBasic + statBasic, priorHousing + statHousing + gosiIncludedBonusTotal + gosiArrearsTotal, transport, otherAllowances),
                 Nationality:  e.Nationality ?? string.Empty,
                 ContractType: e.ContractType ?? "Indefinite",
                 PeriodYear:   run.Year,
@@ -1751,23 +2333,166 @@ public class PayrollController : ControllerBase
             // POD-B2: a supplemental run takes NO recurring deduction — an off-cycle bonus run must not
             // collect a second EMI for the period. The mutable decrement block after the loop is gated on
             // the same flag, so balances and installments are untouched too.
-            var empLoans   = includesRecurringPay ? activeLoans.Where(l => l.EmployeeIntId == e.Id).ToList() : new List<EmployeeLoan>();
-            var empAdv     = includesRecurringPay ? activeAdvances.Where(a => a.EmployeeIntId == e.Id).ToList() : new List<SalaryAdvance>();
-            var loanEmi    = empLoans.Sum(l => Math.Min(l.InstallmentAmount, l.OutstandingBalance));
-            var advEmi     = empAdv.Sum(a => Math.Min(a.InstallmentAmount, a.OutstandingBalance));
+            //
+            // POD-C1 — a SETTLING employee is the exception: this is their LAST payment, so their debts are
+            // settled with it rather than left to a next run that will never come. They are re-loaded here
+            // even though the run pays no recurring salary, and the "due" below is the WHOLE outstanding
+            // balance rather than one instalment.
+            var empSettlement = settlementsByEmp.TryGetValue(e.Id, out var stl) ? stl : null;
+            var isSettlingEmployee = empSettlement is not null;
+            var empLoans   = includesRecurringPay || isSettlingEmployee ? activeLoans.Where(l => l.EmployeeIntId == e.Id).OrderBy(l => l.Id).ToList() : new List<EmployeeLoan>();
+            var empAdv     = includesRecurringPay || isSettlingEmployee ? activeAdvances.Where(a => a.EmployeeIntId == e.Id).OrderBy(a => a.Id).ToList() : new List<SalaryAdvance>();
+
+            // POD-C1 — the settlement's OWN lines, read verbatim from the persisted plan.
+            var empSettlementLines = empSettlement is not null
+                    && settlementLinesById.TryGetValue(empSettlement.Id, out var sl)
+                ? sl
+                : new List<FinalSettlementLine>();
+            var settlementEarningTotal = Math.Round(empSettlementLines
+                .Where(l => l.LineType == FinalSettlementLineTypes.Earning).Sum(l => l.Amount), 2);
+            // Capped at the settlement's own gross AT PLAN TIME (see the approve path), so a settlement's
+            // own deductions can never drive net negative and 422 the whole batch out from under every
+            // other leaver in the run.
+            var settlementDeductionTotal = Math.Round(Math.Min(settlementEarningTotal, empSettlementLines
+                .Where(l => l.LineType == FinalSettlementLineTypes.Deduction).Sum(l => l.Amount)), 2);
+
+            // ── POD-C3 (MF-2): DEBT IS CAPPED AT WHAT THE PAY PERIOD CAN FUND ────────────────────────
+            // Proration makes an un-prorated EMI reachable for the first time: a joiner on the 25th with
+            // a 20,000 package and a 5,000 instalment earns ~4,000 for the month. Pre-C3 the shortfall
+            // was silently swallowed by `Math.Max(0m, rawNet)` on a Regular run (the negative-net
+            // collector was gated on `!includesRecurringPay`), so the employee was underpaid AND the
+            // unfloored deduction credits made Σ DR ≠ Σ CR — a gl_unbalanced 422 at Lock on a run that
+            // locks cleanly today. The instalment is therefore capped at the net available BEFORE debt,
+            // and the balance CARRIES FORWARD (standard GCC practice, and the only outcome that neither
+            // underpays nor unbalances). An EMI is a DEBT INSTALMENT, not a wage — it is never prorated.
+            var deductionsBeforeDebt = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction
+                                     + taxDeduction + gosiEmployeeTotal + adjustmentDeductions + totalBonusTax
+                                     + settlementDeductionTotal;
+            var earningsForPeriod = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal
+                                  + settlementEarningTotal;
+            var affordable = Math.Round(earningsForPeriod - deductionsBeforeDebt, 2);
+
+            var loanTakenById = new Dictionary<Guid, decimal>();
+            var advTakenById  = new Dictionary<Guid, decimal>();
+            decimal loanEmi = 0m, advEmi = 0m, deferredDebt = 0m;
+            var debtBudget = Math.Max(0m, affordable);
+            foreach (var l in empLoans)
+            {
+                // POD-C1 — a leaver's debts are settled from their FINAL payment, so the whole balance is
+                // due, not one instalment. The take is still re-capped against the LIVE OutstandingBalance
+                // inside this transaction (after any final-wage-month EMI has already decremented it) and
+                // against what the settlement can fund, so Σ recovery ≤ the original balance is arithmetic
+                // rather than convention, and there is exactly ONE decrement path.
+                var due = isSettlingEmployee ? l.OutstandingBalance : Math.Min(l.InstallmentAmount, l.OutstandingBalance);
+                if (due <= 0m) continue;
+                var take = Math.Min(due, debtBudget);
+                if (take > 0m) { loanTakenById[l.Id] = take; loanEmi += take; debtBudget -= take; }
+                deferredDebt += due - take;
+            }
+            foreach (var a in empAdv)
+            {
+                var due = isSettlingEmployee ? a.OutstandingBalance : Math.Min(a.InstallmentAmount, a.OutstandingBalance);
+                if (due <= 0m) continue;
+                var take = Math.Min(due, debtBudget);
+                if (take > 0m) { advTakenById[a.Id] = take; advEmi += take; debtBudget -= take; }
+                deferredDebt += due - take;
+            }
+            // POD-C1 — the settlement PLANNED a recovery at approve; the live balance may since have moved
+            // (the final wage month's own EMI). A reduction is reported, never silently over-recovered.
+            if (isSettlingEmployee)
+            {
+                var plannedRecovery = Math.Round(empSettlement!.PlannedLoanRecovery + empSettlement.PlannedAdvanceRecovery, 2);
+                var actualRecovery  = Math.Round(loanEmi + advEmi, 2);
+                if (plannedRecovery - actualRecovery > 0.01m)
+                    settlementRecoveryReduced.Add((e.Id, e.EmployeeCode, e.FullName, plannedRecovery, actualRecovery));
+            }
+            // POD-B1b-FIX (re-audit #6) — NO rounding on the EMI path. An instalment is
+            // ApprovedAmount / Installments and is routinely 4dp; the accrual debit posts it verbatim, so
+            // rounding here would make Σ CR ≠ Σ DR by up to a cent on the remittance and either post a
+            // journal off by a cent or 422 a legitimate one. The capping above is exact by construction
+            // (Math.Min of two stored decimals), so it introduces no new precision either.
+            deferredDebt = Math.Round(deferredDebt, 2);
+            if (deferredDebt > 0m)
+                deferredEmiEmployees.Add((e.Id, e.EmployeeCode, e.FullName, deferredDebt));
+            if (loanTakenById.Count > 0) loanTakenByEmployee[e.Id] = loanTakenById;
+            if (advTakenById.Count > 0)  advTakenByEmployee[e.Id]  = advTakenById;
+            // Rounded exactly where it was pre-C3: the slip AGGREGATE rounds, the emitted LOAN_EMI /
+            // ADVANCE_EMI lines do not.
             var totalLoanDeduction = Math.Round(loanEmi + advEmi, 2);
 
-            var deductions = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction + taxDeduction + gosiEmployeeTotal + totalLoanDeduction + adjustmentDeductions + totalBonusTax;
+            // ── POD-C3 (POD-B3 handoff): net the 1420 receivable a prior void recognised ─────────────
+            // min(outstanding, net before recovery) — net then equals "what we should have paid − what we
+            // already paid", which is the definition of a recovery. Never drives net negative.
+            decimal receivableRecovery = 0m;
+            if (run.NetsPriorReceivable && receivableByEmp.TryGetValue(e.Id, out var empReceivables))
+            {
+                var recoverable = Math.Max(0m, Math.Round(affordable - totalLoanDeduction, 2));
+                // POD-C3-FIX — how much of this employee's recovery came from a receivable recognised in a
+                // DIFFERENT period, and which periods those were. Recovering inside the SAME period is not
+                // a wage deduction at all (the replacement run re-pays the very month whose cash the
+                // employee already holds); recovering out of a LATER month's wages is, and the two must
+                // not be reported as though they were the same act.
+                decimal crossPeriodTaken = 0m;
+                var crossPeriods = new SortedSet<string>(StringComparer.Ordinal);
+                foreach (var rcv in empReceivables)
+                {
+                    if (recoverable <= 0m) break;
+                    var take = Math.Min(rcv.Outstanding, recoverable);
+                    if (take <= 0m) continue;
+                    receivableRecovery += take;
+                    recoverable -= take;
+                    receivableTakenByEmployee.Add((rcv.Id, e.Id, take));
+                    if (!string.Equals(rcv.Period, periodStr, StringComparison.Ordinal))
+                    {
+                        crossPeriodTaken += take;
+                        crossPeriods.Add(string.IsNullOrWhiteSpace(rcv.Period) ? "(unknown period)" : rcv.Period);
+                    }
+                }
+                receivableRecovery = Math.Round(receivableRecovery, 2);
+                crossPeriodTaken   = Math.Round(crossPeriodTaken, 2);
+                if (crossPeriodTaken > 0m)
+                    receivableCrossPeriodEmployees.Add((e.Id, e.EmployeeCode, e.FullName, crossPeriodTaken,
+                        string.Join(", ", crossPeriods)));
+                var residual = Math.Round(empReceivables.Sum(r => r.Outstanding) - receivableRecovery, 2);
+                if (residual > 0m)
+                    receivableResidualEmployees.Add((e.Id, e.EmployeeCode, e.FullName, residual));
+            }
+
+            var deductions = deductionsBeforeDebt + totalLoanDeduction + receivableRecovery;
             // C3: net salary cannot be negative (GCC labour law); engine Rule 3 will flag this.
             // (gross bonus in, bonus tax out) == (net bonus in) — take-home is unchanged by POD-B1b.
-            var rawNet = gross + overtimePay + totalBonusGross + adjustmentEarnings - deductions;
-            // POD-B2 (M4): a supplemental run whose deductions exceed its earnings has no vehicle to
-            // express the shortfall — the floor below silently swallows it and the run then trips
-            // GL_WILL_NOT_BALANCE (an Error whose remedy, "re-process the run", can never fix it), leaving
-            // an unlockable run that DeleteRun also refuses. B2 Corrections are ADDITIVE-ONLY: collect the
-            // offenders and refuse the whole run with a specific 422 below. Clawback/negative delta is B3.
-            if (!includesRecurringPay && rawNet < 0m)
-                negativeNetEmployees.Add(new { employeeId = e.Id, code = e.EmployeeCode, name = e.FullName, shortfall = Math.Abs(rawNet) });
+            var rawNet = earningsForPeriod - deductions;
+            // POD-B2 (M4): a run whose deductions exceed its earnings has no vehicle to express the
+            // shortfall — the floor below silently swallows it and the run then trips GL_WILL_NOT_BALANCE
+            // (an Error whose remedy, "re-process the run", can never fix it), leaving an unlockable run
+            // that DeleteRun also refuses. Correction runs are ADDITIVE-ONLY: collect the offenders and
+            // refuse the whole run with a specific 422 below.
+            //
+            // POD-C3 (MF-2): negative net is now DETECTED on recurring runs too — that gate is exactly
+            // what made the magnitude of the shortfall invisible on a Regular run (the pre-existing
+            // ZERO_NET_WITH_GROSS Error says net is zero, never by how much it was short, nor why).
+            //
+            // The RESPONSE differs by run type ON PURPOSE, and this is a deliberate narrowing of the
+            // consultant's "refuse everywhere":
+            //   • SUPPLEMENTAL — unchanged: throw, roll back, 422 negative_net_unsupported (POD-B2's
+            //     tested contract; an additive-only run with no vehicle for a negative delta).
+            //   • RECURRING — the run is still WRITTEN and net is still clamped at zero, because the
+            //     existing ZERO_NET_WITH_GROSS Error already BLOCKS Approve and Lock, so the unbalanced
+            //     journal the clamp would otherwise cause is unreachable. Refusing at Process instead
+            //     would break that shipped, tested remedy path (the operator inspects the processed run,
+            //     fixes the cause, re-processes) for a case a joiner can now legitimately reach. What C3
+            //     adds is a SECOND, Error-severity result that names the exact shortfall and its most
+            //     likely cause — information the operator previously had to derive by hand.
+            // Debt is already capped above, so what lands here is a genuinely unfundable NON-DEBT
+            // deduction, most often the FullMonth statutory contribution of a late-month joiner.
+            if (rawNet < 0m)
+            {
+                if (!includesRecurringPay)
+                    negativeNetEmployees.Add(new { employeeId = e.Id, code = e.EmployeeCode, name = e.FullName, shortfall = Math.Abs(rawNet) });
+                else
+                    recurringShortfallEmployees.Add((e.Id, e.EmployeeCode, e.FullName, Math.Abs(rawNet),
+                        proration.IsProrated, gosiEmployeeTotal));
+            }
             var netSalary = Math.Max(0m, rawNet);
 
             // COMPLIANCE: YTD — sum all locked slips for this employee earlier in the same year
@@ -1788,17 +2513,40 @@ public class PayrollController : ControllerBase
                 BasicSalary = basic,
                 HousingAllowance = housing,
                 TransportAllowance = transport,
-                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings,
-                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings,
+                // POD-C1 — the settlement's earnings ride the SAME aggregate as bonus/adjustment/arrears do,
+                // so NetSalary, the WPS/SIF amount and the payment batch total all pick them up with no new
+                // machinery. (The statutory base is untouched — see the GOSI decision on FinalSettlement.)
+                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal,
+                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal,
                 Deductions = deductions,
                 NetSalary = netSalary,
                 EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
                 EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
-                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings,
+                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal,
                 YtdDeductions = ytdDeduct + deductions,
                 YtdNet = ytdNet + netSalary,
                 Status = "Draft",
+                // ── POD-C3: THE PRORATION WITNESSES ─────────────────────────────────────────────────
+                // These are what let POD-A1 keep its guarantee — "reconstruct expected from the run's own
+                // persisted outputs" — once the money columns carry a PRORATED wage while the statutory
+                // base is the FULL monthly package. Both reconciliation paths rebuild from them.
+                PaidFromDate = proration.PaidFrom,
+                PaidToDate = proration.PaidTo,
+                PaidDays = proration.PaidDays,
+                ProrationDenominatorDays = proration.DenominatorDays,
+                PeriodDays = proration.PeriodDays,
+                ProrationBasis = policy.Basis,
+                ProrationFactor = factor,
+                FullBasicSalary = fullBasic,
+                FullHousingAllowance = fullHousing,
+                FullTransportAllowance = fullTransport,
+                GosiBasePolicy = policy.GosiBase,
+                ArrearsAmount = arrearsTotal,
+                // POD-C1 SEAM: the WAGE side of this leaver's final month is settled here and nowhere
+                // else. C3 emits NO EOSB, no notice pay, no leave encashment, no termination payable and
+                // no off-cycle settlement journal. Everything after PaidToDate is C1's.
+                IsFinalWageMonth = includesRecurringPay && proration.IsFinalWageMonth,
             };
             slips.Add(slip);
             slip.CompanyId = company.Id;
@@ -1822,7 +2570,7 @@ public class PayrollController : ControllerBase
             // Skipping it — rather than emitting 0.00 — keeps a supplemental run's journal free of an
             // empty EARN:BASIC debit group in BuildPayrollGlEntries.
             if (includesRecurringPay)
-            AddEarning(tenantId, id, e.Id, "BASIC", "Basic salary", basic, "Salary");
+            AddEarning(tenantId, id, e.Id, "BASIC", WithProrationNote("Basic salary", prorationNote), basic, "Salary");
             if (housing > 0) AddEarning(tenantId, id, e.Id, "HOUSING", "Housing allowance", housing, "Salary");
             if (transport > 0) AddEarning(tenantId, id, e.Id, "TRANSPORT", "Transport allowance", transport, "Salary");
             if (otherAllowances > 0) AddEarning(tenantId, id, e.Id, "OTHER_ALLOWANCES", "Other allowances", otherAllowances, "Salary");
@@ -1833,7 +2581,9 @@ public class PayrollController : ControllerBase
                     $"Overtime ({otHours:N2} h × {Math.Round(hourlyRate, 2):N2}/h × {otMultiplier:N2})",
                     overtimePay, "Overtime");
             }
-            if (fixedDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "FIXED_DEDUCTION", "Fixed deduction", fixedDeduction, "Salary");
+            if (fixedDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "FIXED_DEDUCTION",
+                WithProrationNote("Fixed deduction", policy.Prorates(ProratedComponentCodes.FixedDeduction) ? prorationNote : string.Empty),
+                fixedDeduction, "Salary");
             if (taxDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "INCOME_TAX", $"Income tax ({incomeTaxRate}%)", taxDeduction, "Tax");
             if (attendanceDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "ATTENDANCE", "Late/early attendance deduction", attendanceDeduction, "Attendance");
             if (lopDeduction > 0)
@@ -1891,11 +2641,87 @@ public class PayrollController : ControllerBase
                     ? payComponents
                     : payComponents.Where(c => IsSupplementalPayComponent(c)).ToList();
                 var computation = PayComponentEngine.Compute(effectiveComponents, payCtx);
+                // POD-C3 — the proration narrative is applied to the ENGINE'S OUTPUT rather than inside
+                // the engine, so PayComponentEngine itself is untouched and the golden-master/equivalence
+                // tests keep their meaning. WithProrationNote is the identity function when the note is
+                // empty, which it always is for an employee employed the whole period.
                 foreach (var line in computation.Earnings)
-                    AddEarning(tenantId, id, e.Id, line.Code, line.Name, line.Amount, line.Source);
+                    AddEarning(tenantId, id, e.Id, line.Code,
+                        line.Code == "BASIC" ? WithProrationNote(line.Name, prorationNote) : line.Name,
+                        line.Amount, line.Source);
                 foreach (var line in computation.Deductions)
-                    AddDeduction(tenantId, company.Id, id, e.Id, line.Code, line.Name, line.Amount, line.Source, isEmployerContribution: line.IsEmployerContribution);
+                    AddDeduction(tenantId, company.Id, id, e.Id, line.Code,
+                        line.Code == "FIXED_DEDUCTION" && policy.Prorates(ProratedComponentCodes.FixedDeduction)
+                            ? WithProrationNote(line.Name, prorationNote) : line.Name,
+                        line.Amount, line.Source, isEmployerContribution: line.IsEmployerContribution);
             }
+
+            // ── POD-C3: ARREARS LINES — ITEMISED PER COVERED PERIOD ─────────────────────────────────
+            // Emitted OUTSIDE both branches, exactly like POD-B1b's bonus withholding, so the legacy
+            // block and the component engine stay provably identical (neither owns arrears). One line per
+            // (covered period, component) so an employee and an auditor can both see WHICH months the
+            // number covers — never one opaque "arrears" figure. EarningDriverKey routes each to the
+            // component's OWN expense account (a retro basic increase debits Basic Salary Expense).
+            foreach (var line in empArrears.OrderBy(a => a.CoveredYear).ThenBy(a => a.CoveredMonth)
+                                           .ThenBy(a => a.ComponentCode, StringComparer.Ordinal))
+            {
+                if (line.Amount <= 0m) continue;
+                AddEarning(tenantId, id, e.Id, line.ComponentCode,
+                    $"Arrears — {PayrollArrearsComponents.Label(line.ComponentCode)} ({line.CoveredYear}-{line.CoveredMonth:D2})",
+                    line.Amount, "Arrears");
+                arrearsLinesToPersist.Add(line);
+            }
+
+            // ── POD-C1: THE SETTLEMENT LINES, EMITTED VERBATIM ──────────────────────────────────────
+            // Emitted OUTSIDE both emission branches, exactly like POD-B1b's bonus withholding and POD-C3's
+            // arrears, so the legacy inline block and the component engine stay provably identical (neither
+            // owns settlements). NOTHING IS RECOMPUTED HERE: every amount, name and quantity is the
+            // persisted plan that was approved and accrued to 2320, which is what makes the payslip and the
+            // journal the same numbers by construction rather than by two implementations agreeing.
+            //   • Earnings carry Source="Settlement" → EarningDriverKeyFor routes each to its OWN expense
+            //     account (5110/5111/5112/5099), and BuildPayrollGlEntries swaps the debit for the stored
+            //     2320 payable so the cost is recognised exactly once, at approval.
+            //   • The settlement's own deductions carry Source="Settlement" → DED:SETTLEMENT_RECOVERY
+            //     (5113 contra-expense), never DED:OTHER (2199), which nothing would ever clear.
+            //   • Loan/advance recovery is emitted below through the EXISTING LOAN_EMI/ADVANCE_EMI lines,
+            //     and receivable recovery through POD-C3's existing block — one mechanism each, so there
+            //     is no double-recovery to guard against.
+            if (empSettlement is not null)
+            {
+                foreach (var line in empSettlementLines.Where(l => l.LineType == FinalSettlementLineTypes.Earning && l.Amount > 0m))
+                    AddEarning(tenantId, id, e.Id, line.ComponentCode, line.ComponentName, line.Amount,
+                        FinalSettlementComponents.SettlementSource);
+                // Capped at the settlement's gross (settlementDeductionTotal), pro rata across the lines,
+                // so the sum emitted can never exceed what the settlement earns.
+                var plannedDeductions = Math.Round(empSettlementLines
+                    .Where(l => l.LineType == FinalSettlementLineTypes.Deduction).Sum(l => l.Amount), 2);
+                var dedScale = plannedDeductions > 0m && settlementDeductionTotal < plannedDeductions
+                    ? settlementDeductionTotal / plannedDeductions
+                    : 1m;
+                foreach (var line in empSettlementLines.Where(l => l.LineType == FinalSettlementLineTypes.Deduction && l.Amount > 0m))
+                {
+                    var amount = Math.Round(line.Amount * dedScale, 2);
+                    if (amount <= 0m) continue;
+                    AddDeduction(tenantId, company.Id, id, e.Id, line.ComponentCode, line.ComponentName, amount,
+                        FinalSettlementComponents.SettlementSource);
+                }
+                settlementsDisbursed.Add(empSettlement);
+                // The leave-balance rows this settlement encashes, so Process can decrement the EXACT rows
+                // the plan named (witnessed for the void) instead of re-deriving them.
+                foreach (var line in empSettlementLines.Where(l =>
+                             l.ComponentCode == FinalSettlementComponents.LeaveEncashment
+                             && l.SourceEntityId is Guid && l.Quantity > 0m))
+                    settlementEncashmentTaken.Add((line.SourceEntityId!.Value, e.Id, line.Quantity));
+            }
+
+            // ── POD-C3 (POD-B3 handoff): the 1420 recovery deduction ────────────────────────────────
+            // Source "Recovery" routes to DED:RECEIVABLE_RECOVERY, which CREDITS the 1420 ASSET the void
+            // debited. Routing it to DED:OTHER (2199) would credit a liability nobody owes and leave the
+            // receivable ageing forever — the exact gap B3 handed to C3.
+            if (receivableRecovery > 0m)
+                AddDeduction(tenantId, company.Id, id, e.Id,
+                    PayrollRecoveryComponents.ReceivableRecovery, PayrollRecoveryComponents.ReceivableRecoveryName,
+                    receivableRecovery, PayrollRecoveryComponents.RecoverySource);
 
             // POD-B1b — bonus withholding. Emitted OUTSIDE the branch so the legacy block and the
             // component engine stay provably identical (neither owns bonus tax). Source="Tax" routes it
@@ -1924,6 +2750,10 @@ public class PayrollController : ControllerBase
             });
 
         _db.PayrollSlips.AddRange(slips);
+        // POD-C3 — the arrears sub-ledger, stamped with the settling run. Persisted INSIDE the run
+        // transaction alongside the earning lines it produced, so a mid-run fault can never leave a
+        // "Settled" line behind an earning that was rolled back.
+        if (arrearsLinesToPersist.Count > 0) _db.PayrollArrearsLines.AddRange(arrearsLinesToPersist);
         // POD-B1b-FIX (P2-1) — pin the run's legal entity NOW, at Process, instead of re-deriving it at
         // Lock. BonusGlLedger.BuildPayrollClearingAsync fell back to "the tenant's single active company"
         // when run.CompanyId was null (BonusGlLedger.cs:174-183); if a second company were activated
@@ -2063,17 +2893,125 @@ public class PayrollController : ControllerBase
         foreach (var r in PayrollValidationEngine.Run(validationCtx))
             _db.PayrollValidationResults.Add(r);
 
+        // ── POD-C3: everything the run DECIDED, said out loud ────────────────────────────────────────
+        // Added alongside the engine's output rather than inside PayrollValidationEngine, so the engine's
+        // rule set (and its tests) are untouched. All Warning severity — none of these block a lock; they
+        // exist so no proration, arrears or debt-deferral decision is ever invisible.
+        void C3Warn(string code, int? employeeId, string message) =>
+            _db.PayrollValidationResults.Add(new PayrollValidationResult
+            {
+                TenantId = tenantId, PayrollRunId = id, EmployeeId = employeeId,
+                Severity = "Warning", Code = code, Message = message,
+            });
+        foreach (var (code, empId, msg) in c3Warnings) C3Warn(code, empId, msg);
+        // POD-C3 (MF-2) — the shortfall, NAMED. Error severity, so it blocks Approve/Lock exactly as the
+        // pre-existing ZERO_NET_WITH_GROSS does; what it adds is the AMOUNT and the most likely cause,
+        // which the operator previously had to derive by hand from the payslip.
+        foreach (var (empId, code, name, shortfall, prorated, statEe) in recurringShortfallEmployees)
+            _db.PayrollValidationResults.Add(new PayrollValidationResult
+            {
+                TenantId = tenantId, PayrollRunId = id, EmployeeId = empId,
+                Severity = "Error", Code = "NEGATIVE_NET_SHORTFALL",
+                Message = $"{name} ({code}): deductions exceed earnings by {shortfall:N2}; net was clamped to 0.00, so " +
+                          $"they are UNDERPAID by that amount. Loan/advance instalments were already capped at the " +
+                          "available net and carried forward, so the remainder is non-debt." +
+                          (prorated
+                              ? $" This employee's wage is PRORATED for part of the month while their social-insurance " +
+                                $"contribution ({statEe:N2}) is computed on the FULL registered monthly wage " +
+                                $"(payparameter.proration_gosi_base = '{policy.GosiBase}'). Either set that company " +
+                                "policy to 'Prorated', or add a positive adjustment covering the shortfall."
+                              : " Reduce the absence/LOP or adjustment deductions, or add a positive adjustment.") +
+                          " This Error blocks Approve and Lock, so no unbalanced journal can be posted.",
+            });
+        foreach (var (empId, code, name, amount) in deferredEmiEmployees)
+            C3Warn("WARN_EMI_DEFERRED_PRORATED_PERIOD", empId,
+                $"{name} ({code}): {amount:N2} of loan/advance instalment could not be funded by this period's net " +
+                "pay and was CARRIED FORWARD, not written off. The outstanding balance is unchanged for that " +
+                "portion, so the next run will collect it.");
+        foreach (var (empId, code, name, amount) in receivableResidualEmployees)
+            C3Warn("WARN_RECEIVABLE_RESIDUAL", empId,
+                $"{name} ({code}): {amount:N2} of a prior voided run's disbursed net pay remains outstanding on the " +
+                "Employee Overpayment Receivable after this run's recovery. It is carried on the sub-ledger and ages " +
+                $"against GET /api/payroll/receivables — it is NOT forgiven.");
+        // POD-C3-FIX — see receivableCrossPeriodEmployees: only a recovery taken from a period OTHER than
+        // the one the cash was disbursed for is a deduction from wages, and only that one needs sign-off.
+        foreach (var (empId, code, name, amount, periods) in receivableCrossPeriodEmployees)
+            C3Warn("WARN_RECEIVABLE_RECOVERY_CROSS_PERIOD", empId,
+                $"{name} ({code}): {amount:N2} recovered on this {periodStr} run relates to a voided run in " +
+                $"{periods}, so it is a DEDUCTION FROM WAGES rather than a decision not to pay the same month " +
+                "twice. This run applies NO statutory cap to it — the full outstanding amount is taken up to the " +
+                "available net. KSA Labour Law limits how much of an amount paid in excess may be deducted from a " +
+                "worker's wage; whether that cap binds here, and at what percentage, requires a Saudi compliance " +
+                "officer's sign-off. If it does, recover across several runs by re-processing after part-recovery, " +
+                "or agree a repayment plan outside payroll. [FLAG-COMPLIANCE-KSA]");
+        foreach (var (emp, reason) in unpayableNonActive)
+            C3Warn("WARN_LEAVER_NO_LAST_WORKING_DAY", emp.Id,
+                $"{emp.FullName} ({emp.EmployeeCode}): {reason} If they are still owed wages, create an offboarding " +
+                "record with the correct last working day, then re-process.");
+        foreach (var e in employees.Where(x => leaverEmployeeIds.Contains(x.Id)))
+        {
+            var pr = prorationByEmp[e.Id];
+            C3Warn("WARN_LEAVER_INCLUDED_ON_NOTICE", e.Id,
+                $"{e.FullName} ({e.EmployeeCode}) has status '{e.Status}' and IS being paid for {pr.PaidFrom:yyyy-MM-dd}" +
+                $"→{pr.PaidTo:yyyy-MM-dd}" + (pr.IsFinalWageMonth ? " (FINAL wage month)" : " (serving notice)") +
+                ". Before POD-C3 they were silently dropped from the run and paid nothing.");
+        }
+        // ── POD-C1: what the SETTLEMENT side of this run decided, said out loud ──────────────────────
+        foreach (var (empId, code, name, planned, taken) in settlementRecoveryReduced)
+            C3Warn("WARN_SETTLEMENT_RECOVERY_REDUCED", empId,
+                $"{name} ({code}): the settlement planned to recover {planned:N2} of outstanding loan/advance but only " +
+                $"{taken:N2} could be taken from this payment. The balance is NOT written off — it stays on the loan " +
+                "sub-ledger and is dispositioned when the settlement reaches Paid (reclassified to the Employee " +
+                "Overpayment Receivable up to what 1400/1410 actually carries, and reported when it cannot be).");
+        if (settlementsDisbursed.Count > 0)
+        {
+            foreach (var s in settlementsDisbursed)
+                C3Warn("WARN_SETTLEMENT_DISBURSED", s.EmployeeId,
+                    $"{s.EmployeeName} ({s.EmployeeCode}): this run disburses their FINAL SETTLEMENT of " +
+                    $"{s.NetPayable:N2} {s.Currency} (last working day {s.LastWorkingDay:yyyy-MM-dd}, reason " +
+                    $"'{s.TerminationReason}'). Their wages through the last working day were paid by the run that " +
+                    "produced their final-wage-month payslip and are NOT repeated here.");
+            // [FLAG-COMPLIANCE-KSA] THE STATUTORY DECISION, RESTATED ON EVERY RUN THAT DISBURSES ONE.
+            // End-of-service gratuity, leave encashment and payment in lieu of notice are treated as NOT
+            // GOSI-bearing: the contributory wage is the MONTHLY REGISTERED wage (basic + housing,
+            // SalaryBreakdown.GosiCoveredWage) and a terminal lump sum is not a monthly wage. This is also
+            // mechanically self-enforcing — a settlement run pays no recurring salary, so Process zeroes
+            // fullBasic/fullHousing, and settlement components enter NEITHER the basic nor the housing slot
+            // of the statutory input; the pack therefore returns zero and POD-A1's reconciliation, which
+            // rebuilds `expected` from those same columns plus the bonus/arrears sub-ledgers, still ties out
+            // with no change to A1 at all.
+            C3Warn("WARN_SETTLEMENT_GOSI_TREATMENT_REQUIRES_SIGNOFF", null,
+                $"This run disburses {settlementsDisbursed.Count} termination settlement(s) totalling " +
+                $"{settlementsDisbursed.Sum(s => s.GrossPayable):N2} gross. NONE of it is treated as GOSI-bearing: " +
+                "the contributory wage is the monthly registered wage, and a terminal lump sum is not one. Whether " +
+                "leave encashment specifically is contributory, and whether the last working day requires Mudad " +
+                "de-registration in this month, requires a Saudi compliance officer's sign-off. [FLAG-COMPLIANCE-KSA]");
+        }
+        if (policy.ProratesStatutoryBase && employees.Any(x => prorationByEmp[x.Id].IsProrated))
+            C3Warn("WARN_PRORATED_GOSI_BASE_REQUIRES_SIGNOFF", null,
+                "This legal entity computes the social-insurance contributory wage on the PRORATED wage in a " +
+                "joining/leaving month (payparameter.proration_gosi_base = 'Prorated'). GOSI assesses a MONTHLY " +
+                "contributory wage and the portal has no partial-month proration of it, so this may UNDER-REMIT. It is " +
+                "also inconsistent with the treatment of unpaid absence, where LOP does not reduce the covered wage. " +
+                "Requires a Saudi compliance officer's sign-off. [FLAG-COMPLIANCE-KSA]");
+
         // POD-B2 (M10) — the WHOLE loan/advance decrement block is gated, not each slip line. A
         // supplemental run collected no EMI (loanEmi/advEmi are 0 above), so decrementing
         // OutstandingBalance / TotalRepaid or marking a LoanInstallment "Paid" here would retire debt the
         // employee never actually repaid.
         // (Pre-existing asymmetry, NOT amplified here: loans are scoped by `employeeIdsForRun` while
         //  bonuses are scoped by `processedEmpIds` further down.)
-        var activeLoansMutable = !includesRecurringPay ? new List<EmployeeLoan>() : await _db.EmployeeLoans
+        //
+        // POD-C1 — a SETTLEMENT run reaches this block even though it pays no recurring salary: a leaver's
+        // debts are recovered from their final payment. It is still per-loan and driven entirely by
+        // loanTakenByEmployee (which only has entries for what was actually withheld), so no non-settling
+        // employee's balance can be touched by it.
+        var runDecrementsDebt = includesRecurringPay || settlementsDisbursed.Count > 0;
+        var activeLoansMutable = !runDecrementsDebt ? new List<EmployeeLoan>() : await _db.EmployeeLoans
             .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
                 && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd))
             .ToListAsync(cancellationToken);
-        var activeAdvMutable = !includesRecurringPay ? new List<SalaryAdvance>() : await _db.SalaryAdvances
+        var activeAdvMutable = !runDecrementsDebt ? new List<SalaryAdvance>() : await _db.SalaryAdvances
             .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
                 && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
             .ToListAsync(cancellationToken);
@@ -2088,7 +3026,14 @@ public class PayrollController : ControllerBase
         // different number than was taken, silently corrupting 1400/1410 and the sub-ledger together.
         foreach (var loan in activeLoansMutable)
         {
-            var deducted = Math.Min(loan.InstallmentAmount, loan.OutstandingBalance);
+            // POD-C3 (MF-2) — decrement by what the run ACTUALLY took, not by a recomputed instalment.
+            // Debt is now capped at the net the period can fund, so recomputing Math.Min(Installment,
+            // Outstanding) here would retire more debt than was withheld and put the loan sub-ledger and
+            // the 1400 receivable permanently out of step with the payslip.
+            var deducted = loanTakenByEmployee.TryGetValue(loan.EmployeeIntId ?? 0, out var lm)
+                        && lm.TryGetValue(loan.Id, out var lt)
+                ? lt
+                : 0m;
             if (deducted <= 0) continue;
             Witness(PayrollConsumptionArtifacts.Loan, loan.Id, loan.EmployeeIntId ?? 0, deducted,
                     loan.Status, loan.OutstandingBalance, loan.TotalRepaid);
@@ -2099,7 +3044,10 @@ public class PayrollController : ControllerBase
             var inst = await _db.LoanInstallments
                 .OrderBy(i => i.DueDate)
                 .FirstOrDefaultAsync(i => i.LoanId == loan.Id && i.Status == "Pending" && i.DueDate <= periodEnd, cancellationToken);
-            if (inst is not null)
+            // POD-C3 — only a FULLY funded instalment closes its schedule row. When the period could not
+            // fund the whole instalment the balance was carried forward, so stamping the row "Paid" would
+            // understate the remaining schedule while OutstandingBalance (correctly) still carries it.
+            if (inst is not null && deducted >= Math.Min(loan.InstallmentAmount, deducted + loan.OutstandingBalance))
             {
                 Witness(PayrollConsumptionArtifacts.LoanInstallment, inst.Id, loan.EmployeeIntId ?? 0, deducted,
                         inst.Status, priorAmountPaid: inst.AmountPaid, priorRunId: inst.PayrollRunId);
@@ -2108,7 +3056,11 @@ public class PayrollController : ControllerBase
         }
         foreach (var adv in activeAdvMutable)
         {
-            var deducted = Math.Min(adv.InstallmentAmount, adv.OutstandingBalance);
+            // POD-C3 (MF-2) — same rule as loans: decrement what was actually withheld.
+            var deducted = advTakenByEmployee.TryGetValue(adv.EmployeeIntId ?? 0, out var am)
+                        && am.TryGetValue(adv.Id, out var at)
+                ? at
+                : 0m;
             if (deducted <= 0) continue;
             Witness(PayrollConsumptionArtifacts.Advance, adv.Id, adv.EmployeeIntId ?? 0, deducted,
                     adv.Status, adv.OutstandingBalance, adv.TotalRepaid);
@@ -2118,11 +3070,89 @@ public class PayrollController : ControllerBase
             var inst = await _db.AdvanceInstallments
                 .OrderBy(i => i.DueDate)
                 .FirstOrDefaultAsync(i => i.AdvanceId == adv.Id && i.Status == "Pending" && i.DueDate <= periodEnd, cancellationToken);
-            if (inst is not null)
+            // POD-C3 — same partial-funding rule as loans.
+            if (inst is not null && deducted >= Math.Min(adv.InstallmentAmount, deducted + adv.OutstandingBalance))
             {
                 Witness(PayrollConsumptionArtifacts.AdvanceInstallment, inst.Id, adv.EmployeeIntId ?? 0, deducted,
                         inst.Status, priorAmountPaid: inst.AmountPaid, priorRunId: inst.PayrollRunId);
                 inst.Status = "Paid"; inst.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); inst.PayrollRunId = id; inst.AmountPaid = deducted;
+            }
+        }
+
+        // ── POD-C3: apply the 1420 RECOVERY to the sub-ledger, witnessed for the void ────────────────
+        // The witness records the PRIOR RecoveredAmount so PayrollVoidService can restore it exactly,
+        // using the same replay machinery B3 built for loans and advances. Without it, voiding a
+        // replacement run would leave the receivable recorded as recovered by a run that no longer exists.
+        if (receivableTakenByEmployee.Count > 0)
+        {
+            var recoveredIds = receivableTakenByEmployee.Select(r => r.ReceivableId).Distinct().ToList();
+            var recoveredRows = await _db.PayrollEmployeeReceivables
+                .Where(r => r.TenantId == tenantId && recoveredIds.Contains(r.Id))
+                .ToListAsync(cancellationToken);
+            foreach (var (rcvId, empId, amount) in receivableTakenByEmployee)
+            {
+                var row = recoveredRows.FirstOrDefault(r => r.Id == rcvId);
+                if (row is null) continue;
+                Witness(PayrollConsumptionArtifacts.EmployeeReceivable, row.Id, empId, amount,
+                        row.Status, priorAmountPaid: row.RecoveredAmount);
+                row.RecoveredAmount = Math.Round(row.RecoveredAmount + amount, 2);
+                row.RecoveredByRunId = id;
+                row.UpdatedAtUtc = DateTime.UtcNow;
+                if (row.RecoveredAmount >= row.Amount) row.Status = PayrollReceivableStatuses.Recovered;
+            }
+        }
+
+        // ── POD-C1: CONSUME THE SETTLEMENTS THIS RUN DISBURSES ───────────────────────────────────────
+        // Stamping the run id is what makes FinalSettlementGlLedger.BuildPayrollClearingAsync find the
+        // payable to clear at Lock, and what makes "a settlement can only be disbursed once" enforceable
+        // (Approved + PayrollRunId == null is the eligibility predicate everywhere).
+        if (settlementsDisbursed.Count > 0)
+        {
+            var disbursedIds = settlementsDisbursed.Select(s => s.Id).ToList();
+            // Tracked copies, re-loaded INSIDE the transaction (the snapshot above is AsNoTracking so it
+            // survives a retry). The Approved + PayrollRunId == null predicate is re-applied as a
+            // compare-and-swap: if a concurrent settlement run stamped them first, this one takes none.
+            var settlementsMutable = await _db.EmployeeFinalSettlements
+                .Where(s => s.TenantId == tenantId && disbursedIds.Contains(s.Id)
+                         && s.Status == FinalSettlementStatuses.Approved && s.PayrollRunId == null)
+                .ToListAsync(cancellationToken);
+            if (settlementsMutable.Count != settlementsDisbursed.Count)
+                throw new PayrollProcessAbortException(409, new
+                {
+                    error    = "settlement_consumed_concurrently",
+                    message  = $"{settlementsDisbursed.Count - settlementsMutable.Count} settlement(s) selected by this " +
+                               "run were disbursed by another payroll run while it was processing. Nothing was written — " +
+                               "re-process this run.",
+                    expected = settlementsDisbursed.Count,
+                    stamped  = settlementsMutable.Count,
+                });
+            foreach (var s in settlementsMutable)
+            {
+                Witness(PayrollConsumptionArtifacts.FinalSettlement, s.Id, s.EmployeeId, s.NetPayable, s.Status);
+                s.PayrollRunId = id;
+                s.Status = FinalSettlementStatuses.Disbursing;
+                s.UpdatedAtUtc = DateTime.UtcNow;
+            }
+
+            // Leave encashment is only real once the BALANCE is decremented. The pre-C1 endpoint computed
+            // an encashment figure and never wrote EmployeeLeaveBalance.Encashed back at all, so the same
+            // days could be encashed again on a second call. Witnessed with the PRIOR value so POD-B3's
+            // void restores the row exactly rather than subtracting a re-derived number.
+            if (settlementEncashmentTaken.Count > 0)
+            {
+                var balanceIds = settlementEncashmentTaken.Select(x => x.BalanceId).Distinct().ToList();
+                var balanceRows = await _db.EmployeeLeaveBalances
+                    .Where(b => b.TenantId == tenantId && balanceIds.Contains(b.Id))
+                    .ToListAsync(cancellationToken);
+                foreach (var (balanceId, empId, days) in settlementEncashmentTaken)
+                {
+                    var row = balanceRows.FirstOrDefault(b => b.Id == balanceId);
+                    if (row is null || days <= 0m) continue;
+                    Witness(PayrollConsumptionArtifacts.LeaveEncashment, row.Id, empId, days,
+                            priorStatus: null, priorAmountPaid: row.Encashed);
+                    row.Encashed = Math.Round(row.Encashed + days, 2);
+                    row.UpdatedAtUtc = DateTime.UtcNow;
+                }
             }
         }
 
@@ -2197,6 +3227,28 @@ public class PayrollController : ControllerBase
             notEligibleCount     = runPopulation.NotEligible.Count,
             siblingRunCount      = siblingRuns.Count,
             statutoryIncremental = statutoryComputedIncrementally,
+            // POD-C3 — WHICH BASIS paid this month, how many people it touched, and what it settled.
+            // "Why is this number what it is?" must be answerable from the audit record alone.
+            prorationBasis       = policy.Basis,
+            prorationBasisSource = policy.BasisSource,
+            gosiBasePolicy       = policy.GosiBase,
+            arrearsGosiTreatment = policy.ArrearsGosiTreatment,
+            proratedEmployees    = employees.Count(x => prorationByEmp[x.Id].IsProrated),
+            leaversPaid          = employees.Count(x => leaverEmployeeIds.Contains(x.Id)),
+            finalWageMonths      = slips.Count(s => s.IsFinalWageMonth),
+            joinersExcluded      = excludedJoiners.Count,
+            arrearsLines         = arrearsLinesToPersist.Count,
+            arrearsTotal         = Math.Round(arrearsLinesToPersist.Sum(a => a.Amount), 2),
+            arrearsGosiBearing   = Math.Round(arrearsLinesToPersist.Where(a => a.IsGosiBearing).Sum(a => a.Amount), 2),
+            arrearsEarnedBasisGosiDelta = Math.Round(arrearsLinesToPersist.Sum(a => a.EarnedBasisGosiDelta), 2),
+            receivableRecovered  = Math.Round(receivableTakenByEmployee.Sum(r => r.Amount), 2),
+            emiDeferred          = Math.Round(deferredEmiEmployees.Sum(x => x.Amount), 2),
+            // POD-C1 — which leavers this run settled, and for how much.
+            settlementsDisbursed = settlementsDisbursed.Count,
+            settlementGross      = Math.Round(settlementsDisbursed.Sum(s => s.GrossPayable), 2),
+            settlementNet        = Math.Round(settlementsDisbursed.Sum(s => s.NetPayable), 2),
+            settlementIds        = settlementsDisbursed.Select(s => s.Id).ToList(),
+            leaveDaysEncashed    = Math.Round(settlementEncashmentTaken.Sum(x => x.Days), 2),
         }, cancellationToken);
             // The selector rows are TRACKED, so the Outcome stamps applied by ResolveRunPopulationAsync
             // persist with this save — inside the run transaction, alongside the slips they describe.
@@ -2313,10 +3365,18 @@ public class PayrollController : ControllerBase
             // the plan is capped by the outstanding accrual AND by the run's own bonus earning total, so
             // an un-accrued bonus is still expensed here and the journal always balances.
             var bonusEarningTotal = earnings.Where(e => e.Source == "Bonus").Sum(e => e.Amount);
+            // POD-C1 — settlement components this run disburses were expensed at APPROVAL (DR 5110/5111/
+            // 5112 / CR 2320). Clear that payable instead of expensing them again; capped by the
+            // outstanding payable AND by the run's own settlement earning total, so a settlement with no
+            // live accrual is still expensed here and the journal always balances.
+            var settlementEarningTotal = earnings
+                .Where(e => e.Source == FinalSettlementComponents.SettlementSource).Sum(e => e.Amount);
             glCtx = glCtx with
             {
                 BonusClearings = await BonusGlLedger.BuildPayrollClearingAsync(
                     _db, tenantId, id, run.CompanyId, bonusEarningTotal, cancellationToken),
+                SettlementClearings = await FinalSettlementGlLedger.BuildPayrollClearingAsync(
+                    _db, tenantId, id, settlementEarningTotal, cancellationToken),
             };
             var (glLines, totalDebits, totalCredits) = BuildPayrollGlEntries(
                 tenantId, id, period, earnings, dedxns, totalNet, uid, uname, glCurrency, glCtx);
@@ -2454,8 +3514,12 @@ public class PayrollController : ControllerBase
         // Rule 1 MISSING_SALARY_STRUCTURE is an Error raised over ctx.ActiveEmployees, so a run with a
         // hold-out would accumulate blocking Errors for the very people it deliberately excluded and could
         // never be approved or locked. Rule 10 WARN_NO_ATTENDANCE noises up the same way.
+        // POD-C1 — same reason as Process: a settlement run's leavers must be in Validate's eligible set,
+        // or Rule 1 MISSING_SALARY_STRUCTURE-style Errors would be raised for people the run legitimately
+        // pays, and the run could never be approved or locked.
         var eligibleForValidation = await LoadEligibleEmployeesAsync(
-            tenantId, company.Id, allowLegacyUnscopedEmployeesForValidation, asNoTracking: true, cancellationToken);
+            tenantId, company.Id, allowLegacyUnscopedEmployeesForValidation, asNoTracking: true, cancellationToken,
+            includeSettlementLeavers: run.SettlesFinalSettlements);
         var validationPopulation = await ResolveRunPopulationAsync(tenantId, run, eligibleForValidation, cancellationToken);
         // /validate is a read-model refresh; the Outcome stamps belong to Process (inside its transaction).
         foreach (var s in validationPopulation.Selections) _db.Entry(s).State = EntityState.Detached;
@@ -3311,8 +4375,7 @@ public class PayrollController : ControllerBase
             foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
             {
                 var first = grp.First();
-                var driver = ResolveDriverForComponent(glCtx.Drivers, grp.Key, first.Source, GlDriverCategories.Earning)?.Key
-                             ?? EarningDriverKey(grp.Key, first.Source);
+                var driver = EarningDriverKeyFor(glCtx.Drivers, grp.Key, first.Source);
                 if (previewClearsBonus && first.Source == "Bonus")
                 {
                     var bonusAmount = grp.Sum(e => e.Amount);
@@ -3372,7 +4435,7 @@ public class PayrollController : ControllerBase
             foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
             {
                 var first = grp.First();
-                var driverRow = ResolveDriverForComponent(glCtx.Drivers, grp.Key.ComponentCode, grp.Key.Source, GlDriverCategories.Deduction);
+                var driverRow = ResolveDeductionDriverRow(glCtx.Drivers, grp.Key.ComponentCode, grp.Key.Source);
                 string driver;
                 if (driverRow is not null)
                 {
@@ -3666,6 +4729,12 @@ public class PayrollController : ControllerBase
         if (!HasPermission("payroll.export")) return Forbid();
 
         var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, id, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (batch is null) return NotFound();
 
@@ -3940,10 +5009,18 @@ public class PayrollController : ControllerBase
     {
         if (!HasPermission("payroll.export")) return Forbid();
 
+        var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
+
+        // Validated AFTER the entity check: a cross-company caller should learn that they may not touch
+        // this batch, not that their status value was spelled wrong.
         if (!WpsStatuses.All.Contains(req.Status))
             return BadRequest(new { error = "invalid_status", message = $"Status must be one of: {string.Join(", ", WpsStatuses.All)}." });
-
-        var tenantId = GetTenantId();
         var batch    = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
 
@@ -3970,6 +5047,56 @@ public class PayrollController : ControllerBase
             .OrderByDescending(x => x.CreatedAtUtc)
             .ThenByDescending(x => x.Id)
             .FirstOrDefaultAsync(cancellationToken);
+
+        // ── POD-C1 (K7): a SETTLEMENT batch may be disbursed by ORDINARY BANK TRANSFER ───────────────
+        // Before this pod the ONLY road to Paid ran through a generated SIF: this method 400s
+        // `wps_file_missing` without one, WpsTransitions admits only Draft→Generated→Submitted→Accepted,
+        // and SettlePaymentBatch refuses anything but Accepted. Filing an end-of-service lump sum through
+        // the wage-protection file for an employee whose REGISTERED CONTRACT WAGE is a fraction of it is a
+        // wage-file mismatch, and end-of-service is customarily paid by ordinary transfer — so the SIF-only
+        // road either forces a wrong filing or leaves the settlement permanently unsettleable.
+        //
+        // The carve-out is deliberately NARROW and is NOT an edge in WpsTransitions (WpsTests asserts that
+        // table, and a batch must never be drivable to Accepted by hand on the normal wage path):
+        //   • the run must be a settlement-purpose run, and
+        //   • the batch must be an explicitly non-WPS payment method, and
+        //   • a bank reference is mandatory (it replaces the Mudad acknowledgement as the evidence), and
+        //   • only Draft/Generated → Accepted is admitted; every other transition still goes through the
+        //     table above.
+        // [FLAG-COMPLIANCE-KSA] Whether a given tenant's settlements must nonetheless ride the Mudad SIF is
+        // a Saudi compliance determination; this makes both roads reachable and auditable instead of
+        // silently mandating one.
+        var isNonWpsSettlementBatch =
+            wpsRun?.SettlesFinalSettlements == true
+            && !string.Equals(batch.PaymentMethod, "WPS", StringComparison.OrdinalIgnoreCase);
+        if (isNonWpsSettlementBatch && req.Status == WpsStatuses.Accepted
+            && (from == WpsStatuses.Draft || from == WpsStatuses.Generated))
+        {
+            if (string.IsNullOrWhiteSpace(req.Reference))
+                return BadRequest(new
+                {
+                    error   = "bank_reference_required",
+                    message = "A bank transfer reference is required to accept a non-WPS settlement batch — " +
+                              "it is the evidence that replaces the WPS/Mudad acknowledgement.",
+                });
+            batch.WpsStatus = WpsStatuses.Accepted;
+            batch.WpsStatusChangedAtUtc = DateTime.UtcNow;
+            batch.WpsSubmissionReference = req.Reference;
+            if (latestFile is not null)
+            {
+                latestFile.FilingStatus = WpsStatuses.Accepted;
+                latestFile.SubmissionReference = req.Reference;
+                latestFile.AcknowledgedAtUtc = DateTime.UtcNow;
+            }
+            await PayrollAudit("payroll.wps.status_changed", "PayrollPaymentBatch", batchId.ToString(),
+                new
+                {
+                    from, to = req.Status, reference = req.Reference, notes = req.Notes,
+                    route = "non_wps_settlement_bank_transfer", paymentMethod = batch.PaymentMethod,
+                }, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            return Ok(new { batchId, wpsStatus = batch.WpsStatus, route = "non_wps_settlement_bank_transfer" });
+        }
 
         if (latestFile is null)
             return BadRequest(new { error = "wps_file_missing", message = "A generated WPS file is required before statutory filing status can be changed." });
@@ -4011,6 +5138,32 @@ public class PayrollController : ControllerBase
                     error   = "settlement_required",
                     message = "Settle the net pay (POST payment-batches/{id}/settle) before reconciling — "
                             + "reconciling now would close the batch with Salaries Payable (2100) still open.",
+                });
+
+            // POD-D4 — Reconciled is the terminal "the month landed" state, and until now it asked only
+            // whether a NetSettlement row EXISTED. It must also be unreachable while the bank has told us
+            // money came back, or has not told us anything at all: a returned salary means Cash/Bank is
+            // overstated for that employee, and an unconfirmed record means nobody knows.
+            var d4Records = await _db.PayrollPaymentRecords.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batch.Id)
+                .Select(x => new { x.EmployeeId, x.Amount, x.Status })
+                .ToListAsync(cancellationToken);
+            var d4Failed = d4Records.Where(x => PaymentRecordStatuses.IsFailed(x.Status)).ToList();
+            var d4Unconfirmed = d4Records
+                .Where(x => !PaymentRecordStatuses.IsConfirmed(x.Status) && !PaymentRecordStatuses.IsCancelled(x.Status))
+                .ToList();
+            if (d4Failed.Count > 0 || d4Unconfirmed.Count > 0)
+                return UnprocessableEntity(new
+                {
+                    error   = "payments_not_reconciled",
+                    message = "This batch cannot reach Reconciled while payments are returned or unconfirmed by the "
+                            + "bank. Import the bank/WPS response (POST payment-batches/{id}/bank-confirmations) and "
+                            + "resolve any returns first — reconciling now would close the month over money that "
+                            + "came back or was never confirmed.",
+                    returnedCount = d4Failed.Count,
+                    returnedTotal = d4Failed.Sum(x => x.Amount),
+                    unconfirmedCount = d4Unconfirmed.Count,
+                    unconfirmedTotal = d4Unconfirmed.Sum(x => x.Amount),
                 });
         }
 
@@ -4075,11 +5228,27 @@ public class PayrollController : ControllerBase
         if (!ErpPostingTransitions.IsAllowed(from, req.Status))
             return BadRequest(new { error = "invalid_transition", message = $"Cannot transition ERP posting status from '{from}' to '{req.Status}'.", allowedTransitions = ErpPostingTransitions.AllowedFrom(from) });
 
+        // ── POD-D4: Exported and Posted now require EVIDENCE, not a free-text string ──────────────────
+        // This endpoint would write Posted off any non-empty Reference and stamp it onto every GL row of
+        // the run, with no artifact, no file and no hash — nothing that was ever exported anywhere. The two
+        // states that ASSERT something happened outside this system are therefore no longer producible by
+        // hand: an export produces a real, tied-out, hash-verified journal artifact, and a confirmation
+        // against that artifact carries the ERP's own document number. ReadyForErp and Rejected are
+        // operational intent and stay here unchanged.
         if (req.Status is ErpPostingStatuses.Exported or ErpPostingStatuses.Posted)
-        {
-            if (string.IsNullOrWhiteSpace(req.Reference))
-                return BadRequest(new { error = "erp_reference_required", message = "ERP document/export reference is required for this status." });
-        }
+            return UnprocessableEntity(new
+            {
+                error   = "evidence_required",
+                message = $"'{req.Status}' can no longer be set by hand: it asserts that a journal was produced and "
+                        + "accepted by an ERP, so it must be backed by an artifact. Produce the journal with "
+                        + "POST /api/finance/gl/journal-exports (period or runId), hand the file to the ERP, then "
+                        + "record the ERP's document number with "
+                        + "POST /api/finance/gl/journal-exports/{exportId}/confirm. Both statuses are then derived "
+                        + "from the per-line ledger evidence.",
+                exportEndpoint  = "/api/finance/gl/journal-exports",
+                confirmEndpoint = "/api/finance/gl/journal-exports/{exportId}/confirm",
+                allowedHere     = new[] { ErpPostingStatuses.ReadyForErp, ErpPostingStatuses.Rejected },
+            });
         if (req.Status is ErpPostingStatuses.Rejected && string.IsNullOrWhiteSpace(req.Notes))
             return BadRequest(new { error = "erp_rejection_reason_required", message = "ERP rejection reason is required." });
 
@@ -4133,6 +5302,12 @@ public class PayrollController : ControllerBase
         if (!HasPermission("payroll.export")) return Forbid();
 
         var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
@@ -4151,12 +5326,20 @@ public class PayrollController : ControllerBase
         if (accrualLines.Count == 0)
             return BadRequest(new { error = "gl_not_accrued", message = "This run has no accrual GL. Lock the run before settling." });
 
-        // P1-7 — do not book cash that never left: block while any payment record is Rejected (bounced
-        // IBAN / failed transfer). Pending records are fine (WPS instructed but not yet cleared).
-        var rejectedCount = await _db.PayrollPaymentRecords
-            .CountAsync(x => x.TenantId == tenantId && x.PaymentBatchId == batch.Id && x.Status == "Rejected", cancellationToken);
+        // P1-7 — do not book cash that never left: block while any payment record has FAILED (bounced IBAN /
+        // returned credit / refused instruction). Pending records are fine (WPS instructed but not cleared).
+        //
+        // POD-D4: this guard was dead. It tested Status == "Rejected", a literal NO code path ever wrote —
+        // the only writers were "Pending" at batch creation and "Cancelled" by the void — so a bounced
+        // salary could never block a settlement. It now reads the shared PaymentRecordStatuses.IsFailed
+        // predicate, which the bank-confirmation import actually produces (Returned as well as Rejected).
+        var failedStatuses = await _db.PayrollPaymentRecords.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batch.Id)
+            .Select(x => x.Status)
+            .ToListAsync(cancellationToken);
+        var rejectedCount = failedStatuses.Count(PaymentRecordStatuses.IsFailed);
         if (rejectedCount > 0)
-            return UnprocessableEntity(new { error = "payment_records_rejected", message = $"{rejectedCount} payment record(s) are Rejected. Resolve/retry them before settling so Cash/Bank reflects the actual outflow.", rejectedCount });
+            return UnprocessableEntity(new { error = "payment_records_rejected", message = $"{rejectedCount} payment record(s) were returned or rejected by the bank. Resolve/retry them before settling so Cash/Bank reflects the actual outflow.", rejectedCount });
 
         // Idempotency (mirror Lock).
         var alreadySettled = await _db.FinanceGlEntries.AnyAsync(
@@ -4193,10 +5376,195 @@ public class PayrollController : ControllerBase
         _db.FinanceGlEntries.AddRange(lines);
         batch.WpsStatus = WpsStatuses.Paid;
         batch.WpsStatusChangedAtUtc = DateTime.UtcNow;
+
+        // ── POD-C1: the settlements this batch actually PAID ─────────────────────────────────────────
+        // This is the ONLY place a settlement reaches Paid, and it is the ordinary net-pay settlement
+        // journal that does it — no second payment mechanism anywhere in the pipeline.
+        var settlementResult = await FinalizePaidSettlementsAsync(
+            tenantId, run, batch, glCtx, settlementPeriod, cancellationToken);
+
         await PayrollAudit("payroll.batch.settled", "PayrollPaymentBatch", batch.Id.ToString(),
-            new { runId = run.Id, batch.BatchNumber, amount = cr, cashAccount, period = settlementPeriod, reference = req.Reference }, cancellationToken);
+            new
+            {
+                runId = run.Id, batch.BatchNumber, amount = cr, cashAccount, period = settlementPeriod,
+                reference = req.Reference,
+                settlementsPaid = settlementResult.SettlementIds,
+                residualDebtReclassed = settlementResult.ResidualReclassed,
+                residualDebtUnbooked  = settlementResult.ResidualUnbooked,
+            }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        return Ok(new { batchId = batch.Id, runId = run.Id, wpsStatus = batch.WpsStatus, settled = cr, cashAccount, period = settlementPeriod });
+        return Ok(new
+        {
+            batchId = batch.Id, runId = run.Id, wpsStatus = batch.WpsStatus, settled = cr, cashAccount,
+            period = settlementPeriod,
+            settlementsPaid = settlementResult.SettlementIds,
+            residualDebtReclassed = settlementResult.ResidualReclassed,
+            residualDebtUnbooked  = settlementResult.ResidualUnbooked,
+        });
+    }
+
+    /// <summary>POD-C1 — what <see cref="FinalizePaidSettlementsAsync"/> did, for the response + audit.</summary>
+    private sealed record PaidSettlementResult(
+        List<Guid> SettlementIds, decimal ResidualReclassed, decimal ResidualUnbooked);
+
+    /// <summary>
+    /// POD-C1 — completes every settlement this payment batch actually paid.
+    ///
+    /// <para>Called from <c>SettlePaymentBatch</c> and NOWHERE else, so the ONLY way a settlement reaches
+    /// <c>Paid</c> is the ordinary POD-B1 net-pay settlement journal (DR 2100 / CR Cash-Bank) clearing it
+    /// like any other payroll. Three things happen here that nothing else in the product does:</para>
+    /// <list type="number">
+    /// <item><b>The offboarding checklist becomes truthful.</b> <c>EmployeeOffboarding.FinalSettlementDone</c>
+    ///   gates the salary-structure deactivation cascade in <c>OffboardingController.Complete</c> and was
+    ///   previously a manual tick-box nothing verified. It is now set by the act of paying.</item>
+    /// <item><b>The leaver's RESIDUAL debt is dispositioned.</b> A loan the settlement could not fully
+    ///   recover would otherwise sit <c>Active</c> forever on an ex-employee who is in NO run population,
+    ///   with 1400 carrying an asset nobody can collect and nothing reporting it (the control-account
+    ///   health check asserts SIGN only, so it would never fire). It is reclassified to the 1420 Employee
+    ///   Overpayment Receivable — the ageing sub-ledger POD-C3 already built and already surfaces at
+    ///   GET /api/payroll/receivables — so it is chased rather than forgiven.</item>
+    /// <item><b>The reclass is CAPPED at what 1400/1410 actually carries.</b> Loans predating the
+    ///   disbursement GL, and seeded Active loans with a real balance and no journal at all, have NO
+    ///   1400 debit behind them; debiting 1420 for those would recognise an asset out of nothing, so the
+    ///   uncovered part is REPORTED (<c>ResidualDebtUnbooked</c>) and the loan stays open. The GL cannot
+    ///   reclassify what it never booked, and pretending otherwise is how a receivable ends up in credit.</item>
+    /// </list>
+    /// </summary>
+    private async Task<PaidSettlementResult> FinalizePaidSettlementsAsync(
+        Guid tenantId, PayrollRun run, PayrollPaymentBatch batch, GlResolutionContext glCtx,
+        string settlementPeriod, CancellationToken ct)
+    {
+        var settlements = await _db.EmployeeFinalSettlements
+            .Where(s => s.TenantId == tenantId && s.PayrollRunId == run.Id
+                     && s.Status == FinalSettlementStatuses.Disbursing)
+            .ToListAsync(ct);
+        if (settlements.Count == 0)
+            return new PaidSettlementResult(new List<Guid>(), 0m, 0m);
+
+        var employeeIds = settlements.Select(s => s.EmployeeId).Distinct().ToList();
+        var offboardingIds = settlements.Select(s => s.OffboardingId).Distinct().ToList();
+        var offboardings = await _db.EmployeeOffboardings
+            .Where(o => o.TenantId == tenantId && offboardingIds.Contains(o.Id))
+            .ToListAsync(ct);
+
+        var loanReceivableAccount    = GlAccountResolver.AccountLabel("LOAN_RECEIVABLE", glCtx);
+        var advanceReceivableAccount = GlAccountResolver.AccountLabel("ADVANCE_RECEIVABLE", glCtx);
+        var employeeReceivableAccount = GlAccountResolver.AccountLabel(
+            GlControlAccounts.EmployeeReceivableDriver, glCtx);
+        // AvailableForRelief, never the raw scoped balance: the unattributed (CompanyId == null) pool sits
+        // inside every company's view while the relief posted against it is stamped with the relieving
+        // company, so two entities reading the same pool would each relieve it in full and drive the ASSET
+        // into credit. Same clamp POD-B1b's loan remittance uses.
+        var loanBalance    = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, loanReceivableAccount, ct);
+        var advanceBalance = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, advanceReceivableAccount, ct);
+        var reclassBudget = new Dictionary<string, decimal>(StringComparer.Ordinal)
+        {
+            [loanReceivableAccount]    = Math.Max(0m, loanBalance.AvailableForRelief),
+            [advanceReceivableAccount] = Math.Max(0m, advanceBalance.AvailableForRelief),
+        };
+
+        var loans = await _db.EmployeeLoans
+            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null
+                     && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0)
+            .ToListAsync(ct);
+        var advances = await _db.SalaryAdvances
+            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null
+                     && employeeIds.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0)
+            .ToListAsync(ct);
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        decimal totalReclassed = 0m, totalUnbooked = 0m;
+
+        // Returns how much of the residual was actually MOVED off the loan/advance receivable (and is
+        // therefore no longer owed on the loan itself); the remainder stays where it is.
+        decimal Reclass(EmployeeFinalSettlement s, string receivableAccount, decimal residual, string what)
+        {
+            if (residual <= 0m) return 0m;
+            var budget = reclassBudget.GetValueOrDefault(receivableAccount);
+            var covered = Math.Min(residual, budget);
+            var uncovered = Math.Round(residual - covered, 2);
+            if (covered > 0m)
+            {
+                reclassBudget[receivableAccount] = budget - covered;
+                _db.FinanceGlEntries.Add(new FinanceGlEntry
+                {
+                    TenantId = tenantId, CompanyId = s.CompanyId ?? run.CompanyId,
+                    SourceModule = FinalSettlementGlDescriptions.SourceModule,
+                    SourceEntityId = s.Id,
+                    SourceEntityRef = EosbProvisionLedger.EmployeeRef(s.EmployeeId),
+                    EventType = GlEventTypes.SettlementResidualReclass,
+                    DebitAccount = employeeReceivableAccount, CreditAccount = receivableAccount,
+                    Amount = covered, Currency = s.Currency,
+                    EntryDate = today, Period = settlementPeriod,
+                    Description = $"{FinalSettlementGlDescriptions.ResidualReclassPrefix}{what} — {s.EmployeeCode}",
+                    PostedBy = GetUserId(), PostedByName = GetUserName(),
+                });
+                // The per-employee sub-ledger behind the aggregate 1420 debit, so the residual AGES on
+                // GET /api/payroll/receivables and can be netted into any future run the same way POD-C3
+                // nets a void's overpayment. Σ(sub-ledger rows written here) == the 1420 debit posted here.
+                _db.PayrollEmployeeReceivables.Add(new PayrollEmployeeReceivable
+                {
+                    TenantId = tenantId, CompanyId = s.CompanyId ?? run.CompanyId,
+                    EmployeeId = s.EmployeeId, EmployeeCode = s.EmployeeCode,
+                    SourceRunId = run.Id, EventType = GlEventTypes.SettlementResidualReclass,
+                    Period = settlementPeriod, Amount = covered,
+                    Status = PayrollReceivableStatuses.Outstanding,
+                });
+                s.ResidualDebtReclassed = Math.Round(s.ResidualDebtReclassed + covered, 2);
+                totalReclassed += covered;
+            }
+            if (uncovered > 0m)
+            {
+                s.ResidualDebtUnbooked = Math.Round(s.ResidualDebtUnbooked + uncovered, 2);
+                totalUnbooked += uncovered;
+            }
+            return covered;
+        }
+
+        foreach (var s in settlements)
+        {
+            s.Status = FinalSettlementStatuses.Paid;
+            s.PaymentBatchId = batch.Id;
+            s.PaidAtUtc = DateTime.UtcNow;
+            s.UpdatedAtUtc = DateTime.UtcNow;
+
+            var off = offboardings.FirstOrDefault(o => o.Id == s.OffboardingId);
+            if (off is not null && !off.FinalSettlementDone)
+            {
+                off.FinalSettlementDone = true;
+                off.UpdatedAtUtc = DateTime.UtcNow;
+            }
+
+            // Only the RECLASSIFIED part leaves the loan. What could not be reclassified is genuinely still
+            // owed on the loan itself — that is the honest state, and it keeps the 1420 sub-ledger equal to
+            // the 1420 GL debit, which is the invariant POD-C3 built the sub-ledger to hold.
+            foreach (var l in loans.Where(l => l.EmployeeIntId == s.EmployeeId && l.OutstandingBalance > 0m))
+            {
+                var moved = Reclass(s, loanReceivableAccount, Math.Round(l.OutstandingBalance, 2), "loan");
+                if (moved <= 0m) continue;
+                l.OutstandingBalance = Math.Round(l.OutstandingBalance - moved, 2);
+                l.TotalRepaid = Math.Round(l.TotalRepaid, 2);   // unchanged: a reclass is not a repayment
+                if (l.OutstandingBalance <= 0m) l.Status = "Closed";
+            }
+            foreach (var a in advances.Where(a => a.EmployeeIntId == s.EmployeeId && a.OutstandingBalance > 0m))
+            {
+                var moved = Reclass(s, advanceReceivableAccount, Math.Round(a.OutstandingBalance, 2), "advance");
+                if (moved <= 0m) continue;
+                a.OutstandingBalance = Math.Round(a.OutstandingBalance - moved, 2);
+                if (a.OutstandingBalance <= 0m) a.Status = "Closed";
+            }
+
+            await PayrollAudit("payroll.final_settlement.paid", "EmployeeFinalSettlement", s.Id.ToString(), new
+            {
+                s.EmployeeId, s.EmployeeCode, s.NetPayable, s.Currency,
+                runId = run.Id, batchId = batch.Id, period = settlementPeriod,
+                residualReclassed = s.ResidualDebtReclassed, residualUnbooked = s.ResidualDebtUnbooked,
+            }, ct);
+        }
+
+        return new PaidSettlementResult(
+            settlements.Select(s => s.Id).ToList(),
+            Math.Round(totalReclassed, 2), Math.Round(totalUnbooked, 2));
     }
 
     /// <summary>
@@ -4208,10 +5576,17 @@ public class PayrollController : ControllerBase
     public async Task<IActionResult> ReverseSettlement(Guid batchId, [FromBody] PayrollReasonRequest req, CancellationToken cancellationToken)
     {
         if (!HasPermission("payroll.export")) return Forbid();
+        var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
+
+        // Validated AFTER the entity check, for the same reason as wps-status above.
         if (string.IsNullOrWhiteSpace(req.Reason))
             return BadRequest(new { error = "reason_required", message = "A reason is required to reverse a settlement." });
-
-        var tenantId = GetTenantId();
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
@@ -4568,6 +5943,12 @@ public class PayrollController : ControllerBase
         if (!HasPermission("payroll.export")) return Forbid();
 
         var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var batch    = await _db.PayrollPaymentBatches.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
         var wpsFile = await _db.WPSFileBatches.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PaymentBatchId == batchId, cancellationToken);
@@ -4656,6 +6037,12 @@ public class PayrollController : ControllerBase
         if (!HasPermission("payroll.export")) return Forbid();
 
         var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var wpsBatch = await _db.PayrollPaymentBatches.AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (wpsBatch is null) return NotFound();
@@ -4710,9 +6097,54 @@ public class PayrollController : ControllerBase
     {
         var tenantId = GetTenantId();
         var query = _db.PayrollPaymentBatches.AsNoTracking().Where(x => x.TenantId == tenantId);
+        // D3: a batch inherits its legal entity from its run. The caller's entity set is applied
+        // EXPLICITLY from the token rather than leaning on the ambient company filter — that filter is
+        // disabled whenever the context has no request principal, so relying on it would have made this
+        // scope silently absent in exactly the places it is hardest to notice. Same rule as the
+        // single-batch guard: a legacy null-company run is group-only.
+        var listScope = this.GetEntityScope();
+        var scopedRuns = Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayrollRuns, tenantId,
+                "The company dimension is re-applied from the caller's own token immediately below; it is "
+                + "dropped first so a null-company run cannot be silently included by the ambient filter.")
+            .AsNoTracking();
+        if (!listScope.IsGroupLevel)
+        {
+            var listCompanyIds = listScope.AccessibleCompanyIds;
+            scopedRuns = scopedRuns.Where(r => r.CompanyId != null && listCompanyIds.Contains(r.CompanyId.Value));
+        }
+        var scopedRunIds = scopedRuns.Select(r => r.Id);
+        query = query.Where(x => scopedRunIds.Contains(x.PayrollRunId));
         if (runId.HasValue) query = query.Where(x => x.PayrollRunId == runId.Value);
         // SAFE-SERIALIZATION: PayrollPaymentBatch is a payment workflow aggregate (TotalAmount is batch-level) — no per-employee salary PII.
-        return Ok(await query.OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken));
+        var batches = await query.OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken);
+
+        // POD-D4 — batch.WpsStatus is set to Paid AT SETTLEMENT, which happens BEFORE the bank's response
+        // exists (Submitted → Accepted → settle(Paid) → bank file comes back with returns). Returning the
+        // bare status therefore reports "Paid" over money that bounced. The per-employee confirmation
+        // coverage rides alongside it so a batch with open returns can never present as terminal-clean.
+        var d4BatchIds = batches.Select(b => b.Id).ToList();
+        var d4Records = d4BatchIds.Count == 0
+            ? new List<PayrollPaymentRecord>()
+            : await _db.PayrollPaymentRecords.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && d4BatchIds.Contains(r.PaymentBatchId))
+                .ToListAsync(cancellationToken);
+
+        return Ok(batches.Select(b =>
+        {
+            var cov = Infrastructure.Finance.BankConfirmationService.Coverage(
+                d4Records.Where(r => r.PaymentBatchId == b.Id).ToList());
+            return new
+            {
+                b.Id, b.TenantId, b.PayrollRunId, b.BatchNumber, b.PaymentMethod, b.TotalAmount, b.Currency,
+                b.Status, b.WpsStatus, b.WpsStatusChangedAtUtc, b.WpsSubmissionReference, b.WpsRejectionReason,
+                b.CreatedAtUtc,
+                unresolvedReturns = new { count = cov.FailedCount, total = cov.FailedTotal },
+                unconfirmedPayments = new { count = cov.UnconfirmedCount, total = cov.UnconfirmedTotal },
+                confirmationCoverage = cov.ConfirmationCoverage,
+                presentsCleanButIsNot = b.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
+                                        && (cov.FailedCount > 0 || cov.UnconfirmedCount > 0),
+            };
+        }).ToList());
     }
 
     /// <summary>
@@ -4725,16 +6157,39 @@ public class PayrollController : ControllerBase
     public async Task<IActionResult> PaymentRecords(Guid id, CancellationToken cancellationToken)
     {
         var tenantId  = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, id, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var records   = await _db.PayrollPaymentRecords.AsNoTracking().Where(x => x.TenantId == tenantId && x.PaymentBatchId == id).ToListAsync(cancellationToken);
         var canSeeIban = HasPermission("payroll.export");
-        return Ok(records.Select(r => new
+        // POD-D4 — the bank's latest word on each record, so a returned salary is visible HERE and not only
+        // in the confirmation history. Status alone used to be "Pending" forever: nothing ever wrote Paid.
+        var d4Confirmations = await _db.BankPaymentConfirmations.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.PaymentBatchId == id)
+            .ToListAsync(cancellationToken);
+        return Ok(records.Select(r =>
         {
-            r.Id,
-            r.EmployeeId,
-            r.Amount,
-            r.Status,
-            r.WpsReference,
-            Iban = canSeeIban ? r.Iban : Infrastructure.Payroll.SifFileGenerator.MaskIban(r.Iban),
+            var latest = d4Confirmations.Where(c => c.PaymentRecordId == r.Id)
+                .OrderByDescending(c => c.ImportedAtUtc).FirstOrDefault();
+            return new
+            {
+                r.Id,
+                r.EmployeeId,
+                r.Amount,
+                r.Status,
+                r.WpsReference,
+                Iban = canSeeIban ? r.Iban : Infrastructure.Payroll.SifFileGenerator.MaskIban(r.Iban),
+                isReturned = PaymentRecordStatuses.IsFailed(r.Status),
+                bankConfirmed = PaymentRecordStatuses.IsConfirmed(r.Status),
+                returnReasonCode = latest is null || latest.Outcome != BankConfirmationOutcomes.Returned ? null : latest.ReasonCode,
+                returnReasonText = latest is null || latest.Outcome != BankConfirmationOutcomes.Returned ? null : latest.ReasonText,
+                bankReference = canSeeIban ? latest?.BankReference : null,
+                bankValueDate = latest?.ValueDate,
+                bankConfirmedAtUtc = latest?.ImportedAtUtc,
+            };
         }));
     }
 
@@ -5033,6 +6488,116 @@ public class PayrollController : ControllerBase
         return Ok(new { advisoryOnly = true, warnings, summary = "AI payroll validation is advisory. It does not approve payroll or change salaries automatically." });
     }
 
+    /// <summary>
+    /// POD-C3 — THE AUDITOR'S VIEW of a run's retro/arrears. The payslip shows the employee one itemised
+    /// line per covered period; this shows the arithmetic behind every one of them — what they were
+    /// ENTITLED to for that period, what was actually PAID, what earlier runs already SETTLED, the
+    /// assignment whose effective date caused it, and the earned-basis GOSI delta a compliance officer
+    /// would need for an amended declaration.
+    /// </summary>
+    [HttpGet("runs/{id:guid}/arrears")]
+    [HasPermission("payroll.read")]
+    public async Task<IActionResult> GetRunArrears(Guid id, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
+        if (run is null) return NotFound();
+
+        // PendingRecovery lines carry no PayrollRunId (they were never paid), so they are matched by the
+        // covered period instead — a retro DECREASE the run REFUSED must still be visible from the run
+        // an operator was trying to process.
+        var settled = await _db.PayrollArrearsLines.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == id)
+            .OrderBy(a => a.EmployeeId).ThenBy(a => a.CoveredYear).ThenBy(a => a.CoveredMonth).ThenBy(a => a.ComponentCode)
+            .ToListAsync(cancellationToken);
+        var pending = await _db.PayrollArrearsLines.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.Status == PayrollArrearsStatuses.PendingRecovery
+                     && (a.CompanyId == run.CompanyId || a.CompanyId == null))
+            .OrderBy(a => a.EmployeeId).ThenBy(a => a.CoveredYear).ThenBy(a => a.CoveredMonth)
+            .ToListAsync(cancellationToken);
+
+        object Project(PayrollArrearsLine a) => new
+        {
+            a.Id, a.EmployeeId, a.EmployeeCode,
+            coveredPeriod = $"{a.CoveredYear}-{a.CoveredMonth:D2}",
+            a.ComponentCode,
+            component = PayrollArrearsComponents.Label(a.ComponentCode),
+            a.EntitledAmount, a.PaidAmount, a.PreviouslySettledAmount, a.Amount,
+            a.IsGosiBearing, a.EarnedBasisGosiDelta,
+            a.Basis, a.ProrationFactor, a.SourceAssignmentId, a.SourceEffectiveDate, a.Status, a.CreatedAtUtc,
+        };
+
+        return Ok(new
+        {
+            runId = id,
+            period = $"{run.Year}-{run.Month:D2}",
+            settlesArrears = run.SettlesArrears,
+            formula = "arrears = entitled(period) − paid(period) − previously settled(period). " +
+                      "'paid' is Σ PayrollEarning over the NON-VOIDED runs of that period, keyed on component code " +
+                      "(never the slip header, which folds overtime/bonus/adjustments into OtherAllowances). " +
+                      "Running the same run twice yields zero the second time because the third term absorbs the first result.",
+            totalSettled = Math.Round(settled.Where(a => a.Status == PayrollArrearsStatuses.Settled).Sum(a => a.Amount), 2),
+            totalGosiBearing = Math.Round(settled.Where(a => a.Status == PayrollArrearsStatuses.Settled && a.IsGosiBearing).Sum(a => a.Amount), 2),
+            totalEarnedBasisGosiDelta = Math.Round(settled.Sum(a => a.EarnedBasisGosiDelta), 2),
+            earnedBasisNote = "[FLAG-COMPLIANCE-KSA] Arrears ride inside the CURRENT month's single statutory ceiling, " +
+                              "so an employee already at the cap contributes nothing on them. The earned-basis figure is " +
+                              "what each covered month's own ceiling headroom would have allowed, and is what an amended " +
+                              "GOSI declaration would be prepared from.",
+            lines = settled.Select(Project).ToList(),
+            pendingRecovery = pending.Select(Project).ToList(),
+        });
+    }
+
+    /// <summary>
+    /// POD-C3 — the AGEING view of the per-employee 1420 Employee Overpayment Receivable sub-ledger.
+    ///
+    /// <para>POD-B3 posted an aggregate <c>DR 1420</c> whenever a void left already-disbursed cash
+    /// standing, and explicitly handed the netting to C3. FinanceGlEntry has no employee dimension, so
+    /// without this sub-ledger the balance could never be attributed, never be recovered, and never be
+    /// chased. An employee held OUT of a replacement run by the B2 selector still owes it — which is why
+    /// this view is keyed on the receivable, not on any run's population.</para>
+    /// </summary>
+    [HttpGet("receivables")]
+    [HasPermission("payroll.read")]
+    public async Task<IActionResult> GetEmployeeReceivables(
+        [FromQuery] Guid? companyId, [FromQuery] bool includeRecovered = false, CancellationToken cancellationToken = default)
+    {
+        var tenantId = GetTenantId();
+        var q = _db.PayrollEmployeeReceivables.AsNoTracking().Where(r => r.TenantId == tenantId);
+        if (companyId.HasValue) q = q.Where(r => r.CompanyId == companyId || r.CompanyId == null);
+        if (!includeRecovered) q = q.Where(r => r.Status != PayrollReceivableStatuses.Recovered);
+        var rows = await q.OrderBy(r => r.CreatedAtUtc).ToListAsync(cancellationToken);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        return Ok(new
+        {
+            outstandingTotal = Math.Round(rows.Sum(r => r.Amount - r.RecoveredAmount), 2),
+            unattributedTotal = Math.Round(rows.Where(r => r.Status == PayrollReceivableStatuses.Unattributed)
+                                               .Sum(r => r.Amount - r.RecoveredAmount), 2),
+            note = "Recovery is netted into a run only when that run sets netsPriorReceivable=true, capped at the " +
+                   "employee's net before recovery, and it CREDITS 1420 (not a payable). A residual is carried here " +
+                   "and ages — it is never forgiven.",
+            rows = rows.Select(r => new
+            {
+                r.Id, r.EmployeeId, r.EmployeeCode, r.SourceRunId, r.EventType, r.Period,
+                r.Amount, r.RecoveredAmount, outstanding = Math.Round(r.Amount - r.RecoveredAmount, 2),
+                r.Status, r.RecoveredByRunId, r.CreatedAtUtc,
+                ageDays = today.DayNumber - DateOnly.FromDateTime(r.CreatedAtUtc).DayNumber,
+            }).ToList(),
+        });
+    }
+
+    /// <summary>
+    /// POD-C3 — appends the proration narrative to a component's display name, e.g.
+    /// "Basic salary (18/30 days · 30-day month · joined 2026-11-13)".
+    ///
+    /// <para>Requirement 7: an employee and an auditor must both be able to see WHY the number is what it
+    /// is. Because the note is EMPTY for anyone employed the whole period, this is the identity function
+    /// on every existing payslip — which is what lets it be applied on both the legacy emission block and
+    /// the component engine's output without changing either.</para>
+    /// </summary>
+    private static string WithProrationNote(string name, string note)
+        => string.IsNullOrEmpty(note) ? name : $"{name} ({note})";
+
     private void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source) =>
         _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source });
 
@@ -5055,8 +6620,74 @@ public class PayrollController : ControllerBase
             "TRANSPORT"        => "EARN:TRANSPORT",
             "OTHER_ALLOWANCES" => "EARN:OTHER_ALLOWANCES",
             "OVERTIME"         => "EARN:OVERTIME",
+            // POD-C3 — arrears are the SAME expense as the component they settle, just paid late. Routing
+            // them to EARN:OTHER (5099) would move a retro basic-salary increase out of Basic Salary
+            // Expense and quietly distort every payroll cost report. The GL stays balanced either way —
+            // this is about the expense landing in the account it belongs to.
+            PayrollArrearsComponents.Basic           => "EARN:BASIC",
+            PayrollArrearsComponents.Housing         => "EARN:HOUSING",
+            PayrollArrearsComponents.Transport       => "EARN:TRANSPORT",
+            PayrollArrearsComponents.OtherAllowances => "EARN:OTHER_ALLOWANCES",
+            // POD-C1 — the termination settlement's own earnings. Before this pod there was no
+            // end-of-service account in the catalog at all, so gratuity had nowhere to land but 5099
+            // Other Earnings — if it ever reached the GL, which it did not.
+            FinalSettlementComponents.Gratuity        => "EARN:EOSB",
+            FinalSettlementComponents.LeaveEncashment => "EARN:LEAVE_ENCASHMENT",
+            FinalSettlementComponents.NoticePay       => "EARN:NOTICE_PAY",
             _                  => "EARN:OTHER",
         };
+
+    /// <summary>
+    /// POD-C3-FIX — the ONE earning-driver resolution both the posted journal and the on-screen preview
+    /// use. Extracted because the two call sites previously did
+    /// <c>ResolveDriverForComponent(...)?.Key ?? EarningDriverKey(...)</c> inline, and that composition
+    /// silently DEFEATED the arrears routing above on every provisioned tenant:
+    ///
+    /// <para><c>EARN:BASIC</c> is seeded <c>Exact "BASIC"</c> (FinanceGl.cs:166) so it does NOT match
+    /// <c>ARREARS_BASIC</c>; the catch-all <c>EARN:OTHER</c> is seeded <c>Any</c> (FinanceGl.cs:171) and
+    /// therefore does. A persisted driver is preferred over the compiled switch, so a retro basic-salary
+    /// increase landed in <c>5099 Other Earnings</c> for every tenant that has gl_drivers rows — i.e.
+    /// every tenant created through <c>GlDriverSeeder</c>. The journal still balanced; the EXPENSE was in
+    /// the wrong account, which is precisely what the switch above says must not happen.</para>
+    ///
+    /// <para><b>The rule, in precedence order.</b>
+    /// <list type="number">
+    /// <item>A driver that CLAIMS the arrears code by a specific predicate (Exact/Prefix/Suffix) wins
+    /// outright — that is a tenant deliberately giving retro pay its own account, a shipped capability
+    /// (GlPhase2Tests.cs:226), and this pod must not take it away.</item>
+    /// <item>Otherwise an <c>ARREARS_*</c> code resolves EXACTLY AS THE COMPONENT IT SETTLES resolves —
+    /// through the tenant's own driver for BASIC/HOUSING/TRANSPORT/OTHER_ALLOWANCES, and therefore
+    /// through any account remap applied to it. Deliberately NOT four new seeded driver keys: a tenant
+    /// who remapped <c>EARN:BASIC</c> to their own chart would then have arrears keep posting to the
+    /// seeded 5001 — the same divergence in a new disguise. Following the source component's driver is
+    /// correct by construction and needs no data migration.</item>
+    /// <item>Everything else is unchanged: persisted driver, else the compiled switch.</item>
+    /// </list></para>
+    /// </summary>
+    private static string EarningDriverKeyFor(IReadOnlyList<GlDriverRow> drivers, string componentCode, string source)
+    {
+        var direct = ResolveDriverForComponent(drivers, componentCode, source, GlDriverCategories.Earning);
+        if (direct is not null && direct.MatchMode != GlDriverMatchModes.Any) return direct.Key;
+
+        // ── POD-C1 — the SAME defect, one pod later, and it would have been silent ────────────────────
+        // EARN:OTHER is seeded `Any` with MatchSource = null (FinanceGl.cs), so on every tenant that HAS
+        // gl_drivers rows but has not re-run POST /api/finance/gl/seed-defaults since this pod — i.e. all
+        // ~55 on day one, because GlDriverSeeder is add-only and runs only when invoked — it MATCHES
+        // EOSB_GRATUITY / LEAVE_ENCASHMENT / NOTICE_PAY, `direct` is non-null, and the compiled switch
+        // below is never consulted. The gratuity would land in 5099 Other Earnings, the journal would
+        // still balance, and nothing would report it. Adding the codes to EarningDriverKey alone is dead
+        // code on that path; this branch is what makes it live. A tenant that deliberately gave the
+        // settlement its own account by a SPECIFIC predicate still wins — that is the rule above.
+        if (FinalSettlementComponents.IsSettlementEarning(componentCode))
+            return EarningDriverKey(componentCode, source);
+
+        var settles = PayrollArrearsComponents.SourceComponent(componentCode);
+        if (!string.Equals(settles, componentCode, StringComparison.Ordinal))
+            return ResolveDriverForComponent(drivers, settles, source, GlDriverCategories.Earning)?.Key
+                   ?? EarningDriverKey(settles, source);
+
+        return direct?.Key ?? EarningDriverKey(componentCode, source);
+    }
 
     /// <summary>
     /// Deduction component group → GL driver key. Also reports the employer side
@@ -5073,8 +6704,48 @@ public class PayrollController : ControllerBase
             ("Loan", _)          => "DED:LOAN",
             ("Attendance", _)    => "DED:ATTENDANCE",
             ("Leave", _)         => "DED:LEAVE",
-            _ => componentCode == "FIXED_DEDUCTION" ? "DED:FIXED_DEDUCTION" : "DED:OTHER",
+            // POD-C3 — recovery of a prior void's disbursed net pay CREDITS the 1420 receivable, so it
+            // must never fall through to DED:OTHER (2199): crediting a payable nobody owes would leave
+            // 1420 ageing forever, which is precisely the defect B3 handed to C3.
+            ("Recovery", _)      => "DED:RECEIVABLE_RECOVERY",
+            // POD-C1 — a settlement-side deduction (notice shortfall under Art. 75/76, other final
+            // deductions) is NOT a debt owed to a third party: it REDUCES what the employer owes. Routing
+            // it to DED:OTHER (2199) would credit a payable that RemitGroups.ForSource has no remittance
+            // path for, so it would age on the balance sheet forever with nothing able to clear it — the
+            // same shape of defect POD-C3 fixed for the 1420 recovery. It credits a CONTRA-EXPENSE (5113)
+            // instead, so net employment cost is right and every account this pod touches returns to zero.
+            (FinalSettlementComponents.SettlementSource, _) => "DED:SETTLEMENT_RECOVERY",
+            _ => componentCode switch
+            {
+                "FIXED_DEDUCTION"     => "DED:FIXED_DEDUCTION",
+                PayrollRecoveryComponents.ReceivableRecovery => "DED:RECEIVABLE_RECOVERY",
+                FinalSettlementComponents.NoticeShortfall    => "DED:SETTLEMENT_RECOVERY",
+                FinalSettlementComponents.OtherDeduction     => "DED:SETTLEMENT_RECOVERY",
+                _                     => "DED:OTHER",
+            },
         };
+    }
+
+    /// <summary>
+    /// POD-C1 — the deduction-side twin of <see cref="EarningDriverKeyFor"/>'s precedence rule, shared by
+    /// the posted journal and the on-screen preview.
+    ///
+    /// <para>DED:OTHER is seeded <c>Any</c> with <c>MatchSource = null</c> (FinanceGl.cs), so on any tenant
+    /// with gl_drivers rows that has not re-seeded since this pod it CLAIMS <c>NOTICE_SHORTFALL</c> and
+    /// <c>SETTLEMENT_DED_OTHER</c> and sends them to 2199 — a payable nothing ever clears. Nulling an
+    /// <c>Any</c>-mode claim on a settlement deduction code drops the caller through to the compiled
+    /// switch, which routes it to the contra-expense. A driver that claims the code by a SPECIFIC
+    /// predicate (Exact/Prefix/Suffix) is a deliberate tenant decision and still wins.</para>
+    /// </summary>
+    private static GlDriverRow? ResolveDeductionDriverRow(
+        IReadOnlyList<GlDriverRow> drivers, string componentCode, string source)
+    {
+        var row = ResolveDriverForComponent(drivers, componentCode, source, GlDriverCategories.Deduction);
+        if (row is not null && row.MatchMode == GlDriverMatchModes.Any
+            && FinalSettlementComponents.IsSettlementDeduction(componentCode)
+            && !string.Equals(row.Key, "DED:SETTLEMENT_RECOVERY", StringComparison.Ordinal))
+            return null;
+        return row;
     }
 
     // POD-B1b — the driver routing + company-first account resolution that used to live here as private
@@ -5158,11 +6829,27 @@ public class PayrollController : ControllerBase
         // custom Phase-2 Earning driver (a shipped feature — ResolveDriverForComponent matches e.g.
         // BONUS_EID by Exact/Prefix/Suffix) and collapsed per-component detail into a single line.
         var deferredBonusGroups = new List<(string Code, string Driver, decimal Amount)>();
+        // POD-C1 — a settlement's earnings were ALREADY expensed when the settlement was approved
+        // (DR 5110/5111/5112 / CR 2320). This run PAYS it, so the correct debit is the payable's own
+        // stored account, not a second expense. Identical doctrine to the bonus clearing above; the plan
+        // is capped by the outstanding payable AND by the run's own settlement earning total, so a
+        // settlement injected into a run with no accrual is still expensed here and the journal always
+        // balances.
+        var settlementClearings = gl.SettlementClearings;
+        var clearsSettlement = settlementClearings.Count > 0;
+        decimal settlementEarningTotal = 0m;
+        var deferredSettlementGroups = new List<(string Code, string Driver, decimal Amount)>();
         foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
         {
             var src = grp.First().Source;
-            var driverKey = ResolveDriverForComponent(gl.Drivers, grp.Key, src, GlDriverCategories.Earning)?.Key
-                            ?? EarningDriverKey(grp.Key, src);
+            var driverKey = EarningDriverKeyFor(gl.Drivers, grp.Key, src);
+            if (clearsSettlement && src == FinalSettlementComponents.SettlementSource)
+            {
+                var settlementAmount = grp.Sum(e => e.Amount);
+                settlementEarningTotal += settlementAmount;
+                deferredSettlementGroups.Add((grp.Key, driverKey, settlementAmount));
+                continue;   // re-emitted below as payable clearing + un-accrued remainder
+            }
             if (clearsBonusAccrual && src == "Bonus")
             {
                 var bonusAmount = grp.Sum(e => e.Amount);
@@ -5274,13 +6961,68 @@ public class PayrollController : ControllerBase
             }
         }
 
+        // ── POD-C1: the settlement payable clearing ───────────────────────────────────────────────────
+        // DR the payable once per settlement. EventType is SettlementPayrollClearing (NOT Accrual) and the
+        // settlement id rides in SourceEntityRef, so FinalSettlementGlLedger can tell exactly how much of
+        // each payable this run consumed. It is an ORIGINATING journal, so a run void contras it like any
+        // other payroll line (GlEventTypes.IsOriginatingPayrollJournal) and 2320 automatically re-opens —
+        // which is precisely what lets the settlement be re-disbursed on a fresh OffCycle run.
+        if (clearsSettlement)
+        {
+            decimal clearedSettlement = 0m;
+            foreach (var c in settlementClearings)
+            {
+                if (c.Amount <= 0m) continue;
+                clearedSettlement += c.Amount;
+                lines.Add(new FinanceGlEntry
+                {
+                    TenantId = tenantId, CompanyId = c.CompanyId ?? gl.CompanyId,
+                    SourceModule = "Payroll", SourceEntityId = runId,
+                    SourceEntityRef = FinalSettlementGlDescriptions.SettlementRef(c.SettlementId),
+                    EventType = GlEventTypes.SettlementPayrollClearing,
+                    DebitAccount = c.PayableAccount, CreditAccount = string.Empty,
+                    Amount = c.Amount, Currency = currency,
+                    EntryDate = today, Period = period,
+                    Description = $"{FinalSettlementGlDescriptions.PayrollClearingPrefix}{c.SettlementId}",
+                    PostedBy = postedBy, PostedByName = postedByName,
+                });
+            }
+            // Whatever the run pays that no live payable covers is a genuine expense of this run, debited
+            // to each component's OWN driver (never one collapsed line), so a settlement paid without an
+            // accrual — a seeder, a legacy fixture — behaves exactly like an ordinary earning.
+            var settlementRemainder = Math.Round(settlementEarningTotal - clearedSettlement, 2);
+            if (settlementRemainder > 0m && deferredSettlementGroups.Count > 0 && settlementEarningTotal > 0m)
+            {
+                var ordered = deferredSettlementGroups.OrderBy(g => g.Code, StringComparer.Ordinal).ToList();
+                var slice = settlementRemainder;
+                for (var i = 0; i < ordered.Count; i++)
+                {
+                    var share = i == ordered.Count - 1
+                        ? slice
+                        : Math.Min(slice, Math.Round(settlementRemainder * (ordered[i].Amount / settlementEarningTotal), 2));
+                    slice = Math.Round(slice - share, 2);
+                    if (share <= 0m) continue;
+                    lines.Add(new FinanceGlEntry
+                    {
+                        TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
+                        SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                        DebitAccount = Account(ordered[i].Driver), CreditAccount = string.Empty,
+                        Amount = share, Currency = currency,
+                        EntryDate = today, Period = period,
+                        Description = $"Payroll earning: {ordered[i].Code} (un-accrued)",
+                        PostedBy = postedBy, PostedByName = postedByName,
+                    });
+                }
+            }
+        }
+
         // ── Deductions (Credit side) ──────────────────────────────────────────
         // Employer-expense pairs accumulate per paired-expense driver key so a client-defined pair
         // (via a custom driver) balances the same way the system DED:STATUTORY_ER row does.
         var employerExpenseByPairKey = new Dictionary<string, decimal>(StringComparer.Ordinal);
         foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
         {
-            var driverRow = ResolveDriverForComponent(gl.Drivers, grp.Key.ComponentCode, grp.Key.Source, GlDriverCategories.Deduction);
+            var driverRow = ResolveDeductionDriverRow(gl.Drivers, grp.Key.ComponentCode, grp.Key.Source);
             string driver;
             bool isEmployerSide;
             string pairKey;
@@ -5826,87 +7568,1006 @@ public class PayrollController : ControllerBase
         });
     }
 
-    /// <summary>Final settlement calculator: pro-rata salary + EOSB + leave encashment - notice deduction.</summary>
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+    //  POD-C1 — THE TERMINATION SETTLEMENT PIPELINE
+    //
+    //  POD-A2 made the end-of-service NUMBER authoritative and left this half open: /final-settlement
+    //  persisted no payable, posted no GL and produced no payment. It computed a pro-rata wage from
+    //  scratch (a naive day-of-month fraction that ignored ProrationCalculator, the proration policy and
+    //  the joining date), an encashment it never wrote back to the leave balance, and a notice deduction
+    //  it applied without asking who terminated — then returned JSON and one audit line. Every leaver was
+    //  settled by spreadsheet plus a manual bank transfer.
+    //
+    //  The endpoint keeps its URL and returns a SUPERSET of its old body (every field at the same path),
+    //  so no consumer breaks — but it now PERSISTS a first-class, auditable payable that is approved,
+    //  accrued to 2320, disbursed through an OffCycle run + payment batch, and cleared by POD-B1's
+    //  ordinary net-pay settlement. Zero spreadsheets, zero manual journals.
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Computes and PERSISTS a leaver's final settlement as a Draft payable (idempotent per offboarding).
+    /// </summary>
     [HttpPost("final-settlement")]
     [HasPermission("payroll.approve")]
     public async Task<IActionResult> FinalSettlement([FromBody] FinalSettlementRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
-        var employee = await _db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == req.EmployeeId && !e.IsDeleted, cancellationToken);
+        var employee = await _db.Employees.AsNoTracking()
+            .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == req.EmployeeId && !e.IsDeleted, cancellationToken);
         if (employee is null) return NotFound(new { message = "Employee not found." });
 
-        var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.IsActive && x.EffectiveDate <= req.LastWorkingDay)
-            .OrderByDescending(x => x.EffectiveDate)
+        // ── GUARD 2: CANNOT SETTLE SOMEONE WHO IS NOT ACTUALLY LEAVING ───────────────────────────────
+        // Pre-C1 this endpoint would happily "settle" a fully Active employee with no offboarding record
+        // at all — there was no leaver check anywhere in the method. The last working day is taken FROM
+        // THE OFFBOARDING RECORD, never from the request body, so a caller cannot invent one.
+        var offboarding = await _db.EmployeeOffboardings.AsNoTracking()
+            .Where(o => o.TenantId == tenantId && o.EmployeeId == req.EmployeeId && o.Status != "Cancelled")
+            .OrderByDescending(o => o.CreatedAtUtc)
             .FirstOrDefaultAsync(cancellationToken);
-        var basicSalary    = salary?.BasicSalary ?? employee.Salary ?? 0m;
-        var grossSalary    = basicSalary + (salary?.HousingAllowance ?? 0m) + (salary?.TransportAllowance ?? 0m)
-                           + (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
-        var currency       = !string.IsNullOrWhiteSpace(salary?.Currency) ? salary!.Currency : await ResolveCurrencyAsync(tenantId, cancellationToken);
+        if (offboarding is null || offboarding.LastWorkingDay == default)
+            return BadRequest(new
+            {
+                error   = "not_a_leaver",
+                message = $"{employee.FullName} has no active offboarding record with a last working day, so there " +
+                          "is nothing to settle. Raise the offboarding (POST /api/offboarding) first — the last " +
+                          "working day is taken from that record and never from this request.",
+                employeeId = req.EmployeeId,
+            });
 
-        // Pro-rata salary for partial month
-        var lastDay        = req.LastWorkingDay;
-        var daysInMonth    = DateTime.DaysInMonth(lastDay.Year, lastDay.Month);
-        var dailyGross     = grossSalary / daysInMonth;
-        var proRataSalary  = Math.Round(dailyGross * lastDay.Day, 2);
+        // ── F8: EXPLICIT COMPANY RESOLUTION ──────────────────────────────────────────────────────────
+        // A null CompanyId would silently change which GlAccountMapping overrides apply and which
+        // period-close row binds, so it is resolved server-side exactly the way a payroll run resolves it
+        // and refused rather than guessed.
+        var (settlementCompanyId, companyError) = await ResolveSettlementCompanyAsync(tenantId, employee, cancellationToken);
+        if (companyError is not null) return UnprocessableEntity(companyError);
 
-        // EOSB / Gratuity — routed through the SAME single authoritative engine as
-        // /eosb/calculate (ComputeEndOfServiceAsync → country-pack IEndOfServiceCalculator).
-        // The old inline flat-fraction formula (½-then-1 rule mis-implemented as a flat
-        // fraction on TOTAL years, with no Art.85 resignation discount) is DELETED. Reason
-        // precedence and the pack's Art.80/84/85 tiers now own every EOSB figure, so equal
-        // (basic, dates, reason, country) yield byte-identical results on both endpoints.
-        var gcc = await _db.GCCComplianceSettings.AsNoTracking().Where(x => x.TenantId == tenantId).FirstOrDefaultAsync(cancellationToken);
-        var calcDate = lastDay.ToDateTime(TimeOnly.MinValue);
-        var terminationReason = await ResolveTerminationReasonAsync(tenantId, req.EmployeeId, req.TerminationReason, cancellationToken);
+        // ── OPEN ITEM: FAIL LOUD WHEN EOSB IS NOT ENABLED ────────────────────────────────────────────
+        // /eosb/calculate refuses outright when EosbEnabled is false while the pre-C1 /final-settlement
+        // silently computed ZERO gratuity. That asymmetry was survivable while the figure was only
+        // displayed; accruing a real payable with a silent zero gratuity is not.
+        var gcc = await _db.GCCComplianceSettings.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
+        if (gcc is null || !gcc.EosbEnabled)
+            return UnprocessableEntity(new
+            {
+                error   = "eosb_not_enabled",
+                message = "End-of-service is not enabled for this tenant, so a settlement would accrue a payable " +
+                          "with a silent ZERO gratuity. Enable EOSB in GCC Settings (or record the amount as an " +
+                          "explicit other-dues line) before settling.",
+            });
 
-        decimal eosbAmount = 0m;
-        double totalYears = (calcDate - employee.JoiningDate).Days / 365.0;
-        // EOSB is computed only when the tenant has a country pack configured AND EOSB enabled —
-        // matching /eosb/calculate, which refuses when EOSB is not enabled. (Behavior change vs
-        // the old path, which computed a UAE-style figure even with no GCC row / EOSB disabled;
-        // flagged for the lead. The rest of the settlement still computes regardless.)
-        if (gcc is not null && gcc.EosbEnabled)
+        var existing = await _db.EmployeeFinalSettlements
+            .Where(s => s.TenantId == tenantId && s.OffboardingId == offboarding.Id
+                     && s.Status != FinalSettlementStatuses.Cancelled)
+            .FirstOrDefaultAsync(cancellationToken);
+        // ── GUARD 1: CANNOT SETTLE TWICE ─────────────────────────────────────────────────────────────
+        // A Draft/PendingApproval settlement is RE-COMPUTED in place (the operator is still iterating);
+        // once it has accrued, it is immutable and must be cancelled (which contras the journal) first.
+        if (existing is not null && FinalSettlementStatuses.HasAccrued(existing.Status))
+            return Conflict(new
+            {
+                error   = "settlement_already_exists",
+                message = $"A settlement for this separation already exists in '{existing.Status}' status and has " +
+                          "posted its accrual journal. Cancel it (which posts the contra) before computing a new one.",
+                settlementId = existing.Id,
+                status       = existing.Status,
+            });
+
+        var plan = await BuildFinalSettlementPlanAsync(
+            tenantId, employee, offboarding, gcc, settlementCompanyId, req, cancellationToken);
+
+        var settlement = existing ?? new EmployeeFinalSettlement
         {
-            var (eosbResult, svcYears) = await ComputeEndOfServiceAsync(
-                gcc, basicSalary, employee.JoiningDate, calcDate, terminationReason, employee, cancellationToken);
-            eosbAmount = Math.Round(eosbResult.TotalGratuity, 2);
-            totalYears = svcYears;
+            TenantId = tenantId,
+            CompanyId = settlementCompanyId,
+            EmployeeId = employee.Id,
+            OffboardingId = offboarding.Id,
+            CreatedByUserId = GetUserId(),
+            CreatedByName = GetUserName(),
+        };
+        ApplyPlan(settlement, plan);
+        if (existing is null) _db.EmployeeFinalSettlements.Add(settlement);
+        else
+        {
+            _db.FinalSettlementLines.RemoveRange(
+                _db.FinalSettlementLines.Where(l => l.TenantId == tenantId && l.SettlementId == settlement.Id));
+            settlement.UpdatedAtUtc = DateTime.UtcNow;
+        }
+        var lineRows = plan.Lines.Select((l, i) =>
+        {
+            l.TenantId = tenantId;
+            l.SettlementId = settlement.Id;
+            l.SortOrder = i;
+            return l;
+        }).ToList();
+        _db.FinalSettlementLines.AddRange(lineRows);
+
+        // The Draft EOSBCalculation is PROMOTED rather than left dangling: /eosb/calculate upserts one per
+        // (tenant, employee) and nothing has ever advanced its Status, so every tenant carries an
+        // ever-growing pile of Drafts that mean nothing. Linking it makes the settlement the thing that
+        // finally gives that row a lifecycle.
+        var draftEosb = await _db.EOSBCalculations
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.Status == "Draft", cancellationToken);
+        if (draftEosb is not null)
+        {
+            settlement.EosbCalculationId = draftEosb.Id;
+            draftEosb.CalculationDate = plan.LastWorkingDay;
+            draftEosb.EligibleSalary = plan.BasicWage;
+            draftEosb.CalculatedAmount = plan.GratuityAmount;
         }
 
-        // Leave encashment: remaining balance × daily gross (30-day basis)
-        var leaveBalances = await _db.EmployeeLeaveBalances.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.Year == lastDay.Year)
+        // Every transition routes through POD-A3's hash-chained helper. /eosb/calculate wrote NOTHING to
+        // that chain at all before this pod; a settlement is a payable, so every step of its life is now
+        // tamper-evident with an actor.
+        await PayrollAudit("payroll.final_settlement.drafted", "EmployeeFinalSettlement", settlement.Id.ToString(), new
+        {
+            employeeId = employee.Id, employee.EmployeeCode,
+            offboardingId = offboarding.Id,
+            lastWorkingDay = plan.LastWorkingDay, plan.TerminationReason,
+            gross = plan.GrossPayable, deductions = plan.TotalDeductions, net = plan.NetPayable,
+            gratuity = plan.GratuityAmount, encashment = plan.LeaveEncashmentAmount,
+            noticePay = plan.NoticePayAmount, noticeShortfall = plan.NoticeShortfallDeduction,
+            unpaidWages = plan.UnpaidWagesAmount, wagesPaidByRunId = plan.WagesPaidByRunId,
+            wageBaseDelta = plan.WageBaseDeltaAmount,
+            recomputed = existing is not null,
+        }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return Ok(ProjectSettlement(settlement, lineRows, plan));
+    }
+
+    /// <summary>POD-C1 — every settlement for the tenant, newest first, with the Art. 88 overdue flag.</summary>
+    [HttpGet("final-settlements")]
+    [HasPermission("payroll.read")]
+    public async Task<IActionResult> ListFinalSettlements(
+        [FromQuery] int? employeeId, [FromQuery] string? status, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var q = _db.EmployeeFinalSettlements.AsNoTracking().Where(s => s.TenantId == tenantId);
+        if (employeeId.HasValue) q = q.Where(s => s.EmployeeId == employeeId.Value);
+        if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
+        var rows = await q.OrderByDescending(s => s.CreatedAtUtc).ToListAsync(cancellationToken);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        return Ok(new
+        {
+            outstandingTotal = Math.Round(rows
+                .Where(s => s.Status is FinalSettlementStatuses.Approved or FinalSettlementStatuses.Disbursing)
+                .Sum(s => s.NetPayable), 2),
+            note = "A settlement is a PAYABLE from the moment it is approved (DR expense / CR 2320) and is " +
+                   "cleared by the ordinary payroll net-pay settlement when the disbursing run's payment " +
+                   "batch is paid. [FLAG-COMPLIANCE-KSA] settlementDueDate applies KSA Labour Law Art. 88 " +
+                   "(one week from the end of the contract; two weeks where the WORKER terminated it).",
+            rows = rows.Select(s => new
+            {
+                s.Id, s.EmployeeId, s.EmployeeCode, s.EmployeeName, s.CompanyId, s.OffboardingId,
+                s.LastWorkingDay, s.SettlementDueDate, s.TerminationReason, s.Status, s.Currency,
+                s.GratuityAmount, s.LeaveEncashmentAmount, s.LeaveEncashmentDays, s.NoticePayAmount,
+                s.OtherDuesAmount, s.NoticeShortfallDeduction, s.OtherDeductionsAmount,
+                s.GrossPayable, s.TotalDeductions, s.NetPayable,
+                s.PayrollRunId, s.PaymentBatchId, s.PaidAtUtc, s.GlPostedAtUtc, s.GlPeriod,
+                s.ResidualDebtReclassed, s.ResidualDebtUnbooked,
+                isOverdue = s.Status != FinalSettlementStatuses.Paid
+                         && s.Status != FinalSettlementStatuses.Cancelled
+                         && s.SettlementDueDate < today,
+                overdueDays = s.Status is FinalSettlementStatuses.Paid or FinalSettlementStatuses.Cancelled
+                    ? 0
+                    : Math.Max(0, today.DayNumber - s.SettlementDueDate.DayNumber),
+            }).ToList(),
+        });
+    }
+
+    /// <summary>POD-C1 — one settlement with its full component breakdown and the A2 EOSB result.</summary>
+    [HttpGet("final-settlements/{id:guid}")]
+    [HasPermission("payroll.read")]
+    public async Task<IActionResult> GetFinalSettlement(Guid id, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var s = await _db.EmployeeFinalSettlements.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (s is null) return NotFound();
+        var lines = await _db.FinalSettlementLines.AsNoTracking()
+            .Where(l => l.TenantId == tenantId && l.SettlementId == id)
+            .OrderBy(l => l.SortOrder)
             .ToListAsync(cancellationToken);
-        var leaveBalanceDays = Math.Max(0m, leaveBalances.Sum(b => b.Accrued + b.CarriedForward + b.ManualAdjustment - b.Used - b.Pending - b.Encashed - b.Expired));
-        var leaveEncashment  = Math.Round(leaveBalanceDays * grossSalary / 30m, 2);
+        return Ok(ProjectSettlement(s, lines, null));
+    }
 
-        // Notice period deduction for days short
-        var noticePeriodDeduction = Math.Round(req.NoticePeriodDaysShort * grossSalary / 30m, 2);
+    /// <summary>POD-C1 — Draft → PendingApproval. Maker/checker: the approver may not be the creator.</summary>
+    [HttpPost("final-settlements/{id:guid}/submit")]
+    [HasPermission("payroll.write")]
+    public async Task<IActionResult> SubmitFinalSettlement(Guid id, [FromBody] PayrollReasonRequest? req, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var s = await _db.EmployeeFinalSettlements
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (s is null) return NotFound();
+        if (s.Status != FinalSettlementStatuses.Draft)
+            return BadRequest(new
+            {
+                error   = "invalid_transition",
+                message = $"Only a Draft settlement can be submitted for approval (current: '{s.Status}').",
+                status  = s.Status,
+            });
+        s.Status = FinalSettlementStatuses.PendingApproval;
+        s.SubmittedByUserId = GetUserId();
+        s.SubmittedByName = GetUserName();
+        s.SubmittedAtUtc = DateTime.UtcNow;
+        s.UpdatedAtUtc = DateTime.UtcNow;
+        await PayrollAudit("payroll.final_settlement.submitted", "EmployeeFinalSettlement", s.Id.ToString(),
+            new { s.EmployeeId, s.NetPayable, reason = req?.Reason }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new { settlementId = s.Id, status = s.Status });
+    }
 
-        var totalPayable = proRataSalary + eosbAmount + leaveEncashment - noticePeriodDeduction;
+    /// <summary>
+    /// POD-C1 — APPROVE: the moment the settlement becomes a real liability. Posts the balanced accrual
+    /// journal (post-once, period-close guarded) and moves the settlement to Approved so a settlement-purpose
+    /// payroll run can disburse it.
+    /// </summary>
+    [HttpPost("final-settlements/{id:guid}/approve")]
+    [HasPermission("payroll.approve")]
+    public async Task<IActionResult> ApproveFinalSettlement(
+        Guid id, [FromBody] ApproveFinalSettlementRequest req, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var s = await _db.EmployeeFinalSettlements
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (s is null) return NotFound();
+        if (s.Status is not (FinalSettlementStatuses.Draft or FinalSettlementStatuses.PendingApproval))
+            return BadRequest(new
+            {
+                error   = "invalid_transition",
+                message = $"Only a Draft or PendingApproval settlement can be approved (current: '{s.Status}').",
+                status  = s.Status,
+            });
 
-        await PayrollAudit("payroll.final_settlement.calculated", "Employee", req.EmployeeId.ToString(), new { lastWorkingDay = req.LastWorkingDay, totalPayable }, cancellationToken);
+        // Segregation of duties, mirroring the payroll run's own approve gate.
+        var actorId = GetUserId();
+        if (actorId is Guid aid && s.CreatedByUserId == aid && !req.AcknowledgeSelfApproval)
+            return UnprocessableEntity(new
+            {
+                error   = "self_approval",
+                message = "The person who computed a settlement should not also approve it. Have a second " +
+                          "approver sign it off, or pass acknowledgeSelfApproval=true to record that you did both.",
+            });
+
+        // ── K2: THE TERMINATION REASON IS A LEGAL DETERMINATION, NOT A DEFAULT ───────────────────────
+        // EmployeeOffboarding.SeparationType DEFAULTS to "Resignation", and ResolveTerminationReasonAsync
+        // takes it as authoritative — so a record saved without changing the default pays a genuinely
+        // TERMINATED employee ⅓ (or nil) of their statutory Art.84 award via the Art.85 scale, and C1 would
+        // now disburse it. Approve therefore refuses until the approver restates the reason EXACTLY.
+        if (!string.Equals(req.ConfirmTerminationReason?.Trim(), s.TerminationReason, StringComparison.Ordinal))
+            return UnprocessableEntity(new
+            {
+                error   = "termination_reason_confirmation_required",
+                message = "Confirm the separation reason before approving. It drives the KSA Art.84/85/80 award " +
+                          "(Art.80 dismissal forfeits the gratuity entirely; an Art.85 resignation is reduced to " +
+                          "nil / ⅓ / ⅔ by tenure), and EmployeeOffboarding.SeparationType DEFAULTS to " +
+                          "'Resignation' — so an untouched default silently discounts a real termination. " +
+                          "Re-send with confirmTerminationReason set to the resolved reason. [FLAG-COMPLIANCE-KSA]",
+                resolvedTerminationReason = s.TerminationReason,
+                appliedRule = SafeEosbRule(s.EosbResultJson),
+                breakdown   = SafeEosbBreakdown(s.EosbResultJson),
+            });
+
+        // ── K3: THE ART. 84 WAGE BASE ────────────────────────────────────────────────────────────────
+        // The pack computes gratuity on the LAST BASIC wage; POD-A2 documented that as a per-company FLOOR,
+        // not the statutory "last wage" (basic + regular allowances). A displayed shortfall was advisory;
+        // a DISBURSED one is underpayment of a statutory entitlement, evidenced by the employer's own
+        // signed settlement. Non-zero delta requires an explicit, RECORDED acknowledgement.
+        if (s.WageBaseDeltaAmount > 0.01m && !req.AcknowledgeWageBaseFloor)
+            return UnprocessableEntity(new
+            {
+                error   = "wage_base_floor_requires_acknowledgement",
+                message = $"This settlement pays gratuity on the BASIC wage only. Computed on the full package " +
+                          $"(basic + allowances) it would be {s.WageBaseDeltaAmount:N2} {s.Currency} HIGHER. KSA " +
+                          "Labour Law Art. 84 measures the award on the LAST WAGE, which the courts read as " +
+                          "including regular allowances — so approving this disburses a known potential shortfall. " +
+                          "Either raise the settlement (add the difference as an other-dues line), or re-send with " +
+                          "acknowledgeWageBaseFloor=true to record who accepted the company floor. " +
+                          "[FLAG-COMPLIANCE-KSA]",
+                wageBaseDelta = s.WageBaseDeltaAmount,
+                currency = s.Currency,
+            });
+
+        // ── GUARD 4: THE WAGE SIDE MUST BE DONE (the POD-C3 seam, as an assertion) ───────────────────
+        // C3 pays a leaver through their last working day inside the ordinary run and stamps
+        // PayrollSlip.IsFinalWageMonth. This settlement carries UnpaidWagesAmount at ZERO in GrossPayable
+        // on the strength of that. If the slip does not exist the wage is genuinely unpaid, and approving
+        // silently would leave the leaver short by a whole final month.
+        if (s.WagesPaidByRunId is null && !s.WagesAcknowledgedUnpaid)
+        {
+            if (!req.AcknowledgeWagesUnpaid)
+                return UnprocessableEntity(new
+                {
+                    error   = "final_wage_month_not_paid",
+                    message = $"No non-voided final-wage-month payslip exists for {s.EmployeeName}, so their wages " +
+                              $"through {s.LastWorkingDay:yyyy-MM-dd} have NOT been paid. Process the payroll run " +
+                              "that covers their last working day first (POD-C3 prorates it and stamps the slip), " +
+                              "or re-send with acknowledgeWagesUnpaid=true and a reason to ADD those wages to this " +
+                              "settlement as an explicit other-dues line.",
+                    unpaidWagesEstimate = s.UnpaidWagesAmount,
+                    lastWorkingDay = s.LastWorkingDay,
+                });
+            if (string.IsNullOrWhiteSpace(req.WagesUnpaidReason))
+                return BadRequest(new
+                {
+                    error   = "reason_required",
+                    message = "A reason is required when adding the leaver's unpaid wages to the settlement.",
+                });
+            // Add the wage as a REAL settlement line and record who authorised it. It rides
+            // SETTLEMENT_OTHER, which routes to EARN:OTHER — the same account an ad-hoc final due lands in.
+            var wageAmount = Math.Round(s.UnpaidWagesAmount, 2);
+            if (wageAmount > 0m)
+            {
+                var maxSort = await _db.FinalSettlementLines
+                    .Where(l => l.TenantId == tenantId && l.SettlementId == s.Id)
+                    .Select(l => (int?)l.SortOrder).MaxAsync(cancellationToken) ?? 0;
+                _db.FinalSettlementLines.Add(new FinalSettlementLine
+                {
+                    TenantId = tenantId, SettlementId = s.Id,
+                    ComponentCode = FinalSettlementComponents.OtherDues,
+                    ComponentName = $"Unpaid wages to {s.LastWorkingDay:yyyy-MM-dd}",
+                    LineType = FinalSettlementLineTypes.Earning,
+                    Source = FinalSettlementComponents.SettlementSource,
+                    Amount = wageAmount, SortOrder = maxSort + 1,
+                    Narrative = $"Added at approval — {req.WagesUnpaidReason}",
+                });
+                s.OtherDuesAmount = Math.Round(s.OtherDuesAmount + wageAmount, 2);
+                s.GrossPayable = Math.Round(s.GrossPayable + wageAmount, 2);
+                s.NetPayable = Math.Round(s.GrossPayable - s.TotalDeductions, 2);
+            }
+            s.WagesAcknowledgedUnpaid = true;
+            s.WagesAcknowledgementReason = req.WagesUnpaidReason;
+        }
+
+        // ── B4: NO OVERLAPPING SERVICE WINDOW ────────────────────────────────────────────────────────
+        // Uniqueness is keyed on the OFFBOARDING so a re-hire can be settled again; that alone would let a
+        // re-hire whose JoiningDate was never reset be paid gratuity for service ALREADY settled, because
+        // ComputeEndOfServiceAsync derives service from employee.JoiningDate. The window assertion is what
+        // closes that.
+        var overlapping = await _db.EmployeeFinalSettlements.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == s.EmployeeId && x.Id != s.Id
+                     && x.Status != FinalSettlementStatuses.Cancelled
+                     && x.ServiceStartDate <= s.LastWorkingDay && x.LastWorkingDay >= s.ServiceStartDate)
+            .Select(x => new { x.Id, x.ServiceStartDate, x.LastWorkingDay, x.Status })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (overlapping is not null)
+            return Conflict(new
+            {
+                error   = "service_period_already_settled",
+                message = $"Settlement {overlapping.Id} already covers service from " +
+                          $"{overlapping.ServiceStartDate:yyyy-MM-dd} to {overlapping.LastWorkingDay:yyyy-MM-dd}, " +
+                          $"which overlaps this one ({s.ServiceStartDate:yyyy-MM-dd} → {s.LastWorkingDay:yyyy-MM-dd}). " +
+                          "For a re-hire, reset the employee's joining date to the RE-HIRE date so the gratuity is " +
+                          "computed on the new service period only.",
+                overlappingSettlementId = overlapping.Id,
+                overlappingStatus = overlapping.Status,
+            });
+
+        // ── POST-ONCE (mirrors Lock / SettlePaymentBatch / RemitStatutory verbatim) ──────────────────
+        if (await FinalSettlementGlLedger.HasLiveAccrualAsync(_db, tenantId, s.Id, cancellationToken))
+            return Conflict(new
+            {
+                error   = "already_posted",
+                message = "This settlement's accrual journal has already been posted to GL.",
+                settlementId = s.Id,
+            });
+
+        var accrualDate = req.AccrualDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var glPeriod = $"{accrualDate.Year}-{accrualDate.Month:D2}";
+        // ── GUARD 3: cannot accrue into a CLOSED period ──────────────────────────────────────────────
+        if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, s.CompanyId, glPeriod, cancellationToken))
+            return UnprocessableEntity(new
+            {
+                error   = "gl_period_closed",
+                message = $"GL period {glPeriod} is closed. Reopen it before accruing a settlement into it.",
+                period  = glPeriod, companyId = s.CompanyId,
+            });
+
+        var lines = await _db.FinalSettlementLines.AsNoTracking()
+            .Where(l => l.TenantId == tenantId && l.SettlementId == s.Id)
+            .OrderBy(l => l.SortOrder)
+            .ToListAsync(cancellationToken);
+        // Re-read the just-added unpaid-wage line, which is tracked but not yet saved.
+        var pendingLines = _db.ChangeTracker.Entries<FinalSettlementLine>()
+            .Where(e => e.State == EntityState.Added && e.Entity.SettlementId == s.Id)
+            .Select(e => e.Entity)
+            .ToList();
+        if (pendingLines.Count > 0) lines = lines.Concat(pendingLines).ToList();
+
+        var glCtx = await LoadGlResolutionContextAsync(tenantId, s.CompanyId, cancellationToken);
+
+        // ── THE POD-C2 SEAM ─────────────────────────────────────────────────────────────────────────
+        // Consume whatever POD-C2 has PROVIDED for THIS employee before expensing anything. With no C2 the
+        // cursor is empty, nothing is relieved, and the whole gratuity hits 5110 — which is exactly what a
+        // tenant with no monthly accrual expects. When C2 starts posting DR 5110 / CR 2310 monthly, this
+        // same code consumes the provision first and expenses only the shortfall, with no rework here.
+        // (It is a PER-EMPLOYEE positional sub-ledger, not ControlAccountBalance.AvailableForRelief: that
+        // clamp is for receivables — on a credit-balance LIABILITY it is always 0, and a tenant-wide pool
+        // would let one employee's settlement relieve another employee's provision.)
+        var provisionCursor = await EosbProvisionLedger.LoadCursorAsync(_db, tenantId, s.EmployeeId, cancellationToken);
+        var (provisionPosition, provisionTaken) =
+            provisionCursor.Take(s.EmployeeId, s.CompanyId, s.GratuityAmount);
+
+        var (glLines, dr, cr) = FinalSettlementGlLedger.BuildAccrual(
+            tenantId, s, lines, glPeriod, glCtx, actorId, GetUserName(),
+            provisionTaken, provisionPosition?.ProvisionAccount);
+        if (Math.Abs(dr - cr) > 0.01m)
+            return UnprocessableEntity(new
+            {
+                error = "gl_unbalanced",
+                message = "Final settlement GL is not balanced. Total debits must equal total credits before approving.",
+                totalDebits = dr, totalCredits = cr, difference = Math.Abs(dr - cr),
+            });
+        _db.FinanceGlEntries.AddRange(glLines);
+
+        s.Status = FinalSettlementStatuses.Approved;
+        s.ConfirmedTerminationReason = s.TerminationReason;
+        s.ApprovedByUserId = actorId;
+        s.ApprovedByName = GetUserName();
+        s.ApprovedAtUtc = DateTime.UtcNow;
+        s.GlPostedAtUtc = DateTime.UtcNow;
+        s.GlPeriod = glPeriod;
+        s.UpdatedAtUtc = DateTime.UtcNow;
+        if (req.AcknowledgeWageBaseFloor && s.WageBaseDeltaAmount > 0m)
+        {
+            s.WageBaseAcknowledgedByUserId = actorId;
+            s.WageBaseAcknowledgedByName = GetUserName();
+            s.WageBaseAcknowledgedAtUtc = DateTime.UtcNow;
+        }
+
+        await PayrollAudit("payroll.final_settlement.approved", "EmployeeFinalSettlement", s.Id.ToString(), new
+        {
+            s.EmployeeId, s.EmployeeCode, s.TerminationReason, s.LastWorkingDay,
+            gross = s.GrossPayable, deductions = s.TotalDeductions, net = s.NetPayable,
+            glPeriod, totalDebits = dr, totalCredits = cr,
+            provisionConsumed = provisionTaken, provisionAccount = provisionPosition?.ProvisionAccount,
+            wageBaseDelta = s.WageBaseDeltaAmount,
+            wageBaseAcknowledged = req.AcknowledgeWageBaseFloor,
+            wagesAcknowledgedUnpaid = s.WagesAcknowledgedUnpaid,
+            selfApproved = actorId is Guid a2 && s.CreatedByUserId == a2,
+            reason = req.Reason,
+        }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
 
         return Ok(new
         {
-            employeeId = req.EmployeeId, employeeName = employee.FullName,
-            lastWorkingDay = req.LastWorkingDay, currency,
-            basicSalary, grossSalary,
-            proRataSalary, daysWorkedInMonth = lastDay.Day, daysInMonth,
-            eosbAmount, totalYears = Math.Round(totalYears, 2), terminationReason,
-            leaveBalanceDays, leaveEncashment,
-            noticePeriodDaysShort = req.NoticePeriodDaysShort, noticePeriodDeduction,
-            totalPayable = Math.Round(totalPayable, 2),
-            breakdown = new[]
+            settlementId = s.Id,
+            status = s.Status,
+            glPeriod,
+            totalDebits = dr,
+            totalCredits = cr,
+            provisionConsumed = provisionTaken,
+            netPayable = s.NetPayable,
+            journal = glLines.Select(l => new
             {
-                new { component = "Pro-rata Salary",          amount =  proRataSalary },
-                new { component = "EOSB / Gratuity",          amount =  eosbAmount },
-                new { component = "Leave Encashment",         amount =  leaveEncashment },
-                new { component = "Notice Period Deduction",  amount = -noticePeriodDeduction },
-            }
+                l.EventType, debit = l.DebitAccount, credit = l.CreditAccount, l.Amount, l.Description,
+            }).ToList(),
+            nextStep = "Create an OffCycle run with settlesFinalSettlements=true and includesRecurringPay=false, " +
+                       "add this employee to its selection, then Process → Approve → Lock → payment batch → " +
+                       "WPS/bank acceptance → settle. POD-B1's net-pay settlement clears 2320 like any other payable.",
         });
+    }
+
+    /// <summary>
+    /// POD-C1 — CANCEL: fully unwinds a settlement. An accrued settlement is contra'd (re-opening 2310 and
+    /// closing 2320 to zero) before the status flips, so the books and the operational state can never
+    /// disagree. Refused once a live payroll clearing exists — at that point the correct unwind is POD-B3's
+    /// run void, which contras the clearing and replays the witness to restore the settlement to Approved.
+    /// </summary>
+    [HttpPost("final-settlements/{id:guid}/cancel")]
+    [HasPermission("payroll.approve")]
+    public async Task<IActionResult> CancelFinalSettlement(
+        Guid id, [FromBody] PayrollReasonRequest req, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        if (string.IsNullOrWhiteSpace(req?.Reason))
+            return BadRequest(new { error = "reason_required", message = "A reason is required to cancel a settlement." });
+
+        var s = await _db.EmployeeFinalSettlements
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (s is null) return NotFound();
+        if (s.Status == FinalSettlementStatuses.Cancelled)
+            return Conflict(new { error = "already_cancelled", message = "This settlement is already cancelled." });
+
+        if (await FinalSettlementGlLedger.HasLiveClearingAsync(_db, tenantId, s.Id, cancellationToken))
+            return UnprocessableEntity(new
+            {
+                error   = "settlement_disbursed",
+                message = "This settlement has already been consumed by a payroll run's accrual journal, so it " +
+                          "cannot be cancelled in isolation — cancelling would leave the run's clearing debiting a " +
+                          "payable that no longer exists. VOID the disbursing run instead (POST runs/{id}/void): " +
+                          "that contras the clearing, re-opens the payable and restores this settlement to Approved, " +
+                          "after which it can be cancelled.",
+                payrollRunId = s.PayrollRunId,
+            });
+
+        var originals = await _db.FinanceGlEntries
+            .Where(x => x.TenantId == tenantId
+                     && x.SourceModule == FinalSettlementGlDescriptions.SourceModule
+                     && x.SourceEntityId == s.Id && !x.IsReversed
+                     && (x.EventType == GlEventTypes.SettlementAccrual
+                      || x.EventType == GlEventTypes.EosbProvisionConsumption))
+            .ToListAsync(cancellationToken);
+
+        // Do not silently rewrite closed books — every period the contra would write into is guarded.
+        foreach (var closedPeriod in originals.Select(o => o.Period).Distinct())
+            if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, s.CompanyId, closedPeriod, cancellationToken))
+                return UnprocessableEntity(new
+                {
+                    error   = "gl_period_closed",
+                    message = $"GL period {closedPeriod} is closed. Reopen it before cancelling this settlement.",
+                    period  = closedPeriod,
+                });
+
+        var contras = new List<FinanceGlEntry>();
+        if (originals.Count > 0)
+        {
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            foreach (var orig in originals)
+                contras.Add(new FinanceGlEntry
+                {
+                    TenantId = tenantId, CompanyId = orig.CompanyId,
+                    SourceModule = FinalSettlementGlDescriptions.SourceModule,
+                    SourceEntityId = s.Id, SourceEntityRef = orig.SourceEntityRef,
+                    // A provision consumption is undone by its OWN reversal tag, so the per-employee
+                    // provision position re-opens (LoadPositionsAsync filters !IsReversed on both legs).
+                    EventType = orig.EventType == GlEventTypes.EosbProvisionConsumption
+                        ? GlEventTypes.EosbProvisionConsumptionReversal
+                        : GlEventTypes.SettlementAccrualReversal,
+                    DebitAccount = orig.CreditAccount, CreditAccount = orig.DebitAccount,
+                    Amount = orig.Amount, Currency = orig.Currency,
+                    EntryDate = today, Period = orig.Period,
+                    Description = $"{FinalSettlementGlDescriptions.ReversalPrefix}{orig.Description} — {req.Reason}",
+                    PostedBy = GetUserId(), PostedByName = GetUserName(),
+                    IsReversed = false, ReversalOfEntryId = orig.Id,
+                });
+            foreach (var o in originals) o.IsReversed = true;
+            _db.FinanceGlEntries.AddRange(contras);
+        }
+
+        var priorStatus = s.Status;
+        s.Status = FinalSettlementStatuses.Cancelled;
+        s.CancelledByUserId = GetUserId();
+        s.CancelledByName = GetUserName();
+        s.CancelledAtUtc = DateTime.UtcNow;
+        s.CancelReason = req.Reason;
+        s.UpdatedAtUtc = DateTime.UtcNow;
+
+        await PayrollAudit("payroll.final_settlement.cancelled", "EmployeeFinalSettlement", s.Id.ToString(), new
+        {
+            s.EmployeeId, s.EmployeeCode, priorStatus, reason = req.Reason,
+            contraEntries = contras.Count,
+            contraAmount = Math.Round(contras.Sum(c => c.Amount), 2),
+        }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new { settlementId = s.Id, status = s.Status, reversedEntries = contras.Count });
+    }
+
+    // ── POD-C1 internals ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>The computed settlement, before it is written to a row.</summary>
+    private sealed record FinalSettlementPlan(
+        string EmployeeCode, string EmployeeName, Guid? CompanyId,
+        DateOnly LastWorkingDay, DateOnly ServiceStartDate, DateOnly SettlementDueDate,
+        string TerminationReason, decimal ServiceYears, string Currency,
+        decimal BasicWage, decimal MonthlyGross,
+        string EosbResultJson, string InputsSnapshotJson,
+        decimal GratuityAmount, decimal LeaveEncashmentAmount, decimal LeaveEncashmentDays,
+        decimal NoticePayAmount, decimal OtherDuesAmount,
+        decimal NoticeShortfallDeduction, decimal OtherDeductionsAmount,
+        decimal PlannedLoanRecovery, decimal PlannedAdvanceRecovery, decimal PlannedReceivableRecovery,
+        decimal GrossPayable, decimal TotalDeductions, decimal NetPayable,
+        decimal UnpaidWagesAmount, Guid? WagesPaidByRunId, DateOnly? WagesPaidThroughDate,
+        decimal WageBaseDeltaAmount,
+        List<FinalSettlementLine> Lines, List<string> Warnings,
+        int NoticePeriodDaysShort, int DaysInMonth, int DaysWorkedInMonth);
+
+    private static void ApplyPlan(EmployeeFinalSettlement s, FinalSettlementPlan p)
+    {
+        s.EmployeeCode = p.EmployeeCode;
+        s.EmployeeName = p.EmployeeName;
+        s.LastWorkingDay = p.LastWorkingDay;
+        s.ServiceStartDate = p.ServiceStartDate;
+        s.SettlementDueDate = p.SettlementDueDate;
+        s.TerminationReason = p.TerminationReason;
+        s.ServiceYears = p.ServiceYears;
+        s.Currency = p.Currency;
+        s.EosbResultJson = p.EosbResultJson;
+        s.InputsSnapshotJson = p.InputsSnapshotJson;
+        s.GratuityAmount = p.GratuityAmount;
+        s.LeaveEncashmentAmount = p.LeaveEncashmentAmount;
+        s.LeaveEncashmentDays = p.LeaveEncashmentDays;
+        s.NoticePayAmount = p.NoticePayAmount;
+        s.OtherDuesAmount = p.OtherDuesAmount;
+        s.NoticeShortfallDeduction = p.NoticeShortfallDeduction;
+        s.OtherDeductionsAmount = p.OtherDeductionsAmount;
+        s.PlannedLoanRecovery = p.PlannedLoanRecovery;
+        s.PlannedAdvanceRecovery = p.PlannedAdvanceRecovery;
+        s.PlannedReceivableRecovery = p.PlannedReceivableRecovery;
+        s.GrossPayable = p.GrossPayable;
+        s.TotalDeductions = p.TotalDeductions;
+        s.NetPayable = p.NetPayable;
+        s.UnpaidWagesAmount = p.UnpaidWagesAmount;
+        s.WagesPaidByRunId = p.WagesPaidByRunId;
+        s.WagesPaidThroughDate = p.WagesPaidThroughDate;
+        s.WageBaseDeltaAmount = p.WageBaseDeltaAmount;
+        s.WarningsJson = JsonSerializer.Serialize(p.Warnings);
+    }
+
+    /// <summary>
+    /// POD-C1 — resolves the legal entity a settlement belongs to. Explicit and refused rather than
+    /// guessed: a null CompanyId silently changes which GlAccountMapping overrides apply and which
+    /// period-close row binds. Mirrors ResolveRunCompanyScopeAsync — the employee's own company, else the
+    /// tenant's single active company (the legacy-unscoped case), else refuse.
+    /// </summary>
+    private async Task<(Guid? CompanyId, object? Error)> ResolveSettlementCompanyAsync(
+        Guid tenantId, Employee employee, CancellationToken ct)
+    {
+        var activeCompanies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+        if (employee.CompanyId is Guid cid && activeCompanies.Contains(cid)) return (cid, null);
+        if (activeCompanies.Count == 1) return (activeCompanies[0], null);
+        return (null, new
+        {
+            error   = "company_not_resolved",
+            message = $"{employee.FullName} is not linked to an active legal entity and this tenant has " +
+                      $"{activeCompanies.Count} of them, so the settlement's company cannot be resolved. The company " +
+                      "decides which chart-of-accounts overrides apply and which GL period-close row binds, so it is " +
+                      "refused rather than guessed. Set the employee's company and retry.",
+            employeeId = employee.Id,
+        });
+    }
+
+    private static string SafeEosbRule(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("applicableRule", out var r) ? r.GetString() ?? string.Empty : string.Empty;
+        }
+        catch { return string.Empty; }
+    }
+
+    private static object SafeEosbBreakdown(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("breakdown", out var b)
+                ? JsonSerializer.Deserialize<List<Dictionary<string, object>>>(b.GetRawText()) ?? new()
+                : new List<Dictionary<string, object>>();
+        }
+        catch { return new List<Dictionary<string, object>>(); }
+    }
+
+    /// <summary>JSON body for a settlement, a strict SUPERSET of the pre-C1 /final-settlement response.</summary>
+    private static object ProjectSettlement(
+        EmployeeFinalSettlement s, IReadOnlyList<FinalSettlementLine> lines, FinalSettlementPlan? plan)
+        => new
+        {
+            // ── every field the pre-C1 endpoint returned, at the SAME path ────────────────────────────
+            employeeId = s.EmployeeId,
+            employeeName = s.EmployeeName,
+            lastWorkingDay = s.LastWorkingDay,
+            currency = s.Currency,
+            basicSalary = plan?.BasicWage ?? 0m,
+            grossSalary = plan?.MonthlyGross ?? 0m,
+            // The old "pro-rata salary" is now the C3 seam: it is the leaver's wage through their last
+            // working day, which the ordinary run has already PAID (hence zero here unless the operator
+            // explicitly acknowledged that it had not).
+            proRataSalary = s.WagesAcknowledgedUnpaid ? s.UnpaidWagesAmount : 0m,
+            daysWorkedInMonth = plan?.DaysWorkedInMonth ?? s.LastWorkingDay.Day,
+            daysInMonth = plan?.DaysInMonth ?? DateTime.DaysInMonth(s.LastWorkingDay.Year, s.LastWorkingDay.Month),
+            eosbAmount = s.GratuityAmount,
+            totalYears = Math.Round(s.ServiceYears, 2),
+            terminationReason = s.TerminationReason,
+            leaveBalanceDays = s.LeaveEncashmentDays,
+            leaveEncashment = s.LeaveEncashmentAmount,
+            noticePeriodDaysShort = plan?.NoticePeriodDaysShort ?? 0,
+            noticePeriodDeduction = s.NoticeShortfallDeduction,
+            totalPayable = s.NetPayable,
+            breakdown = lines.Select(l => new
+            {
+                component = l.ComponentName,
+                amount = l.LineType == FinalSettlementLineTypes.Deduction ? -l.Amount : l.Amount,
+            }).ToList(),
+
+            // ── POD-C1 additions ──────────────────────────────────────────────────────────────────────
+            settlementId = s.Id,
+            status = s.Status,
+            companyId = s.CompanyId,
+            offboardingId = s.OffboardingId,
+            serviceStartDate = s.ServiceStartDate,
+            settlementDueDate = s.SettlementDueDate,
+            grossPayable = s.GrossPayable,
+            totalDeductions = s.TotalDeductions,
+            netPayable = s.NetPayable,
+            noticePay = s.NoticePayAmount,
+            otherDues = s.OtherDuesAmount,
+            otherDeductions = s.OtherDeductionsAmount,
+            plannedLoanRecovery = s.PlannedLoanRecovery,
+            plannedAdvanceRecovery = s.PlannedAdvanceRecovery,
+            plannedReceivableRecovery = s.PlannedReceivableRecovery,
+            unpaidWagesAmount = s.UnpaidWagesAmount,
+            wagesPaidByRunId = s.WagesPaidByRunId,
+            wagesPaidThroughDate = s.WagesPaidThroughDate,
+            wageBaseDelta = s.WageBaseDeltaAmount,
+            glPeriod = s.GlPeriod,
+            glPostedAtUtc = s.GlPostedAtUtc,
+            payrollRunId = s.PayrollRunId,
+            paymentBatchId = s.PaymentBatchId,
+            paidAtUtc = s.PaidAtUtc,
+            eosbResult = SafeEosbBreakdown(s.EosbResultJson),
+            appliedRule = SafeEosbRule(s.EosbResultJson),
+            warnings = plan?.Warnings ?? new List<string>(),
+            lines = lines.Select(l => new
+            {
+                l.ComponentCode, l.ComponentName, l.LineType, l.Source, l.Amount, l.Quantity,
+                l.SourceEntityId, l.Narrative,
+            }).ToList(),
+        };
+
+    /// <summary>
+    /// POD-C1 — computes the whole settlement, ONCE, from POD-A2's engine and POD-C3's persisted outputs.
+    /// Every number the disbursing run emits comes from here and is never recomputed downstream.
+    /// </summary>
+    private async Task<FinalSettlementPlan> BuildFinalSettlementPlanAsync(
+        Guid tenantId, Employee employee, EmployeeOffboarding offboarding, GCCComplianceSetting gcc,
+        Guid? companyId, FinalSettlementRequest req, CancellationToken ct)
+    {
+        var warnings = new List<string>();
+        var lastDay = offboarding.LastWorkingDay;
+        if (req.LastWorkingDay != default && req.LastWorkingDay != lastDay)
+            warnings.Add($"The requested last working day ({req.LastWorkingDay:yyyy-MM-dd}) was IGNORED: the " +
+                         $"settlement uses the offboarding record's {lastDay:yyyy-MM-dd}. Correct the offboarding " +
+                         "record if that date is wrong.");
+
+        var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.EffectiveDate <= lastDay)
+            .OrderByDescending(x => x.EffectiveDate)
+            .FirstOrDefaultAsync(ct);
+        var basicWage = salary?.BasicSalary ?? employee.Salary ?? 0m;
+        var monthlyGross = basicWage + (salary?.HousingAllowance ?? 0m) + (salary?.TransportAllowance ?? 0m)
+                         + (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
+        var currency = !string.IsNullOrWhiteSpace(salary?.Currency)
+            ? salary!.Currency
+            : await ResolveCurrencyAsync(tenantId, ct);
+
+        var terminationReason = await ResolveTerminationReasonAsync(tenantId, employee.Id, req.TerminationReason, ct);
+        var calcDate = lastDay.ToDateTime(TimeOnly.MinValue);
+
+        // ── POD-A2's ONE authoritative engine. The Breakdown is kept IN FULL — /eosb/calculate discards
+        //    it and keeps only the rule string, so the Art.84 tier split and the Art.85/80 adjustment line
+        //    were unrecoverable from anything the product persisted.
+        var (eosbResult, serviceYears) = await ComputeEndOfServiceAsync(
+            gcc, basicWage, employee.JoiningDate, calcDate, terminationReason, employee, ct);
+        var gratuity = Math.Round(eosbResult.TotalGratuity, 2);
+
+        // [FLAG-COMPLIANCE-KSA] the Art. 84 wage-base delta, computed by re-running the SAME pack on the
+        // full package. Purely indicative and never paid automatically — it is the number the approver
+        // must consciously accept or correct.
+        decimal wageBaseDelta = 0m;
+        if (monthlyGross > basicWage && gratuity > 0m)
+        {
+            var (fullResult, _) = await ComputeEndOfServiceAsync(
+                gcc, monthlyGross, employee.JoiningDate, calcDate, terminationReason, employee, ct);
+            wageBaseDelta = Math.Max(0m, Math.Round(fullResult.TotalGratuity - gratuity, 2));
+            if (wageBaseDelta > 0m)
+                warnings.Add($"[FLAG-COMPLIANCE-KSA] Gratuity is computed on the BASIC wage ({basicWage:N2}). On the " +
+                             $"full package ({monthlyGross:N2}) it would be {wageBaseDelta:N2} {currency} higher. " +
+                             "KSA Art. 84 measures the award on the LAST WAGE, which is read as including regular " +
+                             "allowances. Approval requires an explicit acknowledgement of this floor.");
+        }
+
+        // ── K5: one authoritative encashable-days function ───────────────────────────────────────────
+        var encashment = await LeaveEncashmentCalculator.ComputeAsync(
+            _db, tenantId, employee.Id, companyId, lastDay, monthlyGross, ct);
+        warnings.AddRange(encashment.Warnings);
+
+        // ── K1: THE NOTICE RULES DEPEND ON WHO TERMINATED (Art. 75/76) ───────────────────────────────
+        // The notice compensation flows to whichever party did NOT give notice: an employer terminating
+        // without notice OWES the employee; only a WORKER resigning short owes the employer. The pre-C1
+        // endpoint applied noticePeriodDaysShort as a deduction unconditionally, with no reference to the
+        // termination reason resolved immediately above it.
+        var isResignation = string.Equals(terminationReason, "Resignation", StringComparison.OrdinalIgnoreCase);
+        var dailyRate = monthlyGross > 0m ? monthlyGross / 30m : 0m;
+        decimal noticeShortfall = 0m;
+        var noticeDaysShort = Math.Max(0, req.NoticePeriodDaysShort);
+        if (noticeDaysShort > 0)
+        {
+            if (isResignation)
+                noticeShortfall = Math.Round(noticeDaysShort * dailyRate, 2);
+            else
+                warnings.Add($"[FLAG-COMPLIANCE-KSA] A notice shortfall of {noticeDaysShort} day(s) was requested but " +
+                             $"the separation reason is '{terminationReason}', not a resignation. Under Art. 75/76 the " +
+                             "notice compensation is owed BY the party that failed to give notice — an employer-side " +
+                             "termination cannot deduct it from the worker. It has been set to ZERO. If the employer " +
+                             "terminated without serving notice, record noticePayDays instead (payment IN LIEU).");
+        }
+        var noticePayDays = Math.Max(0, req.NoticePayDays);
+        var noticePay = noticePayDays > 0 ? Math.Round(noticePayDays * dailyRate, 2) : 0m;
+        if (noticePayDays > 0 && isResignation)
+            warnings.Add($"Payment in lieu of notice ({noticePayDays} day(s)) is being paid on a RESIGNATION. That is " +
+                         "unusual — payment in lieu is normally owed by an employer who terminated without serving " +
+                         "notice. It has been included as instructed; confirm it is intended.");
+        if (noticePayDays == 0 && !isResignation && offboarding.NoticePeriodDays > 0
+            && offboarding.NoticeDate.AddDays(offboarding.NoticePeriodDays) > lastDay)
+            warnings.Add("[FLAG-COMPLIANCE-KSA] The employer terminated and the last working day falls BEFORE the end " +
+                         "of the recorded notice period, but no payment in lieu of notice has been included. Under " +
+                         "Art. 75/76 the employer owes compensation for the unserved notice — set noticePayDays if so.");
+
+        // ── THE POD-C3 WAGE SEAM: the leaver's final wages, and who paid them ────────────────────────
+        var finalWageSlip = await _db.PayrollSlips.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.EmployeeId == employee.Id
+                     && s.IsFinalWageMonth && s.Status != "Voided")
+            .OrderByDescending(s => s.PaidToDate)
+            .Select(s => new { s.RunId, s.PaidToDate, s.GrossSalary })
+            .FirstOrDefaultAsync(ct);
+        decimal unpaidWages = 0m;
+        Guid? wagesPaidByRunId = null;
+        DateOnly? wagesPaidThrough = null;
+        if (finalWageSlip is not null)
+        {
+            wagesPaidByRunId = finalWageSlip.RunId;
+            wagesPaidThrough = finalWageSlip.PaidToDate;
+            unpaidWages = 0m;   // PAID — carried at ZERO in GrossPayable, which is the whole point
+        }
+        else
+        {
+            // An INDICATIVE figure only, so the approver can see what is at stake. It is not added to the
+            // settlement unless they explicitly acknowledge that the wage side is not done.
+            var daysInLwdMonth = DateTime.DaysInMonth(lastDay.Year, lastDay.Month);
+            unpaidWages = Math.Round(monthlyGross / daysInLwdMonth * lastDay.Day, 2);
+            warnings.Add($"No non-voided final-wage-month payslip exists, so wages through {lastDay:yyyy-MM-dd} appear " +
+                         $"UNPAID (indicatively {unpaidWages:N2} {currency}). They are carried at ZERO in this " +
+                         "settlement: the correct fix is to process the payroll run covering the last working day, " +
+                         "which prorates them properly (POD-C3). Approval refuses until that run exists, or until an " +
+                         "operator explicitly acknowledges the wages are unpaid and authorises adding them here.");
+        }
+
+        // ── PLANNED debt recovery. Planned only: the run RE-CAPS against the live balance and is the sole
+        //    decrement path, so there is exactly one recovery mechanism and no double-recovery to guard. ─
+        var loans = await _db.EmployeeLoans.AsNoTracking()
+            .Where(l => l.TenantId == tenantId && l.Status == "Active"
+                     && l.EmployeeIntId == employee.Id && l.OutstandingBalance > 0)
+            .ToListAsync(ct);
+        var advances = await _db.SalaryAdvances.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.Status == "Active"
+                     && a.EmployeeIntId == employee.Id && a.OutstandingBalance > 0)
+            .ToListAsync(ct);
+        var receivables = await _db.PayrollEmployeeReceivables.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.EmployeeId == employee.Id
+                     && r.Status == PayrollReceivableStatuses.Outstanding && r.Amount > r.RecoveredAmount)
+            .ToListAsync(ct);
+
+        // ── Build the lines. THE RUN EMITS THESE VERBATIM. ───────────────────────────────────────────
+        var lines = new List<FinalSettlementLine>();
+        void Earning(string code, string name, decimal amount, decimal qty = 0m, Guid? sourceId = null, string? narrative = null)
+        {
+            if (amount <= 0m) return;
+            lines.Add(new FinalSettlementLine
+            {
+                ComponentCode = code, ComponentName = name,
+                LineType = FinalSettlementLineTypes.Earning,
+                Source = FinalSettlementComponents.SettlementSource,
+                Amount = Math.Round(amount, 2), Quantity = qty,
+                SourceEntityId = sourceId, Narrative = narrative,
+            });
+        }
+        void Deduction(string code, string name, decimal amount, string? narrative = null)
+        {
+            if (amount <= 0m) return;
+            lines.Add(new FinalSettlementLine
+            {
+                ComponentCode = code, ComponentName = name,
+                LineType = FinalSettlementLineTypes.Deduction,
+                Source = FinalSettlementComponents.SettlementSource,
+                Amount = Math.Round(amount, 2), Narrative = narrative,
+            });
+        }
+
+        Earning(FinalSettlementComponents.Gratuity,
+            $"{FinalSettlementComponents.Label(FinalSettlementComponents.Gratuity)} ({eosbResult.ApplicableRule})",
+            gratuity, narrative: string.Join("; ", eosbResult.Breakdown.Select(b => $"{b.Label}: {b.Amount:N2}")));
+        foreach (var enc in encashment.Lines)
+            Earning(FinalSettlementComponents.LeaveEncashment,
+                $"Leave encashment — {enc.LeaveTypeName} ({enc.EncashableDays:N2} days, {enc.Year})",
+                enc.Amount, enc.EncashableDays, enc.BalanceId,
+                $"{enc.EncashableDays:N2} of {enc.AvailableDays:N2} available days at {enc.Basis}");
+        Earning(FinalSettlementComponents.NoticePay,
+            $"{FinalSettlementComponents.Label(FinalSettlementComponents.NoticePay)} ({noticePayDays} days)", noticePay);
+        Earning(FinalSettlementComponents.OtherDues, "Other final dues", Math.Max(0m, req.OtherDuesAmount),
+            narrative: req.Notes);
+
+        Deduction(FinalSettlementComponents.NoticeShortfall,
+            $"{FinalSettlementComponents.Label(FinalSettlementComponents.NoticeShortfall)} ({noticeDaysShort} days)",
+            noticeShortfall);
+        Deduction(FinalSettlementComponents.OtherDeduction, "Other final deductions",
+            Math.Max(0m, req.OtherDeductionsAmount), req.Notes);
+
+        var gross = Math.Round(lines.Where(l => l.LineType == FinalSettlementLineTypes.Earning).Sum(l => l.Amount), 2);
+        var rawDeductions = Math.Round(lines.Where(l => l.LineType == FinalSettlementLineTypes.Deduction).Sum(l => l.Amount), 2);
+        // ── F1: THE SETTLEMENT'S OWN DEDUCTIONS ARE CAPPED AT ITS GROSS, AT PLAN TIME ────────────────
+        // Debt is capped later by the run's `affordable` budget, but a settlement-side deduction is not —
+        // it lands in deductionsBeforeDebt, and on a supplemental run a negative net throws
+        // negative_net_unsupported and rolls back EVERY OTHER LEAVER in the batch. "The batch fails" is not
+        // an acceptable answer to "the notice shortfall exceeds the settlement".
+        var deductions = Math.Min(gross, rawDeductions);
+        if (rawDeductions > gross)
+            warnings.Add($"Settlement deductions ({rawDeductions:N2}) exceed the settlement's gross ({gross:N2}) and " +
+                         $"have been CAPPED at it. {rawDeductions - gross:N2} is not written off — recover it through " +
+                         "the loan/advance sub-ledger or an explicit agreement outside payroll.");
+        var net = Math.Round(gross - deductions, 2);
+
+        // Recovery is planned against what the settlement can actually fund, in a fixed order.
+        var recoveryBudget = net;
+        decimal loanPlan = 0m, advPlan = 0m, rcvPlan = 0m;
+        foreach (var l in loans.OrderBy(l => l.Id))
+        {
+            if (recoveryBudget <= 0m) break;
+            var take = Math.Min(l.OutstandingBalance, recoveryBudget);
+            loanPlan += take; recoveryBudget -= take;
+        }
+        foreach (var a in advances.OrderBy(a => a.Id))
+        {
+            if (recoveryBudget <= 0m) break;
+            var take = Math.Min(a.OutstandingBalance, recoveryBudget);
+            advPlan += take; recoveryBudget -= take;
+        }
+        foreach (var r in receivables.OrderBy(r => r.CreatedAtUtc))
+        {
+            if (recoveryBudget <= 0m) break;
+            var take = Math.Min(r.Outstanding, recoveryBudget);
+            rcvPlan += take; recoveryBudget -= take;
+        }
+        var totalDebt = Math.Round(loans.Sum(l => l.OutstandingBalance) + advances.Sum(a => a.OutstandingBalance), 2);
+        if (totalDebt > Math.Round(loanPlan + advPlan, 2))
+            warnings.Add($"{totalDebt - Math.Round(loanPlan + advPlan, 2):N2} of outstanding loan/advance cannot be " +
+                         "funded by this settlement. It is NOT written off: when the settlement is paid, the residual " +
+                         "is reclassified to the Employee Overpayment Receivable (1420) up to what 1400/1410 actually " +
+                         "carries, and reported when it cannot be.");
+
+        // [FLAG-COMPLIANCE-KSA] Art. 88 — one week from the end of the contract, two where the WORKER
+        // terminated it. Persisted so an overdue settlement is visible on the list view.
+        var dueDate = lastDay.AddDays(isResignation ? 14 : 7);
+
+        return new FinalSettlementPlan(
+            employee.EmployeeCode, employee.FullName, companyId,
+            lastDay, DateOnly.FromDateTime(employee.JoiningDate), dueDate,
+            terminationReason, (decimal)Math.Round(serviceYears, 4), currency,
+            basicWage, monthlyGross,
+            JsonSerializer.Serialize(new
+            {
+                totalGratuity = eosbResult.TotalGratuity,
+                applicableRule = eosbResult.ApplicableRule,
+                breakdown = eosbResult.Breakdown.Select(b => new { b.Label, b.Amount }).ToList(),
+            }),
+            JsonSerializer.Serialize(new
+            {
+                basicWage, monthlyGross, currency,
+                serviceStart = DateOnly.FromDateTime(employee.JoiningDate),
+                serviceEnd = lastDay,
+                terminationReason,
+                countryCode = gcc.CountryCode,
+                contractType = employee.ContractType,
+                nationality = employee.Nationality,
+                wageBase = "basic",
+            }),
+            gratuity, encashment.TotalAmount, encashment.TotalDays,
+            noticePay, Math.Max(0m, req.OtherDuesAmount),
+            noticeShortfall, Math.Max(0m, req.OtherDeductionsAmount),
+            Math.Round(loanPlan, 2), Math.Round(advPlan, 2), Math.Round(rcvPlan, 2),
+            gross, deductions, net,
+            unpaidWages, wagesPaidByRunId, wagesPaidThrough,
+            wageBaseDelta,
+            lines, warnings,
+            noticeDaysShort,
+            DateTime.DaysInMonth(lastDay.Year, lastDay.Month), lastDay.Day);
     }
 
     private Task<string> ResolveCurrencyAsync(Guid tenantId, CancellationToken ct)
@@ -6372,18 +9033,67 @@ public class PayrollController : ControllerBase
 
         var canSeeSalary = HasPermission("payroll.export");
 
+        // ── POD-C3-FIX: the AUDITOR's payslip must explain itself too ────────────────────────────────
+        // Requirement 7 says an employee AND an auditor must both be able to see why a number is what it
+        // is. The employee's half already worked — ESS renders the stored PayslipComponent rows, whose
+        // names carry the proration note and one "Arrears — <component> (YYYY-MM)" line per covered
+        // period. THIS endpoint builds its items from the slip HEADER columns instead, so arrears folded
+        // silently into "Other Allowances" and the days/basis narrative never appeared at all. Both are
+        // read from persisted state (no recompute), so this PDF cannot disagree with the ESS one.
+        var arrearsLines = slip.ArrearsAmount == 0m
+            ? new List<PayrollArrearsLine>()
+            : await _db.PayrollArrearsLines.AsNoTracking()
+                .Where(a => a.TenantId == tenantId && a.PayrollRunId == payslip.PayrollRunId
+                         && a.EmployeeId == slip.EmployeeId && a.Status == PayrollArrearsStatuses.Settled)
+                .OrderBy(a => a.CoveredYear).ThenBy(a => a.CoveredMonth).ThenBy(a => a.ComponentCode)
+                .ToListAsync(ct);
+
+        // The 1420 recovery, named rather than swallowed by the "Other Deductions" residual — without it
+        // a zero-net replacement payslip shows a gross, a residual lump, and no reason.
+        // Summed client-side over a handful of rows: SQLite (the test provider) cannot translate a decimal
+        // SUM, and the same client-side pattern is already used for statutoryLines just above.
+        var recoveryTotal = (await _db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == payslip.PayrollRunId
+                     && d.EmployeeId == slip.EmployeeId
+                     && (d.Source == PayrollRecoveryComponents.RecoverySource
+                         || d.ComponentCode == PayrollRecoveryComponents.ReceivableRecovery))
+            .Select(d => d.Amount)
+            .ToListAsync(ct)).Sum();
+
+        // No run row ⇒ no period ⇒ no honest "joined on" test, so the narrative is skipped rather than
+        // guessed. Unreachable in practice (the payslip carries PayrollRunId), and silent when it happens.
+        var prorationNote = run is null
+            ? string.Empty
+            : ProrationCalculator.NarrativeFromSlip(slip, new DateOnly(run.Year, run.Month, 1));
+        string Label(string name) => string.IsNullOrEmpty(prorationNote) ? name : $"{name} ({prorationNote})";
+
         // Build items from stored slip fields (no recompute)
         var items = new List<PayslipLineItem>();
-        if (slip.BasicSalary > 0)        items.Add(new("Basic Salary",        canSeeSalary ? slip.BasicSalary        : 0m, "Earning"));
-        if (slip.HousingAllowance > 0)   items.Add(new("Housing Allowance",   canSeeSalary ? slip.HousingAllowance   : 0m, "Earning"));
-        if (slip.TransportAllowance > 0) items.Add(new("Transport Allowance", canSeeSalary ? slip.TransportAllowance : 0m, "Earning"));
-        if (slip.OtherAllowances > 0)    items.Add(new("Other Allowances",    canSeeSalary ? slip.OtherAllowances    : 0m, "Earning"));
+        if (slip.BasicSalary > 0)        items.Add(new(Label("Basic Salary"),  canSeeSalary ? slip.BasicSalary        : 0m, "Earning"));
+        if (slip.HousingAllowance > 0)   items.Add(new("Housing Allowance",    canSeeSalary ? slip.HousingAllowance   : 0m, "Earning"));
+        if (slip.TransportAllowance > 0) items.Add(new("Transport Allowance",  canSeeSalary ? slip.TransportAllowance : 0m, "Earning"));
+        // slip.OtherAllowances INCLUDES the arrears (PayrollController.cs:2316), so the arrears are lifted
+        // OUT of it before the residual is shown — itemising them on top of the unchanged bucket would
+        // overstate the gross on the page by exactly the arrears amount.
+        var otherAllowancesExArrears = slip.OtherAllowances - slip.ArrearsAmount;
+        if (otherAllowancesExArrears > 0) items.Add(new("Other Allowances", canSeeSalary ? otherAllowancesExArrears : 0m, "Earning"));
+        foreach (var a in arrearsLines)
+            items.Add(new($"Arrears — {PayrollArrearsComponents.Label(a.ComponentCode)} ({a.CoveredYear}-{a.CoveredMonth:D2})",
+                canSeeSalary ? a.Amount : 0m, "Earning"));
+        // Any arrears the slip carries that no line accounts for is still shown, never dropped silently.
+        var unitemisedArrears = slip.ArrearsAmount - arrearsLines.Sum(a => a.Amount);
+        if (unitemisedArrears > 0) items.Add(new("Arrears", canSeeSalary ? unitemisedArrears : 0m, "Earning"));
 
         foreach (var line in statutoryLines.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase) && l.Amount > 0))
             items.Add(new(line.ComponentName, canSeeSalary ? line.Amount : 0m, "Deduction"));
 
+        if (recoveryTotal > 0)
+            items.Add(new(PayrollRecoveryComponents.ReceivableRecoveryName, canSeeSalary ? recoveryTotal : 0m, "Deduction"));
+
         // Non-statutory deductions (loans, advances, fixed)
-        var otherDeductions = slip.Deductions - statutoryLines.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase)).Sum(l => l.Amount);
+        var otherDeductions = slip.Deductions
+                            - statutoryLines.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase)).Sum(l => l.Amount)
+                            - recoveryTotal;
         if (otherDeductions > 0) items.Add(new("Other Deductions", canSeeSalary ? otherDeductions : 0m, "Deduction"));
 
         items.Add(new("Net Pay", canSeeSalary ? slip.NetSalary : 0m, "Net"));
@@ -6657,7 +9367,20 @@ public record CreatePayrollRunRequest(
     string? RunType = null,
     Guid? ParentRunId = null,
     bool? IncludesRecurringPay = null,
-    string? GlPostingPeriod = null);
+    string? GlPostingPeriod = null,
+    /// <summary>POD-C3 — does this run SETTLE retro/arrears? Defaults to true for the period-owning types
+    /// (Regular, Replacement) and false for the supplemental ones, where paying a backdated increment out
+    /// of band is a deliberate act. With no retro-effective salary assignment in existence the engine
+    /// produces zero lines either way.</summary>
+    bool? SettlesArrears = null,
+    /// <summary>POD-C3 — does this run NET the 1420 Employee Overpayment Receivable a prior void
+    /// recognised? Default OFF: recovering an overpayment out of someone's salary is an act the operator
+    /// chooses, never a side effect of re-running a month.</summary>
+    bool? NetsPriorReceivable = null,
+    /// <summary>POD-C1 — is this run the DISBURSEMENT VEHICLE for approved termination settlements? Only
+    /// an OffCycle or Supplementary run may be one, it must NOT pay recurring salary, and it is what makes
+    /// a leaver (Offboarded, final wage month already paid) eligible for a run at all.</summary>
+    bool? SettlesFinalSettlements = null);
 
 /// <summary>POD-B2 — upsert include/exclude intent for a run's population.</summary>
 public record PayrollRunSelectionRequest(
@@ -6737,4 +9460,40 @@ public record RemitReverseRequest(string? Group = null, string? Reason = null);
 public record PayrollGroupRequest(string Code, string Name, string? Currency);
 public record ImportSalaryStructuresRequest(string CsvContent);
 public record EosbCalculationRequest(int EmployeeId, DateTime? AsOfDate, string? TerminationReason = null);
-public record FinalSettlementRequest(int EmployeeId, DateOnly LastWorkingDay, int NoticePeriodDaysShort = 0, string? TerminationReason = null);
+/// <summary>
+/// POD-C1 — every new member is optional and defaulted, so the pre-C1 caller still works verbatim.
+/// <paramref name="LastWorkingDay"/> is retained for wire compatibility but is NO LONGER AUTHORITATIVE:
+/// the date comes from the employee's offboarding record, and a divergence is reported as a warning.
+/// </summary>
+public record FinalSettlementRequest(
+    int EmployeeId,
+    DateOnly LastWorkingDay,
+    /// <summary>Days of notice the WORKER failed to serve. Only lawful on a resignation (Art. 75/76) —
+    /// see the compliance warning raised when the separation is employer-side.</summary>
+    int NoticePeriodDaysShort = 0,
+    string? TerminationReason = null,
+    /// <summary>Days of notice the EMPLOYER did not serve, paid IN LIEU to the worker.</summary>
+    int NoticePayDays = 0,
+    decimal OtherDuesAmount = 0m,
+    decimal OtherDeductionsAmount = 0m,
+    string? Notes = null);
+
+/// <summary>POD-C1 — the explicit determinations an approver must make before a settlement becomes a
+/// real, disbursable liability. None of them are defaulted to "yes".</summary>
+public record ApproveFinalSettlementRequest(
+    /// <summary>Must equal the RESOLVED termination reason exactly. EmployeeOffboarding.SeparationType
+    /// defaults to "Resignation", which silently applies the Art. 85 haircut — this is what stops an
+    /// untouched default discounting a genuine termination.</summary>
+    string? ConfirmTerminationReason = null,
+    /// <summary>Records that the approver accepts gratuity computed on the BASIC wage floor rather than
+    /// the Art. 84 "last wage". Required whenever the computed delta is non-zero.</summary>
+    bool AcknowledgeWageBaseFloor = false,
+    /// <summary>Records that the leaver's final-month wages are genuinely UNPAID and authorises adding
+    /// them to this settlement as an explicit other-dues line.</summary>
+    bool AcknowledgeWagesUnpaid = false,
+    string? WagesUnpaidReason = null,
+    /// <summary>Records that the same person computed and approved the settlement.</summary>
+    bool AcknowledgeSelfApproval = false,
+    /// <summary>GL date for the accrual journal. Defaults to today; the period is guarded for close.</summary>
+    DateOnly? AccrualDate = null,
+    string? Reason = null);

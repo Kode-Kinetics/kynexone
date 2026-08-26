@@ -127,6 +127,24 @@ public sealed class GosiReconciliationService
             .GroupBy(b => b.EmployeeIntId!.Value)
             .ToDictionary(g => g.Key, g => g.Sum(b => b.GrossBonusAmount));
 
+        // ── POD-C3 — GOSI-BEARING ARREARS (base reconstruction, part 3) ─────────────────────────
+        // Structural TWIN of the bonus block above, and for the same reason: an arrears amount is a real
+        // addition to the contributory wage that is NOT recoverable from the slip's money columns (the
+        // slip folds it into OtherAllowances alongside overtime and bonuses). It is re-derived from the
+        // run-stamped sub-ledger, keyed on the SAME IsGosiBearing flag the run wrote — one flag governs
+        // the run and the reconstruction, so they cannot drift. Under
+        // `payparameter.arrears_gosi_treatment = None` no line is ever flagged and this is a no-op.
+        var runArrears = await _db.PayrollArrearsLines.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == run.Id && a.IsGosiBearing
+                     && a.Status == PayrollArrearsStatuses.Settled)
+            .Select(a => new { a.EmployeeId, a.Amount, a.EarnedBasisGosiDelta })
+            .ToListAsync(ct);
+        var gosiArrearsByEmp = runArrears
+            .GroupBy(a => a.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Sum(a => a.Amount));
+        var arrearsGosiBaseTotal = Math.Round(runArrears.Sum(a => a.Amount), 2);
+        var arrearsEarnedBasisTotal = Math.Round(runArrears.Sum(a => a.EarnedBasisGosiDelta), 2);
+
         // Employees for nationality / contract type (the only run inputs not persisted on the slip).
         var slipEmpIds = slips.Select(s => s.EmployeeId).Distinct().ToList();
         var employees = await _db.Employees.AsNoTracking()
@@ -169,14 +187,29 @@ public sealed class GosiReconciliationService
 
             if (calc is not null)
             {
-                var gosiBonus = gosiBonusByEmp.GetValueOrDefault(slip.EmployeeId);
-                // Byte-identical to PayrollController:879-886: GOSI bonus is folded into the housing slot
-                // so SalaryBreakdown.GosiCoveredWage = Basic + (Housing + eligible bonus). basic/housing
-                // come from the slip the run wrote (drift-proof). Transport/other do not affect the KSA/UAE
-                // covered wage (Basic + Housing) — passed for completeness only.
+                var gosiBonus   = gosiBonusByEmp.GetValueOrDefault(slip.EmployeeId);
+                var gosiArrears = gosiArrearsByEmp.GetValueOrDefault(slip.EmployeeId);
+                // GOSI bonus AND POD-C3 arrears are folded into the housing slot so
+                // SalaryBreakdown.GosiCoveredWage = Basic + (Housing + eligible bonus + arrears) — the
+                // SAME single slot the run feeds the pack, which is what makes the 45,000 ceiling apply to
+                // the same total in one call on both sides. basic/housing come from the slip the run wrote
+                // (drift-proof). Transport/other do not affect the KSA/UAE covered wage — passed for
+                // completeness only.
+                //
+                // ── POD-C3: WHICH SLIP COLUMNS ARE THE STATUTORY BASE ────────────────────────────────
+                // Under `proration_gosi_base = FullMonth` (the KSA default) the run fed the pack the FULL
+                // monthly package while BasicSalary/HousingAllowance carry the PRORATED wage. Rebuilding
+                // from the money columns alone would then understate the base for every joiner and leaver
+                // and A1's `expected == actual` would fail silently on a statutory filing source. The slip
+                // persists the full package and the policy it used precisely so this rebuild can be exact
+                // under EITHER value. GosiBasePolicy is NULL on every pre-C3 slip, so their reconstruction
+                // is byte-identical to before.
+                var useFullPackage = slip.GosiBasePolicy == ProrationGosiBases.FullMonth;
+                var baseBasic   = useFullPackage ? slip.FullBasicSalary      ?? slip.BasicSalary      : slip.BasicSalary;
+                var baseHousing = useFullPackage ? slip.FullHousingAllowance ?? slip.HousingAllowance : slip.HousingAllowance;
                 var breakdown = new SalaryBreakdown(
-                    slip.BasicSalary,
-                    slip.HousingAllowance + gosiBonus,
+                    baseBasic,
+                    baseHousing + gosiBonus + gosiArrears,
                     slip.TransportAllowance,
                     0m);
                 var input = new StatutoryDeductionInput(
@@ -299,6 +332,12 @@ public sealed class GosiReconciliationService
             // which is not persisted — so the honest contract is: per-run expected is meaningful for a
             // single-run period, and ReconcilePeriodAsync is the tie-out that always holds.
             SiblingRunCount = siblingRunCount,
+            // POD-C3 — the arrears slice of the contributory base, NAMED rather than left to be inferred
+            // from a delta (the same discipline A1 used for SiblingRunCount).
+            ArrearsGosiBase            = arrearsGosiBaseTotal,
+            ArrearsGosiBaseEarnedBasis = arrearsEarnedBasisTotal,
+            ProratedEmployeeCount      = slips.Count(s => s.ProrationFactor.HasValue && s.ProrationFactor.Value < 1m),
+            GosiBasePolicy             = slips.Select(s => s.GosiBasePolicy).FirstOrDefault(p => p != null),
             // POD-B3 — recovery awareness. See the isVoided/supersededByRunId derivation above.
             RunStatus         = run.Status,
             IsVoided          = isVoided,
@@ -362,6 +401,19 @@ public sealed class GosiReconciliationService
             .GroupBy(b => b.EmployeeIntId!.Value)
             .ToDictionary(g => g.Key, g => g.Sum(b => b.GrossBonusAmount));
 
+        // POD-C3 — the period's GOSI-bearing arrears, mirroring periodGosiBonusByEmp exactly. This is the
+        // half that makes the tie-out survive a Supplementary run settling arrears alongside the Regular
+        // run: PayrollController.Process adds the SAME sibling arrears into its period-to-date base
+        // (priorHousingByEmp), so `expected` here and `actual` there are computed on identical inputs
+        // whichever order the period's runs were processed in.
+        var periodArrears = runIds.Count == 0 ? new List<PayrollArrearsLine>() : await _db.PayrollArrearsLines.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.IsGosiBearing && a.Status == PayrollArrearsStatuses.Settled
+                     && a.PayrollRunId != null && runIds.Contains(a.PayrollRunId!.Value))
+            .ToListAsync(ct);
+        var periodGosiArrearsByEmp = periodArrears
+            .GroupBy(a => a.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Sum(a => a.Amount));
+
         // Resolve the pack once from the period's company (same rule as ReconcileAsync).
         var activeCompanies = await _db.Companies.AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
@@ -392,8 +444,18 @@ public sealed class GosiReconciliationService
         foreach (var empId in empIds.OrderBy(x => x))
         {
             var empSlips = slips.Where(s => s.EmployeeId == empId).ToList();
-            var basic    = empSlips.Sum(s => s.BasicSalary);
-            var housing  = empSlips.Sum(s => s.HousingAllowance) + periodGosiBonusByEmp.GetValueOrDefault(empId);
+            // POD-C3 — the SAME "which columns are the statutory base" rule as ReconcileAsync, applied per
+            // slip before aggregation, so a period that mixes a prorated Regular run with a supplemental
+            // one still sums one consistent base. A pre-C3 slip (GosiBasePolicy null) uses its money
+            // columns exactly as before.
+            decimal SlipBasic(PayrollSlip s) => s.GosiBasePolicy == ProrationGosiBases.FullMonth
+                ? s.FullBasicSalary ?? s.BasicSalary : s.BasicSalary;
+            decimal SlipHousing(PayrollSlip s) => s.GosiBasePolicy == ProrationGosiBases.FullMonth
+                ? s.FullHousingAllowance ?? s.HousingAllowance : s.HousingAllowance;
+            var basic    = empSlips.Sum(SlipBasic);
+            var housing  = empSlips.Sum(SlipHousing)
+                         + periodGosiBonusByEmp.GetValueOrDefault(empId)
+                         + periodGosiArrearsByEmp.GetValueOrDefault(empId);
             var transport = empSlips.Sum(s => s.TransportAllowance);
             employees.TryGetValue(empId, out var emp);
 
@@ -509,6 +571,42 @@ public sealed record GosiRunReconciliation(
 
     /// <summary>POD-B2 — other non-voided runs in this run's (company, year, month).</summary>
     public int SiblingRunCount { get; init; }
+
+    // ── POD-C3: proration + arrears awareness ────────────────────────────────────────────────────
+
+    /// <summary>How much of the contributory base above is retro/arrears settled by THIS run, in the
+    /// period PAID. Named rather than left as an unexplained delta.</summary>
+    public decimal ArrearsGosiBase { get; init; }
+
+    /// <summary>
+    /// [FLAG-COMPLIANCE-KSA] The same arrears measured on the EARNED basis: Σ over covered periods of
+    /// <c>min(entitled, ceiling) − min(paid, ceiling)</c>, where each earned month had its OWN 45,000
+    /// headroom. Because arrears ride inside the CURRENT month's single cap, an employee already at the
+    /// ceiling contributes NOTHING on their arrears — so this figure and <see cref="ArrearsGosiBase"/>
+    /// diverge exactly where an amended declaration would be needed. Computed and persisted even though
+    /// the product refuses to FILE on the earned basis: flagging without a number is not actionable.
+    /// </summary>
+    public decimal ArrearsGosiBaseEarnedBasis { get; init; }
+
+    /// <summary>Employees on this run whose wage was prorated (joiner/leaver).</summary>
+    public int ProratedEmployeeCount { get; init; }
+
+    /// <summary><c>FullMonth</c> | <c>Prorated</c> | null (pre-C3 run) — which base the run fed the pack.
+    /// Null is the flag that the slip's money columns ARE the base, i.e. the pre-C3 reconstruction.</summary>
+    public string? GosiBasePolicy { get; init; }
+
+    /// <summary>POD-C3 — human-readable note when this run's covered wage is not simply "the slip's
+    /// basic + housing"; null for a run with no proration and no arrears, i.e. every pre-C3 run.</summary>
+    public string? ProrationScopeNote =>
+        ProratedEmployeeCount == 0 && ArrearsGosiBase == 0m
+            ? null
+            : $"{ProratedEmployeeCount} employee(s) on this run were paid a PRORATED wage" +
+              (GosiBasePolicy == ProrationGosiBases.FullMonth
+                  ? " while their social-insurance base stayed at the FULL registered monthly wage (payparameter.proration_gosi_base = 'FullMonth'), so the covered wage above is rebuilt from the slip's persisted full package, not its money columns."
+                  : " and their social-insurance base was prorated with it (payparameter.proration_gosi_base = 'Prorated') — [FLAG-COMPLIANCE-KSA].") +
+              (ArrearsGosiBase == 0m
+                  ? string.Empty
+                  : $" It also includes {ArrearsGosiBase:N2} of retro arrears settled in this period; on the EARNED basis (each month's own ceiling headroom) the same arrears would have added {ArrearsGosiBaseEarnedBasis:N2}.");
 
     /// <summary>
     /// POD-B2 — true when this run shares its period with another run, which makes the per-run EXPECTED

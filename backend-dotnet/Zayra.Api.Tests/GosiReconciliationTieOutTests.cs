@@ -342,11 +342,21 @@ public class GosiReconciliationTieOutTests
     public async Task MidPeriodJoiner_IncludedAtFullCoveredWage_TiesOut()
     {
         // REQUIREMENT #5 (mid-period joiners): an employee who joined mid-month is INCLUDED in the run
-        // (PayrollController.cs:604 selects on Status=="Active" with no join-date filter) and — in this
-        // implementation — contributes on the FULL covered wage (no join-date proration at
-        // PayrollController.cs:806-808). The reconciliation must reflect exactly that: a slip exists for
-        // the joiner and expected==actual==GL with zero variance on the full 13,000 base. Guards against
-        // a silent join-date exclusion, and against the run and reconstruction diverging on proration.
+        // and contributes on the FULL covered wage. The reconciliation must reflect exactly that: a slip
+        // exists for the joiner and expected==actual==GL with zero variance on the full 13,000 base.
+        // Guards against a silent join-date exclusion, and against the run and reconstruction diverging
+        // on proration.
+        //
+        // ── POD-C3 NOTE — THIS TEST IS DELIBERATELY UNCHANGED, AND THAT IS THE POINT ─────────────────
+        // C3 now PRORATES this joiner's WAGE (slip.BasicSalary drops to 16/30 of 10,000), but the KSA
+        // default `payparameter.proration_gosi_base = FullMonth` keeps the CONTRIBUTORY wage at the full
+        // registered monthly package — so CoveredWageBase is still 13,000 and expected==actual==GL still
+        // holds to the halala. Under the old code that equality came for free because nothing was
+        // prorated; it now holds only because the slip persists FullBasicSalary / FullHousingAllowance /
+        // GosiBasePolicy and GosiReconciliationService rebuilds from them. This test therefore became a
+        // STRICTLY STRONGER assertion without a single character changing: it fails the moment the run
+        // and the A1 reconstruction diverge on proration, which is exactly what it was written to guard.
+        // The companion PRORATED-base case is MidPeriodJoiner_ProratedGosiBase_TiesOut below.
         var ruleReader = KsaRules();
         var tenantId = await SeedTenantAsync();
         var (_, saudiId, _, runId) = await SeedRunAsync(tenantId,
@@ -383,6 +393,237 @@ public class GosiReconciliationTieOutTests
             Assert.Equal(0m, recon.ExpectedVsActualEmployeeDelta);
             Assert.Equal(0m, recon.GlEmployeeDelta);
             Assert.Equal(0, recon.VarianceCount);
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+    // POD-C3 — THE CROSS-POD BAR: the A1 tie-out must survive PRORATION and ARREARS.
+    //
+    // A1's guarantee is "expected == actual == GL, reconstructed from the run's OWN persisted outputs".
+    // Proration and arrears each move the statutory base in a way the slip's MONEY columns cannot
+    // express, so if the run and the reconstruction were ever to diverge, every affected employee would
+    // report a phantom variance on a STATUTORY FILING SOURCE, silently. These are the tests that make
+    // that impossible.
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// The joiner's WAGE is prorated AND their CONTRIBUTORY WAGE is prorated with it
+    /// (payparameter.proration_gosi_base = 'Prorated'). The reconstruction must follow — which it does
+    /// only because the slip records WHICH policy the run used.
+    /// </summary>
+    [Fact]
+    public async Task MidPeriodJoiner_ProratedGosiBase_TiesOut()
+    {
+        var ruleReader = KsaRules();
+        var tenantId = await SeedTenantAsync();
+        var (companyId, saudiId, _, runId) = await SeedRunAsync(tenantId,
+            saudiBasic: 10_000m, saudiHousing: 3_000m, gosiBonusGross: 0m,
+            expatBasic: 0m, expatHousing: 0m, year: 2026, month: 11, includeExpat: false,
+            saudiJoiningDate: new DateTime(2026, 11, 15, 0, 0, 0, DateTimeKind.Utc));
+
+        await using (var db = _fx.CreateDb())
+        {
+            db.CompanyRatePolicies.Add(new CompanyRatePolicy
+            {
+                TenantId = tenantId, CompanyId = companyId, RateKey = ProrationRateKeys.GosiBase,
+                RateCategory = "PayParameter", RateValue = ProrationGosiBases.Prorated, DataType = "string",
+                EffectiveFrom = new DateOnly(2020, 1, 1), Status = CompanyPolicyStatuses.Active,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await BuildPayroll(db, tenantId, ruleReader).Process(runId, CancellationToken.None));
+
+        // Joined 15 Nov → 16 of 30 days → factor 16/30. The prorated package is 13,000 × 16/30 = 6,933.33,
+        // and BASIC absorbs the residual so the components sum to it exactly.
+        const decimal proratedBase = 6_933.33m;
+
+        await using (var db = _fx.CreateDb())
+        {
+            var slip = await db.PayrollSlips.AsNoTracking()
+                .FirstAsync(s => s.TenantId == tenantId && s.RunId == runId && s.EmployeeId == saudiId);
+            Assert.Equal(16, slip.PaidDays);
+            Assert.Equal(ProrationGosiBases.Prorated, slip.GosiBasePolicy);
+            Assert.Equal(proratedBase, slip.BasicSalary + slip.HousingAllowance, 2);
+            // The FULL package is persisted regardless of policy — it is the OT/LOP rate basis.
+            Assert.Equal(10_000m, slip.FullBasicSalary);
+        }
+
+        await LockRunAsync(tenantId, runId, ruleReader);
+
+        await using (var db = _fx.CreateDb())
+        {
+            var run = await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == runId);
+            var recon = await new GosiReconciliationService(db, KsaResolver(ruleReader))
+                .ReconcileAsync(tenantId, run, CancellationToken.None);
+
+            var row = recon.Rows.First(r => r.EmployeeId == saudiId);
+            Assert.Equal(proratedBase, row.CoveredWageBase, 2);
+            Assert.Equal(0m, recon.ExpectedVsActualEmployeeDelta);
+            Assert.Equal(0m, recon.ExpectedVsActualEmployerDelta);
+            Assert.Equal(0m, recon.GlEmployeeDelta);
+            Assert.Equal(0m, recon.GlEmployerDelta);
+            Assert.Equal(0, recon.VarianceCount);
+            Assert.Equal(1, recon.ProratedEmployeeCount);
+        }
+    }
+
+    /// <summary>
+    /// A run that SETTLES retro arrears. The arrears ride the housing slot in the run's statutory input;
+    /// the reconstruction must add the SAME amount from the run-stamped sub-ledger, keyed on the SAME
+    /// IsGosiBearing flag, or expected != actual for every affected employee.
+    /// </summary>
+    [Fact]
+    public async Task ArrearsBearingRun_TiesOut_AndTheArrearsBaseIsNamed()
+    {
+        var ruleReader = KsaRules();
+        var tenantId = await SeedTenantAsync();
+        var (companyId, saudiId, _, octRunId) = await SeedRunAsync(tenantId,
+            saudiBasic: 10_000m, saudiHousing: 3_000m, gosiBonusGross: 0m,
+            expatBasic: 0m, expatHousing: 0m, year: 2026, month: 10, includeExpat: false);
+
+        // October is paid at the original package and locked.
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await BuildPayroll(db, tenantId, ruleReader).Process(octRunId, CancellationToken.None));
+        await LockRunAsync(tenantId, octRunId, ruleReader);
+
+        // A backdated increment, effective 1 October, keyed in November.
+        Guid novRunId;
+        await using (var db = _fx.CreateDb())
+        {
+            db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+            {
+                TenantId = tenantId, EmployeeId = saudiId, SalaryStructureId = Guid.NewGuid(),
+                BasicSalary = 12_000m, HousingAllowance = 3_000m,
+                EffectiveDate = new DateOnly(2026, 10, 1), IsActive = true,
+                CreatedAtUtc = new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc),
+            });
+            var nov = new PayrollRun
+            {
+                TenantId = tenantId, CompanyId = companyId, Year = 2026, Month = 11,
+                Status = "Draft", RunType = PayrollRunTypes.Regular, IncludesRecurringPay = true,
+                SettlesArrears = true,
+            };
+            db.PayrollRuns.Add(nov);
+            await db.SaveChangesAsync();
+            novRunId = nov.Id;
+        }
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await BuildPayroll(db, tenantId, ruleReader).Process(novRunId, CancellationToken.None));
+
+        await using (var db = _fx.CreateDb())
+        {
+            var lines = await db.PayrollArrearsLines.AsNoTracking()
+                .Where(a => a.TenantId == tenantId && a.PayrollRunId == novRunId).ToListAsync();
+            Assert.Single(lines);
+            Assert.Equal(2_000m, lines[0].Amount);         // 12,000 − 10,000 for October
+            Assert.Equal(2026, lines[0].CoveredYear);
+            Assert.Equal(10, lines[0].CoveredMonth);
+            Assert.True(lines[0].IsGosiBearing);
+        }
+
+        await LockRunAsync(tenantId, novRunId, ruleReader);
+
+        await using (var db = _fx.CreateDb())
+        {
+            var run = await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == novRunId);
+            var recon = await new GosiReconciliationService(db, KsaResolver(ruleReader))
+                .ReconcileAsync(tenantId, run, CancellationToken.None);
+
+            var row = recon.Rows.First(r => r.EmployeeId == saudiId);
+            // November's own base (12,000 + 3,000) PLUS the 2,000 October arrears, in ONE ceiling-capped
+            // pack call — exactly what the run fed it.
+            Assert.Equal(17_000m, row.CoveredWageBase, 2);
+            Assert.Equal(2_000m, recon.ArrearsGosiBase, 2);
+            Assert.Equal(0m, recon.ExpectedVsActualEmployeeDelta);
+            Assert.Equal(0m, recon.ExpectedVsActualEmployerDelta);
+            Assert.Equal(0m, recon.GlEmployeeDelta);
+            Assert.Equal(0m, recon.GlEmployerDelta);
+            Assert.Equal(0, recon.VarianceCount);
+        }
+    }
+
+    /// <summary>
+    /// MF-1 — the sibling-arrears half. A SUPPLEMENTARY run settles the arrears, then the period is
+    /// reconciled at PERIOD scope. If Process did not add sibling arrears to its period-to-date base
+    /// (priorHousingByEmp), expected and actual would be computed on different inputs and the period
+    /// tie-out — the one a GOSI filing is built from — would break.
+    /// </summary>
+    [Fact]
+    public async Task ArrearsOnASupplementaryRun_PeriodTieOutStillHolds()
+    {
+        var ruleReader = KsaRules();
+        var tenantId = await SeedTenantAsync();
+        var (companyId, saudiId, _, octRunId) = await SeedRunAsync(tenantId,
+            saudiBasic: 10_000m, saudiHousing: 3_000m, gosiBonusGross: 0m,
+            expatBasic: 0m, expatHousing: 0m, year: 2026, month: 10, includeExpat: false);
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await BuildPayroll(db, tenantId, ruleReader).Process(octRunId, CancellationToken.None));
+        await LockRunAsync(tenantId, octRunId, ruleReader);
+
+        // November: the REGULAR run first (no retro yet), then the increment, then a SUPPLEMENTARY run
+        // that settles the arrears — the ordering that exposes the sibling-base bug.
+        Guid novRegularId, novSuppId;
+        await using (var db = _fx.CreateDb())
+        {
+            var reg = new PayrollRun
+            {
+                TenantId = tenantId, CompanyId = companyId, Year = 2026, Month = 11,
+                Status = "Draft", RunType = PayrollRunTypes.Regular, IncludesRecurringPay = true,
+                SettlesArrears = false,
+            };
+            db.PayrollRuns.Add(reg);
+            await db.SaveChangesAsync();
+            novRegularId = reg.Id;
+        }
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await BuildPayroll(db, tenantId, ruleReader).Process(novRegularId, CancellationToken.None));
+        await LockRunAsync(tenantId, novRegularId, ruleReader);
+
+        await using (var db = _fx.CreateDb())
+        {
+            db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+            {
+                TenantId = tenantId, EmployeeId = saudiId, SalaryStructureId = Guid.NewGuid(),
+                BasicSalary = 12_000m, HousingAllowance = 3_000m,
+                EffectiveDate = new DateOnly(2026, 10, 1), IsActive = true,
+                CreatedAtUtc = new DateTime(2026, 11, 20, 0, 0, 0, DateTimeKind.Utc),
+            });
+            var supp = new PayrollRun
+            {
+                TenantId = tenantId, CompanyId = companyId, Year = 2026, Month = 11,
+                Status = "Draft", RunType = PayrollRunTypes.Supplementary, IncludesRecurringPay = false,
+                SettlesArrears = true,
+            };
+            db.PayrollRuns.Add(supp);
+            await db.SaveChangesAsync();
+            novSuppId = supp.Id;
+        }
+
+        await using (var db = _fx.CreateDb())
+        {
+            var ctrl = BuildPayroll(db, tenantId, ruleReader);
+            Assert.IsType<OkObjectResult>(await ctrl.UpsertRunSelection(novSuppId,
+                new PayrollRunSelectionRequest("Include", "Retro increment arrears", new List<int> { saudiId }),
+                CancellationToken.None));
+            Assert.IsType<OkObjectResult>(await ctrl.Process(novSuppId, CancellationToken.None));
+        }
+        await LockRunAsync(tenantId, novSuppId, ruleReader);
+
+        await using (var db = _fx.CreateDb())
+        {
+            var period = await new GosiReconciliationService(db, KsaResolver(ruleReader))
+                .ReconcilePeriodAsync(tenantId, companyId, 2026, 11, CancellationToken.None);
+
+            Assert.Equal(2, period.RunCount);
+            Assert.Equal(0m, period.ExpectedVsActualEmployeeDelta);
+            Assert.Equal(0m, period.ExpectedVsActualEmployerDelta);
+            Assert.Equal(0m, period.GlEmployeeDelta);
+            Assert.Equal(0m, period.GlEmployerDelta);
+            Assert.Equal(0, period.VarianceCount);
         }
     }
 

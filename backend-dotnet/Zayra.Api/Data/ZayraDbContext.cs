@@ -683,6 +683,13 @@ public class ZayraDbContext : DbContext
     public DbSet<PayrollValidationOverride> PayrollValidationOverrides => Set<PayrollValidationOverride>();
     /// <summary>POD-B3 — the persisted witness of what each run CONSUMED, replayed by the void/reopen unwind.</summary>
     public DbSet<PayrollRunConsumption> PayrollRunConsumptions => Set<PayrollRunConsumption>();
+    /// <summary>POD-C3 — the retro/arrears sub-ledger: one line per (settling run, employee, covered
+    /// period, component), with the entitled/paid/previously-settled arithmetic that produced it.</summary>
+    public DbSet<PayrollArrearsLine> PayrollArrearsLines => Set<PayrollArrearsLine>();
+    /// <summary>POD-C3 — the per-employee sub-ledger behind the aggregate 1420 receivable a
+    /// FundsDisbursed void posts. FinanceGlEntry has no employee dimension, so without this the
+    /// receivable can never be netted into a replacement run.</summary>
+    public DbSet<PayrollEmployeeReceivable> PayrollEmployeeReceivables => Set<PayrollEmployeeReceivable>();
     public DbSet<PayrollException> PayrollExceptions => Set<PayrollException>();
     public DbSet<Payslip> Payslips => Set<Payslip>();
     public DbSet<PayslipComponent> PayslipComponents => Set<PayslipComponent>();
@@ -694,6 +701,12 @@ public class ZayraDbContext : DbContext
     public DbSet<WPSFileBatch> WPSFileBatches => Set<WPSFileBatch>();
     public DbSet<SIFFileRecord> SIFFileRecords => Set<SIFFileRecord>();
     public DbSet<EOSBCalculation> EOSBCalculations => Set<EOSBCalculation>();
+    /// <summary>POD-C1 — the termination settlement as a first-class auditable payable: computed once by
+    /// POD-A2's engine, accrued to 2320 on approval, disbursed through the ordinary payroll rails.</summary>
+    public DbSet<EmployeeFinalSettlement> EmployeeFinalSettlements => Set<EmployeeFinalSettlement>();
+    /// <summary>POD-C1 — the settlement's components. The disbursing run emits its payroll lines VERBATIM
+    /// from these rows and never recomputes anything.</summary>
+    public DbSet<FinalSettlementLine> FinalSettlementLines => Set<FinalSettlementLine>();
     public DbSet<PayrollAuditLog> PayrollAuditLogs => Set<PayrollAuditLog>();
     public DbSet<ShiftDefinition> ShiftDefinitions => Set<ShiftDefinition>();
     public DbSet<ShiftAssignment> ShiftAssignments => Set<ShiftAssignment>();
@@ -825,6 +838,8 @@ public class ZayraDbContext : DbContext
     public DbSet<ComplianceAuditLog> ComplianceAuditLogs => Set<ComplianceAuditLog>();
     public DbSet<ComplianceAIInsight> ComplianceAIInsights => Set<ComplianceAIInsight>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    // POD-D5: per-notification, per-channel delivery ledger (queued/sent/failed/not_configured).
+    public DbSet<NotificationDelivery> NotificationDeliveries => Set<NotificationDelivery>();
     public DbSet<Company> Companies => Set<Company>();
     public DbSet<Branch> Branches => Set<Branch>();
     public DbSet<Department> Departments => Set<Department>();
@@ -892,6 +907,10 @@ public class ZayraDbContext : DbContext
     public DbSet<BonusApproval> BonusApprovals => Set<BonusApproval>();
     public DbSet<BonusAuditLog> BonusAuditLogs => Set<BonusAuditLog>();
     public DbSet<FinanceGlEntry> FinanceGlEntries => Set<FinanceGlEntry>();
+    // ── POD-D4 (month-end hand-off) — additive only; no existing table is altered ───────────────
+    public DbSet<GlJournalExport> GlJournalExports => Set<GlJournalExport>();
+    public DbSet<GlJournalExportLine> GlJournalExportLines => Set<GlJournalExportLine>();
+    public DbSet<BankPaymentConfirmation> BankPaymentConfirmations => Set<BankPaymentConfirmation>();
     public DbSet<GlAccount> GlAccounts => Set<GlAccount>();
     public DbSet<GlAccountMapping> GlAccountMappings => Set<GlAccountMapping>();
     public DbSet<GlDriver> GlDrivers => Set<GlDriver>();
@@ -1286,6 +1305,36 @@ public class ZayraDbContext : DbContext
             entity.ToTable("notifications");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.UserId, x.Status, x.CreatedAtUtc });
+        });
+
+        // POD-D5 — notification delivery ledger. Additive; the notifications table is untouched.
+        modelBuilder.Entity<NotificationDelivery>(entity =>
+        {
+            entity.ToTable("notification_deliveries");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Channel).HasMaxLength(20);
+            entity.Property(x => x.Outcome).HasMaxLength(20);
+            entity.Property(x => x.AudienceType).HasMaxLength(20);
+            entity.Property(x => x.EventCode).HasMaxLength(120);
+            entity.Property(x => x.DedupeKey).HasMaxLength(64);
+            entity.Property(x => x.IdempotencyKey).HasMaxLength(64);
+            entity.Property(x => x.ErrorCode).HasMaxLength(80);
+            entity.Property(x => x.ProviderName).HasMaxLength(60);
+            entity.Property(x => x.ProviderReference).HasMaxLength(200);
+            // Exactly-once is enforced by the DATABASE, not by a check-then-act read: a concurrent
+            // re-entry computing the same business-identity key is refused here.
+            entity.HasIndex(x => new { x.TenantId, x.DedupeKey }).IsUnique();
+            // Worker drain path. PARTIAL on purpose: this table grows by employees × channels per
+            // run across every tenant, so the queue index must not carry the terminal rows (which
+            // are the overwhelming majority once a run finishes).
+            entity.HasIndex(x => new { x.Outcome, x.NextAttemptAtUtc })
+                  .HasFilter("outcome IN ('queued','sending')");
+            // Admin visibility queries.
+            entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.Outcome, x.Channel });
+            // Optimistic claim: the worker's UPDATE is a compare-and-swap on this token, so two
+            // instances draining the same row cannot both dispatch it.
+            entity.Property(x => x.LeaseVersion).IsConcurrencyToken();
         });
 
         modelBuilder.Entity<Company>(entity =>
@@ -1849,6 +1898,49 @@ public class ZayraDbContext : DbContext
             // Idempotent re-Process: one witness per (run, artifact type, artifact).
             entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.ArtifactType, x.ArtifactId }).IsUnique();
         });
+        // ── POD-C3: the retro/arrears sub-ledger ──────────────────────────────────────────────────────
+        // ITenantOwned + ICompanyScopedOperational, so it inherits the fail-closed tenant read filter AND
+        // the company write guard; CompanyId is always stamped from the settling run.
+        modelBuilder.Entity<PayrollArrearsLine>(entity =>
+        {
+            entity.ToTable("payroll_arrears_lines");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.EmployeeCode).HasMaxLength(50);
+            entity.Property(x => x.ComponentCode).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.Basis).HasMaxLength(40);
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.EntitledAmount).HasPrecision(14, 2);
+            entity.Property(x => x.PaidAmount).HasPrecision(14, 2);
+            entity.Property(x => x.PreviouslySettledAmount).HasPrecision(14, 2);
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.EarnedBasisGosiDelta).HasPrecision(14, 2);
+            entity.Property(x => x.ProrationFactor).HasPrecision(12, 6);
+            // The A1 reconstruction's dominant read: every GOSI-bearing line a run settled.
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
+            // The self-correcting formula's read: everything already settled for a covered period.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.CoveredYear, x.CoveredMonth });
+            // ONE line per (run, employee, covered period, component). This is the true invariant and the
+            // idempotency backstop for a re-Process. Deliberately NOT a global unique on (employee,
+            // period, component): two SUCCESSIVE backdated increments for the same covered period,
+            // settled in two different months, are legitimate and must not be refused by an index.
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId, x.CoveredYear, x.CoveredMonth, x.ComponentCode })
+                  .IsUnique();
+        });
+        // ── POD-C3: the per-employee 1420 sub-ledger ──────────────────────────────────────────────────
+        modelBuilder.Entity<PayrollEmployeeReceivable>(entity =>
+        {
+            entity.ToTable("payroll_employee_receivables");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.EmployeeCode).HasMaxLength(50);
+            entity.Property(x => x.EventType).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.Period).HasMaxLength(7);
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.RecoveredAmount).HasPrecision(14, 2);
+            entity.Ignore(x => x.Outstanding);
+            entity.HasIndex(x => new { x.TenantId, x.SourceRunId });
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+        });
         modelBuilder.Entity<PayrollException>(entity => { entity.ToTable("payroll_exceptions"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.Status }); });
         modelBuilder.Entity<Payslip>(entity => { entity.ToTable("payslips"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
         modelBuilder.Entity<PayslipTemplate>(entity =>
@@ -1898,6 +1990,70 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.WPSFileBatchId });
         });
         modelBuilder.Entity<EOSBCalculation>(entity => { entity.ToTable("eosb_calculations"); entity.HasKey(x => x.Id); entity.Property(x => x.EligibleSalary).HasPrecision(14,2); entity.Property(x => x.CalculatedAmount).HasPrecision(14,2); entity.Property(x => x.RulesSnapshotJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status }); });
+        // ── POD-C1: the termination settlement pipeline ───────────────────────────────────────────────
+        modelBuilder.Entity<EmployeeFinalSettlement>(entity =>
+        {
+            entity.ToTable("employee_final_settlements");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.EmployeeCode).HasMaxLength(50);
+            entity.Property(x => x.EmployeeName).HasMaxLength(200);
+            entity.Property(x => x.TerminationReason).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.ConfirmedTerminationReason).HasMaxLength(60);
+            entity.Property(x => x.Currency).HasMaxLength(10).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.GlPeriod).HasMaxLength(7);
+            entity.Property(x => x.CreatedByName).HasMaxLength(200);
+            entity.Property(x => x.SubmittedByName).HasMaxLength(200);
+            entity.Property(x => x.ApprovedByName).HasMaxLength(200);
+            entity.Property(x => x.CancelledByName).HasMaxLength(200);
+            entity.Property(x => x.WageBaseAcknowledgedByName).HasMaxLength(200);
+            entity.Property(x => x.CancelReason).HasMaxLength(1000);
+            entity.Property(x => x.WagesAcknowledgementReason).HasMaxLength(1000);
+            entity.Property(x => x.EosbResultJson).HasColumnType("json");
+            entity.Property(x => x.InputsSnapshotJson).HasColumnType("json");
+            entity.Property(x => x.WarningsJson).HasColumnType("json");
+            entity.Property(x => x.ServiceYears).HasPrecision(10, 4);
+            entity.Property(x => x.LeaveEncashmentDays).HasPrecision(10, 2);
+            foreach (var money in new[]
+                     {
+                         nameof(EmployeeFinalSettlement.GratuityAmount), nameof(EmployeeFinalSettlement.LeaveEncashmentAmount),
+                         nameof(EmployeeFinalSettlement.NoticePayAmount), nameof(EmployeeFinalSettlement.OtherDuesAmount),
+                         nameof(EmployeeFinalSettlement.NoticeShortfallDeduction), nameof(EmployeeFinalSettlement.OtherDeductionsAmount),
+                         nameof(EmployeeFinalSettlement.PlannedLoanRecovery), nameof(EmployeeFinalSettlement.PlannedAdvanceRecovery),
+                         nameof(EmployeeFinalSettlement.PlannedReceivableRecovery), nameof(EmployeeFinalSettlement.GrossPayable),
+                         nameof(EmployeeFinalSettlement.TotalDeductions), nameof(EmployeeFinalSettlement.NetPayable),
+                         nameof(EmployeeFinalSettlement.UnpaidWagesAmount), nameof(EmployeeFinalSettlement.WageBaseDeltaAmount),
+                         nameof(EmployeeFinalSettlement.ResidualDebtReclassed), nameof(EmployeeFinalSettlement.ResidualDebtUnbooked),
+                     })
+                entity.Property(money).HasPrecision(14, 2);
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
+            // CANNOT SETTLE THE SAME SEPARATION TWICE — keyed on the OFFBOARDING, never on the employee.
+            // A re-hire who leaves a second time has a second offboarding and MUST be settleable (the
+            // leaver union in PayrollController.LoadEligibleWithLeaversAsync already contemplates re-hire,
+            // and EmployeeOffboarding.RehireEligible exists); keying on the employee would make them
+            // permanently unsettleable. Approve additionally refuses an overlapping SERVICE WINDOW, which
+            // is what stops a re-hire whose joining date was never reset being paid twice for one period.
+            // HasFilter is ignored by the SQLite provider the unit tests use, so the API 409 is the belt
+            // to this brace (the same arrangement as the payroll-run period indexes).
+            entity.HasIndex(x => new { x.TenantId, x.OffboardingId })
+                  .IsUnique()
+                  .HasDatabaseName("ix_employee_final_settlements_live_offboarding")
+                  .HasFilter("status <> 'Cancelled'");
+        });
+        modelBuilder.Entity<FinalSettlementLine>(entity =>
+        {
+            entity.ToTable("final_settlement_lines");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ComponentCode).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.ComponentName).HasMaxLength(200);
+            entity.Property(x => x.LineType).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.Source).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.Narrative).HasMaxLength(500);
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.Quantity).HasPrecision(12, 4);
+            entity.HasIndex(x => new { x.TenantId, x.SettlementId });
+        });
         modelBuilder.Entity<PayrollAuditLog>(entity =>
         {
             entity.ToTable("payroll_audit_logs");
@@ -1999,6 +2155,15 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.YtdDeductions).HasPrecision(14, 2);
             entity.Property(x => x.YtdNet).HasPrecision(14, 2);
             entity.Property(x => x.LoanDeductions).HasPrecision(14, 2);
+            // POD-C3 — the proration witnesses. All nullable (or defaulted), so every pre-C3 row is
+            // untouched and the A1 reconstruction keeps its pre-C3 behaviour for them by construction.
+            entity.Property(x => x.ProrationBasis).HasMaxLength(40);
+            entity.Property(x => x.GosiBasePolicy).HasMaxLength(20);
+            entity.Property(x => x.ProrationFactor).HasPrecision(12, 6);
+            entity.Property(x => x.FullBasicSalary).HasPrecision(12, 2);
+            entity.Property(x => x.FullHousingAllowance).HasPrecision(12, 2);
+            entity.Property(x => x.FullTransportAllowance).HasPrecision(12, 2);
+            entity.Property(x => x.ArrearsAmount).HasPrecision(12, 2);
             entity.HasIndex(x => new { x.TenantId, x.RunId, x.EmployeeId }).IsUnique();
         });
 
@@ -2102,6 +2267,20 @@ public class ZayraDbContext : DbContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId });
             entity.HasIndex(x => new { x.TenantId, x.Status });
+            // D1 — AT MOST ONE LIVE SEPARATION PER EMPLOYEE, enforced by the database.
+            // The service checks for a live separation before inserting, but a check-then-act with no
+            // constraint is advisory only: two concurrent terminates (double-click, client retry, two
+            // operators) both read "none" and both insert. That is not cosmetic — final settlements are
+            // de-duplicated by OffboardingId, not by employee, so two separations mean TWO EOSB accruals
+            // for one exit, and the "already settled" guard can be walked past by landing on the other
+            // row. A partial unique index makes the invariant true rather than merely intended;
+            // Cancelled and Completed are excluded because they belong to closed service periods.
+            // Named overload so this coexists with the plain lookup index above rather than replacing
+            // it — EF keys indexes by property set, so an unnamed duplicate would silently drop the
+            // non-unique one and de-optimise reads of closed separations.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId }, "ix_employee_offboardings_live_per_employee")
+                .IsUnique()
+                .HasFilter("status NOT IN ('Cancelled', 'Completed')");
         });
 
         modelBuilder.Entity<Tenant>(entity =>
@@ -3324,6 +3503,82 @@ public class ZayraDbContext : DbContext
             // POD-B1b — resolves "how much of this bonus batch has already been cleared?" in one seek;
             // payroll clearing lines live in the PAYROLL journal and carry the batch id in SourceEntityRef.
             entity.HasIndex(x => new { x.TenantId, x.EventType, x.SourceEntityRef });
+        });
+
+        // ── POD-D4 — month-end hand-off (journal artifact + bank confirmation) ──────────────────
+        // CREATE-only: three new tables, zero ALTER on any existing table. FinanceGlEntry above is
+        // untouched — its per-line ERP block (erp_posting_status / erp_document_number) already existed
+        // and is simply now written from an artifact instead of a free-text string.
+        modelBuilder.Entity<GlJournalExport>(entity =>
+        {
+            entity.ToTable("gl_journal_exports");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CompanyCode).HasMaxLength(64);
+            entity.Property(x => x.Period).HasMaxLength(7);
+            entity.Property(x => x.FormatKey).HasMaxLength(64);
+            entity.Property(x => x.Currency).HasMaxLength(8);
+            entity.Property(x => x.FileName).HasMaxLength(300);
+            entity.Property(x => x.FileHash).HasMaxLength(80);
+            entity.Property(x => x.Status).HasMaxLength(24);
+            entity.Property(x => x.ExportedByName).HasMaxLength(200);
+            entity.Property(x => x.ConfirmedByName).HasMaxLength(200);
+            entity.Property(x => x.ErpDocumentNumber).HasMaxLength(120);
+            entity.Property(x => x.RejectionReason).HasMaxLength(1000);
+            entity.Property(x => x.Notes).HasMaxLength(1000);
+            entity.Property(x => x.FilterJson).HasColumnType("json");
+            entity.Property(x => x.TotalDebits).HasColumnType("decimal(18,4)");
+            entity.Property(x => x.TotalCredits).HasColumnType("decimal(18,4)");
+            entity.HasIndex(x => new { x.TenantId, x.Period });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+        });
+
+        modelBuilder.Entity<GlJournalExportLine>(entity =>
+        {
+            entity.ToTable("gl_journal_export_lines");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Side).HasMaxLength(2);
+            entity.Property(x => x.AccountCode).HasMaxLength(120);
+            entity.Property(x => x.AccountName).HasMaxLength(300);
+            entity.Property(x => x.Currency).HasMaxLength(8);
+            entity.Property(x => x.Period).HasMaxLength(7);
+            entity.Property(x => x.JournalRef).HasMaxLength(120);
+            entity.Property(x => x.Description).HasMaxLength(1000);
+            entity.Property(x => x.SourceModule).HasMaxLength(40);
+            entity.Property(x => x.SourceEntityRef).HasMaxLength(120);
+            entity.Property(x => x.EventType).HasMaxLength(80);
+            entity.Property(x => x.Amount).HasColumnType("decimal(18,4)");
+            // The frozen set: a download regenerates from these rows in LineNo order.
+            entity.HasIndex(x => new { x.TenantId, x.GlJournalExportId, x.LineNo });
+            // "which export(s) covered this ledger row?" — drives the ERP confirmation stamp and the
+            // reconciliation view's exported-vs-posted coverage.
+            entity.HasIndex(x => new { x.TenantId, x.FinanceGlEntryId });
+        });
+
+        modelBuilder.Entity<BankPaymentConfirmation>(entity =>
+        {
+            entity.ToTable("bank_payment_confirmations");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Outcome).HasMaxLength(24);
+            entity.Property(x => x.RawOutcome).HasMaxLength(64);
+            entity.Property(x => x.PreviousStatus).HasMaxLength(24);
+            entity.Property(x => x.HoldReason).HasMaxLength(64);
+            entity.Property(x => x.BankReference).HasMaxLength(140);
+            entity.Property(x => x.ReasonCode).HasMaxLength(64);
+            entity.Property(x => x.ReasonText).HasMaxLength(1000);
+            entity.Property(x => x.MatchedBy).HasMaxLength(32);
+            entity.Property(x => x.SourceFileName).HasMaxLength(300);
+            entity.Property(x => x.SourceFileHash).HasMaxLength(80);
+            entity.Property(x => x.ParserKey).HasMaxLength(64);
+            entity.Property(x => x.ImportedByName).HasMaxLength(200);
+            entity.Property(x => x.ConfirmedAmount).HasPrecision(14, 2);
+            entity.Property(x => x.RecordAmount).HasPrecision(14, 2);
+            entity.HasIndex(x => new { x.TenantId, x.PaymentBatchId, x.PaymentRecordId });
+            // Tenant-wide duplicate-file probe: one bank file must not be applied to several batches
+            // without an explicit acknowledgement.
+            entity.HasIndex(x => new { x.TenantId, x.SourceFileHash });
+            entity.HasIndex(x => new { x.TenantId, x.ImportBatchId });
         });
 
         // ── Reports & Analytics ────────────────────────────────────────────────

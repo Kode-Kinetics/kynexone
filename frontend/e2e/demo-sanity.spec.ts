@@ -13,9 +13,10 @@ import { platformLogin, tenantLogin, INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, EVOSTE
  */
 
 test.describe('Platform admin — demo sanity', () => {
-  test.beforeEach(async ({ page }) => {
-    await platformLogin(page);
-  });
+  // No per-test login: the session comes from auth.setup.ts via storageState. Logging in here
+  // once per route made the suite issue 17 logins in seconds, which the API's platform-login
+  // rate limit (default 5/window) correctly rejected — so the tests failed inside the login
+  // helper instead of checking the routes they name.
 
   const PLATFORM_ROUTES = [
     '/platform/dashboard',

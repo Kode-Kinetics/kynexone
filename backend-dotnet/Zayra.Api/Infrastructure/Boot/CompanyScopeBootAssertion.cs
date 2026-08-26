@@ -44,6 +44,17 @@ public static class CompanyScopeBootAssertion
                              "entire existing general ledger from the finance module that reads it. " +
                              "Tenant isolation is unaffected (ITenantOwned still applies), and GL " +
                              "reads are already gated by the finance.gl.* permissions.",
+        // Wave 0. Initially made ICompanyScopedOperational; independent review showed that was wrong.
+        ["GlJournalExport"] = "Export artifact whose CompanyId is the FILTER THE EXPORT WAS TAKEN " +
+                              "UNDER, not an ownership scope. NULL is not a backfill transient here — " +
+                              "it is the meaning of a group-level export spanning every legal entity. " +
+                              "Under the scoped interface the write guard refuses that null in a " +
+                              "multi-company tenant (group export threw company_scope_required), and " +
+                              "in a single-company tenant the auto-stamped id broke the supersede " +
+                              "probe, which matches CompanyId == null. Read access is enforced in " +
+                              "GlJournalExportsController: every endpoint checks an explicit " +
+                              "finance.gl.* permission and then ScopeError, which requires group level " +
+                              "for a tenant-wide request and CanAccessCompany otherwise.",
     };
 
     public static IReadOnlyList<string> FindViolations(DbContext db)

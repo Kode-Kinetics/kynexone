@@ -1110,13 +1110,24 @@ public class PayrollModuleTests
     {
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        // D3: a payment batch always belongs to a payroll run — the run is where its legal entity comes
+        // from. This fixture used to point PayrollRunId at a Guid with no row behind it, a state the
+        // product cannot produce, and the batch endpoints now (correctly) refuse an unresolvable owner
+        // rather than guessing one. The run is seeded so the test exercises WPS transitions, which is
+        // what it is actually about. CompanyId is null and the test caller is group-level.
+        var run = new PayrollRun
+        {
+            Id = Guid.NewGuid(), TenantId = tenantId, CompanyId = null,
+            Year = 2026, Month = 7, Status = "Locked",
+        };
         var batch = new PayrollPaymentBatch
         {
             TenantId = tenantId,
-            PayrollRunId = Guid.NewGuid(),
+            PayrollRunId = run.Id,
             BatchNumber = "PAY-STAT-001",
             WpsStatus = WpsStatuses.Generated
         };
+        db.PayrollRuns.Add(run);
         var file = new WPSFileBatch
         {
             TenantId = tenantId,
@@ -1148,8 +1159,18 @@ public class PayrollModuleTests
         savedFile.SubmissionReference.Should().Be("ACK-456");
     }
 
+    /// <summary>
+    /// POD-D4 rewrote what this test asserts, and the rewrite IS the fix.
+    ///
+    /// <para>It used to assert that <c>UpdateErpPostingStatus</c> writes <c>Posted</c> off a free-text
+    /// reference and stamps it onto the run's GL rows — with no file, no hash, and nothing that was ever
+    /// exported anywhere. That is the exact hole POD-D4 closes: the two statuses that ASSERT a journal was
+    /// produced and accepted by an ERP now require an artifact, and this endpoint refuses them with
+    /// 422 evidence_required. The reachable-by-hand states (ReadyForErp, Rejected) still work here, and
+    /// the gl_not_posted precondition is unchanged.</para>
+    /// </summary>
     [Fact]
-    public async Task ErpPostingStatus_RequiresGlAndPersistsRunAndGlReferences()
+    public async Task ErpPostingStatus_RequiresGlAndRefusesPostedWithoutExportEvidence()
     {
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
@@ -1173,18 +1194,28 @@ public class PayrollModuleTests
 
         var ctrl = MakeCtrl(db, tenantId, permissions: new[] { "payroll.export" });
 
-        var noGl = await ctrl.UpdateErpPostingStatus(runWithoutGl.Id, new ErpPostingStatusRequest(ErpPostingStatuses.Posted, "ERP-1"), CancellationToken.None);
+        // Precondition unchanged: a run with no live accrual has no journal at all.
+        var noGl = await ctrl.UpdateErpPostingStatus(runWithoutGl.Id, new ErpPostingStatusRequest(ErpPostingStatuses.ReadyForErp), CancellationToken.None);
         noGl.Should().BeOfType<BadRequestObjectResult>();
 
+        // POD-D4: Posted (and Exported) are no longer producible by hand — they need an export artifact.
         var posted = await ctrl.UpdateErpPostingStatus(runWithGl.Id, new ErpPostingStatusRequest(ErpPostingStatuses.Posted, "ERP-2026-08"), CancellationToken.None);
-        posted.Should().BeOfType<OkObjectResult>();
+        posted.Should().BeOfType<UnprocessableEntityObjectResult>();
+        System.Text.Json.JsonSerializer.Serialize(((UnprocessableEntityObjectResult)posted).Value)
+            .Should().Contain("evidence_required");
 
-        var savedRun = await db.PayrollRuns.FindAsync(runWithGl.Id);
-        var savedGl = await db.FinanceGlEntries.SingleAsync(x => x.SourceEntityId == runWithGl.Id);
-        savedRun!.ErpPostingStatus.Should().Be(ErpPostingStatuses.Posted);
-        savedRun.ErpPostingReference.Should().Be("ERP-2026-08");
-        savedGl.ErpPostingStatus.Should().Be(ErpPostingStatuses.Posted);
-        savedGl.ErpDocumentNumber.Should().Be("ERP-2026-08");
+        var stillReady = await db.PayrollRuns.FindAsync(runWithGl.Id);
+        stillReady!.ErpPostingStatus.Should().Be(ErpPostingStatuses.ReadyForErp,
+            "a bare status write must not be able to claim the journal reached an ERP");
+        var untouchedGl = await db.FinanceGlEntries.SingleAsync(x => x.SourceEntityId == runWithGl.Id);
+        untouchedGl.ErpDocumentNumber.Should().BeNull();
+
+        // Operational intent still belongs here, and still persists.
+        var rejected = await ctrl.UpdateErpPostingStatus(runWithGl.Id,
+            new ErpPostingStatusRequest(ErpPostingStatuses.Rejected, null, "ERP refused the batch"), CancellationToken.None);
+        rejected.Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        (await db.PayrollRuns.FindAsync(runWithGl.Id))!.ErpPostingStatus.Should().Be(ErpPostingStatuses.Rejected);
     }
 
     // ── Section 11: AI Insight Engine — anomaly generation ───────────────────

@@ -134,7 +134,13 @@ public class BypassLintTests
     public void AllowEntityReturn_ProductionReasonsMustAssertFlatness()
     {
         var sourceRoot = ResolveSourceRoot();
-        if (sourceRoot is null) return;
+        // D14: a guard that SKIPS when it cannot find the source is a false negative, not a safe
+        // default — a CI layout change would silently disable every isolation lint while still
+        // reporting green. Throwing is the only honest behaviour for a control, and it also
+        // narrows the nullable so the scan below cannot be handed a null root.
+        sourceRoot = sourceRoot ?? throw new InvalidOperationException(
+            "The Zayra.Api source root could not be resolved, so this guard would check NOTHING. "
+            + "Treat an unresolvable path as a build failure, never a skip.");
 
         // Regex: capture the string inside [AllowEntityReturn("...")] or [AllowEntityReturn(@"...")]
         var reasonPattern = new Regex(
@@ -180,7 +186,13 @@ public class BypassLintTests
     public void RawSql_NoFromSqlRawOrFromSqlInterpolatedInProductionCode()
     {
         var sourceRoot = ResolveSourceRoot();
-        if (sourceRoot is null) return;
+        // D14: a guard that SKIPS when it cannot find the source is a false negative, not a safe
+        // default — a CI layout change would silently disable every isolation lint while still
+        // reporting green. Throwing is the only honest behaviour for a control, and it also
+        // narrows the nullable so the scan below cannot be handed a null root.
+        sourceRoot = sourceRoot ?? throw new InvalidOperationException(
+            "The Zayra.Api source root could not be resolved, so this guard would check NOTHING. "
+            + "Treat an unresolvable path as a build failure, never a skip.");
 
         var rawSqlPatterns = new[] { "FromSqlRaw(", "FromSqlInterpolated(", "DapperExtensions", "IDbConnection" };
 
@@ -298,7 +310,13 @@ public class BypassLintTests
     public void RawEntityOkReturn_ControllersMustProjectSensitiveEntitiesToDto()
     {
         var sourceRoot = ResolveSourceRoot();
-        if (sourceRoot is null) return;
+        // D14: a guard that SKIPS when it cannot find the source is a false negative, not a safe
+        // default — a CI layout change would silently disable every isolation lint while still
+        // reporting green. Throwing is the only honest behaviour for a control, and it also
+        // narrows the nullable so the scan below cannot be handed a null root.
+        sourceRoot = sourceRoot ?? throw new InvalidOperationException(
+            "The Zayra.Api source root could not be resolved, so this guard would check NOTHING. "
+            + "Treat an unresolvable path as a build failure, never a skip.");
 
         var violations = new List<string>();
         var controllerDir = Path.Combine(sourceRoot, "Controllers");
@@ -348,7 +366,13 @@ public class BypassLintTests
     public void AllowEntityReturn_MustBeOnMethodNotClass()
     {
         var sourceRoot = ResolveSourceRoot();
-        if (sourceRoot is null) return;
+        // D14: a guard that SKIPS when it cannot find the source is a false negative, not a safe
+        // default — a CI layout change would silently disable every isolation lint while still
+        // reporting green. Throwing is the only honest behaviour for a control, and it also
+        // narrows the nullable so the scan below cannot be handed a null root.
+        sourceRoot = sourceRoot ?? throw new InvalidOperationException(
+            "The Zayra.Api source root could not be resolved, so this guard would check NOTHING. "
+            + "Treat an unresolvable path as a build failure, never a skip.");
 
         // A class-level [AllowEntityReturn] suppresses ALL actions on that controller,
         // bypassing any future action-level checks. Flag any class-level usage.

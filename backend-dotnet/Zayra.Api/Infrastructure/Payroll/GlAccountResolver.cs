@@ -49,6 +49,19 @@ public sealed record BonusAccrualClearing(
     public IReadOnlyDictionary<string, decimal> ByComponentCode => ClearedByComponentCode ?? NoComponents;
 }
 
+/// <summary>
+/// POD-C1 — one settlement's outstanding payable, and how much of it THIS payroll run clears.
+///
+/// <para><see cref="PayableAccount"/> is the accrual line's STORED CreditAccount, never a freshly
+/// resolved one: the clearing DEBIT must hit the exact account the approval credited, so a
+/// chart-of-accounts remap between approve and lock can never leave 2320 Final Settlement Payable off
+/// zero. Identical doctrine to <see cref="BonusAccrualClearing.AccrualAccount"/>.</para>
+/// </summary>
+/// <param name="CompanyId">The legal entity holding the payable being retired — which is not always the
+/// run's own company (a legacy/seeded run can carry none while the settlement it pays is stamped).</param>
+public sealed record SettlementPayableClearing(
+    Guid SettlementId, string EmployeeRef, string PayableAccount, decimal Amount, Guid? CompanyId = null);
+
 /// <summary>Everything the shared GL routing needs, loaded once per posting (company-first).</summary>
 public sealed record GlResolutionContext(
     IReadOnlyDictionary<string, (string Code, string Name)> Overrides,
@@ -62,6 +75,16 @@ public sealed record GlResolutionContext(
     /// default, which reproduces the pre-B1b journal exactly.
     /// </summary>
     public IReadOnlyList<BonusAccrualClearing> BonusClearings { get; init; } = Array.Empty<BonusAccrualClearing>();
+
+    /// <summary>
+    /// POD-C1 — per-settlement payable clearing for the run being posted. Carried on the context for the
+    /// SAME reason <see cref="BonusClearings"/> is (an <c>init</c> property, not a new
+    /// <c>BuildPayrollGlEntries</c> parameter) so the builder's arity — and therefore the
+    /// reflection-driven golden master, PayComponentGoldenMasterTests — is unchanged. Empty by default,
+    /// which reproduces the pre-C1 journal exactly.
+    /// </summary>
+    public IReadOnlyList<SettlementPayableClearing> SettlementClearings { get; init; }
+        = Array.Empty<SettlementPayableClearing>();
 
     /// <summary>POD-B1b — the legal entity this context was resolved for. Stamped onto every line the
     /// posting builders emit (a plain FinanceGlEntry dimension, never an amount or account change).</summary>

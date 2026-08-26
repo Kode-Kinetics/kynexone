@@ -77,10 +77,19 @@ public class EosbUnificationIndependentTests
     // Seeds one KSA employee (EOSB enabled) joining on `joiningDate`, basic SAR `basic`.
     private static int SeedKsaEmployee(ZayraDbContext db, Guid tenantId, DateTime joiningDate, decimal basic = Basic)
     {
+        // POD-C1 refuses to guess a settlement's legal entity (it decides which chart-of-accounts
+        // overrides apply and which GL period-close row binds), so the fixture states one explicitly.
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Independent Test Entity", CountryCode = "SA",
+            DefaultCurrency = "SAR", IsActive = true,
+        };
+        db.Companies.Add(company);
         var emp = new Employee
         {
             TenantId = tenantId, EmployeeCode = "E900", FullName = "Independent Test Employee",
             Status = "Active", Nationality = "SAU", JoiningDate = joiningDate,
+            CompanyId = company.Id,
         };
         db.Employees.Add(emp);
         db.GCCComplianceSettings.Add(new GCCComplianceSetting
@@ -95,6 +104,22 @@ public class EosbUnificationIndependentTests
         });
         db.SaveChanges();
         return emp.Id;
+    }
+
+    // POD-C1 hardened /final-settlement so it will only settle a real leaver, sourcing the last working
+    // day from the offboarding record rather than the request body. These POD-A2 parity tests predate
+    // that rule; each now records the separation it was always implying. The EOSB figures asserted
+    // below are unchanged — this only supplies the leaver context the endpoint requires before it will
+    // accrue a payable.
+    private static void SeedLeaver(ZayraDbContext db, Guid tenantId, int empId, DateOnly lastWorkingDay,
+        string separationType = "Termination")
+    {
+        db.EmployeeOffboardings.Add(new EmployeeOffboarding
+        {
+            TenantId = tenantId, EmployeeId = empId, SeparationType = separationType,
+            Status = "InProgress", LastWorkingDay = lastWorkingDay, CreatedAtUtc = DateTime.UtcNow,
+        });
+        db.SaveChanges();
     }
 
     private static decimal EosbFrom(IActionResult result)
@@ -122,6 +147,7 @@ public class EosbUnificationIndependentTests
         var joining = new DateTime(2020, 3, 10, 0, 0, 0, DateTimeKind.Utc);
         var asOf    = new DateTime(2023, 8, 25, 0, 0, 0, DateTimeKind.Utc);
         var empId = SeedKsaEmployee(db, tenantId, joining);
+        SeedLeaver(db, tenantId, empId, DateOnly.FromDateTime(asOf), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var eosb = await ctrl.CalculateEosb(
@@ -144,6 +170,7 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 7, 1), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         // 1.5yr resignation (join 2022-01 → 2023-07).
@@ -161,6 +188,7 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
@@ -179,6 +207,7 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2018, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2025, 7, 1), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         // join 2018-01 → 2025-07 = exactly 7.5 years.
@@ -197,6 +226,7 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2011, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
@@ -214,6 +244,7 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2018, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2025, 7, 1), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
@@ -233,6 +264,7 @@ public class EosbUnificationIndependentTests
         var tenantId = Guid.NewGuid();
         // join 2022-07 → 2024-01 = 1.5 years.
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2022, 7, 1, 0, 0, 0, DateTimeKind.Utc));
+        SeedLeaver(db, tenantId, empId, new DateOnly(2024, 1, 1), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var asOf = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);

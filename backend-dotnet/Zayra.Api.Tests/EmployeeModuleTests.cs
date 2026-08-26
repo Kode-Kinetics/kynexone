@@ -146,7 +146,7 @@ public class EmployeeModuleTests
             db,
             new AuditService(db),
             new FakeDocumentStorage(),
-            new NotificationService(db, new FakeEmailService(), NullLogger<NotificationService>.Instance)),
+            TestNotifications.For(db)),
             CancellationToken.None);
 
         var created = Assert.IsType<EmployeeDetailDto>(Assert.IsType<CreatedAtActionResult>(result.Result).Value);
@@ -231,7 +231,7 @@ public class EmployeeModuleTests
             db,
             new AuditService(db),
             new FakeDocumentStorage(),
-            new NotificationService(db, new FakeEmailService(), NullLogger<NotificationService>.Instance)),
+            TestNotifications.For(db)),
             CancellationToken.None);
 
         var created = Assert.IsType<EmployeeDetailDto>(Assert.IsType<CreatedAtActionResult>(result.Result).Value);
@@ -656,7 +656,7 @@ public class EmployeeModuleTests
             new Pbkdf2PasswordHasher(),
             audit,
             new FakeDocumentStorage(),
-            new NotificationService(db, new FakeEmailService(), NullLogger<NotificationService>.Instance),
+            TestNotifications.For(db),
             new FakeHijriDateService(),
             new Zayra.Api.Infrastructure.Common.DataScopeService(db),
             new FakeLetterService(),

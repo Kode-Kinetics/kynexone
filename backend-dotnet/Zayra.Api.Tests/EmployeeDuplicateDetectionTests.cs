@@ -83,7 +83,7 @@ public class EmployeeDuplicateDetectionTests
     {
         var controller = new EmployeesController(
             db, new Pbkdf2PasswordHasher(), new AuditService(db), new FakeDocStorage2(),
-            new NotificationService(db, new FakeEmailSvc2(), NullLogger<NotificationService>.Instance),
+            TestNotifications.For(db),
             new FakeHijriSvc2(), new Zayra.Api.Infrastructure.Common.DataScopeService(db), new FakeLetterSvc2());
         var claims = new List<Claim>
         {
@@ -101,7 +101,7 @@ public class EmployeeDuplicateDetectionTests
 
     private static EmployeeManagementService BuildService(ZayraDbContext db) => new(
         db, new AuditService(db), new FakeDocStorage2(),
-        new NotificationService(db, new FakeEmailSvc2(), NullLogger<NotificationService>.Instance));
+        TestNotifications.For(db));
 
     private static T Prop<T>(object o, string name) => (T)o.GetType().GetProperty(name)!.GetValue(o)!;
 

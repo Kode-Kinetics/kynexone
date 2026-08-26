@@ -22,6 +22,43 @@ public class LeaveService : ILeaveService
         _workWeek = workWeek ?? new WorkWeekService(db);
     }
 
+    /// <summary>
+    /// POD-C3 (MF-6c) — resolves <c>lop.monthly_day_divisor</c> for the employee's legal entity, the SAME
+    /// key and the SAME precedence PayrollController.Process reads. Before this, unpaid leave was
+    /// snapshotted at a hard-coded <c>basic / 30</c> at approval time while payroll charged unpaid
+    /// ABSENCE at the configured divisor — two day-rates for the same economic fact on one payslip.
+    /// Falls back to 30 (the shipped default), so a tenant that never configured a divisor is unaffected.
+    /// </summary>
+    private async Task<decimal> ResolveLopDayDivisorAsync(Guid tenantId, int employeeId, DateOnly onDate, CancellationToken ct)
+    {
+        const decimal fallback = 30m;
+        // IgnoreQueryFilters is intentional: resolving the employee's legal entity is a SYSTEM/config
+        // read that must succeed regardless of the approver's own company claims; the explicit TenantId
+        // predicate on BOTH sides re-applies exact tenant scope and never reads another tenant.
+        var cc = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.Id == employeeId)
+            .Join(_db.Companies.IgnoreQueryFilters().AsNoTracking().Where(c => c.TenantId == tenantId),
+                  e => e.CompanyId, c => (Guid?)c.Id, (e, c) => c.CountryCode)
+            .FirstOrDefaultAsync(ct);
+        if (string.IsNullOrWhiteSpace(cc)) return fallback;
+        var eff = onDate.ToDateTime(TimeOnly.MinValue);
+        // Tenant override wins over the seeded platform default (TenantId == null) — the same rule
+        // StatutoryRuleReader applies for the payroll run.
+        // IgnoreQueryFilters is intentional: StatutoryRule platform defaults are stored with TenantId ==
+        // null, which the per-tenant global filter excludes; this reads the tenant's own rows PLUS those
+        // platform defaults and nothing else.
+        var raw = await _db.StatutoryRules.IgnoreQueryFilters().AsNoTracking()
+            .Where(r => (r.TenantId == tenantId || r.TenantId == null)
+                     && r.CountryCode == cc && r.RuleKey == "lop.monthly_day_divisor"
+                     && r.EffectiveFrom <= eff && (r.EffectiveTo == null || r.EffectiveTo >= eff))
+            .OrderByDescending(r => r.TenantId != null).ThenByDescending(r => r.EffectiveFrom)
+            .Select(r => r.RuleValue)
+            .FirstOrDefaultAsync(ct);
+        return decimal.TryParse(raw, System.Globalization.NumberStyles.Any,
+                                System.Globalization.CultureInfo.InvariantCulture, out var v) && v > 0m
+            ? v : fallback;
+    }
+
     public async Task<EmployeeLeaveBalance> GetOrCreateBalanceAsync(Guid tenantId, int employeeId, Guid leaveTypeId, int year, CancellationToken ct = default)
     {
         var balance = await _db.EmployeeLeaveBalances
@@ -461,10 +498,16 @@ public class LeaveService : ILeaveService
                 .Where(s => s.TenantId == tenantId && s.EmployeeId == request.EmployeeId && s.IsActive && s.EffectiveDate <= request.StartDate)
                 .OrderByDescending(s => s.EffectiveDate)
                 .FirstOrDefaultAsync(ct);
-            // basic ÷ 30 per unpaid day — standard GCC day-rate convention, matches payroll's
-            // default LOP divisor. [FLAG-COMPLIANCE: confirm divisor per jurisdiction before filing.]
+            // POD-C3 (MF-6c) — the divisor is READ, not hard-coded. This literal 30 was a THIRD day-rate
+            // in the product (alongside lop.monthly_day_divisor and the proration basis): a tenant on a
+            // 26-day divisor charged unpaid leave at basic/30 here and unpaid absence at basic/26 in
+            // payroll, on the same payslip. With proration in play the mismatch can drive net negative.
+            // Resolution order mirrors the payroll run exactly: the tenant/platform StatutoryRule for the
+            // employee's company country, falling back to 30 — so nothing changes for a tenant that never
+            // configured one. [FLAG-COMPLIANCE: confirm divisor per jurisdiction before filing.]
             var basic = salary?.BasicSalary ?? 0m;
-            var amount = Math.Round(basic / 30m * request.TotalDays, 2);
+            var lopDivisor = await ResolveLopDayDivisorAsync(tenantId, request.EmployeeId, request.StartDate, ct);
+            var amount = Math.Round(basic / lopDivisor * request.TotalDays, 2);
             _db.LeavePayrollImpacts.Add(new LeavePayrollImpact
             {
                 TenantId = tenantId,
