@@ -133,3 +133,63 @@ Wrap list: `AuthService` (7 pre-auth methods), `MfaService` (5), `EnterpriseIden
 
 **Current activity:** pushing Gate 0 B1/B2 and opening its PR.
 **Next:** B3 real Chrome role/isolation gate.
+
+
+---
+
+## Checkpoint 4 — 05:45Z — Gate 0 B3 complete, real Chrome gate green
+
+**Branch:** `wave1/security-scope-browser-gate` · **main SHA:** `5583b12`
+
+**A4 PROVEN, with evidence.** Merging PR #44 triggered the new workflow on `main`:
+`Apply DB Migrations (deploy gate)` entered state **`waiting`**, with 1 pending deployment on
+environment **Production** requiring approver `kodekinetics79`. **Not approved** — no production
+deploy this shift. Production migration and deploy now require a human, which is what A4 asked for.
+
+**B3 — real Chrome role and isolation gate.** A full real stack was stood up locally: Postgres 16,
+the real backend with `EnterpriseGroupSeeder` (4 tenants / 15 companies / 58 users), and a
+**production** `next build` + `next start`. No mocked business APIs, no fixtures, no demo data.
+
+| Run | Result |
+|---|---|
+| Pre-existing `group-company` suite (baseline) | 16 passed, 2 failed, **9 skipped** |
+| New `playwright.security.config.ts` gate | **22 passed, 0 failed, 0 skipped** |
+| Full backend suite | **1709 passed, 0 failed, 0 skipped** |
+
+**Two of my own tests were passing for the wrong reason — caught before claiming done.**
+
+1. UI tests navigated to `/employees`, which **does not exist** (the route is `/people`). One failed
+   for the wrong reason; the other **passed against a 404 page**, "proving" no sibling-company data was
+   visible on a page that rendered nothing.
+2. Setup wrote tokens to `accessToken`/`token`; the app reads **`zayra_access_token`** /
+   **`platform_access_token`**. Every browser context was silently **anonymous**, so a suite of
+   "cross-company data is not visible" assertions passed because *no* data was visible.
+
+Both fixed. The company-isolation assertion is now load-bearing in both directions and was
+negative-tested: substituting a group session into the company-scoped slot fails the gate with
+*"the employees page rendered a sibling company's codes"*.
+
+**Product changes made to support it (not test-only hacks)**
+
+- Platform-owner bootstrap decoupled from demo-data seeding. It previously lived inside the demo block,
+  so Production and dedicated deployments — where demo seeding is correctly refused — had **no
+  supported way to create the first platform operator**. Now inert unless `PLATFORM_ADMIN_PASSWORD` is
+  supplied, a no-op once any platform user exists, and on Production additionally gated behind
+  `PLATFORM_ADMIN_BOOTSTRAP=true`.
+- Removed a Playwright artifact (`frontend/test-results/.last-run.json`) that was tracked on `main`,
+  and gitignored `node_modules/`, `test-results/`, `playwright-report/`, `blob-report/` under `frontend/`.
+
+**Rate limiting respected, not raised.** The old suite trips `429` because it logs in per spec file.
+The limiter (10/60s) is left exactly as production runs it; the nine roles authenticate once each,
+paced, and reuse sessions. Storage states and tokens are gitignored and excluded from CI artifacts.
+
+**CI:** `Chrome Security Gate (roles + isolation)` job added — real Postgres service, real backend with
+seed, production frontend build, `retries: 0`, failure evidence uploaded with `.auth` excluded.
+
+**Gaps recorded, not glossed:** GAP-B3-1 (`Manager`/`Employee` not seeded, so those journeys are absent
+rather than faked), B3-2 (mid-session revocation needs a contract), B3-3 (batch pages API-covered only),
+B3-4 (impersonation/break-glass not end-to-end), B3-5 (gate not yet a required check — governance G-6),
+B3-6 (console-error assertions not global).
+
+**Current activity:** pushing B3 and updating PR #45.
+**Next:** Phase C (G3 observability) in a separate worktree.
