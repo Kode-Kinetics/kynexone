@@ -1110,13 +1110,24 @@ public class PayrollModuleTests
     {
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        // D3: a payment batch always belongs to a payroll run — the run is where its legal entity comes
+        // from. This fixture used to point PayrollRunId at a Guid with no row behind it, a state the
+        // product cannot produce, and the batch endpoints now (correctly) refuse an unresolvable owner
+        // rather than guessing one. The run is seeded so the test exercises WPS transitions, which is
+        // what it is actually about. CompanyId is null and the test caller is group-level.
+        var run = new PayrollRun
+        {
+            Id = Guid.NewGuid(), TenantId = tenantId, CompanyId = null,
+            Year = 2026, Month = 7, Status = "Locked",
+        };
         var batch = new PayrollPaymentBatch
         {
             TenantId = tenantId,
-            PayrollRunId = Guid.NewGuid(),
+            PayrollRunId = run.Id,
             BatchNumber = "PAY-STAT-001",
             WpsStatus = WpsStatuses.Generated
         };
+        db.PayrollRuns.Add(run);
         var file = new WPSFileBatch
         {
             TenantId = tenantId,

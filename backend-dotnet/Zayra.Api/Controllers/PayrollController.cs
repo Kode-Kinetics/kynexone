@@ -4729,6 +4729,12 @@ public class PayrollController : ControllerBase
         if (!HasPermission("payroll.export")) return Forbid();
 
         var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, id, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (batch is null) return NotFound();
 
@@ -5007,6 +5013,12 @@ public class PayrollController : ControllerBase
             return BadRequest(new { error = "invalid_status", message = $"Status must be one of: {string.Join(", ", WpsStatuses.All)}." });
 
         var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var batch    = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
 
@@ -5288,6 +5300,12 @@ public class PayrollController : ControllerBase
         if (!HasPermission("payroll.export")) return Forbid();
 
         var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
@@ -5560,6 +5578,12 @@ public class PayrollController : ControllerBase
             return BadRequest(new { error = "reason_required", message = "A reason is required to reverse a settlement." });
 
         var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
@@ -5916,6 +5940,12 @@ public class PayrollController : ControllerBase
         if (!HasPermission("payroll.export")) return Forbid();
 
         var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var batch    = await _db.PayrollPaymentBatches.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
         var wpsFile = await _db.WPSFileBatches.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PaymentBatchId == batchId, cancellationToken);
@@ -6004,6 +6034,12 @@ public class PayrollController : ControllerBase
         if (!HasPermission("payroll.export")) return Forbid();
 
         var tenantId = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var wpsBatch = await _db.PayrollPaymentBatches.AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (wpsBatch is null) return NotFound();
@@ -6058,6 +6094,23 @@ public class PayrollController : ControllerBase
     {
         var tenantId = GetTenantId();
         var query = _db.PayrollPaymentBatches.AsNoTracking().Where(x => x.TenantId == tenantId);
+        // D3: a batch inherits its legal entity from its run. The caller's entity set is applied
+        // EXPLICITLY from the token rather than leaning on the ambient company filter — that filter is
+        // disabled whenever the context has no request principal, so relying on it would have made this
+        // scope silently absent in exactly the places it is hardest to notice. Same rule as the
+        // single-batch guard: a legacy null-company run is group-only.
+        var listScope = this.GetEntityScope();
+        var scopedRuns = Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayrollRuns, tenantId,
+                "The company dimension is re-applied from the caller's own token immediately below; it is "
+                + "dropped first so a null-company run cannot be silently included by the ambient filter.")
+            .AsNoTracking();
+        if (!listScope.IsGroupLevel)
+        {
+            var listCompanyIds = listScope.AccessibleCompanyIds;
+            scopedRuns = scopedRuns.Where(r => r.CompanyId != null && listCompanyIds.Contains(r.CompanyId.Value));
+        }
+        var scopedRunIds = scopedRuns.Select(r => r.Id);
+        query = query.Where(x => scopedRunIds.Contains(x.PayrollRunId));
         if (runId.HasValue) query = query.Where(x => x.PayrollRunId == runId.Value);
         // SAFE-SERIALIZATION: PayrollPaymentBatch is a payment workflow aggregate (TotalAmount is batch-level) — no per-employee salary PII.
         var batches = await query.OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken);
@@ -6101,6 +6154,12 @@ public class PayrollController : ControllerBase
     public async Task<IActionResult> PaymentRecords(Guid id, CancellationToken cancellationToken)
     {
         var tenantId  = GetTenantId();
+        // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
+        // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
+        // it these endpoints were tenant-only, and the run-status guards below fail OPEN
+        // cross-company (PayrollRun is company-filtered, so the run reads back null).
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, id, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
         var records   = await _db.PayrollPaymentRecords.AsNoTracking().Where(x => x.TenantId == tenantId && x.PaymentBatchId == id).ToListAsync(cancellationToken);
         var canSeeIban = HasPermission("payroll.export");
         // POD-D4 — the bank's latest word on each record, so a returned salary is visible HERE and not only
