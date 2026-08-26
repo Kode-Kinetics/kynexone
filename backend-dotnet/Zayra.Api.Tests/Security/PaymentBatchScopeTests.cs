@@ -295,37 +295,45 @@ public class PaymentBatchScopeTests
     // ── The durable ratchet: no batch route may ship without the guard ────────────────────────────
 
     /// <summary>
-    /// A source-level guard, because the failure mode here is a NEW endpoint added later without the
-    /// check — exactly how the nine routes above came to be tenant-only in the first place. Every action
-    /// whose route template is batch-specific must call the shared authorization helper.
+    /// A source-level ratchet, because the failure mode here is a NEW endpoint added later without the
+    /// check — exactly how the nine routes above came to be tenant-only in the first place.
+    ///
+    /// <para>The first version of this test had a FALSE PASS, found by independent review: it bounded an
+    /// action's body at the next <c>[Http</c> attribute, so for the LAST action in a file the region ran
+    /// to end-of-file and swallowed the private helper whose name it greps for. Deleting the real guard
+    /// in <c>BankConfirmationsController</c> left it green. It now brace-matches the actual method body,
+    /// and discovers controllers across the whole tree instead of trusting two hard-coded paths.</para>
     /// </summary>
     [Fact]
     public void EveryBatchSpecificRoute_CallsTheSharedCompanyGuard()
     {
-        var repoRoot = FindRepoRoot();
+        var controllers = Directory.GetFiles(
+            Path.Combine(FindApiRoot(), "Controllers"), "*.cs", SearchOption.AllDirectories);
+        controllers.Should().NotBeEmpty("the scan must actually find controller sources");
+
+        var checkedRoutes = new List<string>();
         var missing = new List<string>();
 
-        foreach (var relative in new[]
-                 {
-                     "Zayra.Api/Controllers/PayrollController.cs",
-                     "Zayra.Api/Controllers/Finance/BankConfirmationsController.cs",
-                 })
+        foreach (var file in controllers)
         {
-            var text = File.ReadAllText(Path.Combine(repoRoot, relative));
-            var lines = text.Split('\n');
+            var lines = File.ReadAllLines(file);
             for (var i = 0; i < lines.Length; i++)
             {
-                // A batch-specific route carries a batch id in its template.
-                if (!lines[i].Contains("[Http") || !lines[i].Contains("payment-batches/{")) continue;
-
-                // Scan this action's body: up to the next [Http attribute.
-                var end = i + 1;
-                while (end < lines.Length && !lines[end].TrimStart().StartsWith("[Http")) end++;
-                var body = string.Join('\n', lines[i..end]);
+                if (!IsBatchSpecificRoute(lines, i)) continue;
+                var rel = Path.GetFileName(file);
+                var route = lines[i].Trim();
+                checkedRoutes.Add($"{rel} {route}");
+                var body = MethodBodyAfter(lines, i);
                 if (!body.Contains("PaymentBatchScopeErrorAsync") && !body.Contains("BatchScopeErrorAsync"))
-                    missing.Add($"{relative}:{i + 1} {lines[i].Trim()}");
+                    missing.Add($"{rel}:{i + 1} {route}");
             }
         }
+
+        // Guard the guard: if the scan silently stops matching (a renamed route segment, a reformatted
+        // attribute), an empty result would look like success.
+        checkedRoutes.Should().HaveCountGreaterThanOrEqualTo(9,
+            "the known batch-specific routes must all still be discovered by this scan; found:\n"
+            + string.Join('\n', checkedRoutes));
 
         missing.Should().BeEmpty(
             "every batch-specific endpoint must derive the legal entity from batch -> run -> "
@@ -333,13 +341,51 @@ public class PaymentBatchScopeTests
             + string.Join('\n', missing));
     }
 
-    private static string FindRepoRoot()
+    /// <summary>True when line <paramref name="i"/> begins an action whose route carries a batch id.
+    /// Tolerates the template sitting on the following line (a wrapped attribute).</summary>
+    private static bool IsBatchSpecificRoute(string[] lines, int i)
+    {
+        if (!lines[i].Contains("[Http")) return false;
+        var window = lines[i] + (i + 1 < lines.Length ? lines[i + 1] : string.Empty);
+        return window.Contains("payment-batches/{");
+    }
+
+    /// <summary>
+    /// The action's real body, by brace matching from the first '{' after the attribute — not "up to the
+    /// next attribute", which runs to EOF for the last action in a file.
+    /// </summary>
+    private static string MethodBodyAfter(string[] lines, int attributeLine)
+    {
+        var i = attributeLine;
+        // Skip the attribute block and the signature to the body's opening brace. The attribute line
+        // ITSELF contains braces, from the route template ("{batchId:guid}") — matching on those made the
+        // second version of this scan stop dead on the attribute and report every route as unguarded.
+        // The body opener is a line that is exactly "{".
+        while (i < lines.Length && lines[i].Trim() != "{") i++;
+        if (i >= lines.Length) return string.Empty;
+
+        var depth = 0;
+        var body = new System.Text.StringBuilder();
+        for (; i < lines.Length; i++)
+        {
+            foreach (var ch in lines[i])
+            {
+                if (ch == '{') depth++;
+                else if (ch == '}') depth--;
+            }
+            body.AppendLine(lines[i]);
+            if (depth <= 0) break;
+        }
+        return body.ToString();
+    }
+
+    private static string FindApiRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, "Zayra.Api")))
+        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, "Zayra.Api", "Controllers")))
             dir = dir.Parent;
         dir.Should().NotBeNull("the test must be able to locate the Zayra.Api source tree");
-        return dir!.FullName;
+        return Path.Combine(dir!.FullName, "Zayra.Api");
     }
 }
 

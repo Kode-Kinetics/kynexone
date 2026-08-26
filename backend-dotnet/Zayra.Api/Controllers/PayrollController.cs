@@ -5009,9 +5009,6 @@ public class PayrollController : ControllerBase
     {
         if (!HasPermission("payroll.export")) return Forbid();
 
-        if (!WpsStatuses.All.Contains(req.Status))
-            return BadRequest(new { error = "invalid_status", message = $"Status must be one of: {string.Join(", ", WpsStatuses.All)}." });
-
         var tenantId = GetTenantId();
         // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
         // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
@@ -5019,6 +5016,11 @@ public class PayrollController : ControllerBase
         // cross-company (PayrollRun is company-filtered, so the run reads back null).
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
             return batchScopeErr;
+
+        // Validated AFTER the entity check: a cross-company caller should learn that they may not touch
+        // this batch, not that their status value was spelled wrong.
+        if (!WpsStatuses.All.Contains(req.Status))
+            return BadRequest(new { error = "invalid_status", message = $"Status must be one of: {string.Join(", ", WpsStatuses.All)}." });
         var batch    = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
 
@@ -5574,9 +5576,6 @@ public class PayrollController : ControllerBase
     public async Task<IActionResult> ReverseSettlement(Guid batchId, [FromBody] PayrollReasonRequest req, CancellationToken cancellationToken)
     {
         if (!HasPermission("payroll.export")) return Forbid();
-        if (string.IsNullOrWhiteSpace(req.Reason))
-            return BadRequest(new { error = "reason_required", message = "A reason is required to reverse a settlement." });
-
         var tenantId = GetTenantId();
         // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
         // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
@@ -5584,6 +5583,10 @@ public class PayrollController : ControllerBase
         // cross-company (PayrollRun is company-filtered, so the run reads back null).
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
             return batchScopeErr;
+
+        // Validated AFTER the entity check, for the same reason as wps-status above.
+        if (string.IsNullOrWhiteSpace(req.Reason))
+            return BadRequest(new { error = "reason_required", message = "A reason is required to reverse a settlement." });
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);

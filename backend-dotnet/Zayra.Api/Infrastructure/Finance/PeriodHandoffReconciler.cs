@@ -24,8 +24,15 @@ public sealed class PeriodHandoffReconciler
         _exports = exports;
     }
 
+    /// <param name="groupScopedCaller">
+    /// D2 — whether the caller is group-scoped. An artifact built with <c>includeUnattributed</c> holds
+    /// tenant-wide NULL-company rows, and this method reports every artifact's totals, line and entry
+    /// counts, file hash and id. Handing those to a company-scoped caller re-opens, from here, exactly
+    /// the aggregate disclosure the export routes refuse. There is deliberately NO default: this service
+    /// has no principal of its own, and a default would be a fail-open waiting to be inherited.
+    /// </param>
     public async Task<object> ReconcileAsync(
-        Guid tenantId, JournalExportFilter filter, CancellationToken ct)
+        Guid tenantId, JournalExportFilter filter, bool groupScopedCaller, CancellationToken ct)
     {
         var blockers = new List<string>();
         var nowPeriod = $"{DateTime.UtcNow:yyyy-MM}";
@@ -69,6 +76,7 @@ public sealed class PeriodHandoffReconciler
         if (filter.PayrollRunId is { } rid) exportQ = exportQ.Where(x => x.PayrollRunId == rid);
         else if (!string.IsNullOrWhiteSpace(filter.Period)) exportQ = exportQ.Where(x => x.Period == filter.Period);
         if (filter.CompanyId is { } cid) exportQ = exportQ.Where(x => x.CompanyId == cid);
+        if (!groupScopedCaller) exportQ = exportQ.Where(x => !x.IncludeUnattributed);
         var exports = await exportQ.OrderByDescending(x => x.ExportedAtUtc).ToListAsync(ct);
 
         var liveExportIds = exports

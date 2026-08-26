@@ -108,12 +108,17 @@ public class GlJournalExportsController : ControllerBase
 
         // IgnoreQueryFilters is intentional: company filter only — the duplicate-export probe must see a
         // live export taken at group level. Tenant re-applied in the WHERE.
-        var priorLive = await _db.GlJournalExports.IgnoreQueryFilters()
+        var priorLiveQ = _db.GlJournalExports.IgnoreQueryFilters()
             .Where(x => x.TenantId == tid && x.Period == (period ?? string.Empty)
                      && x.PayrollRunId == runId && x.CompanyId == companyId
                      && x.FormatKey == build!.Formatter.Key && x.Currency == build.Document.Currency
-                     && x.Status == GlJournalExportStatuses.Exported)
-            .ToListAsync(ct);
+                     && x.Status == GlJournalExportStatuses.Exported);
+        // D2 (round 3): superseding is a WRITE. A company-scoped caller is refused sight of a
+        // group-created includeUnattributed artifact by Get/Download/Confirm/Reject/List, so they must not
+        // be able to flip its status either — silently, and with the superseded ids visible only in the
+        // audit log. Same predicate, same rule, applied to the mutation as well as the reads.
+        if (!this.GetEntityScope().IsGroupLevel) priorLiveQ = priorLiveQ.Where(x => !x.IncludeUnattributed);
+        var priorLive = await priorLiveQ.ToListAsync(ct);
 
         var export = _exports.Persist(tid.Value, filter, build!, this.GetUserId(), UserName(), priorLive);
 
@@ -429,7 +434,11 @@ public class GlJournalExportsController : ControllerBase
         if (FilterError(period, runId) is { } filterErr) return filterErr;
 
         var filter = new JournalExportFilter(period, runId, companyId, null, includeUnattributed, false);
-        return Ok(await _reconciler.ReconcileAsync(tid.Value, filter, ct));
+        // D2 (round 3): the reconciler re-lists the very artifacts List now hides, with their totals,
+        // line/entry counts and hashes. It is a service with no principal of its own, so the decision is
+        // passed in explicitly rather than left to a default.
+        return Ok(await _reconciler.ReconcileAsync(
+            tid.Value, filter, this.GetEntityScope().IsGroupLevel, ct));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────────────────────────
@@ -484,11 +493,21 @@ public class GlJournalExportsController : ControllerBase
         },
         unattributedExcluded = new
         {
-            count = build.Selection.UnattributedExcludedCount,
-            total = build.Selection.UnattributedExcludedTotal,
+            // D2 (round 3): the COUNT and the TOTAL are the size and value of the tenant-wide NULL-company
+            // pool — precisely what includeUnattributed is a group-only privilege over. Reporting them to a
+            // company-scoped caller handed back in aggregate what the flag refuses in detail, and needed
+            // neither the flag nor an artifact to do it: one Preview per period walks the whole residue.
+            // The caller still learns that rows WERE excluded, which is what they need in order to escalate.
+            excluded = build.Selection.UnattributedExcludedCount > 0,
+            count = this.GetEntityScope().IsGroupLevel ? build.Selection.UnattributedExcludedCount : (int?)null,
+            total = this.GetEntityScope().IsGroupLevel ? build.Selection.UnattributedExcludedTotal : (decimal?)null,
             note = build.Selection.UnattributedExcludedCount == 0 ? null
+                 : this.GetEntityScope().IsGroupLevel
+                 ? "Ledger rows with no company attribution were left out of this company-filtered export. "
+                 + "Every pre-POD-B1b row is unattributed — re-run with includeUnattributed=true to include them."
                  : "Ledger rows with no company attribution were left out of this company-filtered export. "
-                 + "Every pre-POD-B1b row is unattributed — re-run with includeUnattributed=true to include them.",
+                 + "They are tenant-wide, so their number and value are visible only at group scope; ask a "
+                 + "group-scoped user to run this export if they need to be included.",
         },
         // Every ledger writer stamps EntryDate = UtcNow, so a July journal locked in August carries an
         // August date. The file emits a derived in-period AccountingDate; this is how often that mattered.

@@ -39,9 +39,18 @@ public static class PaymentBatchScopeExtensions
 {
     /// <summary>
     /// Returns a refusal to return from the action, or <c>null</c> when the caller may proceed.
-    /// Call it BEFORE reading an uploaded body, parsing a file, matching records, returning history
-    /// or applying any mutation — an unauthorised caller must not even get their payload consumed.
-    /// This is ADDITIONAL to the endpoint's existing permission check, never a replacement for it.
+    /// Call it BEFORE reading an uploaded body, parsing a file, matching records, returning history or
+    /// applying any mutation, and before validating a bound request body — an unauthorised caller should
+    /// learn that the batch is not theirs, not that a field was spelled wrong.
+    ///
+    /// <para>ONE HONEST LIMIT: for an action with a <c>[FromBody]</c> parameter, ASP.NET Core has already
+    /// model-bound and deserialized the body before the action runs, and <c>[ApiController]</c> may
+    /// already have returned an automatic 400 on model-state failure. Nothing an action can do changes
+    /// that. The claim that holds everywhere is that no batch DATA is read or written first; the stronger
+    /// "the payload is never consumed" claim holds only where the action reads the stream itself, as
+    /// <c>BankConfirmationsController.Import</c> does.</para>
+    ///
+    /// <para>This is ADDITIONAL to the endpoint's existing permission check, never a replacement.</para>
     /// </summary>
     public static async Task<IActionResult?> PaymentBatchScopeErrorAsync(
         this ControllerBase controller, ZayraDbContext db, Guid tenantId, Guid batchId, CancellationToken ct)
@@ -53,9 +62,13 @@ public static class PaymentBatchScopeExtensions
         if (batch is null) return controller.NotFound();
 
         // The COMPANY filter must not apply while we are deciding whether the caller may access this
-        // company: filtering first would turn a cross-company batch into "run not found" and silently
-        // fail OPEN for the null-company case. ScopedBypass.TenantWide drops exactly that one dimension
-        // and re-applies the tenant itself, so this cannot become a cross-tenant read by omission.
+        // company: the run's own CompanyId is the INPUT to that decision, so filtering by it first is
+        // circular. Stated precisely, because an earlier revision of this comment overclaimed: reading
+        // through the ambient filter would fail CLOSED, not open — the run would come back null and this
+        // would return batch_run_not_resolvable. The bypass is here so the decision is made on the real
+        // value and the caller gets 403 rather than a 404 that conflates "not yours" with "not there",
+        // not because it would fail open. ScopedBypass.TenantWide drops exactly that one dimension and
+        // re-applies the tenant itself, so this cannot become a cross-tenant read by omission.
         var run = await ScopedBypass.TenantWide(db.PayrollRuns, tenantId,
                 "Company scope must be dropped to READ the run's own CompanyId — that value is the input "
                 + "to the authorization decision being made here, so filtering by it first would be circular.")
