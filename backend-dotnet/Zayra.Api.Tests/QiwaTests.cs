@@ -123,7 +123,7 @@ public class QiwaTests
         var payload = new QiwaEmployeePayload(
             "EMP-001", "1234567890", "NationalId", "Saudi", "Saudi", "2421", "7000123456", "WL-1", "CONTRACT-1");
 
-        var result = await adapter.PushEmployeeAsync("token", payload, CancellationToken.None);
+        var result = await adapter.PushEmployeeAsync("token", payload, Guid.NewGuid(), CancellationToken.None);
 
         Assert.True(result.Success);
         Assert.Null(result.ErrorCode);
@@ -136,7 +136,7 @@ public class QiwaTests
         var payload = new QiwaEmployeePayload(
             "EMP-001", "", "NationalId", "Saudi", "Saudi", "2421", "7000123456", "WL-1", "CONTRACT-1");
 
-        var result = await adapter.PushEmployeeAsync("token", payload, CancellationToken.None);
+        var result = await adapter.PushEmployeeAsync("token", payload, Guid.NewGuid(), CancellationToken.None);
 
         Assert.False(result.Success);
         Assert.Equal("FIELD_MISSING", result.ErrorCode);
@@ -643,7 +643,7 @@ file sealed class SpyQiwaApiAdapter : IQiwaApiAdapter
     }
 
     public Task<QiwaApiResult> PushEmployeeAsync(
-        string accessToken, QiwaEmployeePayload payload, CancellationToken ct)
+        string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
     {
         PushCalls.Add(payload);
         return Task.FromResult(new QiwaApiResult(true, null, null, "{\"status\":\"synced\"}"));

@@ -3,9 +3,11 @@ using System.Text.Json;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Approvals;
@@ -16,19 +18,26 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private readonly IAuditService _audit;
     private readonly IHrmHierarchyService _hierarchy;
     private readonly IEstablishmentGuard _establishmentGuard;
+    private readonly ILeaveService _leaveService;
 
     public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit)
         : this(db, audit, new HrmHierarchyService(db, audit))
     {
     }
 
-    public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit, IHrmHierarchyService hierarchy, IEstablishmentGuard? establishmentGuard = null)
+    public ApprovalWorkflowService(
+        ZayraDbContext db,
+        IAuditService audit,
+        IHrmHierarchyService hierarchy,
+        IEstablishmentGuard? establishmentGuard = null,
+        ILeaveService? leaveService = null)
     {
         _db = db;
         _audit = audit;
         _hierarchy = hierarchy;
         // Optional with concrete fallback so direct constructions keep compiling AND enforcing.
         _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
+        _leaveService = leaveService ?? new LeaveService(db, new ApprovalPolicyService(db));
     }
 
     public async Task<PagedResult<ApprovalWorkflowDto>> GetWorkflowsAsync(Guid tenantId, string? entityName, int page, int pageSize, CancellationToken cancellationToken)
@@ -202,8 +211,6 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var approval = await _db.ApprovalRequests.Include(x => x.Decisions).FirstOrDefaultAsync(x => x.Id == approvalRequestId && x.TenantId == tenantId, cancellationToken);
         if (approval is null) return null;
         if (approval.Status != "Pending") throw new InvalidOperationException("Approval request is already completed.");
-        var step = await _db.ApprovalWorkflowSteps.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.WorkflowId == approval.WorkflowId && x.StepOrder == approval.CurrentStepOrder, cancellationToken)
-            ?? throw new InvalidOperationException("Current approval step was not found.");
 
         var requestedDecision = Clean(request.Decision);
         if (!requestedDecision.Equals("Approve", StringComparison.OrdinalIgnoreCase) &&
@@ -211,6 +218,45 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             throw new InvalidOperationException("Decision must be Approve or Reject.");
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId)
             throw new InvalidOperationException("Maker-checker violation: requester cannot approve or reject their own approval request.");
+        if (string.Equals(approval.EntityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
+        {
+            // LeaveRequest/LeaveApproval/balance is the aggregate of record. ApprovalRequest is
+            // only its indexed routing projection, so dispatch before generic workflow lookup and
+            // let LeaveService own the single relational transaction for decisions from either UI.
+            if (!await CanDecideRequestAsync(approval, context, cancellationToken))
+                throw new InvalidOperationException($"Current step requires approver role '{approval.CurrentApproverRole}'.");
+            if (context.UserId is null)
+                throw new InvalidOperationException("An authenticated approver is required.");
+            if (!Guid.TryParse(approval.EntityId, out var leaveRequestId))
+                throw new InvalidOperationException("The approval request is not linked to a valid leave request.");
+
+            var approverName = await _db.Employees.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.UserAccountId == context.UserId && !x.IsDeleted)
+                .Select(x => x.FullName)
+                .FirstOrDefaultAsync(cancellationToken)
+                ?? await _db.Users.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && x.Id == context.UserId && !x.IsDeleted)
+                    .Select(x => x.FullName)
+                    .FirstOrDefaultAsync(cancellationToken)
+                ?? context.UserId.Value.ToString();
+
+            if (requestedDecision.Equals("Reject", StringComparison.OrdinalIgnoreCase))
+            {
+                var reason = Clean(request.Comments);
+                if (string.IsNullOrWhiteSpace(reason))
+                    throw new InvalidOperationException("A rejection reason is required.");
+                await _leaveService.RejectRequestAsync(tenantId, leaveRequestId, context.UserId.Value, approverName, reason, cancellationToken);
+            }
+            else
+            {
+                await _leaveService.ApproveRequestAsync(tenantId, leaveRequestId, context.UserId.Value, approverName, Clean(request.Comments), cancellationToken);
+            }
+
+            return await GetRequestAsync(tenantId, approvalRequestId, cancellationToken);
+        }
+
+        var step = await _db.ApprovalWorkflowSteps.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.WorkflowId == approval.WorkflowId && x.StepOrder == approval.CurrentStepOrder, cancellationToken)
+            ?? throw new InvalidOperationException("Current approval step was not found.");
         if (approval.Decisions.Any(x => x.StepOrder == step.StepOrder))
             throw new InvalidOperationException("Current approval step has already been decided.");
         if (!await CanDecideStepAsync(approval, step, context, cancellationToken))
@@ -227,6 +273,10 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             DecidedByUserId = context.UserId
         };
         _db.Entry(approvalDecision).State = EntityState.Added;
+        // Relational compare-and-swap. DecisionVersion is an EF concurrency token, so the UPDATE
+        // carries `WHERE DecisionVersion = observedVersion`; every decision advances it. The
+        // ApprovalDecision unique key is the immutable second line of defence.
+        approval.DecisionVersion++;
 
         if (normalizedDecision == "Rejected")
         {
@@ -255,7 +305,20 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             }
         }
 
-        await _db.SaveChangesAsync(cancellationToken);
+        try
+        {
+            // EF wraps this multi-entity batch in one relational transaction. A lost CAS or unique
+            // decision conflict rolls back the decision row and every aggregate side effect together.
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            throw new InvalidOperationException("Current approval step has already been decided.", ex);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            throw new InvalidOperationException("Current approval step has already been decided.", ex);
+        }
         // audit_logs.metadata is a `json` column — pass a JSON object, never a bare string (a bare
         // "Approved" is invalid JSON and would 500 AFTER the decision above already committed).
         await _audit.WriteAsync("approval.request_decided", nameof(ApprovalRequest), approval.Id.ToString(), context,
@@ -601,4 +664,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     }
 
     private static string Clean(string? value) => value?.Trim() ?? string.Empty;
+
+    private static bool IsUniqueViolation(DbUpdateException ex)
+        => ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation };
 }

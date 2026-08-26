@@ -247,8 +247,8 @@ public class ApplicationsController : ControllerBase
             ScheduledAt = req.ScheduledAt,
             DurationMinutes = req.DurationMinutes,
             Mode = req.Mode,
-            MeetingLink = req.MeetingLink,
-            Location = req.Location,
+            MeetingLink = req.MeetingLink ?? string.Empty,
+            Location = req.Location ?? string.Empty,
         };
         _db.InterviewSchedules.Add(interview);
 
@@ -377,47 +377,27 @@ public class ApplicationsController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId = this.GetUserId()!.Value;
-        var offer = await _db.OfferLetters.FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
-        if (offer is null) return NotFound();
-        if (offer.Status != "Sent") return BadRequest(new { message = "Offer must be in Sent status." });
+        var acceptance = await _svc.AcceptOfferAsync(tenantId, offerId, userId, "HR", ct);
+        if (acceptance.Outcome == OfferAcceptanceOutcome.NotFound) return NotFound();
+        if (!acceptance.IsSuccess)
+            return Conflict(new { message = acceptance.Message, outcome = acceptance.Outcome.ToString() });
 
-        offer.Status = "Accepted";
-        offer.AcceptedAtUtc = DateTime.UtcNow;
-
-        // Advance application to Hired
-        var app = await _db.JobApplications.FirstOrDefaultAsync(a => a.Id == offer.ApplicationId && a.TenantId == tenantId, ct);
-        if (app is not null)
+        var offer = await _db.OfferLetters.AsNoTracking()
+            .FirstAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
+        if (acceptance.WasAcceptedNow)
         {
-            app.Stage = "Hired";
-            app.StageOrder = 6;
-            app.Status = "Hired";
-            app.HiredAtUtc = DateTime.UtcNow;
-
-            var opening = await _db.JobOpenings.FirstOrDefaultAsync(j => j.Id == app.JobOpeningId && j.TenantId == tenantId, ct);
-            if (opening is not null)
-            {
-                opening.FilledCount++;
-                if (opening.FilledCount >= opening.HeadCount) opening.Status = "Closed";
-            }
+            await _notify.NotifyAsync(tenantId, null,
+                "Offer Accepted — Onboarding Started",
+                $"{offer.CandidateName} accepted the offer for {offer.OfferedJobTitle}. Employee draft created.",
+                "OfferLetter", offer.Id.ToString(), ct);
         }
 
-        await LogEventAsync(tenantId, offer.ApplicationId, "OfferAccepted", "Hired",
-            "Offer accepted by candidate. Initiating onboarding.", userId, "HR", ct);
-
-        // Trigger onboarding
-        var draftId = await _svc.ConvertToEmployeeDraftAsync(tenantId, offerId, userId, ct);
-
-        if (draftId.HasValue && app is not null)
-            app.OnboardingDraftId = draftId;
-
-        await _db.SaveChangesAsync(ct);
-
-        await _notify.NotifyAsync(tenantId, null,
-            "Offer Accepted — Onboarding Started",
-            $"{offer.CandidateName} accepted the offer for {offer.OfferedJobTitle}. Employee draft created.",
-            "OfferLetter", offer.Id.ToString(), ct);
-
-        return Ok(new { offer, onboardingDraftId = draftId });
+        return Ok(new
+        {
+            offer,
+            onboardingDraftId = acceptance.OnboardingDraftId,
+            alreadyAccepted = !acceptance.WasAcceptedNow,
+        });
     }
 
     [HttpPost("offers/{offerId:guid}/decline")]
@@ -431,7 +411,7 @@ public class ApplicationsController : ControllerBase
 
         offer.Status = "Declined";
         offer.DeclinedAtUtc = DateTime.UtcNow;
-        offer.DeclineReason = req.Reason;
+        offer.DeclineReason = req.Reason ?? string.Empty;
 
         await LogEventAsync(tenantId, offer.ApplicationId, "OfferDeclined", "Offer",
             $"Offer declined. Reason: {req.Reason}", userId, "HR", ct);
@@ -457,7 +437,7 @@ public class ApplicationsController : ControllerBase
 
     // ── Shared helpers ─────────────────────────────────────────────────────────
 
-    private async Task LogEventAsync(Guid tenantId, Guid applicationId, string eventType, string stage,
+    private Task LogEventAsync(Guid tenantId, Guid applicationId, string eventType, string stage,
         string notes, Guid? userId, string performedByName, CancellationToken ct)
     {
         _db.ApplicationEvents.Add(new ApplicationEvent
@@ -470,6 +450,7 @@ public class ApplicationsController : ControllerBase
             PerformedByUserId = userId,
             PerformedByName = performedByName,
         });
+        return Task.CompletedTask;
     }
 }
 

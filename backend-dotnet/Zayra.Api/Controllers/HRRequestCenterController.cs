@@ -163,6 +163,10 @@ public class HRRequestCenterController : ControllerBase
         if (tenantId is null) return Unauthorized();
 
         var userId = this.GetUserId();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(req.EmployeeId)) return Forbid();
+        if (!await _db.Employees.AnyAsync(e => e.TenantId == tenantId && e.Id == req.EmployeeId && !e.IsDeleted, ct))
+            return BadRequest(new { message = "Employee not found." });
 
         var slaHours = 48;
         if (req.CategoryId.HasValue)
@@ -206,6 +210,8 @@ public class HRRequestCenterController : ControllerBase
         var request = await _db.HRRequests
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (request is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(request.EmployeeId)) return Forbid();
 
         request.Status = req.Status;
         await _db.SaveChangesAsync(ct);
@@ -215,21 +221,24 @@ public class HRRequestCenterController : ControllerBase
     // ── Comments ────────────────────────────────────────────────────────────
 
     [HttpPost("{id:guid}/comments")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> AddComment(Guid id, [FromBody] AddCommentRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
         var userId = this.GetUserId();
-        var requestExists = await _db.HRRequests
-            .AnyAsync(r => r.Id == id && r.TenantId == tenantId, ct);
-        if (!requestExists) return NotFound();
+        var ticket = await _db.HRRequests
+            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        if (ticket is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(ticket.EmployeeId)) return Forbid();
 
         var comment = new HRRequestComment
         {
             TenantId = tenantId.Value,
             HRRequestId = id,
-            EmployeeId = req.EmployeeId,
+            EmployeeId = ticket.EmployeeId,
             UserId = userId,
             Comment = req.Comment,
             AuthorType = "HR",
@@ -240,17 +249,15 @@ public class HRRequestCenterController : ControllerBase
         // A reply from HR moves an Open ticket into "InProgress" so the SLA/response
         // indicators reflect that HR has engaged. (Canonical status token — no space —
         // matching the dashboard count, status filters and badges across the app.)
-        var ticket = await _db.HRRequests.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
-        if (ticket is not null && ticket.Status == "Open")
+        if (ticket.Status == "Open")
             ticket.Status = "InProgress";
         // Notify the employee in their self-service feed that HR replied.
-        if (ticket is not null)
-            _db.EmployeeNotifications.Add(new EmployeeNotification
-            {
-                TenantId = tenantId.Value, EmployeeId = ticket.EmployeeId, NotificationType = "Info",
-                Title = "HR replied to your request",
-                Body = $"HR responded to \"{ticket.Subject}\". Open it to read the reply.",
-            });
+        _db.EmployeeNotifications.Add(new EmployeeNotification
+        {
+            TenantId = tenantId.Value, EmployeeId = ticket.EmployeeId, NotificationType = "Info",
+            Title = "HR replied to your request",
+            Body = $"HR responded to \"{ticket.Subject}\". Open it to read the reply.",
+        });
         await _db.SaveChangesAsync(ct);
         return Created($"/api/hr-requests/{id}/comments/{comment.Id}", comment);
     }
@@ -264,15 +271,18 @@ public class HRRequestCenterController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var open = await _db.HRRequests.CountAsync(r => r.TenantId == tenantId && r.Status == "Open", ct);
-        var inProgress = await _db.HRRequests.CountAsync(r => r.TenantId == tenantId && r.Status == "InProgress", ct);
-        var resolved = await _db.HRRequests.CountAsync(r => r.TenantId == tenantId && r.Status == "Resolved", ct);
-        var overdue = await _db.HRRequests.CountAsync(r =>
-            r.TenantId == tenantId && r.Status != "Resolved" && r.Status != "Closed"
-            && r.DueAtUtc < DateTime.UtcNow, ct);
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var allowedIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds!.ToList();
 
-        var recentRequests = await _db.HRRequests
-            .Where(r => r.TenantId == tenantId)
+        var dashboardQuery = _db.HRRequests.Where(r => r.TenantId == tenantId);
+        if (allowedIds is not null) dashboardQuery = dashboardQuery.Where(r => allowedIds.Contains(r.EmployeeId));
+        var open = await dashboardQuery.CountAsync(r => r.Status == "Open", ct);
+        var inProgress = await dashboardQuery.CountAsync(r => r.Status == "InProgress", ct);
+        var resolved = await dashboardQuery.CountAsync(r => r.Status == "Resolved", ct);
+        var overdue = await dashboardQuery.CountAsync(r =>
+            r.Status != "Resolved" && r.Status != "Closed" && r.DueAtUtc < DateTime.UtcNow, ct);
+
+        var recentRequests = await dashboardQuery
             .OrderByDescending(r => r.CreatedAtUtc)
             .Take(5)
             .ToListAsync(ct);

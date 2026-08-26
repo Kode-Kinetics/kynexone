@@ -26,6 +26,7 @@ export interface ReportingLineDto {
 
 export interface EmployeeListItem {
   id: number;
+  publicId: string;
   employeeCode: string;
   fullName: string;
   arabicName: string;

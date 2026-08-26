@@ -28,6 +28,8 @@ import client from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { payrollApi } from '../api/payroll';
+import type { PayrollRun } from '../api/payroll';
 
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
@@ -61,7 +63,14 @@ const leaveRequestsImportExport = {
 
 function fmtDate(s: string | null | undefined) {
   if (!s) return '—';
-  return new Date(s).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+  // DateOnly values are calendar facts, not UTC instants. `new Date('2026-08-24')`
+  // parses as UTC midnight and displays Aug 23 west of UTC. Construct a local calendar
+  // date from its components so leave dates round-trip in every browser timezone.
+  const calendar = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  const value = calendar
+    ? new Date(Number(calendar[1]), Number(calendar[2]) - 1, Number(calendar[3]))
+    : new Date(s);
+  return value.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function fmtAmt(n: number) {
@@ -69,7 +78,11 @@ function fmtAmt(n: number) {
 }
 
 function daysBetween(start: string, end: string) {
-  const d = Math.ceil((new Date(end).getTime() - new Date(start).getTime()) / 86400000) + 1;
+  const toDayNumber = (value: string) => {
+    const [year, month, day] = value.split('-').map(Number);
+    return Date.UTC(year, month - 1, day) / 86400000;
+  };
+  const d = Math.ceil(toDayNumber(end) - toDayNumber(start)) + 1;
   return Math.max(0, d);
 }
 
@@ -182,6 +195,7 @@ function GroupContextBar({
       <ChevronRight className="h-3.5 w-3.5 text-slate-300 dark:text-white/20" />
       <select
         title="Filter by company"
+        aria-label="Filter by company"
         className={`${sel} w-52 !border-sapphire/30 !bg-white dark:!bg-white/10`}
         value={companyId}
         onChange={e => { onCompanyChange(e.target.value); onBranchChange(''); }}
@@ -199,6 +213,7 @@ function GroupContextBar({
           </div>
           <select
             title="Filter by branch"
+            aria-label="Filter by branch"
             className={`${sel} w-44 !border-sapphire/30 !bg-white dark:!bg-white/10`}
             value={branchId}
             onChange={e => onBranchChange(e.target.value)}
@@ -1494,14 +1509,20 @@ function HolidayCalendarTab() {
 // ── Encashment Tab ────────────────────────────────────────────────────────────
 
 function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const { user } = useAuth();
   const [requests, setRequests] = useState<LeaveEncashmentRequest[]>([]);
+  const [payrollRuns, setPayrollRuns] = useState<PayrollRun[]>([]);
+  const [selectedRun, setSelectedRun] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [encashPickedEmp, setEncashPickedEmp] = useState<SelectedEmployee | null>(null);
-  const [form, setForm] = useState({ employeeId: '', employeeName: '', leaveTypeId: '', year: new Date().getFullYear(), daysToEncash: '', amountPerDay: '', reason: '' });
+  const [form, setForm] = useState({ employeeId: '', employeeName: '', leaveTypeId: '', year: new Date().getFullYear(), daysToEncash: '', reason: '' });
   const [saving, setSaving] = useState(false);
   const { currencyCode } = useTenantSettings();
+  const canHrApprove = user?.roles.some(r => ['Admin', 'HR Manager'].includes(r)) ?? false;
+  const canPayrollApprove = user?.roles.some(r => ['Admin', 'Payroll Officer', 'Payroll Manager'].includes(r)) ?? false;
+  const canVoid = user?.roles.some(r => ['Admin', 'Payroll Manager'].includes(r)) ?? false;
   const set = (k: keyof typeof form, v: string | number) => setForm(f => ({ ...f, [k]: v }));
 
   useEffect(() => {
@@ -1510,18 +1531,36 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
   const load = () => { setLoading(true); encashmentApi.list(groupFilter).then(setRequests).catch(() => {}).finally(() => setLoading(false)); };
   useEffect(() => { load(); leaveTypesApi.list().then(setLeaveTypes).catch(() => {}); }, [groupFilter.companyId, groupFilter.branchId]);
+  useEffect(() => {
+    if (!canPayrollApprove) return;
+    payrollApi.listRuns({ status: 'Draft', pageSize: 100 })
+      .then(r => setPayrollRuns(r.items))
+      .catch(() => setPayrollRuns([]));
+  }, [canPayrollApprove]);
 
   const create = async () => {
-    if (!form.employeeId || !form.leaveTypeId || !form.daysToEncash || !form.amountPerDay) return;
+    if (!form.employeeId || !form.leaveTypeId || !form.daysToEncash) return;
     setSaving(true);
     try {
-      await encashmentApi.create({ employeeId: Number(form.employeeId), leaveTypeId: form.leaveTypeId, year: Number(form.year), daysToEncash: Number(form.daysToEncash), amountPerDay: Number(form.amountPerDay), reason: form.reason });
+      await encashmentApi.create({ employeeId: Number(form.employeeId), leaveTypeId: form.leaveTypeId, year: Number(form.year), daysToEncash: Number(form.daysToEncash), reason: form.reason });
       setShowCreate(false); load();
     } catch { alert('Failed.'); }
     setSaving(false);
   };
 
   const hrApprove = async (id: string) => { try { await encashmentApi.hrApprove(id); load(); } catch { alert('Failed.'); } };
+  const payrollApprove = async (id: string) => {
+    const payrollRunId = selectedRun[id];
+    if (!payrollRunId) return;
+    try { await encashmentApi.payrollApprove(id, payrollRunId); load(); }
+    catch { alert('Payroll approval failed. Verify the run is open and matches the employee legal entity.'); }
+  };
+  const voidEncashment = async (id: string) => {
+    const reason = prompt('Void reason (required):')?.trim() ?? '';
+    if (reason.length < 5) return;
+    try { await encashmentApi.void(id, reason); load(); }
+    catch { alert('Void failed. If payroll was processed, void or reopen the payroll run first.'); }
+  };
   const reject = async (id: string) => { const n = prompt('Rejection notes:') ?? ''; try { await encashmentApi.reject(id, n); load(); } catch { alert('Failed.'); } };
 
   return (
@@ -1543,11 +1582,34 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
               </div>
               <div className="flex items-center gap-3">
                 <StatusBadge status={r.status} />
-                {r.status === 'Pending' && (
+                {r.status === 'Pending' && canHrApprove && (
                   <div className="flex gap-2">
                     <button type="button" className={btn.primary} onClick={() => hrApprove(r.id)}>HR Approve</button>
                     <button type="button" className={btn.danger} onClick={() => reject(r.id)}>Reject</button>
                   </div>
+                )}
+                {r.status === 'HRApproved' && canPayrollApprove && (
+                  <div className="flex items-center gap-2">
+                    <select
+                      aria-label={`Target payroll run for ${r.employeeName}`}
+                      className={sel}
+                      value={selectedRun[r.id] ?? ''}
+                      onChange={e => setSelectedRun(s => ({ ...s, [r.id]: e.target.value }))}
+                    >
+                      <option value="">Select open payroll run…</option>
+                      {payrollRuns.filter(run => !r.companyId || run.companyId === r.companyId).map(run => (
+                        <option key={run.id} value={run.id}>
+                          {run.year}-{String(run.month).padStart(2, '0')} · {run.runType ?? 'Regular'}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="button" className={btn.primary} disabled={!selectedRun[r.id]} onClick={() => payrollApprove(r.id)}>
+                      Payroll Approve
+                    </button>
+                  </div>
+                )}
+                {r.status === 'PayrollApproved' && canVoid && (
+                  <button type="button" className={btn.danger} onClick={() => voidEncashment(r.id)}>Void</button>
                 )}
               </div>
             </div>
@@ -1564,16 +1626,15 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                 {leaveTypes.map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}
               </select>
             </Field>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <Field label="Year"><input type="number" className={inp} value={form.year} onChange={e => set('year', Number(e.target.value))} /></Field>
               <Field label="Days to Encash *"><input type="number" step="0.5" className={inp} value={form.daysToEncash} onChange={e => set('daysToEncash', e.target.value)} /></Field>
-              <Field label={`Daily Rate (${currencyCode}) *`}><input type="number" step="0.01" aria-label={`Daily rate in ${currencyCode}`} className={inp} value={form.amountPerDay} onChange={e => set('amountPerDay', e.target.value)} /></Field>
             </div>
-            {form.daysToEncash && form.amountPerDay && (
-              <div className="rounded-lg bg-emerald-50 px-4 py-3 dark:bg-emerald-500/10">
-                <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">Estimated: {currencyCode} {fmtAmt(Number(form.daysToEncash) * Number(form.amountPerDay))}</p>
-              </div>
-            )}
+            <div className="rounded-lg bg-emerald-50 px-4 py-3 dark:bg-emerald-500/10">
+              <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                The payable amount is calculated securely from the employee's active basic salary and legal-entity rules.
+              </p>
+            </div>
             <Field label="Reason"><textarea className={inp} rows={2} value={form.reason} onChange={e => set('reason', e.target.value)} /></Field>
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>Cancel</button>
@@ -1884,6 +1945,7 @@ export function LeavePage() {
   const [branchId, setBranchId] = useState('');
 
   const isAdmin    = user?.roles.some(r => ['Admin', 'HR Manager', 'HR Officer'].includes(r)) ?? false;
+  const isPayroll  = user?.roles.some(r => ['Payroll Officer', 'Payroll Manager'].includes(r)) ?? false;
   const isManager  = !isAdmin && (user?.roles.some(r => ['Manager', 'Supervisor'].includes(r)) ?? false);
   const isEmployee = !isAdmin && !isManager;
   const selfEmployeeId = user?.employeeId;
@@ -1916,7 +1978,7 @@ export function LeavePage() {
       if (['types', 'policies', 'holidays', 'reports', 'ai-insights'].includes(t.id)) return isAdmin;
       if (t.id === 'approvals') return isAdmin || isManager;
       if (t.id === 'absences') return isAdmin || isManager;
-      if (t.id === 'encashment') return isAdmin || isManager;
+      if (t.id === 'encashment') return isAdmin || isManager || isPayroll;
       if (t.id === 'compoff') return isAdmin || isManager;
       return true;
     });

@@ -222,10 +222,11 @@ public class LeaveBlackoutDate : ITenantOwned
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
-public class LeaveEncashmentRequest : ITenantOwned
+public class LeaveEncashmentRequest : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
     public int EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public Guid LeaveTypeId { get; set; }
@@ -234,12 +235,31 @@ public class LeaveEncashmentRequest : ITenantOwned
     public decimal DaysToEncash { get; set; }
     public decimal AmountPerDay { get; set; }
     public decimal TotalAmount { get; set; }
+    public string Currency { get; set; } = string.Empty;
     public string Reason { get; set; } = string.Empty;
     public string Status { get; set; } = "Pending";
     public string HRNotes { get; set; } = string.Empty;
     public string PayrollNotes { get; set; } = string.Empty;
+    /// <summary>The payroll run explicitly selected by the payroll approver.</summary>
+    public Guid? PayrollRunId { get; set; }
+    /// <summary>The normal payroll adjustment consumed by the selected run.</summary>
+    public Guid? PayrollAdjustmentId { get; set; }
+    public int DecisionVersion { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? ProcessedAtUtc { get; set; }
+    public DateTime? VoidedAtUtc { get; set; }
+    public Guid? VoidedByUserId { get; set; }
+    public string VoidReason { get; set; } = string.Empty;
+}
+
+public static class LeaveEncashmentStatuses
+{
+    public const string Pending = "Pending";
+    public const string HRApproved = "HRApproved";
+    public const string PayrollApproved = "PayrollApproved";
+    public const string Processed = "Processed";
+    public const string Rejected = "Rejected";
+    public const string Voided = "Voided";
 }
 
 public class CompOffCredit : ITenantOwned
@@ -247,6 +267,11 @@ public class CompOffCredit : ITenantOwned
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
     public int EmployeeId { get; set; }
+    /// <summary>
+    /// Source conversion when this credit was generated from approved overtime. Null for
+    /// manually-entered historical credits.
+    /// </summary>
+    public Guid? OvertimeCompOffConversionId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public DateOnly WorkedDate { get; set; }
     public string WorkType { get; set; } = "Overtime";
@@ -254,6 +279,8 @@ public class CompOffCredit : ITenantOwned
     public decimal DaysEarned { get; set; }
     public DateOnly? ExpiryDate { get; set; }
     public string Status { get; set; } = "Pending";
+    /// <summary>Optimistic version protecting the remaining usable days from concurrent spends.</summary>
+    public int UsageVersion { get; set; }
     public string ManagerApprovalNotes { get; set; } = string.Empty;
     public string ApprovedByName { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -267,6 +294,8 @@ public class CompOffUsage : ITenantOwned
     public int EmployeeId { get; set; }
     public Guid CompOffCreditId { get; set; }
     public Guid? LeaveRequestId { get; set; }
+    /// <summary>Caller-supplied replay key for a use command; null on legacy/manual usages.</summary>
+    public Guid? IdempotencyKey { get; set; }
     public decimal DaysUsed { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

@@ -93,6 +93,7 @@ public sealed class GosiReadinessReportService
             BlockedCount:   employees.Count - readyCount,
             PeriodDate:     periodDate,
             CalculatedAt:   DateTime.UtcNow,
+            Disclaimer:     "This report is illustrative readiness guidance based on configured rules; validate statutory filings with GOSI and qualified Saudi compliance advisers.",
             Employees:      rows);
     }
 }
@@ -105,6 +106,7 @@ public record GosiReadinessReport(
     int                                  BlockedCount,
     DateOnly                             PeriodDate,
     DateTime                             CalculatedAt,
+    string                               Disclaimer,
     IReadOnlyList<GosiEmployeeReadinessRow> Employees);
 
 public record GosiEmployeeReadinessRow(

@@ -14,7 +14,7 @@ import {
   type SalaryStructure, type EmployeeSalaryStructure, type Payslip,
   type PayrollPaymentBatch, type PayrollPaymentRecord,
   type PayrollApproval, type PayrollSummary,
-  type PayrollGLJournal, type PayrollReconciliation, type FinalSettlementResult,
+  type PayrollGLJournal, type PayrollReconciliation, type FinalSettlementResult, type FinalSettlementListRow,
   type PayrollCompany, type PayrollOverview, type PayrollReadiness,
   type PayrollCompanySummary, type AIInsight,
 } from '../api/payroll';
@@ -1210,15 +1210,27 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [results, setResults] = useState<PayrollValidationResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
 
+  useEffect(() => {
+    if (!runId) { setResults([]); setError(''); return; }
+    setLoading(true); setError('');
+    payrollApi.listValidationResults(runId)
+      .then(setResults)
+      .catch((e: unknown) => setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Unable to load saved validation results.'))
+      .finally(() => setLoading(false));
+  }, [runId]);
+
   const validate = async () => {
     if (!runId) return;
-    setLoading(true);
+    setLoading(true); setError('');
     payrollApi.validateRun(runId).then(r => {
       setResults(Array.isArray(r) ? r : (r as { warnings?: PayrollValidationResult[] }).warnings ?? []);
-    }).catch(() => {}).finally(() => setLoading(false));
+    }).catch((e: unknown) => {
+      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Payroll validation failed.');
+    }).finally(() => setLoading(false));
   };
 
   useEffect(() => { if (selectedRunId) { setRunId(selectedRunId); } }, [selectedRunId]);
@@ -1238,6 +1250,8 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
         </button>
       </div>
 
+      {error && <div className="rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">{error}</div>}
+
       {results.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
           <KpiCard label="Total Issues" value={results.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
@@ -1250,7 +1264,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
-            {runId ? 'No validation results — click "Run Validation" to check' : 'Select a run and click validate'}
+            {runId ? 'No saved validation issues. Run validation to refresh the current checks.' : 'Select a run and click validate'}
           </p>
         </div>
       ) : (
@@ -1729,10 +1743,13 @@ function BankWpsTab() {
 // ── Payment Tracking Tab ────────────────────────────────────────────────────────
 
 function PaymentTrackingTab() {
+  type FinanceActionForm = { reference: string; date: string; group: 'GOSI' | 'TAX' | 'LOAN' | 'All'; reason: string };
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [wpsForms, setWpsForms] = useState<Record<string, { status: string; reference: string; notes: string }>>({});
   const [wpsSaving, setWpsSaving] = useState<string | null>(null);
+  const [financeSaving, setFinanceSaving] = useState<string | null>(null);
+  const [financeForms, setFinanceForms] = useState<Record<string, FinanceActionForm>>({});
   const { currencyCode } = useTenantSettings();
 
   const loadBatches = () => {
@@ -1770,6 +1787,30 @@ function PaymentTrackingTab() {
       loadBatches();
     } catch (e) { notifyApiError(e); }
     finally { setWpsSaving(null); }
+  };
+  const defaultFinanceForm: FinanceActionForm = { reference: '', date: new Date().toISOString().slice(0, 10), group: 'All', reason: '' };
+  const financeForm = (batchId: string) => financeForms[batchId] ?? defaultFinanceForm;
+  const setFinanceForm = (batchId: string, patch: Partial<FinanceActionForm>) =>
+    setFinanceForms(prev => ({ ...prev, [batchId]: { ...defaultFinanceForm, ...(prev[batchId] ?? {}), ...patch } }));
+  const runFinanceAction = async (batch: PayrollPaymentBatch, action: 'settle' | 'reverse-settle' | 'remit' | 'reverse-remit') => {
+    const form = financeForm(batch.id);
+    if (action.startsWith('reverse') && !form.reason.trim()) {
+      notifyApiError({ response: { data: { message: 'A reason is required for reversal.' } } });
+      return;
+    }
+    if (action.startsWith('reverse') && !window.confirm('This posts a contra journal. Continue?')) return;
+    setFinanceSaving(`${batch.id}:${action}`);
+    try {
+      if (action === 'settle') await payrollApi.settlePaymentBatch(batch.id, { reference: form.reference || undefined, paidDate: form.date || undefined });
+      if (action === 'reverse-settle') await payrollApi.reversePaymentSettlement(batch.id, form.reason);
+      if (action === 'remit') await payrollApi.remitRun(batch.payrollRunId, { group: form.group, reference: form.reference || undefined, remitDate: form.date || undefined });
+      if (action === 'reverse-remit') {
+        if (form.group === 'All') throw new Error('Choose GOSI, TAX, or LOAN before reversing a remittance.');
+        await payrollApi.reverseRemittance(batch.payrollRunId, { group: form.group, reason: form.reason });
+      }
+      loadBatches();
+    } catch (e) { notifyApiError(e); }
+    finally { setFinanceSaving(null); }
   };
 
   return (
@@ -1814,10 +1855,9 @@ function PaymentTrackingTab() {
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-400">{fmtDate(b.createdAtUtc)}</td>
                   <td className="px-4 py-2">
-                    {allowedWpsNext(b.wpsStatus || 'Draft').length === 0 ? (
-                      <span className="text-xs text-slate-400">No action</span>
-                    ) : (
-                      <div className="grid min-w-[260px] gap-2">
+                    <div className="grid min-w-[290px] gap-2">
+                    {allowedWpsNext(b.wpsStatus || 'Draft').length > 0 && (
+                      <>
                         <select
                           title="Next WPS status"
                           className={sel}
@@ -1838,8 +1878,34 @@ function PaymentTrackingTab() {
                             {wpsSaving === b.id ? 'Saving…' : 'Save'}
                           </button>
                         </div>
+                      </>
+                    )}
+                    {(b.wpsStatus === 'Accepted' || b.wpsStatus === 'Paid') && (
+                      <div className="grid gap-2 border-t border-slate-100 pt-2 dark:border-white/10">
+                        <div className="grid grid-cols-2 gap-2">
+                          <input className={inp} type="date" aria-label={`Finance action date for ${b.batchNumber}`} value={financeForm(b.id).date} onChange={e => setFinanceForm(b.id, { date: e.target.value })} />
+                          <input className={inp} aria-label={`Finance reference for ${b.batchNumber}`} placeholder="Bank / filing reference" value={financeForm(b.id).reference} onChange={e => setFinanceForm(b.id, { reference: e.target.value })} />
+                        </div>
+                        {b.wpsStatus === 'Accepted' && <button type="button" className={btn.primary} onClick={() => runFinanceAction(b, 'settle')} disabled={financeSaving !== null}>Settle net pay to GL</button>}
+                        {b.wpsStatus === 'Paid' && (
+                          <>
+                            <div className="grid grid-cols-[1fr_auto] gap-2">
+                              <select className={sel} aria-label={`Remittance group for ${b.batchNumber}`} value={financeForm(b.id).group} onChange={e => setFinanceForm(b.id, { group: e.target.value as 'GOSI' | 'TAX' | 'LOAN' | 'All' })}>
+                                {['All', 'GOSI', 'TAX', 'LOAN'].map(g => <option key={g}>{g}</option>)}
+                              </select>
+                              <button type="button" className={btn.primary} onClick={() => runFinanceAction(b, 'remit')} disabled={financeSaving !== null}>Remit</button>
+                            </div>
+                            <input className={inp} aria-label={`Reversal reason for ${b.batchNumber}`} placeholder="Required reversal reason" value={financeForm(b.id).reason} onChange={e => setFinanceForm(b.id, { reason: e.target.value })} />
+                            <div className="flex gap-2">
+                              <button type="button" className={btn.danger} onClick={() => runFinanceAction(b, 'reverse-settle')} disabled={financeSaving !== null}>Reverse settlement</button>
+                              <button type="button" className={btn.danger} onClick={() => runFinanceAction(b, 'reverse-remit')} disabled={financeSaving !== null || financeForm(b.id).group === 'All'}>Reverse remit</button>
+                            </div>
+                          </>
+                        )}
                       </div>
                     )}
+                    {allowedWpsNext(b.wpsStatus || 'Draft').length === 0 && b.wpsStatus !== 'Accepted' && b.wpsStatus !== 'Paid' && <span className="text-xs text-slate-400">No action</span>}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -2127,7 +2193,6 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [journal, setJournal] = useState<PayrollGLJournal | null>(null);
   const [loading, setLoading] = useState(false);
-  const { currencyCode } = useTenantSettings();
 
   useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
@@ -2167,11 +2232,11 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
             </div>
             <div className="surface p-4">
               <p className="text-xs text-slate-400">Total Debits</p>
-              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits, currencyCode)}</p>
+              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits, journal.currency)}</p>
             </div>
             <div className="surface p-4">
               <p className="text-xs text-slate-400">Total Credits</p>
-              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits, currencyCode)}</p>
+              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits, journal.currency)}</p>
             </div>
           </div>
 
@@ -2204,12 +2269,12 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
                       <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                         <td className="px-3 py-2 font-mono text-xs text-slate-500">{e.glAccount}</td>
                         <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{e.glAccountName}</td>
-                        <td className={`px-3 py-2 text-right font-semibold tabular-nums ${side.color}`}>{fmtAmt(e.amount, currencyCode)}</td>
+                        <td className={`px-3 py-2 text-right font-semibold tabular-nums ${side.color}`}>{fmtAmt(e.amount, journal.currency)}</td>
                       </tr>
                     ))}
                     <tr className="border-t-2 border-slate-200 dark:border-white/10">
                       <td colSpan={2} className="px-3 py-2 text-xs font-bold text-slate-600 dark:text-slate-300">Total</td>
-                      <td className={`px-3 py-2 text-right text-sm font-extrabold tabular-nums ${side.color}`}>{fmtAmt(side.entries.reduce((s, e) => s + e.amount, 0), currencyCode)}</td>
+                      <td className={`px-3 py-2 text-right text-sm font-extrabold tabular-nums ${side.color}`}>{fmtAmt(side.entries.reduce((s, e) => s + e.amount, 0), journal.currency)}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -2329,8 +2394,52 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
 function FinalSettlementTab() {
   const [form, setForm] = useState({ employeeId: '', lastWorkingDay: new Date().toISOString().slice(0, 10), noticePeriodDaysShort: '0', terminationReason: '' });
   const [result, setResult] = useState<FinalSettlementResult | null>(null);
+  const [settlements, setSettlements] = useState<FinalSettlementListRow[]>([]);
+  const [outstandingTotal, setOutstandingTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [actionSaving, setActionSaving] = useState<string | null>(null);
+  const [actionForms, setActionForms] = useState<Record<string, {
+    reason: string; accrualDate: string; acknowledgeWageBaseFloor: boolean;
+    acknowledgeWagesUnpaid: boolean; wagesUnpaidReason: string; acknowledgeSelfApproval: boolean;
+  }>>({});
+
+  const loadSettlements = () => payrollApi.listFinalSettlements().then(r => {
+    setSettlements(r.rows); setOutstandingTotal(r.outstandingTotal);
+  }).catch((e: unknown) => setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Unable to load final settlements.'));
+  useEffect(() => { loadSettlements(); }, []);
+
+  const defaultActionForm = {
+    reason: '', accrualDate: new Date().toISOString().slice(0, 10),
+    acknowledgeWageBaseFloor: false, acknowledgeWagesUnpaid: false,
+    wagesUnpaidReason: '', acknowledgeSelfApproval: false,
+  };
+  const actionForm = (id: string) => actionForms[id] ?? defaultActionForm;
+  const setActionForm = (id: string, patch: Partial<typeof defaultActionForm>) =>
+    setActionForms(prev => ({ ...prev, [id]: { ...defaultActionForm, ...(prev[id] ?? {}), ...patch } }));
+
+  const transition = async (settlement: FinalSettlementListRow, action: 'submit' | 'approve' | 'cancel') => {
+    const af = actionForm(settlement.id);
+    if (action === 'cancel' && !af.reason.trim()) { setError('A cancellation reason is required.'); return; }
+    if (action === 'cancel' && !window.confirm('Cancel this settlement and post any required contra journal?')) return;
+    setActionSaving(`${settlement.id}:${action}`); setError('');
+    try {
+      if (action === 'submit') await payrollApi.submitFinalSettlement(settlement.id, af.reason || undefined);
+      if (action === 'approve') await payrollApi.approveFinalSettlement(settlement.id, {
+        confirmTerminationReason: settlement.terminationReason,
+        acknowledgeWageBaseFloor: af.acknowledgeWageBaseFloor,
+        acknowledgeWagesUnpaid: af.acknowledgeWagesUnpaid,
+        wagesUnpaidReason: af.wagesUnpaidReason || undefined,
+        acknowledgeSelfApproval: af.acknowledgeSelfApproval,
+        accrualDate: af.accrualDate || undefined,
+        reason: af.reason || undefined,
+      });
+      if (action === 'cancel') await payrollApi.cancelFinalSettlement(settlement.id, af.reason);
+      await loadSettlements();
+    } catch (e: unknown) {
+      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? `${action} failed.`);
+    } finally { setActionSaving(null); }
+  };
 
   const calculate = async () => {
     if (!form.employeeId || !form.lastWorkingDay) return;
@@ -2339,18 +2448,20 @@ function FinalSettlementTab() {
       // Empty terminationReason ⇒ backend uses the employee's recorded separation type.
       const res = await payrollApi.finalSettlement(Number(form.employeeId), form.lastWorkingDay, Number(form.noticePeriodDaysShort), form.terminationReason || undefined);
       setResult(res);
+      await loadSettlements();
     } catch (e: unknown) {
       setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Calculation failed.');
     } finally { setLoading(false); }
   };
 
   return (
-    <div className="space-y-5 max-w-2xl">
+    <div className="space-y-5">
       <div className="surface p-4">
-        <p className="text-sm font-semibold text-slate-800 dark:text-white">Final Settlement Calculator</p>
+        <p className="text-sm font-semibold text-slate-800 dark:text-white">Final Settlement Lifecycle</p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Calculates the total amount payable to a departing employee: pro-rata salary, EOSB/Gratuity, leave encashment, minus notice period shortfall.
+          Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.
         </p>
+        <p className="mt-2 text-sm font-semibold text-sapphire dark:text-cyanAccent">Outstanding approved/disbursing payable: {outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
       </div>
 
       <div className="surface p-5 space-y-4">
@@ -2383,7 +2494,7 @@ function FinalSettlementTab() {
         </div>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <button type="button" className={btn.primary} onClick={calculate} disabled={!form.employeeId || !form.lastWorkingDay || loading}>
-          <Calculator className="h-4 w-4" /> {loading ? 'Calculating…' : 'Calculate Settlement'}
+          <Calculator className="h-4 w-4" /> {loading ? 'Creating draft…' : 'Calculate & Save Draft'}
         </button>
       </div>
 
@@ -2391,7 +2502,7 @@ function FinalSettlementTab() {
         <div className="surface p-5 space-y-4">
           <div>
             <p className="text-sm font-semibold text-slate-900 dark:text-white">{result.employeeName}</p>
-            <p className="text-xs text-slate-400">Last working day: {result.lastWorkingDay} · Service: {result.totalYears.toFixed(2)} years · Reason: {result.terminationReason}</p>
+            <p className="text-xs text-slate-400">Settlement {result.settlementId} · {result.status} · Last working day: {result.lastWorkingDay} · Service: {result.totalYears.toFixed(2)} years · Reason: {result.terminationReason}</p>
           </div>
 
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
@@ -2417,9 +2528,56 @@ function FinalSettlementTab() {
             <p className="text-2xl font-extrabold text-sapphire dark:text-cyanAccent">{result.currency} {result.totalPayable.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
           </div>
 
-          <p className="text-xs text-amber-600 dark:text-amber-400">Advisory only. Consult legal/HR before processing final settlement payment. Values are based on current salary records and leave balance data.</p>
+          <p className="text-xs text-amber-600 dark:text-amber-400">This is a persisted Draft payable. Review every warning and component before submitting or approving it.</p>
+          {result.warnings?.map(w => <p key={w} className="text-xs text-amber-600 dark:text-amber-400">{w}</p>)}
         </div>
       )}
+
+      <div className="surface overflow-x-auto">
+        <div className="border-b border-slate-100 px-4 py-3 dark:border-white/10">
+          <p className="text-sm font-semibold text-slate-800 dark:text-white">Settlement Register</p>
+        </div>
+        <table className="w-full min-w-[1100px] text-sm">
+          <thead><tr className="border-b border-slate-100 dark:border-white/10">
+            {['Employee', 'Last day', 'Due', 'Net payable', 'Status', 'Workflow controls'].map(h => <th key={h} className="px-4 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>)}
+          </tr></thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+            {settlements.length === 0 && <tr><td colSpan={6} className="py-8 text-center text-slate-400">No final settlements.</td></tr>}
+            {settlements.map(s => {
+              const af = actionForm(s.id);
+              const mutable = !['Paid', 'Cancelled', 'Disbursing'].includes(s.status);
+              return <tr key={s.id} className="align-top">
+                <td className="px-4 py-3"><p className="font-medium text-slate-900 dark:text-white">{s.employeeName}</p><p className="text-xs text-slate-400">{s.employeeCode}</p></td>
+                <td className="px-4 py-3 text-xs text-slate-500">{s.lastWorkingDay}</td>
+                <td className={`px-4 py-3 text-xs ${s.isOverdue ? 'font-semibold text-rose-500' : 'text-slate-500'}`}>{s.settlementDueDate}{s.isOverdue ? ` · ${s.overdueDays}d overdue` : ''}</td>
+                <td className="px-4 py-3 font-semibold">{fmtAmt(s.netPayable, s.currency)}</td>
+                <td className="px-4 py-3"><StatusBadge status={s.status} /></td>
+                <td className="px-4 py-3">
+                  {mutable ? <div className="grid min-w-[420px] gap-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <input className={inp} type="date" aria-label={`Accrual date for ${s.employeeName}`} value={af.accrualDate} onChange={e => setActionForm(s.id, { accrualDate: e.target.value })} />
+                      <input className={inp} aria-label={`Workflow reason for ${s.employeeName}`} placeholder="Reason / approval note" value={af.reason} onChange={e => setActionForm(s.id, { reason: e.target.value })} />
+                    </div>
+                    {(s.status === 'Draft' || s.status === 'PendingApproval') && <>
+                      <div className="flex flex-wrap gap-3 text-xs text-slate-600 dark:text-slate-300">
+                        <label><input type="checkbox" checked={af.acknowledgeWageBaseFloor} onChange={e => setActionForm(s.id, { acknowledgeWageBaseFloor: e.target.checked })} /> Accept flagged wage-base floor</label>
+                        <label><input type="checkbox" checked={af.acknowledgeSelfApproval} onChange={e => setActionForm(s.id, { acknowledgeSelfApproval: e.target.checked })} /> Acknowledge maker/checker exception</label>
+                        <label><input type="checkbox" checked={af.acknowledgeWagesUnpaid} onChange={e => setActionForm(s.id, { acknowledgeWagesUnpaid: e.target.checked })} /> Add acknowledged unpaid wages</label>
+                      </div>
+                      {af.acknowledgeWagesUnpaid && <input className={inp} aria-label={`Unpaid wages reason for ${s.employeeName}`} placeholder="Required unpaid-wages justification" value={af.wagesUnpaidReason} onChange={e => setActionForm(s.id, { wagesUnpaidReason: e.target.value })} />}
+                    </>}
+                    <div className="flex gap-2">
+                      {s.status === 'Draft' && <button type="button" className={btn.primary} onClick={() => transition(s, 'submit')} disabled={actionSaving !== null}>Submit</button>}
+                      {(s.status === 'Draft' || s.status === 'PendingApproval') && <button type="button" className={btn.primary} onClick={() => transition(s, 'approve')} disabled={actionSaving !== null}>Approve & Post GL</button>}
+                      <button type="button" className={btn.danger} onClick={() => transition(s, 'cancel')} disabled={actionSaving !== null}>Cancel</button>
+                    </div>
+                  </div> : <p className="text-xs text-slate-400">{s.status === 'Approved' ? 'Create an off-cycle settlement run to disburse.' : 'No direct action.'}</p>}
+                </td>
+              </tr>;
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

@@ -40,6 +40,11 @@ public class EnterpriseIdentityBoundaryTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => svc.UpdateSettingsAsync(tenant.Id,
             new UpdateEnterpriseIdentitySettingsRequest(null, null, null, EnforceSsoLogin: true, null, null, null, null, null, null, null, null),
             Ctx, CancellationToken.None));
+
+        // Rejected settings must not remain tracked and leak through a later unit of work.
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        Assert.False((await db.TenantIdentityProviderSettings.SingleAsync()).EnforceSsoLogin);
     }
 
     [Fact]
@@ -52,7 +57,7 @@ public class EnterpriseIdentityBoundaryTests
             SamlEnabled: true,
             OidcEnabled: true,
             ScimEnabled: null,
-            EnforceSsoLogin: true,
+            EnforceSsoLogin: false,
             ScimDryRun: null,
             AllowedDomains: new[] { "example.com" },
             SamlEntityId: "https://idp.example.com/saml",

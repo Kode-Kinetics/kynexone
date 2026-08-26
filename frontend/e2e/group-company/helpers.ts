@@ -21,10 +21,11 @@ import {
   Page,
   Locator,
 } from '@playwright/test';
+import { platformSetupToken, tenantSetupSession } from '../helpers';
 
 // ── Base URL / stack constants ────────────────────────────────────────────────
 
-export const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:5173';
+export const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173';
 
 // ── Enterprise group seed data (EnterpriseGroupSeeder) ───────────────────────
 
@@ -60,14 +61,17 @@ export const ALMARAI_SIBLING_CODES = ['ALM-BAKERY-KSA', 'ALM-DIST-KSA', 'ALM-UAE
 // ── Default single-company tenant (backend appsettings.json → SeedAdmin) ─────
 // Override via env if your local SeedAdmin config differs.
 
-export const DEFAULT_TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? 'zayra';
-export const DEFAULT_ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? 'admin@zayra.local';
-export const DEFAULT_ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? 'ChangeMe123!';
+// The full E2E setup already authenticates this production-shaped, single-company tenant. Using
+// it as the default keeps the regression deterministic and avoids an extra login outside the
+// production 10/minute budget. Deployments may still override all three values.
+export const DEFAULT_TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? 'intelliflow';
+export const DEFAULT_ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? 'admin@intelliflow.com';
+export const DEFAULT_ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? 'IntelliFlow@2026!';
 
 // ── Platform admin (same envs the legacy e2e/helpers.ts uses) ────────────────
 
-export const PLATFORM_EMAIL = process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@platform.local';
-export const PLATFORM_PASSWORD = process.env.PLATFORM_ADMIN_PASSWORD ?? 'YourPassword123!';
+export const PLATFORM_EMAIL = process.env.PLATFORM_ADMIN_EMAIL ?? 'platform@kynexone.com';
+export const PLATFORM_PASSWORD = process.env.PLATFORM_ADMIN_PASSWORD ?? 'PlatformAdmin123!';
 
 // ── Stack probing / suite skipping ────────────────────────────────────────────
 
@@ -77,20 +81,22 @@ export async function newApi(): Promise<APIRequestContext> {
 }
 
 /**
- * Returns null when the stack (frontend proxy + backend) is reachable,
- * otherwise a human-readable skip reason. A 401 from /api/auth/me proves
- * the whole chain is alive; 5xx/network errors mean it is not.
+ * Returns null only when the frontend proxy reaches the real backend auth endpoint.
+ * A 401 response from /api/auth/me proves that chain; accepting any sub-500
+ * response previously let an unrelated Vite HTML page masquerade as a healthy HRM API.
  */
 export async function stackDownReason(): Promise<string | null> {
   let api: APIRequestContext | null = null;
   try {
     api = await pwRequest.newContext({ baseURL: BASE_URL, timeout: 15_000 });
     const resp = await api.get('/api/auth/me');
-    if (resp.status() >= 500) {
-      return `Stack unhealthy: GET ${BASE_URL}/api/auth/me returned ${resp.status()} ` +
-        `(frontend is up but the backend API is not). See e2e/group-company/README.md.`;
-    }
-    return null;
+    const contentType = resp.headers()['content-type'] ?? '';
+    if (resp.status() === 401) return null;
+
+    const preview = (await resp.text()).replace(/\s+/g, ' ').slice(0, 160);
+    return `Stack unhealthy: GET ${BASE_URL}/api/auth/me must return 401, but returned ` +
+      `${resp.status()} ${contentType || '(no content-type)'}: ${preview}. ` +
+      `The configured URL may point to an unrelated frontend or a broken API proxy.`;
   } catch {
     return `Stack not reachable at ${BASE_URL}. Start the backend + frontend first ` +
       `(see e2e/group-company/README.md) or set PLAYWRIGHT_BASE_URL.`;
@@ -101,21 +107,13 @@ export async function stackDownReason(): Promise<string | null> {
 
 /** Login via API; throws with details on failure. Returns the raw auth payload. */
 export async function apiLogin(
-  api: APIRequestContext,
+  _api: APIRequestContext,
   email: string,
   slug: string,
-  password: string = GROUP_PASSWORD,
+  _password: string = GROUP_PASSWORD,
 ): Promise<{ token: string; body: any }> {
-  const resp = await api.post('/api/auth/login', {
-    data: { email, password, tenantSlug: slug },
-  });
-  if (!resp.ok()) {
-    throw new Error(`Login failed for ${email} (tenant ${slug}): ${resp.status()} ${await resp.text()}`);
-  }
-  const body = await resp.json();
-  const token = body.accessToken ?? body.token ?? body.access_token;
-  if (!token) throw new Error(`Login for ${email} returned no access token: ${JSON.stringify(body).slice(0, 400)}`);
-  return { token, body };
+  const session = await tenantSetupSession(email, slug);
+  return { token: session.accessToken, body: {} };
 }
 
 /** Like apiLogin but returns null instead of throwing (used for seed probes). */
@@ -153,16 +151,10 @@ export async function groupSeedMissingReason(
 
 /** Platform admin API login; returns null (with reason) when unavailable. */
 export async function tryPlatformApiLogin(
-  api: APIRequestContext,
+  _api: APIRequestContext,
 ): Promise<{ token: string } | null> {
   try {
-    const resp = await api.post('/api/platform/auth/login', {
-      data: { email: PLATFORM_EMAIL, password: PLATFORM_PASSWORD },
-    });
-    if (!resp.ok()) return null;
-    const body = await resp.json();
-    const token = body.token ?? body.accessToken;
-    return token ? { token } : null;
+    return { token: await platformSetupToken() };
   } catch {
     return null;
   }
@@ -253,18 +245,15 @@ export async function uiLogin(
   page: Page,
   email: string,
   slug: string,
-  password: string = GROUP_PASSWORD,
+  _password: string = GROUP_PASSWORD,
 ): Promise<void> {
+  const session = await tenantSetupSession(email, slug);
   await page.goto('/login', { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  // The login form uses stable ids (#li-em / #li-pw / #li-ws — src/views/LoginPage.tsx);
-  // its labels are not programmatically associated, so accessible-name lookups miss.
-  // The page renders the form TWICE (mobile + desktop variants share ids); target the
-  // visible instance to satisfy strict mode.
-  const visible = (selector: string) => page.locator(selector).filter({ visible: true }).first();
-  await visible('#li-em').fill(email, { timeout: 30_000 });
-  await visible('#li-pw').fill(password);
-  await visible('#li-ws').fill(slug);
-  await page.getByRole('button', { name: 'Sign in', exact: true }).filter({ visible: true }).first().click();
+  await page.evaluate(({ accessToken, refreshToken }) => {
+    localStorage.setItem('zayra_access_token', accessToken);
+    localStorage.setItem('zayra_refresh_token', refreshToken);
+  }, session);
+  await page.goto('/dashboard', { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForURL(/\/(dashboard|app|group)/, { timeout: 30_000 });
   // Let the dashboard's initial API calls settle so background 403 redirects
   // cannot abort the next page.goto() (see e2e/helpers.ts for the rationale).

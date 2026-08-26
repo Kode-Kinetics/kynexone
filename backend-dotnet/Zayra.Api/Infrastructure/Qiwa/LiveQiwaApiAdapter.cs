@@ -65,7 +65,7 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
         }
     }
 
-    public async Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, CancellationToken ct)
+    public async Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
     {
         var client = _httpFactory.CreateClient("qiwa");
         var json = JsonSerializer.Serialize(new
@@ -86,6 +86,9 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
             Content = new StringContent(json, Encoding.UTF8, "application/json"),
         };
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        // Stable across lease expiry/retry/restart. Qiwa (or the configured gateway) can
+        // collapse a replay that occurred after an ambiguous network/commit outcome.
+        req.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey.ToString("N"));
 
         try
         {

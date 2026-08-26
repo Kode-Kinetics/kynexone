@@ -22,6 +22,28 @@ namespace Zayra.Api.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("FriendlyName")
+                        .HasColumnType("text")
+                        .HasColumnName("friendly_name");
+
+                    b.Property<string>("Xml")
+                        .HasColumnType("text")
+                        .HasColumnName("xml");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("DataProtectionKeys");
+                });
+
             modelBuilder.Entity("Zayra.Api.Domain.Entities.AuditLog", b =>
                 {
                     b.Property<Guid>("Id")
@@ -315,6 +337,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
+                    b.Property<Guid>("FamilyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("family_id");
+
                     b.Property<string>("ReplacedByTokenHash")
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)")
@@ -345,6 +371,8 @@ namespace Zayra.Api.Migrations
                         .IsUnique();
 
                     b.HasIndex("UserId");
+
+                    b.HasIndex("FamilyId", "UserId", "RevokedAtUtc");
 
                     b.ToTable("refresh_tokens", (string)null);
                 });
@@ -2219,7 +2247,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("ApprovalRequestId");
 
-                    b.HasIndex("TenantId", "ApprovalRequestId", "StepOrder");
+                    b.HasIndex("TenantId", "ApprovalRequestId", "StepOrder")
+                        .IsUnique();
 
                     b.ToTable("approval_decisions", (string)null);
                 });
@@ -2477,6 +2506,11 @@ namespace Zayra.Api.Migrations
                     b.Property<int>("CurrentStepOrder")
                         .HasColumnType("integer")
                         .HasColumnName("current_step_order");
+
+                    b.Property<int>("DecisionVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("decision_version");
 
                     b.Property<DateTime?>("DueAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -5561,6 +5595,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("manager_approval_notes");
 
+                    b.Property<Guid?>("OvertimeCompOffConversionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("overtime_comp_off_conversion_id");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text")
@@ -5569,6 +5607,11 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
+
+                    b.Property<int>("UsageVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("usage_version");
 
                     b.Property<string>("WorkType")
                         .IsRequired()
@@ -5580,6 +5623,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("worked_date");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "OvertimeCompOffConversionId")
+                        .IsUnique()
+                        .HasFilter("\"overtime_comp_off_conversion_id\" IS NOT NULL");
 
                     b.HasIndex("TenantId", "EmployeeId", "Status");
 
@@ -5610,6 +5657,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
+                    b.Property<Guid?>("IdempotencyKey")
+                        .HasColumnType("uuid")
+                        .HasColumnName("idempotency_key");
+
                     b.Property<Guid?>("LeaveRequestId")
                         .HasColumnType("uuid")
                         .HasColumnName("leave_request_id");
@@ -5619,6 +5670,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompOffCreditId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasFilter("\"idempotency_key\" IS NOT NULL");
 
                     b.ToTable("comp_off_usages", (string)null);
                 });
@@ -7559,6 +7614,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("profile_photo_url");
 
+                    b.Property<Guid>("PublicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("public_id");
+
                     b.Property<string>("Qid")
                         .IsRequired()
                         .HasColumnType("text")
@@ -7757,6 +7816,10 @@ namespace Zayra.Api.Migrations
                         .HasFilter("passport_number <> ''");
 
                     b.HasIndex("TenantId", "PositionId");
+
+                    b.HasIndex("TenantId", "PublicId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_employees_tenant_public_id");
 
                     b.HasIndex("TenantId", "Qid")
                         .HasDatabaseName("ix_employees_dup_qid")
@@ -8032,6 +8095,8 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "BonusBatchId", "EmployeeId");
 
                     b.HasIndex("TenantId", "EmployeeId", "Status");
+
+                    b.HasIndex("TenantId", "EmployeeIntId", "Status");
 
                     b.ToTable("employee_bonuses", (string)null);
                 });
@@ -9859,6 +9924,8 @@ namespace Zayra.Api.Migrations
                         .IsUnique();
 
                     b.HasIndex("TenantId", "EmployeeId", "Status");
+
+                    b.HasIndex("TenantId", "EmployeeIntId", "Status");
 
                     b.ToTable("employee_loans", (string)null);
                 });
@@ -13293,6 +13360,11 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "EmployeeId", "LeaveTypeId");
 
+                    b.HasIndex("TenantId", "EmployeeId", "LeaveTypeId", "Year", "Reference")
+                        .IsUnique()
+                        .HasDatabaseName("IX_leave_balance_transactions_tenant_id_employee_id_leave_typ~1")
+                        .HasFilter("\"transaction_type\" = 'Accrual'");
+
                     b.ToTable("leave_balance_transactions", (string)null);
                 });
 
@@ -13476,14 +13548,29 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(10,2)")
                         .HasColumnName("amount_per_day");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("currency");
 
                     b.Property<decimal>("DaysToEncash")
                         .HasPrecision(6, 2)
                         .HasColumnType("numeric(6,2)")
                         .HasColumnName("days_to_encash");
+
+                    b.Property<int>("DecisionVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("decision_version");
 
                     b.Property<int>("EmployeeId")
                         .HasColumnType("integer")
@@ -13508,10 +13595,18 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("leave_type_name");
 
+                    b.Property<Guid?>("PayrollAdjustmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payroll_adjustment_id");
+
                     b.Property<string>("PayrollNotes")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("payroll_notes");
+
+                    b.Property<Guid?>("PayrollRunId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payroll_run_id");
 
                     b.Property<DateTime?>("ProcessedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -13536,13 +13631,36 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(12,2)")
                         .HasColumnName("total_amount");
 
+                    b.Property<string>("VoidReason")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("void_reason");
+
+                    b.Property<DateTime?>("VoidedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("voided_at_utc");
+
+                    b.Property<Guid?>("VoidedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("voided_by_user_id");
+
                     b.Property<int>("Year")
                         .HasColumnType("integer")
                         .HasColumnName("year");
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "PayrollAdjustmentId")
+                        .IsUnique()
+                        .HasFilter("\"payroll_adjustment_id\" IS NOT NULL");
+
+                    b.HasIndex("TenantId", "PayrollRunId");
+
                     b.HasIndex("TenantId", "Status");
+
+                    b.HasIndex("TenantId", "CompanyId", "Status");
 
                     b.ToTable("leave_encashment_requests", (string)null);
                 });
@@ -16024,7 +16142,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "OvertimeRequestId");
+                    b.HasIndex("TenantId", "OvertimeRequestId", "ApprovalLevel")
+                        .IsUnique();
 
                     b.ToTable("overtime_approvals", (string)null);
                 });
@@ -16179,7 +16298,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "OvertimeRequestId");
+                    b.HasIndex("TenantId", "OvertimeRequestId")
+                        .IsUnique();
 
                     b.ToTable("overtime_calculations", (string)null);
                 });
@@ -16223,6 +16343,9 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "OvertimeRequestId")
+                        .IsUnique();
 
                     b.ToTable("overtime_comp_off_conversions", (string)null);
                 });
@@ -16321,6 +16444,9 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "OvertimeRequestId")
+                        .IsUnique();
 
                     b.HasIndex("TenantId", "EmployeeId", "Status");
 
@@ -16465,6 +16591,11 @@ namespace Zayra.Api.Migrations
                     b.Property<DateTime?>("DecidedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
+
+                    b.Property<int>("DecisionVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("decision_version");
 
                     b.Property<int>("EmployeeId")
                         .HasColumnType("integer")
@@ -17008,6 +17139,16 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("reason");
 
+                    b.Property<Guid?>("SourceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_id");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("source_type");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text")
@@ -17020,6 +17161,10 @@ namespace Zayra.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "PayrollRunId", "EmployeeId");
+
+                    b.HasIndex("TenantId", "SourceType", "SourceId")
+                        .IsUnique()
+                        .HasFilter("\"source_id\" IS NOT NULL");
 
                     b.ToTable("payroll_adjustments", (string)null);
                 });
@@ -21031,6 +21176,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "EmployeeId", "Status");
 
+                    b.HasIndex("TenantId", "EmployeeIntId", "Status");
+
                     b.ToTable("salary_advances", (string)null);
                 });
 
@@ -22805,6 +22952,67 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "ExpiryDate", "Status");
 
                     b.ToTable("work_permit_records", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.WorkerHeartbeat", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("InstanceId")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("instance_id");
+
+                    b.Property<DateTime>("LastAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_attempt_at_utc");
+
+                    b.Property<string>("LastErrorCode")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("last_error_code");
+
+                    b.Property<DateTime?>("LastFailedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_failed_at_utc");
+
+                    b.Property<DateTime?>("LastSucceededAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_succeeded_at_utc");
+
+                    b.Property<DateTime>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at_utc");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<string>("WorkerName")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("worker_name");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("WorkerName", "InstanceId")
+                        .IsUnique();
+
+                    b.HasIndex("WorkerName", "UpdatedAtUtc");
+
+                    b.ToTable("worker_heartbeats", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.WorkforcePlan", b =>

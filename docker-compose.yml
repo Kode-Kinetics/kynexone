@@ -31,6 +31,10 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://0.0.0.0:5117
       ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DATABASE:-zayra};Username=${POSTGRES_USER:-zayra};Password=${POSTGRES_PASSWORD:-zayra_password}
+      # Compose owns an isolated Development database, so migrate it before AuthSeeder runs.
+      # Without this, EnsureCreated produces a schema with no migration history and readiness
+      # correctly reports every migration as pending. Production still uses the CI/pre-deploy gate.
+      Database__RunMigrationsOnStartup: ${RUN_MIGRATIONS_ON_STARTUP:-true}
       AI_PROVIDER: ${AI_PROVIDER:-ollama}
       AI_MODEL: ${AI_MODEL:-gpt-oss:120b-cloud}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11435}
@@ -51,9 +55,14 @@ services:
       # Default false so a normal local/deployment stack cannot rewrite tenant
       # data. Use SEED_DEMO_DATA=true only in an isolated demo database.
       SeedAdmin__SeedDemoData: ${SEED_DEMO_DATA:-false}
+      # Dedicated, disposable group-company E2E fixture; never enabled by default.
+      SEED_ENTERPRISE_TEST_DATA: ${SEED_ENTERPRISE_TEST_DATA:-false}
       PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-platform@kynexone.com}
       PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:-PlatformAdmin123!}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      # Deployed/local default remains 10/minute. An isolated broad browser suite may opt into a
+      # larger login budget without changing the production security default.
+      RateLimit__LoginPermitLimit: ${LOGIN_PERMIT_LIMIT:-10}
     ports:
       - "${BACKEND_PORT:-5117}:5117"
     extra_hosts:
@@ -69,8 +78,8 @@ services:
     depends_on:
       - backend
     environment:
-      # Server-side: Next.js rewrites proxy /api/* to the backend over the Docker network.
-      # Browser-side: the app uses relative URLs, so no public API URL is needed.
+      # Browser calls stay relative; these values are consumed by the Next.js
+      # server-side rewrite, where the Compose service hostname is resolvable.
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://backend:5117}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://backend:5117}
     ports:

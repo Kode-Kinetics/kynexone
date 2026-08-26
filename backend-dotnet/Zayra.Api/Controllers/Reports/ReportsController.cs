@@ -5,6 +5,8 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Reports;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Reports;
@@ -81,7 +83,25 @@ public class ReportsController : ControllerBase
         var employeeIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds;
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        object? data = req.ReportKey switch
+        object? data = await ExecuteReportDataAsync(tid, req, employeeIds, ct);
+
+        if (data == null)
+        {
+            await LogReportExecution(tid, uid, req, "Failed", 0, (int)sw.ElapsedMilliseconds, $"Report '{req.ReportKey}' not found.", ct);
+            return NotFound($"Report '{req.ReportKey}' not found.");
+        }
+
+        sw.Stop();
+        var rowCount = data is System.Collections.ICollection c ? c.Count : 0;
+
+        await LogReportExecution(tid, uid, req, "Success", rowCount, (int)sw.ElapsedMilliseconds, null, ct);
+
+        return Ok(new { reportKey = req.ReportKey, generatedAt = DateTime.UtcNow, rowCount, durationMs = sw.ElapsedMilliseconds, data });
+    }
+
+    internal async Task<object?> ExecuteReportDataAsync(
+        Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct) =>
+        req.ReportKey switch
         {
             "hr.headcount" => await RunHrHeadcount(tid, req, employeeIds, ct),
             "hr.new-joiners" => await RunNewJoiners(tid, req, employeeIds, ct),
@@ -100,7 +120,9 @@ public class ReportsController : ControllerBase
             "overtime.approved" => await RunApprovedOvertime(tid, req, employeeIds, ct),
             "payroll.register" => await RunPayrollRegister(tid, req, employeeIds, ct),
             "payroll.summary" => await RunPayrollSummary(tid, req, employeeIds, ct),
+            "payroll.slips" => await RunPayrollSlips(tid, req, employeeIds, ct),
             "recruitment.pipeline" => await RunRecruitmentPipeline(tid, ct),
+            "recruitment.time-to-hire" => await RunRecruitmentTimeToHire(tid, req, ct),
             "compliance.visa-expiry" => await RunVisaExpiry(tid, req, employeeIds, ct),
             "compliance.passport-expiry" => await RunPassportExpiry(tid, req, employeeIds, ct),
             "compliance.contract-expiry" => await RunContractExpiry(tid, req, employeeIds, ct),
@@ -112,20 +134,6 @@ public class ReportsController : ControllerBase
             "qiwa.readiness" => await RunQiwaReadiness(tid, req, employeeIds, ct),
             _ => null,
         };
-
-        if (data == null)
-        {
-            await LogReportExecution(tid, uid, req, "Failed", 0, (int)sw.ElapsedMilliseconds, $"Report '{req.ReportKey}' not found.", ct);
-            return NotFound($"Report '{req.ReportKey}' not found.");
-        }
-
-        sw.Stop();
-        var rowCount = data is System.Collections.ICollection c ? c.Count : 0;
-
-        await LogReportExecution(tid, uid, req, "Success", rowCount, (int)sw.ElapsedMilliseconds, null, ct);
-
-        return Ok(new { reportKey = req.ReportKey, generatedAt = DateTime.UtcNow, rowCount, durationMs = sw.ElapsedMilliseconds, data });
-    }
 
     // ── HR Reports ────────────────────────────────────────────────────────────
 
@@ -375,6 +383,28 @@ public class ReportsController : ControllerBase
             .OrderBy(x => x.Department).ToListAsync(ct);
     }
 
+    private async Task<object> RunPayrollSlips(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
+    {
+        var runs = _db.PayrollRuns.Where(x => x.TenantId == tid);
+        if (!string.IsNullOrWhiteSpace(req.Filters?.Period)
+            && DateOnly.TryParseExact(req.Filters.Period + "-01", "yyyy-MM-dd", out var period))
+            runs = runs.Where(x => x.Year == period.Year && x.Month == period.Month);
+        var runId = await runs.OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
+            .Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct);
+        if (runId is null) return Array.Empty<object>();
+
+        var slips = _db.PayrollSlips.Where(x => x.TenantId == tid && x.RunId == runId.Value);
+        if (employeeIds is not null) slips = slips.Where(x => employeeIds.Contains(x.EmployeeId));
+        return await slips.OrderBy(x => x.Department).ThenBy(x => x.EmployeeName)
+            .Select(x => new
+            {
+                x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary,
+                x.HousingAllowance, x.TransportAllowance, x.OtherAllowances,
+                x.GrossSalary, x.Deductions, x.EmployeeStatutoryTotal,
+                x.LoanDeductions, x.NetSalary, x.Status
+            }).ToListAsync(ct);
+    }
+
     // ── Recruitment Reports ───────────────────────────────────────────────────
 
     private async Task<object> RunRecruitmentPipeline(Guid tid, CancellationToken ct)
@@ -383,6 +413,23 @@ public class ReportsController : ControllerBase
             .GroupBy(x => x.Stage)
             .Select(g => new { Stage = g.Key, Count = g.Count() })
             .OrderBy(x => x.Stage).ToListAsync(ct);
+    }
+
+    private async Task<object> RunRecruitmentTimeToHire(Guid tid, RunReportRequest req, CancellationToken ct)
+    {
+        var from = req.Filters?.DateFrom ?? DateTime.UtcNow.AddYears(-1);
+        var to = req.Filters?.DateTo ?? DateTime.UtcNow;
+        var hires = await _db.JobApplications
+            .Where(x => x.TenantId == tid && x.Status == "Hired" && x.HiredAtUtc != null
+                        && x.HiredAtUtc >= from && x.HiredAtUtc <= to)
+            .OrderBy(x => x.HiredAtUtc)
+            .Select(x => new { x.JobTitle, x.CandidateName, x.AppliedAtUtc, x.HiredAtUtc })
+            .ToListAsync(ct);
+        return hires.Select(x => new
+        {
+            x.JobTitle, x.CandidateName, x.AppliedAtUtc, x.HiredAtUtc,
+            DaysToHire = (int)(x.HiredAtUtc!.Value - x.AppliedAtUtc).TotalDays
+        }).ToList();
     }
 
     // ── Compliance Reports ────────────────────────────────────────────────────
@@ -659,7 +706,7 @@ public class ReportsController : ControllerBase
     // ── Report Schedules ──────────────────────────────────────────────────────
 
     [HttpGet("schedules")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("reports.schedule")]
     public async Task<IActionResult> ListSchedules(CancellationToken ct)
     {
         if (!HasPermission("reports.schedule")) return Forbid();
@@ -669,10 +716,12 @@ public class ReportsController : ControllerBase
     }
 
     [HttpPost("schedules")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("reports.schedule")]
     public async Task<IActionResult> CreateSchedule([FromBody] CreateScheduleRequest req, CancellationToken ct)
     {
         if (!HasPermission("reports.schedule")) return Forbid();
+        if (!ReportSchedulePolicy.TryValidate(req, out var validationError))
+            return BadRequest(new { message = validationError });
         if (!TryValidateControlledOverride(req.GovernanceOverride, "report.schedule.create", out var rejection))
             return rejection!;
         var tid = GetTenantId();
@@ -684,6 +733,7 @@ public class ReportsController : ControllerBase
             Frequency = req.Frequency, DeliveryMethod = req.DeliveryMethod,
             Recipients = req.Recipients ?? string.Empty, ExportFormat = req.ExportFormat,
             CreatedBy = uid,
+            NextRunAtUtc = ReportSchedulePolicy.NextRun(DateTime.UtcNow, req.Frequency),
         };
         _db.ReportSchedules.Add(s);
         AddGovernanceAudit("governance.controlled_override.report_schedule_created", "ReportSchedule", s.Id.ToString(), req.GovernanceOverride!, new { s.ReportKey, s.ReportName, s.Frequency, s.DeliveryMethod, s.ExportFormat });
@@ -692,7 +742,7 @@ public class ReportsController : ControllerBase
     }
 
     [HttpPatch("schedules/{id:guid}/toggle")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("reports.schedule")]
     public async Task<IActionResult> ToggleSchedule(Guid id, [FromBody] GovernanceOverrideRequest? governanceOverride, CancellationToken ct)
     {
         if (!HasPermission("reports.schedule")) return Forbid();
@@ -702,13 +752,15 @@ public class ReportsController : ControllerBase
         var s = await _db.ReportSchedules.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (s == null) return NotFound();
         s.IsActive = !s.IsActive; s.UpdatedAtUtc = DateTime.UtcNow;
+        if (s.IsActive && (s.NextRunAtUtc is null || s.NextRunAtUtc <= DateTime.UtcNow))
+            s.NextRunAtUtc = ReportSchedulePolicy.NextRun(DateTime.UtcNow, s.Frequency);
         AddGovernanceAudit("governance.controlled_override.report_schedule_toggled", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName, s.IsActive });
         await _db.SaveChangesAsync(ct);
         return Ok(s);
     }
 
     [HttpDelete("schedules/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("reports.schedule")]
     public async Task<IActionResult> DeleteSchedule(Guid id, [FromBody] GovernanceOverrideRequest? governanceOverride, CancellationToken ct)
     {
         if (!HasPermission("reports.schedule")) return Forbid();

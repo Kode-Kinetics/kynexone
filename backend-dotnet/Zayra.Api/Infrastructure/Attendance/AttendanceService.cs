@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Attendance;
@@ -16,6 +17,7 @@ public class AttendanceService : IAttendanceService
     private readonly ZayraDbContext _db;
     private readonly INotificationService _notifications;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly WorkWeekService _workWeek;
     // Per-request cache of the resolved tenant timezone so the per-employee/day loop
     // doesn't re-query localization settings on every call.
     private readonly Dictionary<Guid, TimeZoneInfo> _tzCache = new();
@@ -25,6 +27,7 @@ public class AttendanceService : IAttendanceService
         _db = db;
         _notifications = notifications;
         _httpClientFactory = httpClientFactory;
+        _workWeek = new WorkWeekService(db);
     }
 
     /// <summary>
@@ -387,6 +390,7 @@ public class AttendanceService : IAttendanceService
         int accepted = 0, duplicates = 0, unmatched = 0;
         var matchedEmployees = new Dictionary<int, Employee>();
         var affectedDates = new HashSet<DateOnly>();
+        var tenantTimeZone = await ResolveTenantTimeZoneAsync(tenantId, ct);
 
         foreach (var punch in punches)
         {
@@ -424,7 +428,13 @@ public class AttendanceService : IAttendanceService
             });
             accepted++;
             if (employee is null) unmatched++;
-            else { matchedEmployees[employee.Id] = employee; affectedDates.Add(DateOnly.FromDateTime(punch.PunchTimestampUtc)); }
+            else
+            {
+                matchedEmployees[employee.Id] = employee;
+                var localPunch = TimeZoneInfo.ConvertTimeFromUtc(
+                    DateTime.SpecifyKind(punch.PunchTimestampUtc, DateTimeKind.Utc), tenantTimeZone);
+                affectedDates.Add(DateOnly.FromDateTime(localPunch));
+            }
         }
 
         device.LastSyncStatus = "Completed";
@@ -443,7 +453,11 @@ public class AttendanceService : IAttendanceService
             var ctx = new RequestContext(ip, "device-ingest", null, tenantId);
             foreach (var emp in matchedEmployees.Values)
                 foreach (var date in affectedDates)
-                { await ProcessEmployeeDay(tenantId, emp, date, policy, ctx, ct); processedDays++; }
+                {
+                    if (await IsLocked(tenantId, date, ct)) continue;
+                    await ProcessEmployeeDay(tenantId, emp, date, policy, ctx, ct);
+                    processedDays++;
+                }
             await _db.SaveChangesAsync(ct);
         }
 
@@ -507,6 +521,14 @@ public class AttendanceService : IAttendanceService
 
     public async Task<int> ProcessAsync(Guid tenantId, ProcessAttendanceRequest request, RequestContext context, CancellationToken ct)
     {
+        if (request.FromDate > request.ToDate)
+            throw new InvalidOperationException("From date must be on or before To date.");
+        if (request.ToDate.DayNumber - request.FromDate.DayNumber > 366)
+            throw new InvalidOperationException("Attendance processing is limited to 367 days per request.");
+        if (await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId
+                && x.Status == "Locked" && x.PeriodStart <= request.ToDate && x.PeriodEnd >= request.FromDate, ct))
+            throw new InvalidOperationException("Attendance cannot be processed for a payroll-locked period.");
+
         var employees = await _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted && (request.EmployeeId == null || x.Id == request.EmployeeId)).ToListAsync(ct);
         var policies = await _db.AttendancePolicies
             .Where(x => x.TenantId == tenantId && x.IsActive)
@@ -623,7 +645,7 @@ public class AttendanceService : IAttendanceService
             throw new InvalidOperationException("Cannot approve your own correction request.");
         if (reg.Status != "Submitted" && reg.Status != "PendingHRApproval")
             throw new InvalidOperationException($"Request is in '{reg.Status}' status and cannot be approved.");
-        if (reg.PayrollLockChecked)
+        if (await IsLocked(tenantId, reg.WorkDate, ct))
             throw new InvalidOperationException("Attendance period is payroll locked.");
         var beforeStatus = reg.Status;
         var activeLevel = reg.Status == "Submitted" ? "Manager" : "HR";
@@ -775,8 +797,9 @@ public class AttendanceService : IAttendanceService
 
     private async Task ProcessEmployeeDay(Guid tenantId, Employee employee, DateOnly date, AttendancePolicy policy, RequestContext context, CancellationToken ct)
     {
-        var start = date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-        var end = date.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
+        var start = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(date.ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified), tz);
+        var end = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(date.AddDays(1).ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified), tz);
         var events = await _db.AttendanceRawEvents.Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.PunchTimestampUtc >= start && x.PunchTimestampUtc < end).OrderBy(x => x.PunchTimestampUtc).ToListAsync(ct);
         var daily = await _db.AttendanceDailyRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.WorkDate == date, ct);
         if (daily is null)
@@ -795,7 +818,6 @@ public class AttendanceService : IAttendanceService
         // wall-clock start/end to UTC. Previously this hardcoded 09:00 *UTC* and ignored
         // the assigned shift entirely — for a GCC tenant (Asia/Riyadh) 09:00 UTC = noon
         // local, so every employee showed bogus late/early minutes.
-        var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
         var shift = await _db.ShiftAssignments.AsNoTracking()
             .Where(a => a.TenantId == tenantId && a.EmployeeId == employee.Id && a.AssignedDate == date)
             .Join(_db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
@@ -817,11 +839,43 @@ public class AttendanceService : IAttendanceService
         {
             shiftEnd = shiftStart.AddMinutes(policy.StandardWorkMinutes + policy.BreakMinutes);
         }
+        var workWeek = await _workWeek.ResolveAsync(tenantId, employee.CompanyId,
+            string.IsNullOrWhiteSpace(employee.CountryCode) ? null : employee.CountryCode, ct);
+        var isRestDay = workWeek.IsWeekend(date.DayOfWeek);
+        var isPublicHoliday = await _db.PublicHolidays.AsNoTracking()
+            .AnyAsync(x => x.TenantId == tenantId && x.Date == date && !x.IsOptional, ct);
+        var approvedLeave = await _db.LeaveRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.Status == "Approved"
+                && x.StartDate <= date && x.EndDate >= date)
+            .Select(x => x.LeaveTypeName)
+            .FirstOrDefaultAsync(ct);
+
         daily.LateMinutes = daily.FirstInUtc is null ? 0 : Math.Max(0, (int)(daily.FirstInUtc.Value - shiftStart).TotalMinutes - policy.GraceMinutes);
         daily.EarlyExitMinutes = daily.LastOutUtc is null ? 0 : Math.Max(0, (int)(shiftEnd - daily.LastOutUtc.Value).TotalMinutes - policy.EarlyExitThresholdMinutes);
         daily.OvertimeMinutes = Math.Max(0, daily.TotalWorkedMinutes - policy.StandardWorkMinutes);
         daily.UndertimeMinutes = Math.Max(0, policy.StandardWorkMinutes - daily.TotalWorkedMinutes);
-        daily.Status = daily.TotalWorkedMinutes == 0 ? "Absent" : daily.TotalWorkedMinutes < policy.HalfDayThresholdMinutes ? "Half day" : daily.LateMinutes > 0 ? "Late" : "Present";
+        if (daily.TotalWorkedMinutes == 0 && !string.IsNullOrWhiteSpace(approvedLeave))
+        {
+            daily.Status = "On leave";
+            daily.MissingPunch = false;
+            daily.LateMinutes = daily.EarlyExitMinutes = daily.UndertimeMinutes = 0;
+        }
+        else if (daily.TotalWorkedMinutes == 0 && isPublicHoliday)
+        {
+            daily.Status = "Public holiday";
+            daily.MissingPunch = false;
+            daily.LateMinutes = daily.EarlyExitMinutes = daily.UndertimeMinutes = 0;
+        }
+        else if (daily.TotalWorkedMinutes == 0 && isRestDay)
+        {
+            daily.Status = "Rest day";
+            daily.MissingPunch = false;
+            daily.LateMinutes = daily.EarlyExitMinutes = daily.UndertimeMinutes = 0;
+        }
+        else
+        {
+            daily.Status = daily.TotalWorkedMinutes == 0 ? "Absent" : daily.TotalWorkedMinutes < policy.HalfDayThresholdMinutes ? "Half day" : daily.LateMinutes > 0 ? "Late" : "Present";
+        }
         daily.ProcessedAtUtc = DateTime.UtcNow;
         daily.UpdatedAtUtc = DateTime.UtcNow;
         foreach (var raw in events) raw.IsProcessed = true;
@@ -860,7 +914,7 @@ public class AttendanceService : IAttendanceService
         record.Notes = daily.MissingPunch ? "Missing punch" : "";
     }
 
-    private async Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)
+    private Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)
     {
         var existing = _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate);
         _db.AttendancePayrollImpacts.RemoveRange(existing);
@@ -868,6 +922,7 @@ public class AttendanceService : IAttendanceService
         if (daily.EarlyExitMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Early exit deduction", Minutes = daily.EarlyExitMinutes, DailyRecordId = daily.Id });
         if (daily.Status == "Absent") _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Absence deduction", Minutes = 480, DailyRecordId = daily.Id });
         if (daily.OvertimeMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Overtime payable", Minutes = daily.OvertimeMinutes, DailyRecordId = daily.Id });
+        return Task.CompletedTask;
     }
 
     private async Task UpsertExceptions(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)

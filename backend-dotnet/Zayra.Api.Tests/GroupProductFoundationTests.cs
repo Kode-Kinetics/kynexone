@@ -69,6 +69,8 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         (await db.AttendanceRecords.IgnoreQueryFilters().CountAsync(a => a.CompanyId == dairy.Id)).Should().Be(15);
         (await db.LeaveRequests.IgnoreQueryFilters().CountAsync(l => l.CompanyId == dairy.Id)).Should().Be(2);
         (await db.PayrollRuns.IgnoreQueryFilters().CountAsync(r => r.CompanyId == dairy.Id)).Should().Be(1);
+        (await db.PayrollRuns.IgnoreQueryFilters().CountAsync(r => r.TenantId == almarai.Id)).Should().Be(5,
+            "every legal entity needs a real payroll artifact for cross-company authorization coverage");
         (await db.CompanyComplianceProfiles.IgnoreQueryFilters().CountAsync(p => p.CompanyId == dairy.Id)).Should().Be(1);
         (await db.CompanyTaxPolicies.IgnoreQueryFilters().CountAsync(p => p.CompanyId == dairy.Id)).Should().Be(1);
 

@@ -111,6 +111,8 @@ public class CyclesController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();
+        var validation = await ValidateRequestAsync(tenantId, req, ct);
+        if (validation is not null) return BadRequest(new { message = validation });
 
         var cycle = new PerformanceCycle
         {
@@ -144,6 +146,8 @@ public class CyclesController : ControllerBase
             .FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId, ct);
         if (cycle is null) return NotFound();
         if (cycle.Status != "Draft") return BadRequest(new { message = "Only Draft cycles can be edited." });
+        var validation = await ValidateRequestAsync(tenantId, req, ct);
+        if (validation is not null) return BadRequest(new { message = validation });
 
         cycle.Name                      = req.Name;
         cycle.CycleType                 = req.CycleType;
@@ -175,11 +179,14 @@ public class CyclesController : ControllerBase
         if (cycle.Status != "Draft") return BadRequest(new { message = "Only Draft cycles can be launched." });
         if (cycle.DefaultScorecardTemplateId is null)
             return BadRequest(new { message = "A default scorecard template is required before launching." });
+        if (!await _db.PerformanceScorecardTemplates.AsNoTracking().AnyAsync(
+                t => t.Id == cycle.DefaultScorecardTemplateId.Value && t.TenantId == tenantId && t.IsActive, ct))
+            return BadRequest(new { message = "The default scorecard template is not active in this tenant." });
 
         cycle.Status         = "Active";
         cycle.LaunchedAtUtc  = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-
+        // EnrollEmployeesAsync performs the single SaveChanges call. The cycle transition and every
+        // enrollment/review row therefore commit atomically rather than leaving an empty Active cycle.
         var enrolled = await _svc.EnrollEmployeesAsync(tenantId, id, ct);
         return Ok(new { cycle, enrolledCount = enrolled });
     }
@@ -203,7 +210,27 @@ public class CyclesController : ControllerBase
         };
         if (next is null) return BadRequest(new { message = $"Cannot advance from status {cycle.Status}." });
 
+        var reviews = await _db.AppraisalReviews
+            .Where(r => r.TenantId == tenantId && r.CycleId == id)
+            .ToListAsync(ct);
+        if (reviews.Count == 0)
+            return Conflict(new { error = "cycle_has_no_reviews", message = "A performance cycle with no enrolled reviews cannot advance." });
+        if (cycle.Status == "InReview" && reviews.Any(r => r.Status != "ManagerReviewComplete"))
+            return Conflict(new { error = "manager_reviews_incomplete", message = "Every enrolled review must complete manager review before calibration/final approval." });
+        if (cycle.Status == "Calibration" && reviews.Any(r => r.Status != "ManagerReviewComplete"))
+            return Conflict(new { error = "calibration_population_incomplete", message = "Calibration cannot finish while any manager review remains incomplete." });
+        if (cycle.Status == "FinalApproval" && reviews.Any(r => r.Status is not ("Published" or "Acknowledged" or "Appealed")))
+            return Conflict(new { error = "reviews_not_published", message = "Every review must be published before the cycle can be published." });
+
         cycle.Status = next;
+        if (next == "FinalApproval")
+        {
+            foreach (var review in reviews.Where(r => r.Status == "ManagerReviewComplete"))
+            {
+                review.Status = "FinalApproval";
+                review.UpdatedAtUtc = DateTime.UtcNow;
+            }
+        }
         if (next == "Published") cycle.PublishedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return Ok(cycle);
@@ -217,11 +244,40 @@ public class CyclesController : ControllerBase
         var cycle = await _db.PerformanceCycles
             .FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId, ct);
         if (cycle is null) return NotFound();
+        if (cycle.Status != "Published")
+            return Conflict(new { error = "cycle_not_published", message = $"Only a Published cycle can be closed (current: {cycle.Status})." });
+        var openAppeals = await _db.AppraisalAppeals.AsNoTracking()
+            .Join(_db.AppraisalReviews.AsNoTracking().Where(r => r.TenantId == tenantId && r.CycleId == id),
+                a => a.ReviewId, r => r.Id, (a, r) => a)
+            .AnyAsync(a => a.TenantId == tenantId && (a.Status == "Submitted" || a.Status == "UnderReview"), ct);
+        if (openAppeals)
+            return Conflict(new { error = "appeals_pending", message = "Resolve all submitted performance appeals before closing the cycle." });
 
         cycle.Status      = "Closed";
         cycle.ClosedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return Ok(cycle);
+    }
+
+    private async Task<string?> ValidateRequestAsync(Guid tenantId, CreateCycleRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.Name)) return "Cycle name is required.";
+        if (req.ReviewPeriodEnd < req.ReviewPeriodStart) return "Review period end must be on or after its start.";
+        if (req.SelfAssessmentDeadline is { } self && self < req.ReviewPeriodStart)
+            return "Self-assessment deadline cannot precede the review period.";
+        if (req.ManagerReviewDeadline is { } manager && manager < req.ReviewPeriodStart)
+            return "Manager-review deadline cannot precede the review period.";
+        if (req.CalibrationDeadline is { } calibration && calibration < req.ReviewPeriodStart)
+            return "Calibration deadline cannot precede the review period.";
+        if (req.SelfAssessmentDeadline is { } s && req.ManagerReviewDeadline is { } m && m < s)
+            return "Manager-review deadline cannot precede the self-assessment deadline.";
+        if (req.ManagerReviewDeadline is { } md && req.CalibrationDeadline is { } cd && cd < md)
+            return "Calibration deadline cannot precede the manager-review deadline.";
+        if (req.DefaultScorecardTemplateId is { } templateId
+            && !await _db.PerformanceScorecardTemplates.AsNoTracking()
+                .AnyAsync(t => t.Id == templateId && t.TenantId == tenantId && t.IsActive, ct))
+            return "Default scorecard template is not active in this tenant.";
+        return null;
     }
 }
 

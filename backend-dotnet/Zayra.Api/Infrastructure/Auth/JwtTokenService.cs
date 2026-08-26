@@ -31,7 +31,8 @@ public class JwtTokenService : ITokenService
             new(JwtRegisteredClaimNames.Email, user.Email),
             new(JwtRegisteredClaimNames.Name, user.FullName),
             new("tenant_id", tenant.Id.ToString()),
-            new("tenant", tenant.Slug)
+            new("tenant", tenant.Slug),
+            new(TenantSessionSecurity.SessionStampClaim, TenantSessionSecurity.StampValue(user))
         };
         var link = user.EmployeeUserAccounts.Where(x => !x.IsDeleted).OrderByDescending(x => x.IsPrimary).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefault();
         if (link is not null)

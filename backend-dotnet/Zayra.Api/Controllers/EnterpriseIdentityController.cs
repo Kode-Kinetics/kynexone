@@ -20,7 +20,7 @@ public class EnterpriseIdentityController : ControllerBase
     }
 
     [HttpGet("settings")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<ActionResult<EnterpriseIdentitySettingsDto>> GetSettings(CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -57,7 +57,7 @@ public class EnterpriseIdentityController : ControllerBase
     }
 
     [HttpGet("validate")]
-    [Authorize(Roles = "Admin")]
+    [HasPermission("security.manage")]
     public async Task<ActionResult<EnterpriseIdentityValidationResult>> Validate(CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

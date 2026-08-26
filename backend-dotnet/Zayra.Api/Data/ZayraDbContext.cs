@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Security.Claims;
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -14,7 +15,7 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Data;
 
-public class ZayraDbContext : DbContext
+public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 {
     /// <summary>
     /// IHttpContextAccessor is a singleton backed by AsyncLocal, so it always reflects the
@@ -171,7 +172,33 @@ public class ZayraDbContext : DbContext
             }
             else if (entry.State == EntityState.Modified)
             {
-                TryStamp(entry, "UpdatedAtUtc", now);
+                // PlatformUser.UpdatedAtUtc doubles as the privileged-session
+                // security stamp. Login telemetry must not rotate it: one bad
+                // password (or an ordinary successful-login timestamp update)
+                // must not revoke an already authenticated operator session.
+                // Administrative role/active/profile changes still take the
+                // normal path below and invalidate outstanding tokens.
+                var platformLoginTelemetryOnly = entry.Entity is PlatformUser
+                    && entry.Properties
+                        .Where(property => property.IsModified)
+                        .All(property => property.Metadata.Name is
+                            nameof(PlatformUser.FailedLoginCount) or
+                            nameof(PlatformUser.LockoutEndUtc) or
+                            nameof(PlatformUser.LastLoginAtUtc) or
+                            nameof(PlatformUser.LastLoginIp));
+                // User.UpdatedAtUtc is likewise the tenant access-token security stamp. Routine
+                // login telemetry must allow multiple legitimate device/browser sessions and a
+                // sub-threshold bad-password attempt must not revoke an existing session. Lockout,
+                // role, permission, entity-scope, password and active-state changes still rotate
+                // or are revalidated on every authenticated request.
+                var tenantLoginTelemetryOnly = entry.Entity is User
+                    && entry.Properties
+                        .Where(property => property.IsModified)
+                        .All(property => property.Metadata.Name is
+                            nameof(User.FailedLoginCount) or
+                            nameof(User.LastLoginAtUtc));
+                if (!platformLoginTelemetryOnly && !tenantLoginTelemetryOnly)
+                    TryStamp(entry, "UpdatedAtUtc", now);
                 if (_actorId.HasValue) TryStamp(entry, "UpdatedBy", _actorId.Value);
             }
 
@@ -207,6 +234,10 @@ public class ZayraDbContext : DbContext
             .ToList();
         if (pendingSync.Count > 0)
             SealPayrollRows(pendingSync);
+        var pendingCentralSync = ChangeTracker.Entries<AuditLog>()
+            .Where(e => e.State == EntityState.Added).Select(e => e.Entity).ToList();
+        if (pendingCentralSync.Count > 0)
+            SealCentralAuditRows(pendingCentralSync);
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
@@ -227,7 +258,11 @@ public class ZayraDbContext : DbContext
             .Where(e => e.State == EntityState.Added)
             .Select(e => e.Entity)
             .ToList();
-        if (pending.Count == 0)
+        var pendingCentral = ChangeTracker.Entries<AuditLog>()
+            .Where(e => e.State == EntityState.Added)
+            .Select(e => e.Entity)
+            .ToList();
+        if (pending.Count == 0 && pendingCentral.Count == 0)
             return await base.SaveChangesAsync(ct);
 
         // Non-Npgsql providers (EF InMemory, SQLite test fixtures) have no advisory locks and no
@@ -235,6 +270,7 @@ public class ZayraDbContext : DbContext
         if (!Database.IsNpgsql())
         {
             await SealPayrollRowsAsync(pending, ct);
+            await SealCentralAuditRowsAsync(pendingCentral, ct);
             return await base.SaveChangesAsync(ct);
         }
 
@@ -245,7 +281,9 @@ public class ZayraDbContext : DbContext
         if (Database.CurrentTransaction is not null)
         {
             await AcquirePayrollChainLocksAsync(tenantIds, ct);
+            await AcquireCentralAuditChainLocksAsync(pendingCentral.Select(x => x.TenantId).Distinct().ToList(), ct);
             await SealPayrollRowsAsync(pending, ct);
+            await SealCentralAuditRowsAsync(pendingCentral, ct);
             return await base.SaveChangesAsync(ct);
         }
 
@@ -258,7 +296,9 @@ public class ZayraDbContext : DbContext
         {
             await using var tx = await Database.BeginTransactionAsync(ct);
             await AcquirePayrollChainLocksAsync(tenantIds, ct);
+            await AcquireCentralAuditChainLocksAsync(pendingCentral.Select(x => x.TenantId).Distinct().ToList(), ct);
             await SealPayrollRowsAsync(pending, ct);
+            await SealCentralAuditRowsAsync(pendingCentral, ct);
             var n = await base.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
             return n;
@@ -274,6 +314,25 @@ public class ZayraDbContext : DbContext
             var key = ComputePayrollChainLockKey(tenantId);
             await Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", ct);
         }
+    }
+
+    private async Task AcquireCentralAuditChainLocksAsync(IReadOnlyCollection<Guid?> tenantIds, CancellationToken ct)
+    {
+        foreach (var tenantId in tenantIds.OrderBy(x => x?.ToString() ?? string.Empty, StringComparer.Ordinal))
+        {
+            var key = ComputeCentralAuditChainLockKey(tenantId);
+            await Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", ct);
+        }
+    }
+
+    internal static long ComputeCentralAuditChainLockKey(Guid? tenantId)
+    {
+        Span<byte> buffer = stackalloc byte[24];
+        System.Text.Encoding.ASCII.GetBytes("CENAUDIT", buffer[..8]);
+        (tenantId ?? Guid.Empty).TryWriteBytes(buffer.Slice(8, 16));
+        Span<byte> hash = stackalloc byte[32];
+        System.Security.Cryptography.SHA256.HashData(buffer, hash);
+        return System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(hash[..8]);
     }
 
     /// <summary>Stable 64-bit advisory-lock key namespaced to the payroll audit chain, derived
@@ -313,6 +372,48 @@ public class ZayraDbContext : DbContext
             ChainPendingGroup(group, tail?.EntryHash ?? string.Empty, tail?.Seq ?? 0L);
         }
     }
+
+    private async Task SealCentralAuditRowsAsync(IReadOnlyList<AuditLog> pending, CancellationToken ct)
+    {
+        foreach (var group in pending.GroupBy(x => x.TenantId))
+        {
+            var tail = await CentralAuditTailQuery(group.Key).FirstOrDefaultAsync(ct);
+            ChainCentralAuditGroup(group, tail?.EntryHash ?? string.Empty, tail?.CreatedAtUtc);
+        }
+    }
+
+    private void SealCentralAuditRows(IReadOnlyList<AuditLog> pending)
+    {
+        foreach (var group in pending.GroupBy(x => x.TenantId))
+        {
+            var tail = CentralAuditTailQuery(group.Key).FirstOrDefault();
+            ChainCentralAuditGroup(group, tail?.EntryHash ?? string.Empty, tail?.CreatedAtUtc);
+        }
+    }
+
+    private IQueryable<CentralAuditTail> CentralAuditTailQuery(Guid? tenantId) =>
+        Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(AuditLogs, tenantId,
+                "Central audit chain tail is pinned to the appended row tenant.")
+            .OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id)
+            .Select(x => new CentralAuditTail(x.EntryHash, x.CreatedAtUtc));
+
+    private static void ChainCentralAuditGroup(
+        IEnumerable<AuditLog> group, string previous, DateTime? previousCreatedAtUtc)
+    {
+        foreach (var row in group.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id))
+        {
+            var timestamp = AuditService.NormalizeUtcMicroseconds(row.CreatedAtUtc);
+            if (previousCreatedAtUtc.HasValue && timestamp <= previousCreatedAtUtc.Value)
+                timestamp = AuditService.NormalizeUtcMicroseconds(previousCreatedAtUtc.Value).AddTicks(10);
+            row.CreatedAtUtc = timestamp;
+            row.PreviousHash = previous;
+            row.EntryHash = AuditService.ComputeHash(row);
+            previous = row.EntryHash;
+            previousCreatedAtUtc = timestamp;
+        }
+    }
+
+    private sealed record CentralAuditTail(string EntryHash, DateTime CreatedAtUtc);
 
     private IQueryable<ChainTail> TenantChainTailQuery(Guid tenantId) =>
         // IgnoreQueryFilters is intentional: the chain tail must be read per the row's own TenantId
@@ -898,6 +999,7 @@ public class ZayraDbContext : DbContext
     public DbSet<FiscalYear> FiscalYears => Set<FiscalYear>();
     public DbSet<NotificationTemplate> NotificationTemplates => Set<NotificationTemplate>();
     public DbSet<AdminAuditLog> AdminAuditLogs => Set<AdminAuditLog>();
+    public DbSet<WorkerHeartbeat> WorkerHeartbeats => Set<WorkerHeartbeat>();
     // ── GOSI ───────────────────────────────────────────────────────────────────
     public DbSet<GosiContributionRule> GosiContributionRules => Set<GosiContributionRule>();
     // ── Qiwa Integration ───────────────────────────────────────────────────────
@@ -941,6 +1043,10 @@ public class ZayraDbContext : DbContext
     public DbSet<ReportExecutionLog> ReportExecutionLogs => Set<ReportExecutionLog>();
     // ── Identity & Security ────────────────────────────────────────────────────
     public DbSet<SecuritySetting> SecuritySettings => Set<SecuritySetting>();
+    // Shared cryptographic key ring for MFA, Qiwa, and notification-provider secrets.
+    // Persisting this in PostgreSQL keeps protected values decryptable across restarts,
+    // redeploys, and multiple API replicas.
+    public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
     public DbSet<TenantIdentityProviderSetting> TenantIdentityProviderSettings => Set<TenantIdentityProviderSetting>();
     public DbSet<EnterpriseIdentityProvisioningEvent> EnterpriseIdentityProvisioningEvents => Set<EnterpriseIdentityProvisioningEvent>();
     public DbSet<PermissionGrantorRecord> PermissionGrantorRecords => Set<PermissionGrantorRecord>();
@@ -966,6 +1072,9 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.PrivacyStatus).HasMaxLength(80);
             entity.Property(x => x.ReadinessState).HasMaxLength(20).HasDefaultValue("Blocked");
             entity.HasIndex(x => new { x.TenantId, x.EmployeeCode }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.PublicId })
+                  .HasDatabaseName("ux_employees_tenant_public_id")
+                  .IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Status });
             // "Needs info" worklist filter — employees whose readiness is Blocked.
             entity.HasIndex(x => new { x.TenantId, x.ReadinessState });
@@ -1569,6 +1678,7 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.CurrentQueue).HasMaxLength(180);
             entity.Property(x => x.EscalatedToRole).HasMaxLength(80);
             entity.Property(x => x.Priority).HasMaxLength(40);
+            entity.Property(x => x.DecisionVersion).IsConcurrencyToken();
             entity.HasIndex(x => new { x.TenantId, x.EntityName, x.EntityId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.Status, x.CurrentApproverUserId });
             entity.HasIndex(x => new { x.TenantId, x.Status, x.CurrentApproverEmployeeId });
@@ -1581,7 +1691,7 @@ public class ZayraDbContext : DbContext
         {
             entity.ToTable("approval_decisions");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.ApprovalRequestId, x.StepOrder });
+            entity.HasIndex(x => new { x.TenantId, x.ApprovalRequestId, x.StepOrder }).IsUnique();
         });
 
         modelBuilder.Entity<ReportingLine>(entity =>
@@ -1792,6 +1902,11 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.BalanceBefore).HasPrecision(7,2);
             entity.Property(x => x.BalanceAfter).HasPrecision(7,2);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.LeaveTypeId });
+            // An accrual period is an immutable business event. This filtered unique witness makes
+            // a concurrent scheduler replay harmless without constraining unrelated ledger rows.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.LeaveTypeId, x.Year, x.Reference })
+                .IsUnique()
+                .HasFilter("\"transaction_type\" = 'Accrual'");
         });
         modelBuilder.Entity<LeaveRequest>(entity => {
             entity.ToTable("leave_requests");
@@ -1817,15 +1932,33 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.DaysToEncash).HasPrecision(6,2);
             entity.Property(x => x.AmountPerDay).HasPrecision(10,2);
             entity.Property(x => x.TotalAmount).HasPrecision(12,2);
+            entity.Property(x => x.Currency).HasMaxLength(8);
+            entity.Property(x => x.DecisionVersion).IsConcurrencyToken();
             entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
+            entity.HasIndex(x => new { x.TenantId, x.PayrollAdjustmentId })
+                .IsUnique()
+                .HasFilter("\"payroll_adjustment_id\" IS NOT NULL");
         });
         modelBuilder.Entity<CompOffCredit>(entity => {
             entity.ToTable("comp_off_credits"); entity.HasKey(x => x.Id);
             entity.Property(x => x.HoursWorked).HasPrecision(5,2);
             entity.Property(x => x.DaysEarned).HasPrecision(5,2);
+            entity.Property(x => x.UsageVersion).IsConcurrencyToken();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.OvertimeCompOffConversionId })
+                .IsUnique()
+                .HasFilter("\"overtime_comp_off_conversion_id\" IS NOT NULL");
         });
-        modelBuilder.Entity<CompOffUsage>(entity => { entity.ToTable("comp_off_usages"); entity.HasKey(x => x.Id); entity.Property(x => x.DaysUsed).HasPrecision(5,2); });
+        modelBuilder.Entity<CompOffUsage>(entity => {
+            entity.ToTable("comp_off_usages"); entity.HasKey(x => x.Id); entity.Property(x => x.DaysUsed).HasPrecision(5,2);
+            // One leave request may legitimately draw from several credits. Replay identity belongs
+            // to the use command itself, scoped to its credit.
+            entity.HasIndex(x => new { x.TenantId, x.CompOffCreditId, x.IdempotencyKey })
+                .IsUnique()
+                .HasFilter("\"idempotency_key\" IS NOT NULL");
+        });
         modelBuilder.Entity<AbsenceRecord>(entity => { entity.ToTable("absence_records"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.AbsenceDate }); });
         modelBuilder.Entity<AbsenceRegularizationRequest>(entity => { entity.ToTable("absence_regularization_requests"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.Status }); });
         modelBuilder.Entity<LeaveDelegation>(entity => { entity.ToTable("leave_delegations"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status }); });
@@ -1846,13 +1979,13 @@ public class ZayraDbContext : DbContext
         modelBuilder.Entity<OvertimeType>(entity => { entity.ToTable("overtime_types"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique(); });
         modelBuilder.Entity<OvertimeMultiplier>(entity => { entity.ToTable("overtime_multipliers"); entity.HasKey(x => x.Id); entity.Property(x => x.Multiplier).HasPrecision(6,3); entity.HasIndex(x => new { x.TenantId, x.OvertimePolicyId, x.DayCategory }); });
         modelBuilder.Entity<OvertimeRule>(entity => { entity.ToTable("overtime_rules"); entity.HasKey(x => x.Id); entity.Property(x => x.RuleValueJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.OvertimePolicyId, x.RuleType }); });
-        modelBuilder.Entity<OvertimeRequest>(entity => { entity.ToTable("overtime_requests"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.WorkDate }); entity.HasIndex(x => new { x.TenantId, x.Status }); });
-        modelBuilder.Entity<OvertimeApproval>(entity => { entity.ToTable("overtime_approvals"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }); });
-        modelBuilder.Entity<OvertimeCalculation>(entity => { entity.ToTable("overtime_calculations"); entity.HasKey(x => x.Id); entity.Property(x => x.ApprovedHours).HasPrecision(8,2); entity.Property(x => x.HourlyRate).HasPrecision(12,2); entity.Property(x => x.Multiplier).HasPrecision(6,3); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.CalculationJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }); });
-        modelBuilder.Entity<OvertimePayrollImpact>(entity => { entity.ToTable("overtime_payroll_impacts"); entity.HasKey(x => x.Id); entity.Property(x => x.Hours).HasPrecision(8,2); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.ApprovedMultiplier).HasPrecision(4,2).HasDefaultValue(0m); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status }); });
+        modelBuilder.Entity<OvertimeRequest>(entity => { entity.ToTable("overtime_requests"); entity.HasKey(x => x.Id); entity.Property(x => x.DecisionVersion).IsConcurrencyToken(); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.WorkDate }); entity.HasIndex(x => new { x.TenantId, x.Status }); });
+        modelBuilder.Entity<OvertimeApproval>(entity => { entity.ToTable("overtime_approvals"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId, x.ApprovalLevel }).IsUnique(); });
+        modelBuilder.Entity<OvertimeCalculation>(entity => { entity.ToTable("overtime_calculations"); entity.HasKey(x => x.Id); entity.Property(x => x.ApprovedHours).HasPrecision(8,2); entity.Property(x => x.HourlyRate).HasPrecision(12,2); entity.Property(x => x.Multiplier).HasPrecision(6,3); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.CalculationJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }).IsUnique(); });
+        modelBuilder.Entity<OvertimePayrollImpact>(entity => { entity.ToTable("overtime_payroll_impacts"); entity.HasKey(x => x.Id); entity.Property(x => x.Hours).HasPrecision(8,2); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.ApprovedMultiplier).HasPrecision(4,2).HasDefaultValue(0m); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }).IsUnique(); });
         modelBuilder.Entity<OvertimeAdjustment>(entity => { entity.ToTable("overtime_adjustments"); entity.HasKey(x => x.Id); entity.Property(x => x.HoursAdjustment).HasPrecision(8,2); entity.Property(x => x.AmountAdjustment).HasPrecision(14,2); });
         modelBuilder.Entity<OvertimeBudget>(entity => { entity.ToTable("overtime_budgets"); entity.HasKey(x => x.Id); entity.Property(x => x.BudgetAmount).HasPrecision(14,2); entity.Property(x => x.ConsumedAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }); });
-        modelBuilder.Entity<OvertimeCompOffConversion>(entity => { entity.ToTable("overtime_comp_off_conversions"); entity.HasKey(x => x.Id); entity.Property(x => x.OvertimeHours).HasPrecision(8,2); entity.Property(x => x.CompOffDays).HasPrecision(6,2); });
+        modelBuilder.Entity<OvertimeCompOffConversion>(entity => { entity.ToTable("overtime_comp_off_conversions"); entity.HasKey(x => x.Id); entity.Property(x => x.OvertimeHours).HasPrecision(8,2); entity.Property(x => x.CompOffDays).HasPrecision(6,2); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }).IsUnique(); });
         modelBuilder.Entity<OvertimeAuditLog>(entity => { entity.ToTable("overtime_audit_logs"); entity.HasKey(x => x.Id); entity.Property(x => x.MetadataJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.EntityName, x.EntityId }); });
 
         modelBuilder.Entity<SalaryStructure>(entity => { entity.ToTable("salary_structures"); entity.HasKey(x => x.Id); entity.Property(x => x.MinGrossSalary).HasPrecision(14,2); entity.Property(x => x.MaxGrossSalary).HasPrecision(14,2); entity.Property(x => x.MinBasicSalary).HasPrecision(14,2); entity.Property(x => x.MaxBasicSalary).HasPrecision(14,2); entity.Property(x => x.EligibleGradeIdsJson).HasColumnType("json"); entity.Property(x => x.EligibleDesignationIdsJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId }); });
@@ -1869,7 +2002,7 @@ public class ZayraDbContext : DbContext
         modelBuilder.Entity<BenefitContribution>(entity => { entity.ToTable("benefit_contributions"); entity.HasKey(x => x.Id); entity.Property(x => x.EmployeeAmount).HasPrecision(14,2); entity.Property(x => x.EmployerAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.BenefitEnrollmentId, x.IsActive }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
         modelBuilder.Entity<BenefitPayrollDeductionLink>(entity => { entity.ToTable("benefit_payroll_deduction_links"); entity.HasKey(x => x.Id); entity.Property(x => x.LinkedAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.BenefitEnrollmentId, x.PayrollRunId }); entity.HasIndex(x => new { x.TenantId, x.PayrollDeductionId }).IsUnique(); });
         modelBuilder.Entity<PayrollAllowance>(entity => { entity.ToTable("payroll_allowances"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); });
-        modelBuilder.Entity<PayrollAdjustment>(entity => { entity.ToTable("payroll_adjustments"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
+        modelBuilder.Entity<PayrollAdjustment>(entity => { entity.ToTable("payroll_adjustments"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.SourceType).HasMaxLength(80); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); entity.HasIndex(x => new { x.TenantId, x.SourceType, x.SourceId }).IsUnique().HasFilter("\"source_id\" IS NOT NULL"); });
         modelBuilder.Entity<PayrollApproval>(entity => { entity.ToTable("payroll_approvals"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId }); });
         modelBuilder.Entity<PayrollValidationResult>(entity =>
         {
@@ -2452,6 +2585,7 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.CreatedByIp).HasMaxLength(64);
             entity.Property(x => x.RevokedByIp).HasMaxLength(64);
             entity.HasIndex(x => x.TokenHash).IsUnique();
+            entity.HasIndex(x => new { x.FamilyId, x.UserId, x.RevokedAtUtc });
             entity.HasOne(x => x.User).WithMany(x => x.RefreshTokens).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
         });
 
@@ -3327,6 +3461,18 @@ public class ZayraDbContext : DbContext
             entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc });
         });
 
+        modelBuilder.Entity<WorkerHeartbeat>(entity =>
+        {
+            entity.ToTable("worker_heartbeats");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.WorkerName).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.InstanceId).HasMaxLength(300).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.LastErrorCode).HasMaxLength(120);
+            entity.HasIndex(x => new { x.WorkerName, x.InstanceId }).IsUnique();
+            entity.HasIndex(x => new { x.WorkerName, x.UpdatedAtUtc });
+        });
+
         // ── Company governance (Phase 1B: per-legal-entity policy foundation) ─────
         modelBuilder.Entity<CompanyTaxPolicy>(entity =>
         {
@@ -3381,6 +3527,7 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.OutstandingBalance).HasPrecision(14, 2);
             entity.HasIndex(x => new { x.TenantId, x.LoanNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeIntId, x.Status });
         });
 
         modelBuilder.Entity<LoanApproval>(entity =>
@@ -3435,6 +3582,7 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.OutstandingBalance).HasPrecision(14, 2);
             entity.HasIndex(x => new { x.TenantId, x.AdvanceNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeIntId, x.Status });
         });
 
         modelBuilder.Entity<AdvanceApproval>(entity =>
@@ -3486,6 +3634,7 @@ public class ZayraDbContext : DbContext
             entity.Property(x => x.BonusAmount).HasPrecision(14, 2);
             entity.HasIndex(x => new { x.TenantId, x.BonusBatchId, x.EmployeeId });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeIntId, x.Status });
         });
 
         modelBuilder.Entity<BonusApproval>(entity =>

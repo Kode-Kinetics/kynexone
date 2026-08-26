@@ -56,6 +56,12 @@ public class LeaveDelegationController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var canAdminister = User.IsInRole("Admin") || User.IsInRole("HR Manager");
+        if (!canAdminister && scope.CallerEmployeeId != req.EmployeeId) return Forbid();
+        if (!scope.CanAccessEmployee(req.EmployeeId) || !scope.CanAccessEmployee(req.DelegateEmployeeId)) return Forbid();
+        if (req.EndDate < req.StartDate) return BadRequest(new { message = "End date must be after start date." });
+
         var employee = await _db.Employees
             .FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId, ct);
         if (employee is null)
@@ -98,6 +104,9 @@ public class LeaveDelegationController : ControllerBase
         var delegation = await _db.LeaveDelegations
             .FirstOrDefaultAsync(d => d.Id == id && d.TenantId == tenantId, ct);
         if (delegation is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!(User.IsInRole("Admin") || User.IsInRole("HR Manager"))
+            && scope.CallerEmployeeId != delegation.EmployeeId) return Forbid();
 
         if (delegation.Status != "Active")
             return BadRequest(new { message = "Only active delegations can be ended." });
@@ -116,6 +125,9 @@ public class LeaveDelegationController : ControllerBase
         var delegation = await _db.LeaveDelegations
             .FirstOrDefaultAsync(d => d.Id == id && d.TenantId == tenantId, ct);
         if (delegation is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!(User.IsInRole("Admin") || User.IsInRole("HR Manager"))
+            && scope.CallerEmployeeId != delegation.EmployeeId) return Forbid();
 
         if (delegation.Status != "Active")
             return BadRequest(new { message = "Only active delegations can be cancelled." });

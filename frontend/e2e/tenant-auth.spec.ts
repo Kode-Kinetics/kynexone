@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
 import {
-  tenantLogin, tenantLogout,
+  tenantLogin, tenantLoginLive, tenantLogout,
   INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1,
-  EVOSTEL_SLUG, EVOSTEL_ADMIN,
-  apiLogin,
+  RASALMANAR_SLUG, RASALMANAR_ADMIN,
+  apiLoginLive,
 } from './helpers';
 
 test.describe('Tenant authentication', () => {
@@ -11,19 +11,19 @@ test.describe('Tenant authentication', () => {
   // ── Happy-path login ────────────────────────────────────────────────────────
 
   test('IntelliFlow admin can log in and reaches dashboard', async ({ page }) => {
-    await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
+    await tenantLoginLive(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
     await expect(page).not.toHaveURL(/\/login/, { timeout: 5_000 });
     const body = (await page.locator('body').innerText()) ?? '';
     expect(body.toLowerCase()).not.toContain('something went wrong');
   });
 
-  test('Evostel admin can log in despite PastDue status', async ({ page }) => {
-    await tenantLogin(page, EVOSTEL_ADMIN.email, EVOSTEL_ADMIN.password, EVOSTEL_SLUG);
+  test('Ras Al-Manar admin can log in', async ({ page }) => {
+    await tenantLoginLive(page, RASALMANAR_ADMIN.email, RASALMANAR_ADMIN.password, RASALMANAR_SLUG);
     await expect(page).not.toHaveURL(/\/login/, { timeout: 5_000 });
   });
 
   test('IntelliFlow employee1 can log in', async ({ page }) => {
-    await tenantLogin(page, INTELLIFLOW_EMP1.email, INTELLIFLOW_EMP1.password, INTELLIFLOW_SLUG);
+    await tenantLoginLive(page, INTELLIFLOW_EMP1.email, INTELLIFLOW_EMP1.password, INTELLIFLOW_SLUG);
     await expect(page).not.toHaveURL(/\/login/, { timeout: 5_000 });
   });
 
@@ -62,6 +62,8 @@ test.describe('Tenant authentication', () => {
   // ── Logout ──────────────────────────────────────────────────────────────────
 
   test('after token cleared, dashboard redirects to login', async ({ page }) => {
+    // The login journey is covered above. Reuse the setup session here so this logout/route-guard
+    // assertion does not consume the final permit in the 10-request authentication test window.
     await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
     await tenantLogout(page);
     await page.goto('/dashboard');
@@ -72,7 +74,7 @@ test.describe('Tenant authentication', () => {
   // ── API-level token validation ──────────────────────────────────────────────
 
   test('API login returns a valid JWT for IntelliFlow admin', async ({ request }) => {
-    const token = await apiLogin(request, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
+    const token = await apiLoginLive(request, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
     expect(typeof token).toBe('string');
     expect(token.split('.').length).toBe(3); // valid JWT format
   });
@@ -93,16 +95,16 @@ test.describe('Tenant authentication', () => {
 
   // ── Cross-tenant login guard ─────────────────────────────────────────────────
 
-  test('IntelliFlow user cannot log in using Evostel slug', async ({ request }) => {
+  test('IntelliFlow user cannot log in using Ras Al-Manar slug', async ({ request }) => {
     const resp = await request.post('/api/auth/login', {
-      data: { email: INTELLIFLOW_ADMIN.email, password: INTELLIFLOW_ADMIN.password, tenantSlug: EVOSTEL_SLUG },
+      data: { email: INTELLIFLOW_ADMIN.email, password: INTELLIFLOW_ADMIN.password, tenantSlug: RASALMANAR_SLUG },
     });
     expect([401, 403, 404]).toContain(resp.status());
   });
 
-  test('Evostel user cannot log in using IntelliFlow slug', async ({ request }) => {
+  test('Ras Al-Manar user cannot log in using IntelliFlow slug', async ({ request }) => {
     const resp = await request.post('/api/auth/login', {
-      data: { email: EVOSTEL_ADMIN.email, password: EVOSTEL_ADMIN.password, tenantSlug: INTELLIFLOW_SLUG },
+      data: { email: RASALMANAR_ADMIN.email, password: RASALMANAR_ADMIN.password, tenantSlug: INTELLIFLOW_SLUG },
     });
     expect([401, 403, 404]).toContain(resp.status());
   });

@@ -64,13 +64,25 @@ public class PIPController : ControllerBase
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();
         var userName = HttpContext.User.FindFirst("FullName")?.Value ?? "HR";
+        if (req.EndDate < req.StartDate)
+            return BadRequest(new { error = "invalid_date_range", message = "PIP end date must be on or after its start date." });
+
+        var employee = await _db.Employees.AsNoTracking()
+            .FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId && !e.IsDeleted, ct);
+        if (employee is null) return BadRequest(new { error = "employee_not_found", message = "Employee was not found in this tenant." });
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
+        if (req.TriggerReviewId is { } reviewId
+            && !await _db.AppraisalReviews.AsNoTracking().AnyAsync(
+                r => r.Id == reviewId && r.TenantId == tenantId && r.EmployeeId == employee.Id, ct))
+            return BadRequest(new { error = "review_employee_mismatch", message = "Trigger review does not belong to this employee and tenant." });
 
         var pip = new PerformanceImprovementPlan
         {
             TenantId          = tenantId,
-            EmployeeId        = req.EmployeeId,
-            EmployeeName      = req.EmployeeName,
-            DepartmentName    = req.DepartmentName,
+            EmployeeId        = employee.Id,
+            EmployeeName      = employee.FullName,
+            DepartmentName    = employee.Department ?? string.Empty,
             TriggerReviewId   = req.TriggerReviewId,
             PerformanceGaps   = req.PerformanceGaps,
             ImprovementGoals  = req.ImprovementGoals,
@@ -94,6 +106,12 @@ public class PIPController : ControllerBase
         var pip = await _db.PerformanceImprovementPlans
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
         if (pip is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(pip.EmployeeId)) return Forbid();
+        if (pip.Status is not ("Active" or "Extended"))
+            return Conflict(new { error = "pip_closed", message = $"A PIP in '{pip.Status}' status cannot be edited." });
+        if (req.EndDate is { } endDate && endDate < pip.StartDate)
+            return BadRequest(new { error = "invalid_date_range", message = "PIP end date must be on or after its start date." });
 
         pip.PerformanceGaps  = req.PerformanceGaps ?? pip.PerformanceGaps;
         pip.ImprovementGoals = req.ImprovementGoals ?? pip.ImprovementGoals;
@@ -114,10 +132,16 @@ public class PIPController : ControllerBase
         var pip = await _db.PerformanceImprovementPlans
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
         if (pip is null) return NotFound();
+        if (req.Status is not ("Improved" or "Extended" or "Failed" or "TerminationRecommended"))
+            return BadRequest(new { error = "invalid_status", message = "Status must be Improved, Extended, Failed, or TerminationRecommended." });
+        if (pip.Status is not ("Active" or "Extended"))
+            return Conflict(new { error = "invalid_transition", message = $"A PIP in '{pip.Status}' status cannot transition again." });
+        if (req.Status == "TerminationRecommended" && string.IsNullOrWhiteSpace(req.Notes))
+            return BadRequest(new { error = "reason_required", message = "A reason is required for a termination recommendation." });
 
         pip.Status    = req.Status;
         pip.HrNotes   = (pip.HrNotes + "\n" + req.Notes).Trim();
-        if (req.Status is not "Active") pip.ClosedAtUtc = DateTime.UtcNow;
+        pip.ClosedAtUtc = req.Status == "Extended" ? null : DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return Ok(pip);
     }
@@ -130,9 +154,15 @@ public class PIPController : ControllerBase
         var userId   = this.GetUserId();
         var userName = HttpContext.User.FindFirst("FullName")?.Value ?? "HR";
 
-        var exists = await _db.PerformanceImprovementPlans
-            .AnyAsync(p => p.Id == id && p.TenantId == tenantId, ct);
-        if (!exists) return NotFound();
+        if (req.Outcome is not ("OnTrack" or "AtRisk" or "Improved" or "Deteriorated"))
+            return BadRequest(new { error = "invalid_outcome", message = "Outcome must be OnTrack, AtRisk, Improved, or Deteriorated." });
+        var pip = await _db.PerformanceImprovementPlans
+            .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
+        if (pip is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(pip.EmployeeId)) return Forbid();
+        if (pip.Status is not ("Active" or "Extended"))
+            return Conflict(new { error = "pip_closed", message = $"Check-ins cannot be added to a PIP in '{pip.Status}' status." });
 
         _db.PIPCheckIns.Add(new PIPCheckIn
         {

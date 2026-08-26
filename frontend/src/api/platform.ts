@@ -493,6 +493,9 @@ export const platformApi = {
   login: (email: string, password: string) =>
     platform.post<{ token: string }>('/api/platform/auth/login', { email, password }).then(r => r.data),
 
+  logout: () =>
+    platform.post('/api/platform/auth/logout').then(() => undefined),
+
   getStats: () =>
     platform.get<PlatformStats>('/api/platform/stats').then(r => r.data),
 

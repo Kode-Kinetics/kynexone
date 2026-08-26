@@ -302,7 +302,7 @@ export const bonusBatchesApi = {
   delete: (id: string) =>
     client.delete<{ deleted: boolean }>(`/api/finance/bonuses/batches/${id}`).then(r => r.data),
 
-  addEmployee: (batchId: string, body: { employeeId: string; employeeName: string; department?: string; basicSalary: number; calculationMethod: string; calculationValue: number; notes?: string }) =>
+  addEmployee: (batchId: string, body: { employeeId?: string; employeeIntId: number; employeeName: string; department?: string; basicSalary: number; calculationMethod: string; calculationValue: number; notes?: string }) =>
     client.post<{ bonus: EmployeeBonus; grossBonusAmount: number; taxWithheld: number; netBonusAmount: number }>(`/api/finance/bonuses/batches/${batchId}/employees`, body).then(r => r.data),
 
   bulkAddEmployees: (batchId: string, body: { companyId?: string; departmentId?: string; department?: string; gradeId?: string; overrideCalculationValue?: number }) =>

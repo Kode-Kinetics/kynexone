@@ -243,10 +243,23 @@ public class PayslipTemplatesController : ControllerBase
         var layout = ParseLayout(template.LayoutJson);
         var items = BuildSampleItems(layout, branding.Locale);
 
-        var logoPath = branding.LogoStorageUrl is not null
-            ? _storage.ResolvePath(branding.LogoStorageUrl)
-            : null;
-        var effectiveBranding = logoPath is not null ? branding with { LogoStorageUrl = logoPath } : branding;
+        byte[]? logoBytes = null;
+        if (!string.IsNullOrWhiteSpace(branding.LogoStorageUrl))
+        {
+            try
+            {
+                logoBytes = await _storage.GetBytesAsync(tenantId, branding.LogoStorageUrl, ct);
+            }
+            catch (FileNotFoundException)
+            {
+                return NotFound(new { message = "The configured payslip logo was not found." });
+            }
+            catch (InvalidOperationException)
+            {
+                return BadRequest(new { message = "The configured payslip logo is not valid for the active tenant." });
+            }
+        }
+        var effectiveBranding = branding with { LogoBytes = logoBytes };
 
         var data = new PayslipData(
             PayslipNumber: "PS-PREVIEW-001",

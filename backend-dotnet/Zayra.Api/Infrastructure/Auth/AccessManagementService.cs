@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
+using System.Text;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
@@ -50,6 +52,9 @@ public class AccessManagementService : IAccessManagementService
 
         var roles = await LoadRoles(tenantId, request.Roles, cancellationToken);
         var isAdminUser = roles.Any(r => r.NormalizedName == "ADMIN");
+        await using var adminSeatLease = await AcquireAdminSeatLeaseAsync(
+            tenantId, isAdminUser, cancellationToken);
+        if (isAdminUser) await EnsureAdminCapacityAsync(tenantId, cancellationToken);
         var user = new User
         {
             TenantId = tenantId,
@@ -107,6 +112,13 @@ public class AccessManagementService : IAccessManagementService
         }
 
         var roles = await LoadRoles(tenantId, request.Roles is { Count: > 0 } ? request.Roles : DefaultRoles(accessMode), cancellationToken);
+        var alreadyActiveAdmin = user.IsActive && user.UserRoles.Any(x => x.Role?.NormalizedName == "ADMIN");
+        var willBeActiveAdmin = accessMode != AccessModes.NoLogin
+            && (alreadyActiveAdmin || roles.Any(x => x.NormalizedName == "ADMIN"));
+        await using var adminSeatLease = await AcquireAdminSeatLeaseAsync(
+            tenantId, willBeActiveAdmin && !alreadyActiveAdmin, cancellationToken);
+        if (willBeActiveAdmin && !alreadyActiveAdmin)
+            await EnsureAdminCapacityAsync(tenantId, cancellationToken);
         foreach (var role in roles)
             if (!user.UserRoles.Any(x => x.RoleId == role.Id)) user.UserRoles.Add(new UserRole { User = user, Role = role });
 
@@ -160,6 +172,12 @@ public class AccessManagementService : IAccessManagementService
             .FirstOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
         var roles = await LoadRoles(tenantId, request.Roles, cancellationToken);
+        var alreadyActiveAdmin = user.IsActive && user.UserRoles.Any(x => x.Role?.NormalizedName == "ADMIN");
+        var willBeActiveAdmin = user.IsActive && roles.Any(x => x.NormalizedName == "ADMIN");
+        await using var adminSeatLease = await AcquireAdminSeatLeaseAsync(
+            tenantId, willBeActiveAdmin && !alreadyActiveAdmin, cancellationToken);
+        if (willBeActiveAdmin && !alreadyActiveAdmin)
+            await EnsureAdminCapacityAsync(tenantId, cancellationToken);
 
         _db.UserRoles.RemoveRange(user.UserRoles);
         user.UserRoles.Clear();
@@ -818,6 +836,58 @@ public class AccessManagementService : IAccessManagementService
             .ToListAsync(cancellationToken);
         if (roles.Count != normalizedRoles.Count) throw new InvalidOperationException("One or more roles are invalid for this tenant.");
         return roles;
+    }
+
+    private async Task EnsureAdminCapacityAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        var limit = await _db.TenantSubscriptions.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Status == SubscriptionStatuses.Active
+                && (x.ExpiresAtUtc == null || x.ExpiresAtUtc > DateTime.UtcNow))
+            .OrderByDescending(x => x.StartedAtUtc)
+            .Select(x => (int?)x.MaxAdminUsers)
+            .FirstOrDefaultAsync(cancellationToken) ?? 10;
+        if (limit == 0) return; // Enterprise/unlimited convention used by platform provisioning.
+
+        var activeAdmins = await _db.Users.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted
+                && x.UserRoles.Any(ur => ur.Role != null && ur.Role.NormalizedName == "ADMIN"))
+            .CountAsync(cancellationToken);
+        if (activeAdmins >= limit)
+            throw new InvalidOperationException($"The tenant subscription allows at most {limit} active administrator user(s).");
+    }
+
+    private async Task<IAsyncDisposable> AcquireAdminSeatLeaseAsync(
+        Guid tenantId, bool required, CancellationToken cancellationToken)
+    {
+        if (!required || !_db.Database.IsNpgsql()) return NoopAsyncDisposable.Instance;
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes($"admin-seat:{tenantId:D}"));
+        var key = System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(digest.AsSpan(0, 8));
+        await _db.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_lock({key})", cancellationToken);
+            return new AdvisoryLockLease(_db, key);
+        }
+        catch
+        {
+            await _db.Database.CloseConnectionAsync();
+            throw;
+        }
+    }
+
+    private sealed class AdvisoryLockLease(ZayraDbContext db, long key) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            try { await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_unlock({key})"); }
+            finally { await db.Database.CloseConnectionAsync(); }
+        }
+    }
+
+    private sealed class NoopAsyncDisposable : IAsyncDisposable
+    {
+        public static readonly NoopAsyncDisposable Instance = new();
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private async Task<User?> LoadAccessUser(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken) =>

@@ -85,11 +85,25 @@ public class CalibrationController : ControllerBase
         var userId   = this.GetUserId();
         var userName = HttpContext.User.FindFirst("FullName")?.Value ?? "HR";
 
+        var cycle = await _db.PerformanceCycles.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == cycleId && c.TenantId == tenantId, ct);
+        if (cycle is null) return NotFound(new { message = "Performance cycle not found." });
+        if (cycle.Status != "Calibration")
+            return Conflict(new { error = "cycle_not_in_calibration", message = $"Calibration adjustments require a cycle in Calibration status (current: {cycle.Status})." });
+        if (req.Adjustment is < -100 or > 100)
+            return BadRequest(new { error = "invalid_adjustment", message = "Calibration adjustment must be between -100 and 100 points." });
+
         var review = await _db.AppraisalReviews
-            .FirstOrDefaultAsync(r => r.Id == req.ReviewId && r.TenantId == tenantId, ct);
+            .FirstOrDefaultAsync(r => r.Id == req.ReviewId && r.TenantId == tenantId && r.CycleId == cycleId, ct);
         if (review is null) return NotFound();
+        if (review.Status != "ManagerReviewComplete")
+            return Conflict(new { error = "review_not_calibratable", message = $"Manager review must be complete before calibration (current: {review.Status})." });
         if (string.IsNullOrWhiteSpace(req.Reason))
             return BadRequest(new { message = "A reason is mandatory for all calibration adjustments." });
+
+        await using var transaction = _db.Database.IsRelational()
+            ? await _db.Database.BeginTransactionAsync(ct)
+            : null;
 
         var originalScore  = review.FinalScore;
         var originalRating = review.FinalRating;
@@ -123,6 +137,7 @@ public class CalibrationController : ControllerBase
             req.Reason, userId, userName, ct);
 
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Ok(new { originalScore, newScore, newRating = review.FinalRating });
     }
 }

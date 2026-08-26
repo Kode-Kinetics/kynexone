@@ -49,13 +49,19 @@ public class ShiftsController : ControllerBase
     public async Task<IActionResult> CreateDefinition([FromBody] ShiftDefinitionRequest req, CancellationToken ct)
     {
         var tenantId = GetTenantId();
+        if (!TimeOnly.TryParse(req.StartTime, out var startTime) || !TimeOnly.TryParse(req.EndTime, out var endTime))
+            return BadRequest(new { message = "Start and end times must use a valid time format." });
+        if (string.IsNullOrWhiteSpace(req.Code) || string.IsNullOrWhiteSpace(req.Name) || req.BreakMinutes < 0)
+            return BadRequest(new { message = "Code, name, and a non-negative break are required." });
+        if (await _db.ShiftDefinitions.AnyAsync(x => x.TenantId == tenantId && x.Code == req.Code.ToUpper(), ct))
+            return Conflict(new { message = "Shift code already exists." });
         var def = new ShiftDefinition
         {
             TenantId = tenantId,
             Code = req.Code.ToUpperInvariant(),
             Name = req.Name,
-            StartTime = TimeOnly.Parse(req.StartTime),
-            EndTime = TimeOnly.Parse(req.EndTime),
+            StartTime = startTime,
+            EndTime = endTime,
             BreakMinutes = req.BreakMinutes,
             Color = req.Color,
             IsActive = true,
@@ -72,11 +78,17 @@ public class ShiftsController : ControllerBase
         var tenantId = GetTenantId();
         var def = await _db.ShiftDefinitions.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (def is null) return NotFound();
+        if (!TimeOnly.TryParse(req.StartTime, out var startTime) || !TimeOnly.TryParse(req.EndTime, out var endTime))
+            return BadRequest(new { message = "Start and end times must use a valid time format." });
+        if (string.IsNullOrWhiteSpace(req.Code) || string.IsNullOrWhiteSpace(req.Name) || req.BreakMinutes < 0)
+            return BadRequest(new { message = "Code, name, and a non-negative break are required." });
+        if (await _db.ShiftDefinitions.AnyAsync(x => x.TenantId == tenantId && x.Id != id && x.Code == req.Code.ToUpper(), ct))
+            return Conflict(new { message = "Shift code already exists." });
 
         def.Code = req.Code.ToUpperInvariant();
         def.Name = req.Name;
-        def.StartTime = TimeOnly.Parse(req.StartTime);
-        def.EndTime = TimeOnly.Parse(req.EndTime);
+        def.StartTime = startTime;
+        def.EndTime = endTime;
         def.BreakMinutes = req.BreakMinutes;
         def.Color = req.Color;
         def.UpdatedAtUtc = DateTime.UtcNow;
@@ -91,6 +103,8 @@ public class ShiftsController : ControllerBase
         var tenantId = GetTenantId();
         var def = await _db.ShiftDefinitions.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (def is null) return NotFound();
+        if (await _db.ShiftAssignments.AnyAsync(x => x.TenantId == tenantId && x.ShiftDefinitionId == id, ct))
+            return Conflict(new { message = "Shift definition is in use. Reassign employees before deleting it." });
         _db.ShiftDefinitions.Remove(def);
         await _db.SaveChangesAsync(ct);
         return NoContent();
@@ -104,7 +118,8 @@ public class ShiftsController : ControllerBase
         var tenantId = GetTenantId();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-        var start = from ?? today.AddDays(-(int)today.DayOfWeek + 1); // Monday
+        var daysSinceMonday = ((int)today.DayOfWeek + 6) % 7;
+        var start = from ?? today.AddDays(-daysSinceMonday); // Monday
         var end = to ?? start.AddDays(6); // Sunday
 
         var employeeQuery = _db.Employees
@@ -131,16 +146,20 @@ public class ShiftsController : ControllerBase
     }
 
     [HttpPost("roster/assign")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Supervisor")]
     public async Task<IActionResult> Assign([FromBody] AssignShiftRequest req, CancellationToken ct)
     {
         var tenantId = GetTenantId();
 
         var emp = await _db.Employees.FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId, ct);
         if (emp is null) return BadRequest(new { message = "Employee not found." });
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(req.EmployeeId)) return Forbid();
 
         var def = await _db.ShiftDefinitions.FirstOrDefaultAsync(d => d.Id == req.ShiftDefinitionId && d.TenantId == tenantId, ct);
         if (def is null) return BadRequest(new { message = "Shift definition not found." });
+        var constraintError = await ValidateAssignmentAsync(tenantId, emp.Id, req.Date, def, ct);
+        if (constraintError is not null) return Conflict(new { message = constraintError });
 
         var existing = await _db.ShiftAssignments
             .FirstOrDefaultAsync(a => a.EmployeeId == req.EmployeeId && a.AssignedDate == req.Date && a.TenantId == tenantId, ct);
@@ -181,6 +200,8 @@ public class ShiftsController : ControllerBase
 
         if (req.DateFrom > req.DateTo)
             return BadRequest(new { message = "From date must be before To date." });
+        if (req.DateTo.DayNumber - req.DateFrom.DayNumber > 366)
+            return BadRequest(new { message = "Auto-plan is limited to 367 days." });
         if (req.ShiftIds == null || req.ShiftIds.Count == 0)
             return BadRequest(new { message = "At least one shift must be selected." });
 
@@ -227,6 +248,9 @@ public class ShiftsController : ControllerBase
                     "alternating" => shifts[di % shifts.Count],
                     _ => shifts[0],
                 };
+
+                var constraintError = await ValidateAssignmentAsync(tenantId, emp.Id, day, shift, ct);
+                if (constraintError is not null) { skipped++; continue; }
 
                 var existing = await _db.ShiftAssignments
                     .FirstOrDefaultAsync(a => a.EmployeeId == emp.Id && a.AssignedDate == day && a.TenantId == tenantId, ct);
@@ -369,6 +393,11 @@ public class ShiftsController : ControllerBase
         {
             if (!shifts.TryGetValue(a.ShiftDefinitionId, out var shift)) { skipped++; continue; }
             if (!employeeNames.TryGetValue(a.EmployeeId, out var empName)) { skipped++; continue; }
+            if (await ValidateAssignmentAsync(tenantId, a.EmployeeId, a.Date, shift, ct) is not null)
+            {
+                skipped++;
+                continue;
+            }
 
             var existing = await _db.ShiftAssignments
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == a.EmployeeId && x.AssignedDate == a.Date, ct);
@@ -395,18 +424,67 @@ public class ShiftsController : ControllerBase
     }
 
     [HttpDelete("roster/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Supervisor")]
     public async Task<IActionResult> RemoveAssignment(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();
         var a = await _db.ShiftAssignments.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (a is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(a.EmployeeId)) return Forbid();
         _db.ShiftAssignments.Remove(a);
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
 
     private Guid GetTenantId() => Guid.Parse(User.FindFirstValue("tenant_id")!);
+
+    private async Task<string?> ValidateAssignmentAsync(Guid tenantId, int employeeId, DateOnly date, ShiftDefinition shift, CancellationToken ct)
+    {
+        if (await _db.LeaveRequests.AsNoTracking().AnyAsync(x => x.TenantId == tenantId
+                && x.EmployeeId == employeeId && x.Status == "Approved" && x.StartDate <= date && x.EndDate >= date, ct))
+            return "Employee has approved leave on this date.";
+
+        var policy = await _db.ShiftPolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
+        var minRest = policy?.MinRestHours > 0 ? policy.MinRestHours : 8;
+        var maxConsecutive = policy?.MaxConsecutiveDays > 0 ? policy.MaxConsecutiveDays : 6;
+        var nearby = await _db.ShiftAssignments.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId
+                && x.AssignedDate >= date.AddDays(-maxConsecutive - 1) && x.AssignedDate <= date.AddDays(maxConsecutive + 1)
+                && x.AssignedDate != date)
+            .ToListAsync(ct);
+        // Batch planners stage assignments before their final SaveChanges. Include those rows so
+        // a single auto-plan cannot create a prohibited streak or short-rest sequence internally.
+        var staged = _db.ShiftAssignments.Local.Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId
+            && x.AssignedDate >= date.AddDays(-maxConsecutive - 1) && x.AssignedDate <= date.AddDays(maxConsecutive + 1)
+            && x.AssignedDate != date).ToList();
+        foreach (var assignment in staged)
+            if (!nearby.Any(x => x.Id == assignment.Id)) nearby.Add(assignment);
+        var dates = nearby.Select(x => x.AssignedDate).ToHashSet();
+        var streak = 1;
+        for (var d = date.AddDays(-1); dates.Contains(d); d = d.AddDays(-1)) streak++;
+        for (var d = date.AddDays(1); dates.Contains(d); d = d.AddDays(1)) streak++;
+        if (streak > maxConsecutive) return $"Assignment exceeds the {maxConsecutive}-day consecutive-work limit.";
+
+        var adjacent = nearby.Where(x => x.AssignedDate == date.AddDays(-1) || x.AssignedDate == date.AddDays(1)).ToList();
+        if (adjacent.Count == 0) return null;
+        var definitions = await _db.ShiftDefinitions.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && adjacent.Select(a => a.ShiftDefinitionId).Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, ct);
+        var currentStart = date.ToDateTime(shift.StartTime);
+        var currentEnd = date.ToDateTime(shift.EndTime);
+        if (shift.EndTime <= shift.StartTime) currentEnd = currentEnd.AddDays(1);
+        foreach (var assignment in adjacent)
+        {
+            if (!definitions.TryGetValue(assignment.ShiftDefinitionId, out var other)) continue;
+            var otherStart = assignment.AssignedDate.ToDateTime(other.StartTime);
+            var otherEnd = assignment.AssignedDate.ToDateTime(other.EndTime);
+            if (other.EndTime <= other.StartTime) otherEnd = otherEnd.AddDays(1);
+            var rest = assignment.AssignedDate < date ? currentStart - otherEnd : otherStart - currentEnd;
+            if (rest.TotalHours < minRest) return $"Assignment violates the {minRest}-hour minimum rest rule.";
+        }
+        return null;
+    }
 
     // ── Policy helpers ────────────────────────────────────────────────
 

@@ -148,7 +148,9 @@ public class GosiController : ControllerBase
             .ToListAsync(ct);
 
         var salaries = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(s => s.TenantId == tenantId)
+            // Match the salary source used by payroll processing and the Saudi Compliance dashboard:
+            // replaced/deactivated packages and future-dated packages are not current wages.
+            .Where(s => s.TenantId == tenantId && s.IsActive)
             .ToListAsync(ct);
 
         var rules = await LoadRulesAsync(tenantId, ct);
@@ -477,7 +479,7 @@ public class GosiController : ControllerBase
         User.Claims.Any(c => c.Type == "permission"
                           && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
-    private async Task GosiAudit(string action, string entityId, object? metadata, CancellationToken ct)
+    private Task GosiAudit(string action, string entityId, object? metadata, CancellationToken ct)
     {
         var tenantId = GetTenantId();
         _db.AuditLogs.Add(new AuditLog
@@ -490,6 +492,7 @@ public class GosiController : ControllerBase
             Metadata    = System.Text.Json.JsonSerializer.Serialize(metadata),
             CreatedAtUtc = DateTime.UtcNow,
         });
+        return Task.CompletedTask;
     }
 }
 

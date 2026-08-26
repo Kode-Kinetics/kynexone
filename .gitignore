@@ -27,3 +27,10 @@ docker-compose.override.yml
 # Temp screenshots / scratch artifacts
 .tmp-*
 *.tmp.png
+
+# Claude Code agent worktrees — tracked gitlinks here broke `git status`
+# repo-wide and silently hid 210 uncommitted files for ten days.
+.claude/worktrees/
+
+# Wave-1 git worktrees — same class of problem as .claude/worktrees
+.wave1/

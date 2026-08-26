@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test';
-import { platformLogin, tenantLogin, INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, EVOSTEL_SLUG, EVOSTEL_ADMIN } from './helpers';
+import { test, expect, type Page } from '@playwright/test';
+import { tenantLogin, INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, RASALMANAR_SLUG, RASALMANAR_ADMIN } from './helpers';
 
 /**
  * Demo sanity — ensures no demo-critical route crashes or shows blank screens.
@@ -11,6 +11,19 @@ import { platformLogin, tenantLogin, INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, EVOSTE
  * - Platform admin routes load without crashing
  * - Tenant admin routes load without crashing
  */
+
+async function gotoRoute(page: Page, route: string): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await page.goto(route, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+      return;
+    } catch (error) {
+      const transientReset = error instanceof Error
+        && /ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED/.test(error.message);
+      if (!transientReset || attempt === 1) throw error;
+    }
+  }
+}
 
 test.describe('Platform admin — demo sanity', () => {
   // No per-test login: the session comes from auth.setup.ts via storageState. Logging in here
@@ -32,12 +45,21 @@ test.describe('Platform admin — demo sanity', () => {
     '/platform/audit-logs',
     '/platform/system-health',
     '/platform/settings',
+    '/platform/compliance',
+    '/platform/leads',
+    '/platform/pricing',
+    '/platform/roles',
+    '/platform/tenants/new',
   ];
 
   for (const route of PLATFORM_ROUTES) {
     test(`${route} loads without crash`, async ({ page }) => {
-      await page.goto(route);
-      await page.waitForLoadState('networkidle');
+      await gotoRoute(page, route);
+
+      await expect.poll(
+        async () => ((await page.locator('body').innerText()) ?? '').trim().length,
+        { timeout: 10_000, message: `${route} did not render meaningful content` },
+      ).toBeGreaterThan(100);
 
       const body = (await page.locator('body').innerText()) ?? '';
 
@@ -46,85 +68,79 @@ test.describe('Platform admin — demo sanity', () => {
       expect(body.toLowerCase()).not.toContain('unexpected error');
       expect(body.toLowerCase()).not.toContain('cannot read properties of undefined');
       expect(body.toLowerCase()).not.toContain('typeerror');
-
-      // Page should have content
-      expect(body.trim().length).toBeGreaterThan(100);
     });
   }
 });
 
 test.describe('IntelliFlow tenant — demo sanity', () => {
-  test.beforeEach(async ({ page }) => {
-    await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
-  });
-
   const TENANT_ROUTES = [
     '/dashboard',
     '/people',
     '/attendance',
     '/leave',
     '/payroll',
+    '/payroll/templates',
     '/recruitment',
+    '/recruitment/onboarding',
     '/performance',
+    '/performance/calibration',
+    '/performance/pip',
     '/reports',
+    '/approvals',
+    '/companies',
+    '/compliance',
+    '/compliance-profiles',
+    '/ess',
+    '/hr-requests',
+    '/loans',
+    '/offboarding',
+    '/org-chart',
+    '/overtime',
+    '/saudi-compliance',
+    '/setup',
+    '/shifts',
+    '/tax-policies',
+    '/tenant-admin',
+    '/user-management',
+    '/ai-assistant',
   ];
 
-  for (const route of TENANT_ROUTES) {
-    test(`IntelliFlow ${route} loads without crash`, async ({ page }) => {
-      await page.goto(route);
-      await page.waitForLoadState('networkidle');
+  test('every IntelliFlow module route loads without crash', async ({ page }) => {
+    test.setTimeout(180_000);
+    await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
+    for (const route of TENANT_ROUTES) {
+      await gotoRoute(page, route);
+
+      await expect.poll(
+        async () => ((await page.locator('body').innerText()) ?? '').trim().length,
+        { timeout: 10_000, message: `${route} did not render meaningful content` },
+      ).toBeGreaterThan(50);
 
       const body = (await page.locator('body').innerText()) ?? '';
-      expect(body.toLowerCase()).not.toContain('something went wrong');
-      expect(body.toLowerCase()).not.toContain('unexpected error');
-      expect(body.trim().length).toBeGreaterThan(50);
-    });
-  }
+      expect(body.toLowerCase(), `${route} rendered a fatal error`).not.toContain('something went wrong');
+      expect(body.toLowerCase(), `${route} rendered an unexpected error`).not.toContain('unexpected error');
+      expect(body.trim().length, `${route} remained blank`).toBeGreaterThan(50);
+    }
+  });
 });
 
-test.describe('Evostel tenant — demo sanity', () => {
-  test.beforeEach(async ({ page }) => {
-    await tenantLogin(page, EVOSTEL_ADMIN.email, EVOSTEL_ADMIN.password, EVOSTEL_SLUG);
-  });
-
-  test('Evostel dashboard loads without crash', async ({ page }) => {
-    await page.goto('/dashboard');
-    await page.waitForLoadState('networkidle');
-    const body = (await page.locator('body').innerText()) ?? '';
-    expect(body.toLowerCase()).not.toContain('something went wrong');
-    expect(body.trim().length).toBeGreaterThan(50);
-  });
-
-  test('Evostel people page loads without crash', async ({ page }) => {
-    await page.goto('/people');
-    await page.waitForLoadState('networkidle');
-    const body = (await page.locator('body').innerText()) ?? '';
-    expect(body.toLowerCase()).not.toContain('something went wrong');
-  });
-
-  test('Evostel shows PastDue warning or banner', async ({ page }) => {
-    await page.goto('/dashboard');
-    await page.waitForLoadState('networkidle');
-    const body = (await page.locator('body').innerText()) ?? '';
-    // Should either show a PastDue warning OR work normally — never crash
-    expect(body.toLowerCase()).not.toContain('something went wrong');
-  });
-
-  test('Evostel AI assistant route shows feature-disabled message not crash', async ({ page }) => {
-    await page.goto('/ai-assistant');
-    await page.waitForLoadState('networkidle');
-    const body = (await page.locator('body').innerText()) ?? '';
-    // Should show "not enabled" or similar — NOT a crash
-    expect(body.toLowerCase()).not.toContain('something went wrong');
-    expect(body.toLowerCase()).not.toContain('typeerror');
+test.describe('Ras Al-Manar tenant — demo sanity', () => {
+  test('dashboard and people load without crash', async ({ page }) => {
+    await tenantLogin(page, RASALMANAR_ADMIN.email, RASALMANAR_ADMIN.password, RASALMANAR_SLUG);
+    for (const route of ['/dashboard', '/people']) {
+      await gotoRoute(page, route);
+      await expect.poll(
+        async () => ((await page.locator('body').innerText()) ?? '').trim().length,
+        { timeout: 10_000, message: `${route} did not render meaningful content` },
+      ).toBeGreaterThan(50);
+      const body = (await page.locator('body').innerText()) ?? '';
+      expect(body.toLowerCase(), `${route} rendered a fatal error`).not.toContain('something went wrong');
+      expect(body.trim().length, `${route} remained blank`).toBeGreaterThan(50);
+    }
   });
 });
 
 test.describe('Platform tenant detail — demo sanity', () => {
-  test.beforeEach(async ({ page }) => {
-    await platformLogin(page);
-  });
-
   test('IntelliFlow tenant detail page loads', async ({ page }) => {
     await page.goto('/platform/tenants');
     await page.waitForLoadState('networkidle');
