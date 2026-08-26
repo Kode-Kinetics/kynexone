@@ -193,3 +193,33 @@ B3-6 (console-error assertions not global).
 
 **Current activity:** pushing B3 and updating PR #45.
 **Next:** Phase C (G3 observability) in a separate worktree.
+
+
+---
+
+## Checkpoint 5 — 06:10Z — Chrome gate green in CI; G3 slice 1 delivered
+
+**Branches:** `wave1/security-scope-browser-gate` (PR #45) · `wave1/observability-foundation` (PR #46, draft)
+
+**PR #45 — Gate 0.** Backend Tests **pass**, Schema Gates **pass**, Frontend Typecheck/Build **pass**,
+gitleaks **pass**, Dependency Scan **pass**, CodeQL javascript-typescript **pass**, and — the one that
+matters — **`Chrome Security Gate (roles + isolation)` PASSED in CI in 6m4s**, running real Postgres +
+real backend with the enterprise seed + a **production** frontend build + Playwright. CodeQL csharp
+still running.
+
+**PR #46 — G3 slice 1 (draft, stacked on Gate 0).** Correlation IDs, provider-neutral OpenTelemetry,
+and the telemetry PII/cardinality guards. Full suite **1730 passed, 0 failed, 0 skipped** (from 1709).
+
+**Deliberate omission worth naming:** EF Core OTel instrumentation was added and then REMOVED. The
+package is prerelease-only and had dropped the `SetDbStatementForText` switch that disables SQL
+capture; on this schema a captured statement carries salaries and IBANs. A beta dependency whose
+redaction behaviour cannot be pinned is the wrong trade for query timings (GAP-G3-1).
+
+**Production is still running stale code.** 75+ minutes after the Wave 0 deploy hook fired,
+`/health/live` still lacks the `commit` field that `main` has emitted since `f23a0009`. The Render
+deploy did not land. The A4 verification step added in PR #44 would have failed that build instead of
+reporting green — which is precisely why it exists. **No remediation attempted: that requires a
+production deploy, which is out of bounds for this shift.**
+
+**Current activity:** awaiting independent review findings and CodeQL.
+**Next:** fix any Critical/High review finding, then the morning report.
