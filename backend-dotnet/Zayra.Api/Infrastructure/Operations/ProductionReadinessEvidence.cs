@@ -2,6 +2,8 @@ using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Scope;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Operations;
@@ -21,27 +23,78 @@ public static class ProductionReadinessEvidence
         // Reporting not_ready here makes /health/ready return 503 so Render refuses to route
         // traffic to the un-migrated instance until the pre-deploy migrate step has run.
         var pendingMigrations = await CountPendingMigrationsAsync(db, dbProbe.Healthy, ct);
+        var workers = dbProbe.Healthy && pendingMigrations == 0
+            ? EvaluateWorkers(await db.WorkerHeartbeats.AsNoTracking().ToListAsync(ct), DateTime.UtcNow)
+            : WorkerFleetReadiness.Unavailable;
+        var queues = dbProbe.Healthy && pendingMigrations == 0
+            ? await BuildQueueHealthAsync(db, ct)
+            : QueueHealthEvidence.Unavailable;
 
         return new ReadinessEvidence(
-            ResolveStatus(dbProbe.Healthy, pendingMigrations),
+            ResolveStatus(dbProbe.Healthy, pendingMigrations, workers.Healthy),
             DateTime.UtcNow,
             new ReadinessDependencies(
                 dbProbe,
                 RedisDependency(config),
                 QiwaDependency(config),
-                await SmtpDependencyAsync(db, ct)),
+                await SmtpDependencyAsync(db, ct),
+                workers),
             tenantCount,
             activeTenantCount,
-            pendingMigrations);
+            pendingMigrations,
+            queues);
     }
 
     /// <summary>Pure status rule: ready iff the DB is reachable AND no migrations are pending.</summary>
     public static string ResolveStatus(bool dbHealthy, int pendingMigrations)
         => dbHealthy && pendingMigrations == 0 ? "ready" : "not_ready";
 
+    public static string ResolveStatus(bool dbHealthy, int pendingMigrations, bool workersHealthy)
+        => dbHealthy && pendingMigrations == 0 && workersHealthy ? "ready" : "not_ready";
+
+    public static WorkerFleetReadiness EvaluateWorkers(IReadOnlyCollection<WorkerHeartbeat> rows, DateTime nowUtc)
+    {
+        var statuses = new List<WorkerReadiness>();
+        foreach (var name in ProductionWorkerNames.All)
+        {
+            var instances = rows.Where(x => x.WorkerName == name)
+                .OrderByDescending(x => x.UpdatedAtUtc).ToList();
+            var latest = instances.FirstOrDefault();
+            if (latest is null)
+            {
+                statuses.Add(new WorkerReadiness(name, "missing", null, null));
+                continue;
+            }
+
+            var maxAge = name is ProductionWorkerNames.AiInsights or ProductionWorkerNames.ComplianceReminders
+                ? TimeSpan.FromHours(2.5) : TimeSpan.FromMinutes(3);
+            var healthy = instances.FirstOrDefault(x => x.Status == WorkerHeartbeatStatuses.Healthy
+                && nowUtc - x.UpdatedAtUtc <= maxAge);
+            var starting = instances.FirstOrDefault(x => x.Status == WorkerHeartbeatStatuses.Started
+                && nowUtc - x.UpdatedAtUtc <= TimeSpan.FromMinutes(5));
+            var failed = instances.FirstOrDefault(x => x.Status == WorkerHeartbeatStatuses.Failed
+                && nowUtc - x.UpdatedAtUtc <= maxAge);
+            var effective = healthy ?? starting ?? failed ?? latest;
+            var state = healthy is not null ? "healthy"
+                : starting is not null ? "starting"
+                : failed is not null ? "failed"
+                : "stale";
+            statuses.Add(new WorkerReadiness(name, state, effective.LastSucceededAtUtc, effective.UpdatedAtUtc));
+        }
+        return new WorkerFleetReadiness(
+            statuses.All(x => x.Status is "healthy" or "starting"),
+            statuses.Count(x => x.Status == "healthy"),
+            statuses.Count(x => x.Status == "starting"),
+            statuses.Count(x => x.Status == "stale"),
+            statuses.Count(x => x.Status == "failed"),
+            statuses.Count(x => x.Status == "missing"),
+            statuses);
+    }
+
     private static async Task<int> CountPendingMigrationsAsync(ZayraDbContext db, bool dbHealthy, CancellationToken ct)
     {
         if (!dbHealthy) return 0; // DB probe already reports not_ready; don't double-count.
+        if (!db.Database.IsRelational()) return 0;
         try
         {
             var pending = await db.Database.GetPendingMigrationsAsync(ct);
@@ -49,9 +102,9 @@ public static class ProductionReadinessEvidence
         }
         catch
         {
-            // Non-relational or a schema created via EnsureCreated (dev/test) has no migrations
-            // history table — treat as "no pending" so those environments stay ready.
-            return 0;
+            // A reachable database whose migration state cannot be established is not safe to
+            // promote. -1 is an explicit unknown/error sentinel and ResolveStatus fails closed.
+            return -1;
         }
     }
 
@@ -89,12 +142,14 @@ public static class ProductionReadinessEvidence
             .OrderByDescending(x => x.CreatedAtUtc)
             .Select(x => (DateTime?)x.CreatedAtUtc)
             .FirstOrDefaultAsync(ct);
+        var workers = EvaluateWorkers(await db.WorkerHeartbeats.AsNoTracking().ToListAsync(ct), DateTime.UtcNow);
+        var queues = await BuildQueueHealthAsync(db, ct);
 
         return new TelemetryEvidence(
             "ok",
             DateTime.UtcNow,
             new TelemetryWindow("24h", since),
-            new DependencyModes(RedisDependency(config), QiwaDependency(config), await SmtpDependencyAsync(db, ct)),
+            new DependencyModes(RedisDependency(config), QiwaDependency(config), await SmtpDependencyAsync(db, ct), workers),
             new GovernanceTelemetry(controlledOverrides24h, latestControlledOverrideAtUtc),
             new ReportingTelemetry(
                 reportRuns.Count,
@@ -109,7 +164,25 @@ public static class ProductionReadinessEvidence
                 frozenPositions,
                 openRequisitionHeadcount,
                 approvedRequisitionHeadcount,
-                budgetedMonthlyCost));
+                budgetedMonthlyCost),
+            queues);
+    }
+
+    private static async Task<QueueHealthEvidence> BuildQueueHealthAsync(ZayraDbContext db, CancellationToken ct)
+    {
+        // Aggregate operations evidence only: no tenant IDs, recipients, employees, report names,
+        // provider messages, or other customer payloads are returned by readiness/telemetry.
+        using var systemScope = SystemScopeContext.Begin();
+        var now = DateTime.UtcNow;
+        return new QueueHealthEvidence(
+            true,
+            await db.QiwaSyncLogs.CountAsync(x => x.Status == QiwaSyncLogStatuses.Pending || x.Status == QiwaSyncLogStatuses.Processing, ct),
+            await db.QiwaSyncLogs.CountAsync(x => x.Status == QiwaSyncLogStatuses.DeadLetter, ct),
+            await db.NotificationDeliveries.CountAsync(x => x.Outcome == DeliveryOutcomes.Queued || x.Outcome == DeliveryOutcomes.Sending, ct),
+            await db.NotificationDeliveries.CountAsync(x => x.Outcome == DeliveryOutcomes.Failed || x.Outcome == DeliveryOutcomes.Unknown, ct),
+            await db.ReportSchedules.CountAsync(x => x.IsActive && !x.IsDeleted && (x.NextRunAtUtc == null || x.NextRunAtUtc <= now), ct),
+            await db.ReportExecutionLogs.CountAsync(x => x.Status == "Failed" && x.CreatedAtUtc >= now.AddHours(-24), ct),
+            await db.ComplianceReminders.CountAsync(x => x.Status == "Pending" && x.ScheduledAtUtc != null && x.ScheduledAtUtc <= now, ct));
     }
 
     private static async Task<DependencyProbe> ProbeDatabaseAsync(ZayraDbContext db, CancellationToken ct)
@@ -126,10 +199,12 @@ public static class ProductionReadinessEvidence
             sw.Stop();
             return new DependencyProbe("ok", true, sw.ElapsedMilliseconds, null);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             sw.Stop();
-            return new DependencyProbe("error", false, sw.ElapsedMilliseconds, ex.Message);
+            // /health/ready is intentionally public for the load balancer. Never echo driver,
+            // hostname, database, or credential details from an exception into that response.
+            return new DependencyProbe("error", false, sw.ElapsedMilliseconds, "unavailable");
         }
     }
 
@@ -171,13 +246,15 @@ public sealed record ReadinessEvidence(
     ReadinessDependencies Dependencies,
     int Tenants,
     int ActiveTenants,
-    int PendingMigrations);
+    int PendingMigrations,
+    QueueHealthEvidence Queues);
 
 public sealed record ReadinessDependencies(
     DependencyProbe Database,
     DependencyMode Redis,
     DependencyMode Qiwa,
-    DependencyMode Smtp);
+    DependencyMode Smtp,
+    WorkerFleetReadiness Workers);
 
 public sealed record DependencyProbe(string Status, bool Healthy, long LatencyMs, string? Error);
 public sealed record DependencyMode(string Mode, bool Configured);
@@ -189,11 +266,41 @@ public sealed record TelemetryEvidence(
     DependencyModes Dependencies,
     GovernanceTelemetry Governance,
     ReportingTelemetry Reporting,
-    WorkforcePlanningTelemetry WorkforcePlanning);
+    WorkforcePlanningTelemetry WorkforcePlanning,
+    QueueHealthEvidence Queues);
 
 public sealed record TelemetryWindow(string Duration, DateTime SinceUtc);
-public sealed record DependencyModes(DependencyMode Redis, DependencyMode Qiwa, DependencyMode Smtp);
+public sealed record DependencyModes(DependencyMode Redis, DependencyMode Qiwa, DependencyMode Smtp, WorkerFleetReadiness Workers);
 public sealed record GovernanceTelemetry(int ControlledOverrides24h, DateTime? LatestControlledOverrideAtUtc);
+
+public sealed record WorkerFleetReadiness(
+    bool Healthy,
+    int HealthyCount,
+    int StartingCount,
+    int StaleCount,
+    int FailedCount,
+    int MissingCount,
+    IReadOnlyList<WorkerReadiness> Workers)
+{
+    public static readonly WorkerFleetReadiness Unavailable = new(
+        false, 0, 0, 0, 0, ProductionWorkerNames.All.Count,
+        ProductionWorkerNames.All.Select(x => new WorkerReadiness(x, "unavailable", null, null)).ToList());
+}
+
+public sealed record WorkerReadiness(string Name, string Status, DateTime? LastSucceededAtUtc, DateTime? UpdatedAtUtc);
+
+public sealed record QueueHealthEvidence(
+    bool Available,
+    int QiwaQueued,
+    int QiwaDeadLetter,
+    int NotificationsQueued,
+    int NotificationsFailed,
+    int ReportsDue,
+    int ReportsFailed24h,
+    int ComplianceRemindersDue)
+{
+    public static readonly QueueHealthEvidence Unavailable = new(false, 0, 0, 0, 0, 0, 0, 0);
+}
 
 public sealed record ReportingTelemetry(
     int ReportRuns24h,

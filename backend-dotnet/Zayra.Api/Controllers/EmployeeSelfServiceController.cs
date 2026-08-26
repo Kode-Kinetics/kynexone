@@ -24,6 +24,10 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         "passportNumber", "visaNumber", "iqamaNumber", "emiratesId", "bankName", "bankIban", "medicalInformation"
     };
+    private static readonly HashSet<string> AllowedSelfServiceProfileFields = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "preferredName", "personalEmail", "phone", "maritalStatus", "emergencyContactName", "emergencyContactPhone"
+    };
 
     private readonly ZayraDbContext _db;
     private readonly ILetterService _letters;
@@ -94,9 +98,25 @@ public class EmployeeSelfServiceController : ControllerBase
         catch { /* non-critical — return null */ }
 
         // ── Enrichment: loans summary ─────────────────────────────────────────
-        // EmployeeLoan.EmployeeId is a Guid not linked to the int employee.Id
-        // Return null gracefully until a FK relationship is established
-        ESSLoansSummaryDto? loansSummary = null;
+        var activeLoans = await _db.EmployeeLoans.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeIntId == employeeId &&
+                        !x.IsDeleted && (x.Status == "Active" || x.Status == "Approved"))
+            .ToListAsync(cancellationToken);
+        var activeLoanIds = activeLoans.Select(x => x.Id).ToList();
+        var nextInstallment = activeLoanIds.Count == 0
+            ? null
+            : await _db.LoanInstallments.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && activeLoanIds.Contains(x.LoanId) &&
+                            x.Status == "Pending" && x.AmountDue > x.AmountPaid)
+                .OrderBy(x => x.DueDate)
+                .FirstOrDefaultAsync(cancellationToken);
+        var loanCurrency = await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
+        var loansSummary = new ESSLoansSummaryDto(
+            activeLoans.Sum(x => x.OutstandingBalance),
+            loanCurrency,
+            activeLoans.Count,
+            nextInstallment is null ? null : nextInstallment.AmountDue - nextInstallment.AmountPaid,
+            nextInstallment?.DueDate.ToString("yyyy-MM-dd"));
 
         // ── Enrichment: performance snapshot ─────────────────────────────────
         ESSPerformanceSnapshotDto? performanceSnapshot = null;
@@ -202,6 +222,10 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
         if (!essOk) return BadRequest(new { message = ctxError });
+        var unsupported = request.Changes.Keys.Where(x => !AllowedSelfServiceProfileFields.Contains(x)).ToList();
+        if (unsupported.Count > 0)
+            return BadRequest(new { message = $"Unsupported self-service profile field(s): {string.Join(", ", unsupported)}." });
+        if (request.Changes.Count == 0) return BadRequest(new { message = "At least one profile change is required." });
         var changesJson = JsonSerializer.Serialize(request.Changes);
         var containsSensitive = request.Changes.Keys.Any(SensitiveProfileFields.Contains);
         var change = new EmployeeProfileChangeRequest
@@ -217,6 +241,66 @@ public class EmployeeSelfServiceController : ControllerBase
         await _db.SaveChangesAsync(cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.profile_change.requested", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
         return Created($"/api/ess/profile-change-request/{change.Id}", change);
+    }
+
+    [HttpGet("profile-change-requests")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    public async Task<IActionResult> ProfileChangeRequests(CancellationToken cancellationToken)
+    {
+        var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
+        var visibleEmployeeIds = _db.Employees.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.Id);
+        return Ok(await _db.EmployeeProfileChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && visibleEmployeeIds.Contains(x.EmployeeId))
+            .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken));
+    }
+
+    [HttpPost("profile-change-requests/{id:guid}/approve")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    public async Task<IActionResult> ApproveProfileChange(Guid id, ProfileChangeDecisionDto request, CancellationToken cancellationToken)
+    {
+        var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
+        var change = await _db.EmployeeProfileChangeRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (change is null) return NotFound();
+        if (change.Status != "PendingHR") return Conflict(new { message = "Profile change request is already decided." });
+        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
+        if (employee is null) return NotFound();
+        var values = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.RequestedChangesJson) ?? new();
+        foreach (var (field, value) in values)
+        {
+            var text = value.ValueKind == JsonValueKind.Null ? string.Empty : value.ToString().Trim();
+            switch (field.ToLowerInvariant())
+            {
+                case "preferredname": employee.PreferredName = text; break;
+                case "personalemail": employee.PersonalEmail = text; break;
+                case "phone": employee.Phone = text; break;
+                case "maritalstatus": employee.MaritalStatus = text; break;
+                case "emergencycontactname": employee.EmergencyContactName = text; break;
+                case "emergencycontactphone": employee.EmergencyContactPhone = text; break;
+                default: return BadRequest(new { message = $"Unsupported profile field '{field}'." });
+            }
+        }
+        change.Status = "Approved";
+        change.DecidedAtUtc = DateTime.UtcNow;
+        change.DecidedBy = GetUserId();
+        await _db.SaveChangesAsync(cancellationToken);
+        await EssAudit(tenantId, employee.Id, "ess.profile_change.approved", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
+        return Ok(change);
+    }
+
+    [HttpPost("profile-change-requests/{id:guid}/reject")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    public async Task<IActionResult> RejectProfileChange(Guid id, ProfileChangeDecisionDto request, CancellationToken cancellationToken)
+    {
+        var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
+        var change = await _db.EmployeeProfileChangeRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (change is null) return NotFound();
+        if (change.Status != "PendingHR") return Conflict(new { message = "Profile change request is already decided." });
+        change.Status = "Rejected";
+        change.DecidedAtUtc = DateTime.UtcNow;
+        change.DecidedBy = GetUserId();
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(change);
     }
 
     [HttpGet("payslips")]
@@ -414,6 +498,13 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
         if (!essOk) return BadRequest(new { message = ctxError });
+        var normalizedStorage = request.StorageUrl.Replace('\\', '/');
+        var localPrefix = $"storage/documents/{tenantId:N}/";
+        var objectPrefix = $"{tenantId:N}/documents/";
+        if (Path.IsPathRooted(request.StorageUrl) || request.StorageUrl.Contains("..", StringComparison.Ordinal)
+            || (!normalizedStorage.StartsWith(localPrefix, StringComparison.OrdinalIgnoreCase)
+                && !normalizedStorage.StartsWith(objectPrefix, StringComparison.OrdinalIgnoreCase)))
+            return BadRequest(new { message = "Document storage reference is not owned by this tenant." });
         var document = new EmployeeDocument
         {
             TenantId = tenantId,
@@ -577,7 +668,9 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
         if (!essOk) return BadRequest(new { message = ctxError });
-        if (!await _db.EmployeeDocuments.AnyAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken)) return NotFound();
+        if (!await _db.EmployeeDocuments.AnyAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted
+                && (x.EmployeeId == employeeId || x.DocumentType.Contains("Policy"))
+                && x.DocumentType.Contains("Policy"), cancellationToken)) return NotFound();
         var existing = await _db.EmployeePolicyAcknowledgements.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.PolicyId == id, cancellationToken);
         if (existing is not null) return Ok(existing);
         var ack = new EmployeePolicyAcknowledgement { TenantId = tenantId, EmployeeId = employeeId, PolicyId = id, UserId = GetUserId() };
@@ -655,12 +748,14 @@ public class EmployeeSelfServiceController : ControllerBase
         if (!string.IsNullOrWhiteSpace(email))
         {
             var normalizedEmail = email.Trim().ToUpperInvariant();
-            var employee = await _db.Employees.AsNoTracking()
-                .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted &&
-                    (x.WorkEmail.ToUpper() == normalizedEmail || x.PersonalEmail.ToUpper() == normalizedEmail),
-                    cancellationToken);
-            if (employee is not null)
-                return (true, tenantId, employee.Id, null);
+            var matches = await _db.Employees.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && !x.IsDeleted &&
+                    (x.WorkEmail.ToUpper() == normalizedEmail || x.PersonalEmail.ToUpper() == normalizedEmail))
+                .Select(x => x.Id).Take(2).ToListAsync(cancellationToken);
+            if (matches.Count == 1)
+                return (true, tenantId, matches[0], null);
+            if (matches.Count > 1)
+                return (false, default, default, "Multiple employee records match this email. Ask HR to link your account explicitly.");
         }
 
         return (false, default, default,
@@ -710,6 +805,7 @@ public record ESSDashboardDto(
     ESSNextLeaveDto? NextApprovedLeave,
     int TenureMonths);
 public record ProfileChangeRequestDto(Dictionary<string, object?> Changes, string? Reason);
+public record ProfileChangeDecisionDto(string? Notes);
 public record ESSAttendanceRegularizationDto(DateOnly WorkDate, string RequestType, DateTime? RequestedInUtc, DateTime? RequestedOutUtc, string Reason);
 public record ESSLeaveRequestDto(Guid LeaveTypeId, DateOnly StartDate, DateOnly EndDate, string? DayType, string Reason);
 public record ESSDocumentUploadDto(string DocumentType, string FileName, string ContentType, string StorageUrl, DateOnly? ExpiryDate, bool IsRequired);

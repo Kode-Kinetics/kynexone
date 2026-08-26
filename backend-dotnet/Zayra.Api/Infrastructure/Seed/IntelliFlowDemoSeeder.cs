@@ -1,8 +1,11 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -22,7 +25,11 @@ public static class IntelliFlowDemoSeeder
     public const string Slug          = "intelliflow";
     public const string AdminEmail    = "admin@intelliflow.com";
     public const string AdminPassword = "IntelliFlow@2026!";
+    public const string DemoCompanyRegistrationNumber = "1010334455";
     private const string DemoPassword = "IntelliFlow@2026!";
+    private const string DemoGosiEmployerId = "3000112233";
+    private const string DemoEstablishmentId = "7000445566";
+    private const string DemoWorkLocationId = "QIWA-RYD-HQ-01";
 
     public static async Task SeedAsync(
         ZayraDbContext  db,
@@ -56,11 +63,6 @@ public static class IntelliFlowDemoSeeder
         var period    = $"{year}-{month:D2}";
         var periodDate = new DateOnly(year, month, 1);
 
-        var gosiRules = await db.GosiContributionRules
-            .AsNoTracking()
-            .Where(r => r.TenantId == Guid.Empty)
-            .ToListAsync(ct);
-
         // ── 1. Tenant ─────────────────────────────────────────────────────────
         var tenant = new Tenant
         {
@@ -92,6 +94,25 @@ public static class IntelliFlowDemoSeeder
             CurrencyCode  = "USD",
         });
 
+        // Subscription currency is the SaaS billing contract; payroll/reporting currency is the tenant's
+        // localization + legal-entity currency. Seed it explicitly so a clean KSA pilot does not inherit
+        // the US/USD model defaults while every salary and ledger row is denominated in SAR.
+        db.TenantLocalizationSettings.Add(new TenantLocalizationSetting
+        {
+            TenantId = tenantId,
+            DefaultLanguage = "en",
+            RtlEnabled = false,
+            CalendarSystem = "Gregorian",
+            DefaultTimezone = "Asia/Riyadh",
+            DateFormat = "DD/MM/YYYY",
+            CurrencyCode = "SAR",
+            CountryCode = "SAU",
+            WeekStartDay = "Sunday",
+            WorkWeek = "Sun-Thu",
+            HijriDatesEnabled = true,
+            UpdatedAtUtc = now,
+        });
+
         // ── 4. Feature flags ──────────────────────────────────────────────────
         foreach (var key in new[]
         {
@@ -120,6 +141,7 @@ public static class IntelliFlowDemoSeeder
             ("Employee",         "James O'Brien",             "employee2@intelliflow.com",        false),
             ("Auditor",          "Maya Johnson",              "auditor@intelliflow.com",          false),
         };
+        var seededUsers = new List<(User User, string Role, bool GroupScope)>();
 
         foreach (var (roleName, fullName, email, isGroupScope) in userSpecs)
         {
@@ -145,6 +167,7 @@ public static class IntelliFlowDemoSeeder
             };
             u.UserRoles.Add(new UserRole { User = u, RoleId = role.Id });
             db.Users.Add(u);
+            seededUsers.Add((u, roleName, isGroupScope));
         }
         await db.SaveChangesAsync(ct);
 
@@ -157,12 +180,45 @@ public static class IntelliFlowDemoSeeder
             TradeName          = "IntelliFlow Systems",
             CountryCode        = "SAU",
             Jurisdiction       = "KSA-mainland",
-            RegistrationNumber = "1010334455",
+            RegistrationNumber = DemoCompanyRegistrationNumber,
+            WpsEmployerId      = DemoEstablishmentId,
+            GosiEmployerId     = DemoGosiEmployerId,
+            QiwaEstablishmentId = DemoEstablishmentId,
             DefaultCurrency    = "SAR",
             IsActive           = true,
             CreatedAtUtc       = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
         };
         db.Companies.Add(company);
+        db.QiwaTenantConnections.Add(new QiwaTenantConnection
+        {
+            TenantId = tenantId,
+            EstablishmentId = DemoEstablishmentId,
+            EstablishmentName = company.TradeName,
+            Status = QiwaConnectionStatuses.Disconnected,
+            Environment = "sandbox",
+            UnifiedOrganisationNumber = company.RegistrationNumber,
+            CreatedAtUtc = now,
+        });
+        await db.SaveChangesAsync(ct);
+
+        // Entity scope is default-deny. Every non-group pilot persona therefore needs an
+        // explicit legal-entity grant before its JWT can see operational records (including
+        // role-owned Approval Center work). Without this, HR Manager authenticates with the
+        // correct role but receives entity_scope=none, so the ambient company query filter
+        // removes the request before the role-owner predicate can match it.
+        foreach (var (user, role, isGroupScope) in seededUsers.Where(x => !x.GroupScope))
+        {
+            db.UserEntityAccesses.Add(new UserEntityAccess
+            {
+                TenantId = tenantId,
+                UserId = user.Id,
+                CompanyId = company.Id,
+                GrantMode = EntityGrantModes.SelectedCompanies,
+                Role = role,
+                IsActive = true,
+                GrantedAt = now,
+            });
+        }
         await db.SaveChangesAsync(ct);
 
         // ── 7. Branch ─────────────────────────────────────────────────────────
@@ -219,9 +275,6 @@ public static class IntelliFlowDemoSeeder
         await db.SaveChangesAsync(ct);
 
         // ── 10. Employees ─────────────────────────────────────────────────────
-        const string GosiEmployerId  = "3000112233";
-        const string EstablishmentId = "7000445566";
-
         static Employee Emp(
             Guid tid, Company co, Branch br, Grade g,
             string code, string en, string ar,
@@ -253,8 +306,19 @@ public static class IntelliFlowDemoSeeder
             IdType          = idType,
             IdNumber        = idNum,
             IqamaNumber     = idType == "Iqama" ? idNum : string.Empty,
-            GosiReference   = GosiEmployerId,
-            EstablishmentId = EstablishmentId,
+            GosiReference   = $"GOSI-{code}",
+            EstablishmentId = DemoEstablishmentId,
+            OccupationCode  = desig.Code switch
+            {
+                "CTO" => "1120", "FIN-MGR" => "1211", "HR-DIR" => "1212",
+                "PM" or "BA" => "2421", "HR-SPEC" => "2423", "ACCT" => "2411",
+                "DEVOPS" => "2522", "UX" => "2166", "QA" => "2519",
+                _ => "2512",
+            },
+            WorkLocationId  = DemoWorkLocationId,
+            ContractReference = $"IFL-QIWA-{code}-2026",
+            QiwaContractNumber = $"IFL-QIWA-{code}-2026",
+            WorkPermitReference = saudiFlag == "NonSaudi" ? $"WP-{idNum}" : string.Empty,
             IsDeleted       = false,
         };
 
@@ -322,6 +386,64 @@ public static class IntelliFlowDemoSeeder
         await db.SaveChangesAsync(ct);
 
         // ── 11. Payroll profiles ──────────────────────────────────────────────
+        // Employee.Salary remains a legacy/search projection, but payroll and statutory workflows resolve
+        // EmployeeSalaryStructure. A pilot seed must follow that same contract rather than creating a
+        // hand-crafted paid slip that has no corresponding effective salary assignment.
+        var salaryEffectiveDate = new DateOnly(year, 1, 1);
+        var salaryStructure = new SalaryStructure
+        {
+            TenantId = tenantId,
+            CompanyId = company.Id,
+            Code = "IFL-STANDARD",
+            Name = "IntelliFlow Standard Package",
+            Currency = "SAR",
+            EffectiveDate = salaryEffectiveDate,
+            MinBasicSalary = allEmps.Min(e => e.Salary ?? 0m),
+            MaxBasicSalary = allEmps.Max(e => e.Salary ?? 0m),
+            MinGrossSalary = allEmps.Min(e => (e.Salary ?? 0m) * 1.35m),
+            MaxGrossSalary = allEmps.Max(e => (e.Salary ?? 0m) * 1.35m),
+            EligibleGradeIdsJson = System.Text.Json.JsonSerializer.Serialize(new[] { grade.Id }),
+            IsActive = true,
+        };
+        db.SalaryStructures.Add(salaryStructure);
+        db.SalaryComponents.AddRange(
+            new SalaryComponent
+            {
+                TenantId = tenantId, SalaryStructureId = salaryStructure.Id, Code = "BASIC",
+                Name = "Basic Salary", ComponentType = "Earning", CalculationType = "Fixed", IsActive = true,
+            },
+            new SalaryComponent
+            {
+                TenantId = tenantId, SalaryStructureId = salaryStructure.Id, Code = "HOUSING",
+                Name = "Housing Allowance", ComponentType = "Earning", CalculationType = "Percentage",
+                Percentage = 25m, IsActive = true,
+            },
+            new SalaryComponent
+            {
+                TenantId = tenantId, SalaryStructureId = salaryStructure.Id, Code = "TRANSPORT",
+                Name = "Transport Allowance", ComponentType = "Earning", CalculationType = "Percentage",
+                Percentage = 10m, IsActive = true,
+            });
+
+        var salaryAssignments = allEmps.Select(emp =>
+        {
+            var basic = emp.Salary ?? 0m;
+            return new EmployeeSalaryStructure
+            {
+                TenantId = tenantId,
+                EmployeeId = emp.Id,
+                SalaryStructureId = salaryStructure.Id,
+                BasicSalary = basic,
+                HousingAllowance = basic * 0.25m,
+                TransportAllowance = basic * 0.10m,
+                EffectiveDate = salaryEffectiveDate,
+                Currency = "SAR",
+                IsActive = true,
+            };
+        }).ToArray();
+        db.EmployeeSalaryStructures.AddRange(salaryAssignments);
+        await db.SaveChangesAsync(ct);
+
         var ibans = new[]
         {
             "SA6080000000300000000001", "SA6180000000300000000002", "SA6280000000300000000003",
@@ -344,9 +466,9 @@ public static class IntelliFlowDemoSeeder
                 WpsEligible              = true,
                 EosbEligible             = true,
                 MolId                    = emp.IdNumber,
-                SocialInsuranceReference = $"{GosiEmployerId}-{(i + 1):D3}",
+                SocialInsuranceReference = $"{DemoGosiEmployerId}-{(i + 1):D3}",
                 PayrollGroup             = "Main",
-                SalaryStructureReference = "IFL-STANDARD",
+                SalaryStructureReference = salaryStructure.Code,
             });
         }
         await db.SaveChangesAsync(ct);
@@ -419,16 +541,26 @@ public static class IntelliFlowDemoSeeder
         var perEmpData = new List<(
             Employee Emp, decimal Basic, decimal Housing, decimal Transport,
             decimal BaseGross, decimal Gross,
-            decimal EmpGosiTotal, decimal EmrGosiTotal, GosiContributionResult GosiResult)>();
+            decimal EmpGosiTotal, decimal EmrGosiTotal, StatutoryDeductionResult GosiResult)>();
+        var statutoryCalculator = new KsaDeductionCalculator(new StatutoryRuleReader(db));
 
         foreach (var emp in allEmps)
         {
-            var basic     = emp.Salary ?? 0m;
-            var housing   = basic * 0.25m;
-            var transport = basic * 0.10m;
+            var salary = salaryAssignments.Single(s => s.EmployeeId == emp.Id && s.EffectiveDate <= periodDate);
+            var basic     = salary.BasicSalary;
+            var housing   = salary.HousingAllowance;
+            var transport = salary.TransportAllowance;
             var baseGross = basic + housing + transport;
-            var gosi      = GosiCalculationService.Calculate(emp.Nationality, basic, gosiRules, periodDate, tenantId);
-            perEmpData.Add((emp, basic, housing, transport, baseGross, baseGross, gosi.EmployeeTotal, gosi.EmployerTotal, gosi));
+            var gosi = await statutoryCalculator.CalculateAsync(new StatutoryDeductionInput(
+                EmployeeId: Guid.Empty,
+                CompanyId: company.Id,
+                Salary: new SalaryBreakdown(basic, housing, transport, 0m),
+                Nationality: emp.Nationality,
+                ContractType: emp.ContractType,
+                PeriodYear: year,
+                PeriodMonth: month), ct);
+            perEmpData.Add((emp, basic, housing, transport, baseGross, baseGross,
+                gosi.TotalEmployeeDeduction, gosi.TotalEmployerContribution, gosi));
         }
 
         var totalGross = perEmpData.Sum(x => x.Gross);
@@ -446,6 +578,7 @@ public static class IntelliFlowDemoSeeder
             TotalGrossSalary = totalGross,
             TotalDeductions  = totalDed,
             TotalNetSalary   = totalNet,
+            TotalEmployerStatutoryCost = perEmpData.Sum(x => x.EmrGosiTotal),
             CreatedAtUtc     = prevMonth.AddDays(-5),
             ProcessedAtUtc   = prevMonth,
             LockedAtUtc      = prevMonth.AddDays(3),
@@ -458,6 +591,7 @@ public static class IntelliFlowDemoSeeder
         var runEmployees      = new List<PayrollRunEmployee>();
         var payslips          = new List<Payslip>();
         var payrollSlips      = new List<PayrollSlip>();
+        var payrollDeductions = new List<PayrollDeduction>();
         var entryDate         = DateOnly.FromDateTime(prevMonth.AddDays(3));
 
         for (var i = 0; i < perEmpData.Count; i++)
@@ -485,43 +619,104 @@ public static class IntelliFlowDemoSeeder
             payslipComponents.Add(new PayslipComponent { TenantId=tenantId, PayslipId=payslip.Id, ComponentType="Earning", ComponentName="Housing Allowance",   Amount=housing });
             payslipComponents.Add(new PayslipComponent { TenantId=tenantId, PayslipId=payslip.Id, ComponentType="Earning", ComponentName="Transport Allowance", Amount=transport });
 
-            foreach (var line in gosi.Lines.Where(l => l.Payer == GosiPayers.Employee))
-                payslipComponents.Add(new PayslipComponent
+            foreach (var line in gosi.Lines)
+            {
+                if (line.EmployeeAmount > 0m)
                 {
-                    TenantId = tenantId, PayslipId = payslip.Id, ComponentType = "Deduction",
-                    ComponentName = GosiCalculationService.ToComponentName(line.Branch, line.Payer, line.Rate),
-                    Amount = line.Amount,
-                });
+                    payslipComponents.Add(new PayslipComponent
+                    {
+                        TenantId = tenantId, PayslipId = payslip.Id, ComponentType = "Deduction",
+                        ComponentName = line.Label, Amount = line.EmployeeAmount,
+                    });
+                    payrollDeductions.Add(new PayrollDeduction
+                    {
+                        TenantId = tenantId, CompanyId = company.Id, PayrollRunId = payrollRun.Id,
+                        EmployeeId = emp.Id, ComponentCode = line.Code, ComponentName = line.Label,
+                        Amount = line.EmployeeAmount, Source = "Statutory", IsEmployerContribution = false,
+                    });
+                }
+                if (line.EmployerAmount > 0m)
+                    payrollDeductions.Add(new PayrollDeduction
+                    {
+                        TenantId = tenantId, CompanyId = company.Id, PayrollRunId = payrollRun.Id,
+                        EmployeeId = emp.Id, ComponentCode = line.Code, ComponentName = line.Label,
+                        Amount = line.EmployerAmount, Source = "Statutory", IsEmployerContribution = true,
+                    });
+            }
 
             payrollSlips.Add(new PayrollSlip
             {
-                TenantId = tenantId, RunId = payrollRun.Id, EmployeeId = emp.Id,
+                TenantId = tenantId, CompanyId = company.Id, RunId = payrollRun.Id, EmployeeId = emp.Id,
                 EmployeeCode = emp.EmployeeCode, EmployeeName = emp.FullName,
                 Department = emp.Department ?? string.Empty,
                 BasicSalary = basic, HousingAllowance = housing,
                 TransportAllowance = transport, OtherAllowances = 0m,
                 GrossSalary = gross, Deductions = empGosiTotal, NetSalary = netPay,
-                Status = "Processed",
+                EmployeeStatutoryTotal = empGosiTotal,
+                EmployerStatutoryTotal = emrGosiTotal,
+                // The demo's first locked run of the year follows Process's current-period-inclusive YTD.
+                YtdGross = gross, YtdDeductions = empGosiTotal, YtdNet = netPay,
+                FullBasicSalary = basic, FullHousingAllowance = housing, FullTransportAllowance = transport,
+                Status = "Final",
             });
 
+            // Persist the same single-sided accrual journal shape produced by PayrollController.Lock:
+            // earnings DR + statutory liabilities CR + employer statutory expense DR + net payable CR.
+            // This makes the seeded locked run a real reconciliation witness, not a hand-crafted total.
             glEntries.Add(new FinanceGlEntry
             {
-                TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = payrollRun.Id,
-                SourceEntityRef = payrollRun.Id.ToString()[..8], EventType = "PayrollPosting",
-                DebitAccount = "5100 - Salaries & Wages", CreditAccount = "2100 - Salaries Payable",
+                TenantId = tenantId, CompanyId = company.Id,
+                SourceModule = "Payroll", SourceEntityId = payrollRun.Id,
+                SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                DebitAccount = "5100 - Salaries & Wages", CreditAccount = string.Empty,
                 Amount = baseGross, Currency = "SAR", EntryDate = entryDate, Period = period,
-                Description = $"Salary posting {emp.FullName} {period}", PostedByName = "System",
+                Description = $"Payroll earning: {emp.EmployeeCode}", PostedByName = "System",
             });
+
+            foreach (var line in gosi.Lines)
+            {
+                if (line.EmployeeAmount > 0m)
+                    glEntries.Add(new FinanceGlEntry
+                    {
+                        TenantId = tenantId, CompanyId = company.Id,
+                        SourceModule = "Payroll", SourceEntityId = payrollRun.Id,
+                        SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                        DebitAccount = string.Empty, CreditAccount = "2101 - GOSI Employee Payable",
+                        Amount = line.EmployeeAmount, Currency = "SAR", EntryDate = entryDate, Period = period,
+                        Description = $"{PayrollGlDescriptions.DeductionPrefix}{line.Code}", PostedByName = "System",
+                    });
+                if (line.EmployerAmount > 0m)
+                    glEntries.Add(new FinanceGlEntry
+                    {
+                        TenantId = tenantId, CompanyId = company.Id,
+                        SourceModule = "Payroll", SourceEntityId = payrollRun.Id,
+                        SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                        DebitAccount = string.Empty, CreditAccount = "2106 - GOSI Employer Payable",
+                        Amount = line.EmployerAmount, Currency = "SAR", EntryDate = entryDate, Period = period,
+                        Description = $"{PayrollGlDescriptions.DeductionPrefix}{line.Code}", PostedByName = "System",
+                    });
+            }
 
             if (emrGosiTotal > 0m)
                 glEntries.Add(new FinanceGlEntry
                 {
-                    TenantId = tenantId, SourceModule = "Payroll", SourceEntityId = payrollRun.Id,
-                    SourceEntityRef = payrollRun.Id.ToString()[..8], EventType = "PayrollPosting",
-                    DebitAccount = "6100 - GOSI Employer Expense", CreditAccount = "2300 - GOSI Payable",
+                    TenantId = tenantId, CompanyId = company.Id,
+                    SourceModule = "Payroll", SourceEntityId = payrollRun.Id,
+                    SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                    DebitAccount = "5101 - Employer Statutory Expense", CreditAccount = string.Empty,
                     Amount = emrGosiTotal, Currency = "SAR", EntryDate = entryDate, Period = period,
-                    Description = $"GOSI employer {emp.FullName} {period}", PostedByName = "System",
+                    Description = "Employer statutory contributions (social insurance)", PostedByName = "System",
                 });
+
+            glEntries.Add(new FinanceGlEntry
+            {
+                TenantId = tenantId, CompanyId = company.Id,
+                SourceModule = "Payroll", SourceEntityId = payrollRun.Id,
+                SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                DebitAccount = string.Empty, CreditAccount = "2100 - Net Salary Payable",
+                Amount = netPay, Currency = "SAR", EntryDate = entryDate, Period = period,
+                Description = PayrollGlDescriptions.NetPayable, PostedByName = "System",
+            });
         }
 
         db.PayrollRunEmployees.AddRange(runEmployees);
@@ -529,17 +724,20 @@ public static class IntelliFlowDemoSeeder
         await db.SaveChangesAsync(ct);
 
         db.PayslipComponents.AddRange(payslipComponents);
+        db.PayrollDeductions.AddRange(payrollDeductions);
         db.PayrollSlips.AddRange(payrollSlips);
         db.FinanceGlEntries.AddRange(glEntries);
         await db.SaveChangesAsync(ct);
 
-        var glSalary = glEntries.Where(e => e.DebitAccount.StartsWith("5100")).Sum(e => e.Amount);
-        var glGosi   = glEntries.Where(e => e.DebitAccount.StartsWith("6100")).Sum(e => e.Amount);
+        var glDebits = glEntries.Where(e => !string.IsNullOrEmpty(e.DebitAccount)).Sum(e => e.Amount);
+        var glCredits = glEntries.Where(e => !string.IsNullOrEmpty(e.CreditAccount)).Sum(e => e.Amount);
+        if (glDebits != glCredits)
+            throw new InvalidOperationException($"IntelliFlow seed GL is not balanced: DR={glDebits:N2}, CR={glCredits:N2}.");
 
         logger.LogInformation(
             "IntelliFlowDemoSeeder: seeded IntelliFlow Systems — {Emp} employees ({Saudi} Saudi, {Expat} expat), " +
             "payroll {Period} gross={Gross:N2} ded={Ded:N2} net={Net:N2} SAR, GL={GL:N2} SAR.",
             allEmps.Length, saudiEmps.Length, expatEmps.Length,
-            period, totalGross, totalDed, totalNet, glSalary + glGosi);
+            period, totalGross, totalDed, totalNet, glDebits);
     }
 }

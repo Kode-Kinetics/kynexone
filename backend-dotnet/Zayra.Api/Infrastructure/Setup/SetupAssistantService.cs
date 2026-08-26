@@ -228,8 +228,8 @@ public sealed class SetupAssistantService : ISetupAssistantService
             .Select(x => x with
             {
                 Code = Code(x.Code, x.Name),
-                Start = TimeRx.IsMatch(x.Start ?? "") ? x.Start : "09:00",
-                End = TimeRx.IsMatch(x.End ?? "") ? x.End : "17:00",
+                Start = TimeRx.IsMatch(x.Start ?? "") ? x.Start! : "09:00",
+                End = TimeRx.IsMatch(x.End ?? "") ? x.End! : "17:00",
                 BreakMinutes = Math.Clamp(x.BreakMinutes, 0, 240),
                 Color = string.IsNullOrWhiteSpace(x.Color) ? "#2F6BFF" : x.Color.Trim(),
             }), x => x.Code);

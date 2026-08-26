@@ -119,15 +119,11 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      # The frontend deploys INDEPENDENTLY (Vercel), so its runtime-dependency advisories
-      # must not hard-block the BACKEND deploy pipeline. axios is patched (1.19.0). The
-      # remaining High advisories are Next.js transitive (postcss/sharp) whose only
-      # npm-audit "fix" is a breaking Next 15->16 major bump — tracked in
-      # docs/FRONTEND_DEP_REMEDIATION.md for a build-verified upgrade. Backend dependency
-      # gating stays HARD via the dotnet audit step above; this step is report-only.
-      - name: npm audit (frontend; report-only)
-        continue-on-error: true
-        run: npm audit --audit-level=high
+      # Runtime transitive overrides are pinned to patched postcss/sharp/nanoid releases.
+      # Keep this fail-closed so a future lockfile change cannot quietly reintroduce a
+      # High/Critical advisory into the independently deployed frontend.
+      - name: npm audit (frontend; fail on High/Critical)
+        run: npm audit --omit=dev --audit-level=high
         working-directory: frontend
 
   # ── G5: schema safety gates ───────────────────────────────────────────────────
@@ -205,6 +201,31 @@ jobs:
           set -euo pipefail
           # No CREATE DATABASE needed: 'ef database update' creates it when absent.
           dotnet tool run dotnet-ef database update --no-build
+
+      # `has-pending-model-changes` only compares the model with the snapshot. It cannot detect
+      # properties that leaked into an old snapshot/Designer without ever appearing in an Up()
+      # migration. Build the schema directly from today's model and require every modeled column
+      # (type + nullability included) to exist in the migration-built fresh database.
+      - name: Gate — migration schema contains every modeled column
+        working-directory: backend-dotnet/Zayra.Api
+        env:
+          ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=ci'
+        run: |
+          set -euo pipefail
+          PGPASSWORD=ci createdb -h localhost -U postgres zayra_model
+          dotnet tool run dotnet-ef dbcontext script --no-build --no-color \
+            | sed '/^\[/d' \
+            | PGPASSWORD=ci psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d zayra_model >/dev/null
+          q="SELECT table_name||'.'||column_name||':'||data_type||':'||is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name <> '__EFMigrationsHistory' ORDER BY 1;"
+          PGPASSWORD=ci psql -h localhost -U postgres -d zayra_fresh -t -A -c "$q" | sort > /tmp/migrated-cols.txt
+          PGPASSWORD=ci psql -h localhost -U postgres -d zayra_model -t -A -c "$q" | sort > /tmp/model-cols.txt
+          missing=$(comm -13 /tmp/migrated-cols.txt /tmp/model-cols.txt)
+          if [ -n "$missing" ]; then
+            echo "::error::Migration-built database is missing modeled columns or has incompatible types/nullability:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "Migration schema contains all $(wc -l < /tmp/model-cols.txt) modeled columns."
 
       # The previous accepted release = the last migration present on the merge base. Applying
       # only up to it, seeding, then upgrading is what proves an EXISTING customer survives the
@@ -291,6 +312,89 @@ jobs:
       - run: npx next build
         working-directory: frontend
 
+  # ── Browser: real tenant journey against the production-shaped Compose topology ──
+  # This is intentionally independent of the platform-admin setup project. A missing platform
+  # bootstrap account must never suppress the client-pilot proof for dashboard + HRM modules.
+  browser-pilot:
+    name: Browser Pilot (seeded tenant, core modules)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [backend-tests, frontend-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install browser test dependencies
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Start clean enterprise demo stack
+        env:
+          SEED_DEMO_DATA: 'true'
+          SEED_ENTERPRISE_TEST_DATA: 'true'
+          # Browser setup authenticates ten distinct enterprise personas and the dedicated auth
+          # spec then exercises ten real login outcomes. This override is isolated to the disposable
+          # CI stack; docker-compose and deployed environments retain the 10/minute default.
+          LOGIN_PERMIT_LIMIT: '25'
+          JWT_SIGNING_KEY: 'CI_ONLY_BROWSER_PILOT_SIGNING_KEY_64_CHARS_MINIMUM_12345678901234567890'
+        run: docker compose -p zayra-browser-ci up -d --build
+
+      - name: Wait for API and UI readiness
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 90); do
+            api=$(curl -s -o /tmp/api-ready.json -w '%{http_code}' http://127.0.0.1:5117/health/ready || true)
+            ui=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/login || true)
+            if [ "$api" = 200 ] && [ "$ui" = 200 ]; then
+              cat /tmp/api-ready.json
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -p zayra-browser-ci logs --no-color --tail=200
+          exit 1
+
+      - name: Run client-pilot browser gate
+        working-directory: frontend
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+          E2E_DEFAULT_TENANT_SLUG: intelliflow
+          E2E_DEFAULT_ADMIN_EMAIL: admin@intelliflow.com
+          E2E_DEFAULT_ADMIN_PASSWORD: 'IntelliFlow@2026!'
+          E2E_MIN_EMPLOYEES: '12'
+        run: npx playwright test --project=tenant-pilot
+
+      - name: Run complete enterprise browser and authorization gate
+        working-directory: frontend
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+        run: npx playwright test --project=chromium
+
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-pilot-results
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          if-no-files-found: ignore
+
+      - name: Capture stack logs on failure
+        if: failure()
+        run: docker compose -p zayra-browser-ci logs --no-color --tail=300
+
+      - name: Remove isolated CI stack
+        if: always()
+        run: docker compose -p zayra-browser-ci down -v
+
   # ── Migrate: apply EF Core migrations to the production DB BEFORE the deploy hook (P0-4) ──
   # render.yaml sets autoDeploy:false, so the deploy hook is the sole trigger and this job gates
   # it: schema is always applied ahead of the new code, preventing 42703/42P01 tenant-wide. Uses
@@ -298,7 +402,7 @@ jobs:
   migrate-backend:
     name: Apply DB Migrations (deploy gate)
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-typecheck, frontend-build, schema-gates, secret-scan, dependency-scan]
+    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
@@ -329,7 +433,7 @@ jobs:
   build-image:
     name: Build & push backend image (GHCR)
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-typecheck, frontend-build, schema-gates, secret-scan, dependency-scan]
+    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: read

@@ -27,12 +27,13 @@ public class FinanceLoanAdvanceMakerCheckerTests
             RequiresApproval = true,
             IsActive = true,
         };
-        db.LoanTypes.Add(loanType);
+        var employee = MakeEmployee(tenantId, "EMP-MONA", "Mona Saleh");
+        db.AddRange(loanType, employee);
         await db.SaveChangesAsync();
 
         var requester = MakeLoansController(db, tenantId, requesterId);
         var create = await requester.CreateLoan(
-            new CreateLoanRequest(Guid.NewGuid(), "Mona Saleh", loanType.Id, 6_000m, 3, null, null),
+            new CreateLoanRequest(employee.PublicId, employee.FullName, loanType.Id, 6_000m, 3, null, employee.Id),
             CancellationToken.None);
         Assert.IsType<OkObjectResult>(create);
 
@@ -77,11 +78,12 @@ public class FinanceLoanAdvanceMakerCheckerTests
             RequiresApproval = true,
             IsActive = true,
         };
-        db.LoanTypes.Add(loanType);
+        var employee = MakeEmployee(tenantId, "EMP-OMAR", "Omar Nasser");
+        db.AddRange(loanType, employee);
         await db.SaveChangesAsync();
 
         var result = await MakeLoansController(db, tenantId, Guid.NewGuid()).CreateLoan(
-            new CreateLoanRequest(Guid.NewGuid(), "Omar Nasser", loanType.Id, 10_000m, 5, null, null),
+            new CreateLoanRequest(employee.PublicId, employee.FullName, loanType.Id, 10_000m, 5, null, employee.Id),
             CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
@@ -98,7 +100,8 @@ public class FinanceLoanAdvanceMakerCheckerTests
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var requesterId = Guid.NewGuid();
-        db.AdvancePolicies.Add(new AdvancePolicy
+        var employee = MakeEmployee(tenantId, "EMP-SARA", "Sara Ahmed");
+        db.Add(new AdvancePolicy
         {
             TenantId = tenantId,
             PolicyName = "Standard",
@@ -106,11 +109,12 @@ public class FinanceLoanAdvanceMakerCheckerTests
             MaxAdvancesPerYear = 2,
             IsActive = true,
         });
+        db.Employees.Add(employee);
         await db.SaveChangesAsync();
 
         var requester = MakeAdvancesController(db, tenantId, requesterId);
         var create = await requester.Create(
-            new CreateAdvanceRequest(Guid.NewGuid(), "Sara Ahmed", 2_500m, "Installments", 2, null, null, null),
+            new CreateAdvanceRequest(employee.PublicId, employee.FullName, 2_500m, "Installments", 2, null, null, employee.Id),
             CancellationToken.None);
         Assert.IsType<OkObjectResult>(create);
 
@@ -134,7 +138,8 @@ public class FinanceLoanAdvanceMakerCheckerTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
-        db.AdvancePolicies.Add(new AdvancePolicy
+        var employee = MakeEmployee(tenantId, "EMP-KHALID", "Khalid Omar");
+        db.Add(new AdvancePolicy
         {
             TenantId = tenantId,
             PolicyName = "Standard",
@@ -142,10 +147,11 @@ public class FinanceLoanAdvanceMakerCheckerTests
             MaxAdvancesPerYear = 2,
             IsActive = true,
         });
+        db.Employees.Add(employee);
         await db.SaveChangesAsync();
 
         var result = await MakeAdvancesController(db, tenantId, Guid.NewGuid()).Create(
-            new CreateAdvanceRequest(Guid.NewGuid(), "Khalid Omar", 1_800m, "OneTime", 1, null, null, null),
+            new CreateAdvanceRequest(employee.PublicId, employee.FullName, 1_800m, "OneTime", 1, null, null, employee.Id),
             CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
@@ -163,6 +169,15 @@ public class FinanceLoanAdvanceMakerCheckerTests
             .Options;
         return new ZayraDbContext(options);
     }
+
+    private static Employee MakeEmployee(Guid tenantId, string code, string name) => new()
+    {
+        TenantId = tenantId,
+        EmployeeCode = code,
+        FullName = name,
+        EnglishName = name,
+        Status = EmployeeStatuses.Active,
+    };
 
     private static LoansController MakeLoansController(ZayraDbContext db, Guid tenantId, Guid userId)
     {

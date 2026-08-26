@@ -134,6 +134,7 @@ public record EmployeeDetailDto
 {
     // ── Identity ──────────────────────────────────────────────────────────────────
     public int Id { get; init; }
+    public Guid PublicId { get; init; }
     public Guid? UserAccountId { get; init; }
     public string EmployeeCode { get; init; } = string.Empty;
     public string FullName { get; init; } = string.Empty;
@@ -258,6 +259,7 @@ public record EmployeeDetailDto
         new()
         {
             Id                            = e.Id,
+            PublicId                      = e.PublicId,
             UserAccountId                 = e.UserAccountId,
             EmployeeCode                  = e.EmployeeCode,
             FullName                      = e.FullName,

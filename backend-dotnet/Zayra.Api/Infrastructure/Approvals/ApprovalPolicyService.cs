@@ -117,7 +117,8 @@ public class ApprovalPolicyService : IApprovalPolicyService
                 step.ApproverType,
                 approverId,
                 approverName,
-                step.IsFinalStep);
+                step.IsFinalStep,
+                step.ApproverRole);
         }).ToList();
 
         return new ResolvedApprovalPolicy(policy.Id, policy.Name, resolvedSteps);

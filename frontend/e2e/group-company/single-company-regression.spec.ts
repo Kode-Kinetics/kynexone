@@ -5,8 +5,8 @@
  *   • NO company switcher in the TopBar, NO "Group Overview" nav entry
  *   • employees page still loads
  *
- * Uses the repo's default seeded tenant (backend appsettings.json → SeedAdmin:
- * slug "zayra", admin@zayra.local / ChangeMe123!). Override via
+ * Uses the production-shaped IntelliFlow demo tenant, which the full E2E setup already
+ * authenticates inside the production login budget. Override via
  * E2E_DEFAULT_TENANT_SLUG / E2E_DEFAULT_ADMIN_EMAIL / E2E_DEFAULT_ADMIN_PASSWORD.
  */
 import { test, expect } from '@playwright/test';

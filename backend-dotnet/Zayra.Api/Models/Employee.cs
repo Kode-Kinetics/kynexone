@@ -26,6 +26,11 @@ public static class EmployeeStatuses
 public class Employee : INullableTenantOwned, ICompanyScopedOperational
 {
     public int Id { get; set; }
+    /// <summary>
+    /// Stable API/domain identifier used by modules whose public contracts use GUID employee references.
+    /// The integer <see cref="Id"/> remains the internal relational key for backward compatibility.
+    /// </summary>
+    public Guid PublicId { get; set; } = Guid.NewGuid();
     public Guid? TenantId { get; set; }
     public Guid? UserAccountId { get; set; }
     public string EmployeeCode { get; set; } = string.Empty;

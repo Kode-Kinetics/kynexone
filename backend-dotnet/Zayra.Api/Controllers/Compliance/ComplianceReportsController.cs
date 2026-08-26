@@ -71,6 +71,48 @@ public class ComplianceReportsController : ControllerBase
         });
     }
 
+    // GET /api/compliance/reports/employee-identity-integrity
+    // Surfaces legacy GUID-only rows that could not be proven against Employee.PublicId. These rows
+    // are never repaired by name; an administrator must reconcile them using authoritative source IDs.
+    [HttpGet("employee-identity-integrity")]
+    [Authorize(Roles = "Admin,HR Manager")]
+    public async Task<IActionResult> EmployeeIdentityIntegrity(CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        var contracts = await _db.EmployeeContracts.CountAsync(x => x.TenantId == tid && !x.IsDeleted &&
+            !_db.Employees.Any(e => e.TenantId == tid && !e.IsDeleted && e.PublicId == x.EmployeeId), ct);
+        var visas = await _db.VisaRecords.CountAsync(x => x.TenantId == tid && !x.IsDeleted &&
+            !_db.Employees.Any(e => e.TenantId == tid && !e.IsDeleted && e.PublicId == x.EmployeeId), ct);
+        var passports = await _db.PassportRecords.CountAsync(x => x.TenantId == tid && !x.IsDeleted &&
+            !_db.Employees.Any(e => e.TenantId == tid && !e.IsDeleted && e.PublicId == x.EmployeeId), ct);
+        var workPermits = await _db.WorkPermitRecords.CountAsync(x => x.TenantId == tid && !x.IsDeleted &&
+            !_db.Employees.Any(e => e.TenantId == tid && !e.IsDeleted && e.PublicId == x.EmployeeId), ct);
+        var renewals = await _db.ComplianceRenewals.CountAsync(x => x.TenantId == tid &&
+            !_db.Employees.Any(e => e.TenantId == tid && !e.IsDeleted && e.PublicId == x.EmployeeId), ct);
+        var reminders = await _db.ComplianceReminders.CountAsync(x => x.TenantId == tid &&
+            !_db.Employees.Any(e => e.TenantId == tid && !e.IsDeleted && e.PublicId == x.EmployeeId), ct);
+        var onboardingTasks = await _db.OnboardingTasks.CountAsync(x => x.TenantId == tid && x.EmployeeId.HasValue &&
+            !_db.Employees.Any(e => e.TenantId == tid && !e.IsDeleted && e.PublicId == x.EmployeeId.Value), ct);
+        var loans = await _db.EmployeeLoans.CountAsync(x => x.TenantId == tid && !x.IsDeleted &&
+            (!x.EmployeeIntId.HasValue || !_db.Employees.Any(e => e.TenantId == tid && !e.IsDeleted &&
+                e.Id == x.EmployeeIntId.Value && e.PublicId == x.EmployeeId)), ct);
+        var advances = await _db.SalaryAdvances.CountAsync(x => x.TenantId == tid && !x.IsDeleted &&
+            (!x.EmployeeIntId.HasValue || !_db.Employees.Any(e => e.TenantId == tid && !e.IsDeleted &&
+                e.Id == x.EmployeeIntId.Value && e.PublicId == x.EmployeeId)), ct);
+        var bonuses = await _db.EmployeeBonuses.CountAsync(x => x.TenantId == tid && !x.IsDeleted &&
+            (!x.EmployeeIntId.HasValue || !_db.Employees.Any(e => e.TenantId == tid && !e.IsDeleted &&
+                e.Id == x.EmployeeIntId.Value && e.PublicId == x.EmployeeId)), ct);
+
+        var total = contracts + visas + passports + workPermits + renewals + reminders + onboardingTasks + loans + advances + bonuses;
+        return Ok(new
+        {
+            status = total == 0 ? "Healthy" : "RequiresReconciliation",
+            totalUnresolved = total,
+            counts = new { contracts, visas, passports, workPermits, renewals, reminders, onboardingTasks, loans, advances, bonuses },
+            remediation = "Reconcile only from authoritative employee public/internal IDs; never infer from employee name.",
+        });
+    }
+
     // GET /api/compliance/reports/expiry-alerts
     [HttpGet("expiry-alerts")]
     public async Task<IActionResult> ExpiryAlerts([FromQuery] int withinDays = 90, CancellationToken ct = default)

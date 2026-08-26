@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
+using Amazon.S3;
+using System.Net;
 using Xunit;
 using Zayra.Api.Infrastructure.Documents;
 
@@ -30,6 +32,19 @@ public class S3DocumentStorageTests
                 throw new InvalidOperationException($"NoSuchKey: {key}");
             return Task.FromResult(entry.Data);
         }
+    }
+
+    private sealed class MissingObjectS3 : IS3Primitives
+    {
+        public Task PutAsync(string bucket, string key, Stream content, string contentType, CancellationToken ct) =>
+            Task.CompletedTask;
+
+        public Task<byte[]> GetBytesAsync(string bucket, string key, CancellationToken ct) =>
+            Task.FromException<byte[]>(new AmazonS3Exception("missing")
+            {
+                StatusCode = HttpStatusCode.NotFound,
+                ErrorCode = "NoSuchKey",
+            });
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -87,6 +102,16 @@ public class S3DocumentStorageTests
         // Tenant B tries to read Tenant A's storage key — must be denied.
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => storage.GetBytesAsync(tenantB, doc.StorageUrl));
+    }
+
+    [Fact]
+    public async Task GetBytesAsync_MissingS3Object_UsesProviderNeutralFileNotFoundException()
+    {
+        var tenantId = Guid.NewGuid();
+        var storage = MakeStorage(new MissingObjectS3());
+
+        await Assert.ThrowsAsync<FileNotFoundException>(() =>
+            storage.GetBytesAsync(tenantId, $"{tenantId:N}/documents/missing.pdf"));
     }
 
     [Fact]

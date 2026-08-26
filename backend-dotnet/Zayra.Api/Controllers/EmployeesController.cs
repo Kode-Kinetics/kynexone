@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
@@ -110,7 +111,7 @@ public class EmployeesController : ControllerBase
         query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(e => e.FullName).Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, e.Branch ?? string.Empty, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate, e.ReadinessState, e.ActivationBlockersCount))
+            .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, e.Branch ?? string.Empty, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate, e.ReadinessState, e.ActivationBlockersCount, e.PublicId))
             .ToListAsync(cancellationToken);
         return Ok(new PagedResult<EmployeeListItemDto>(items, total, page, pageSize));
     }
@@ -2017,6 +2018,25 @@ public class EmployeesController : ControllerBase
     {
         var tenantId = RequireTenant();
         if (!await _db.EmployeeDrafts.AnyAsync(x => x.Id == draftId && x.TenantId == tenantId, cancellationToken)) return NotFound();
+        var storageUrl = request.StorageUrl?.Trim() ?? string.Empty;
+        if (storageUrl.Length == 0)
+            return BadRequest(new { message = "A storage key is required. Upload the file before attaching it to a draft." });
+
+        try
+        {
+            // This metadata-only endpoint remains backwards compatible with the upload-then-attach
+            // flow, but only accepts an object the active tenant can actually read.
+            _ = await _documents.GetBytesAsync(tenantId, storageUrl, cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return BadRequest(new { message = "The referenced document does not exist. Upload the file before attaching it to a draft." });
+        }
+        catch (InvalidOperationException)
+        {
+            return BadRequest(new { message = "The referenced document is not a valid object for the active tenant." });
+        }
+
         var document = new EmployeeDocument
         {
             TenantId = tenantId,
@@ -2024,7 +2044,7 @@ public class EmployeesController : ControllerBase
             DocumentType = request.DocumentType.Trim(),
             FileName = request.FileName.Trim(),
             ContentType = request.ContentType.Trim(),
-            StorageUrl = request.StorageUrl.Trim(),
+            StorageUrl = storageUrl,
             IsRequired = request.IsRequired,
             ExpiryDate = request.ExpiryDate
         };
@@ -2087,15 +2107,27 @@ public class EmployeesController : ControllerBase
                 return Forbid();
         }
 
-        var path = _documents.ResolvePath(document.StorageUrl);
-        if (!System.IO.File.Exists(path)) return NotFound(new { message = "Stored document file was not found." });
+        byte[] contents;
+        try
+        {
+            contents = await _documents.GetBytesAsync(tenantId, document.StorageUrl, cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return NotFound(new { message = "Stored document file was not found." });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger?.LogWarning(ex, "Rejected invalid storage key for employee document {DocumentId}", documentId);
+            return NotFound(new { message = "Stored document file was not found." });
+        }
 
         document.LastDownloadedAtUtc = DateTime.UtcNow;
         document.LastDownloadedBy = GetUserId();
         await _db.SaveChangesAsync(cancellationToken);
         await Audit("employee.document_downloaded", "EmployeeDocument", documentId.ToString(), cancellationToken);
 
-        return PhysicalFile(path, document.ContentType, document.FileName);
+        return File(contents, document.ContentType, document.FileName);
     }
 
     [HttpPost("drafts/{draftId:guid}/submit")]
@@ -2264,6 +2296,8 @@ public class EmployeesController : ControllerBase
                     var draftDocuments = await _db.EmployeeDocuments.Where(x => x.TenantId == tenantId && x.DraftId == draftId).ToListAsync(cancellationToken);
                     foreach (var document in draftDocuments) document.EmployeeId = employee.Id;
                     employee.UserAccountId = await CreateEmployeeUserAccount(employee, cancellationToken);
+                    await _db.LinkOnboardingTasksForActivatedDraftAsync(
+                        tenantId, draftId, employee, cancellationToken);
                     draft.Status = "Activated";
                     draft.CurrentStep = "Activated";
                     draft.ApprovedAtUtc = DateTime.UtcNow;
@@ -2431,11 +2465,21 @@ public class EmployeesController : ControllerBase
     [HttpPost("{id:int}/documents")]
     [HasPermission("employees.documents")]
     [RequestSizeLimit(10_485_760)]
-    public async Task<ActionResult<EmployeeDocumentDto>> UploadEmployeeDocument(int id, [FromForm] EmployeeDocumentUploadMetadata request, [FromForm] IFormFile file, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
+    [Consumes("multipart/form-data")]
+    public async Task<ActionResult<EmployeeDocumentDto>> UploadEmployeeDocument(int id, [FromForm] EmployeeDocumentUploadForm form, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         try
         {
-            var document = await employeeManagement.UploadDocumentAsync(RequireTenant(), id, request, file, Context(), cancellationToken);
+            var request = new EmployeeDocumentUploadMetadata(
+                form.DocumentType,
+                form.DocumentCategory,
+                form.IssueDate,
+                form.ExpiryDate,
+                form.RenewalReminderDate,
+                form.IsRequired,
+                form.ApprovalStatus,
+                form.Notes);
+            var document = await employeeManagement.UploadDocumentAsync(RequireTenant(), id, request, form.File, Context(), cancellationToken);
             return Created($"/api/employees/{id}/documents/{document.Id}", EmployeeDocumentDto.Project(document));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -3876,7 +3920,7 @@ public class EmployeesController : ControllerBase
     private bool CanViewSensitive() => CanEditSensitive() || User.IsInRole("Payroll Officer") || User.HasClaim("permission", "employees.sensitive");
     private Task Notify(string title, string message, string entity, string? entityId, CancellationToken cancellationToken) => _notifications.NotifyAsync(RequireTenant(), null, title, message, entity, entityId, cancellationToken);
 
-    private EmployeeListItemDto ToListItem(Employee employee) => new(employee.Id, employee.EmployeeCode, employee.FullName, employee.ArabicName, employee.Department, employee.Designation, employee.Branch, employee.ManagerEmployeeId, employee.Status, employee.ProfileCompletenessScore, employee.VisaExpiryDate, employee.PassportExpiryDate, employee.ReadinessState, employee.ActivationBlockersCount);
+    private EmployeeListItemDto ToListItem(Employee employee) => new(employee.Id, employee.EmployeeCode, employee.FullName, employee.ArabicName, employee.Department, employee.Designation, employee.Branch, employee.ManagerEmployeeId, employee.Status, employee.ProfileCompletenessScore, employee.VisaExpiryDate, employee.PassportExpiryDate, employee.ReadinessState, employee.ActivationBlockersCount, employee.PublicId);
     private static string FirstNonEmpty(params string[] values) => values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "Unnamed Employee";
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id") ?? throw new UnauthorizedAccessException("Tenant claim missing."));
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
@@ -3889,7 +3933,7 @@ public class EmployeesController : ControllerBase
     private Task Audit(string action, string entity, string? entityId, CancellationToken cancellationToken) => _audit.WriteAsync(action, entity, entityId, new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant()), null, cancellationToken);
 }
 
-public record EmployeeListItemDto(int Id, string EmployeeCode, string FullName, string ArabicName, string Department, string Designation, string Branch, int? ManagerEmployeeId, string Status, decimal ProfileCompletenessScore, DateOnly? VisaExpiryDate, DateOnly? PassportExpiryDate, string ReadinessState, int ActivationBlockersCount);
+public record EmployeeListItemDto(int Id, string EmployeeCode, string FullName, string ArabicName, string Department, string Designation, string Branch, int? ManagerEmployeeId, string Status, decimal ProfileCompletenessScore, DateOnly? VisaExpiryDate, DateOnly? PassportExpiryDate, string ReadinessState, int ActivationBlockersCount, Guid PublicId = default);
 
 // ── Duplicate-person detection DTOs (contract mirrors frontend api/employees.ts) ──────────────────
 public record DuplicateIdentityValueDto(string? FieldKey, string? Value);
@@ -3962,4 +4006,14 @@ public record EmployeeReportsDto(int TotalHeadcount, int ActiveEmployees, int Ne
 public record EmployeeAiResponseDto(string Answer, IReadOnlyCollection<EmployeeListItemDto> Employees);
 public record EmployeeDraftRequest(string? CurrentStep, string? EnglishName, string? ArabicName, string? PersonalEmail, string? WorkEmail, string? Phone, string? Gender, DateOnly? DateOfBirth, string? MaritalStatus, string? EmergencyContactName, string? EmergencyContactPhone, string? Nationality, string? CountryCode, string? Department, string? Designation, string? Branch, string? WorkLocation, int? ManagerEmployeeId, DateTime? JoiningDate, string? ContractType, string? Grade, string? CostCenter, DateOnly? ContractStartDate, DateOnly? ContractEndDate, DateOnly? ProbationEndDate, string? PayrollProfileCode, decimal? Salary, string? BankName, string? BankIban, string? WpsBankDetails, string? ShiftPolicyCode, string? LeavePolicyCode, string? SponsorName, DateOnly? PassportIssueDate, string? PassportNumber, DateOnly? PassportExpiryDate, DateOnly? VisaIssueDate, string? VisaNumber, DateOnly? VisaExpiryDate, string? IqamaNumber, string? MuqeemNumber, string? GosiReference, string? QiwaContractNumber, string? EmiratesId, string? LaborCardNumber, string? VisaFileNumber, string? Qid, string? WorkPermitNumber, DateOnly? WorkPermitIssueDate, string? CivilId, string? ResidencyNumber, DateOnly? ResidencyIssueDate);
 public record EmployeeDocumentUploadRequest(string DocumentType, bool IsRequired, DateOnly? ExpiryDate, IFormFile File);
+public record EmployeeDocumentUploadForm(
+    [Required, MaxLength(80)] string DocumentType,
+    [MaxLength(80)] string? DocumentCategory,
+    DateOnly? IssueDate,
+    DateOnly? ExpiryDate,
+    DateOnly? RenewalReminderDate,
+    bool IsRequired,
+    [MaxLength(40)] string? ApprovalStatus,
+    [MaxLength(1000)] string? Notes,
+    [Required] IFormFile File);
 public record EmployeeTemplateDto(string TemplateType, string Language, string Title, string Body);

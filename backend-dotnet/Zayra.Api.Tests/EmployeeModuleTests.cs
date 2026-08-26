@@ -666,7 +666,10 @@ public class EmployeeModuleTests
         {
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, effectiveUserId.ToString()),
-            new Claim(ClaimTypes.Role, "Admin")
+            new Claim(ClaimTypes.Role, "Admin"),
+            new Claim("permission", "employees.read"),
+            new Claim("permission", "employees.write"),
+            new Claim("permission", "employees.sensitive")
         }, "Test"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } };
         return controller;

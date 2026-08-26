@@ -31,6 +31,7 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
     public async Task<EnterpriseIdentitySettingsDto> UpdateSettingsAsync(Guid tenantId, UpdateEnterpriseIdentitySettingsRequest request, RequestContext context, CancellationToken ct)
     {
         var setting = await EnsureSettingsAsync(tenantId, ct);
+        var originalValues = _db.Entry(setting).CurrentValues.Clone();
         if (request.SamlEnabled.HasValue) setting.SamlEnabled = request.SamlEnabled.Value;
         if (request.OidcEnabled.HasValue) setting.OidcEnabled = request.OidcEnabled.Value;
         if (request.ScimEnabled.HasValue) setting.ScimEnabled = request.ScimEnabled.Value;
@@ -48,7 +49,14 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
             setting.EnforceSsoLogin = request.EnforceSsoLogin.Value;
             var validation = Validate(setting);
             if (setting.EnforceSsoLogin && !validation.IsValid)
-                throw new InvalidOperationException("SSO enforcement requires valid SAML or OIDC settings and at least one allowed email domain.");
+            {
+                // This build publishes provider metadata but does not consume SAML assertions or
+                // OIDC callbacks. Restore every staged setting so a rejected request cannot be
+                // flushed by a later SaveChanges call on the same scoped DbContext.
+                _db.Entry(setting).CurrentValues.SetValues(originalValues);
+                throw new InvalidOperationException(
+                    "SSO enforcement is unavailable until a federation adapter is installed; local login remains enabled.");
+            }
         }
 
         setting.UpdatedAtUtc = DateTime.UtcNow;
@@ -278,6 +286,8 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
     private static EnterpriseIdentityValidationResult Validate(TenantIdentityProviderSetting setting)
     {
         var errors = new List<string>();
+        if (setting.EnforceSsoLogin)
+            errors.Add("sso_enforcement_unavailable_in_this_build");
         if (setting.EnforceSsoLogin && !setting.SamlEnabled && !setting.OidcEnabled)
             errors.Add("sso_enforcement_requires_saml_or_oidc");
         if ((setting.SamlEnabled || setting.OidcEnabled || setting.EnforceSsoLogin) && ParseDomains(setting.AllowedDomainsCsv).Count == 0)

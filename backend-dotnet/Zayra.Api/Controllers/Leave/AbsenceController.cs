@@ -60,6 +60,8 @@ public class AbsenceController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(req.EmployeeId)) return Forbid();
 
         var employee = await _db.Employees
             .FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId, ct);
@@ -128,8 +130,15 @@ public class AbsenceController : ControllerBase
         if (absence is null)
             return BadRequest(new { message = "Absence record not found." });
 
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!(User.IsInRole("Admin") || User.IsInRole("HR Manager"))
+            && scope.CallerEmployeeId != absence.EmployeeId) return Forbid();
+
         if (absence.IsRegularized)
             return BadRequest(new { message = "This absence has already been regularized." });
+        if (await _db.AbsenceRegularizationRequests.AnyAsync(x => x.TenantId == tenantId
+                && x.AbsenceRecordId == req.AbsenceRecordId && x.Status == "Pending", ct))
+            return Conflict(new { message = "A regularization request is already pending." });
 
         var employee = await _db.Employees
             .FirstOrDefaultAsync(e => e.Id == absence.EmployeeId && e.TenantId == tenantId, ct);
@@ -160,6 +169,8 @@ public class AbsenceController : ControllerBase
         var regularization = await _db.AbsenceRegularizationRequests
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (regularization is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(regularization.EmployeeId)) return Forbid();
 
         if (regularization.Status != "Pending")
             return BadRequest(new { message = "Only pending regularization requests can be approved." });
@@ -190,6 +201,8 @@ public class AbsenceController : ControllerBase
         var regularization = await _db.AbsenceRegularizationRequests
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (regularization is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(regularization.EmployeeId)) return Forbid();
 
         if (regularization.Status != "Pending")
             return BadRequest(new { message = "Only pending regularization requests can be rejected." });

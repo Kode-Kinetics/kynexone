@@ -183,6 +183,40 @@ public class OffboardingController : ControllerBase
         var off = await Find(id, ct);
         if (off is null) return NotFound();
         if (off.Status != "InProgress") return BadRequest(new { message = "Offboarding is not in progress." });
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        if (off.LastWorkingDay == default || off.LastWorkingDay > today)
+            return Conflict(new
+            {
+                error = "last_working_day_not_reached",
+                message = off.LastWorkingDay == default
+                    ? "A valid last working day is required before offboarding can be completed."
+                    : $"Offboarding cannot be completed before the last working day ({off.LastWorkingDay:yyyy-MM-dd})."
+            });
+        if (!off.AssetsReturned || !off.KnowledgeHandover
+            || off.ExitInterviewStatus is not ("Completed" or "Waived"))
+            return Conflict(new
+            {
+                error = "offboarding_checklist_incomplete",
+                message = "Complete asset return and knowledge handover, and complete or waive the exit interview before archiving the employee.",
+                off.AssetsReturned,
+                off.KnowledgeHandover,
+                off.ExitInterviewStatus,
+            });
+
+        var paidSettlement = await _db.EmployeeFinalSettlements.AsNoTracking()
+            .AnyAsync(s => s.TenantId == off.TenantId
+                        && s.OffboardingId == off.Id
+                        && s.EmployeeId == off.EmployeeId
+                        && s.Status == FinalSettlementStatuses.Paid, ct);
+        if (!paidSettlement)
+            return Conflict(new
+            {
+                error = "final_settlement_not_paid",
+                message = "The authoritative final settlement must be paid before offboarding can be completed."
+            });
+        off.FinalSettlementDone = true;
+
         off.Status = "Completed";
         off.CompletedAtUtc = DateTime.UtcNow;
         off.UpdatedAtUtc = DateTime.UtcNow;

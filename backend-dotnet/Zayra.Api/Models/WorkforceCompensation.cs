@@ -129,6 +129,8 @@ public class OvertimeRequest : ITenantOwned, ICompanyScopedOperational
     public string Source { get; set; } = "Manual";
     public string Reason { get; set; } = string.Empty;
     public string Status { get; set; } = "PendingManager";
+    /// <summary>Optimistic version for manager/HR/final decision compare-and-swap.</summary>
+    public int DecisionVersion { get; set; }
     public Guid? AttendanceDailyRecordId { get; set; }
     public Guid? ProjectId { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -462,6 +464,15 @@ public class PayrollAdjustment : ITenantOwned
     public decimal Amount { get; set; }
     public string Reason { get; set; } = string.Empty;
     public string Status { get; set; } = "Pending";
+    /// <summary>Stable business source type for exactly-once externally-created adjustments.</summary>
+    public string SourceType { get; set; } = string.Empty;
+    /// <summary>Stable source aggregate id; unique with TenantId/SourceType when populated.</summary>
+    public Guid? SourceId { get; set; }
+}
+
+public static class PayrollAdjustmentSources
+{
+    public const string LeaveEncashment = "LeaveEncashment";
 }
 
 public class PayrollApproval : ITenantOwned

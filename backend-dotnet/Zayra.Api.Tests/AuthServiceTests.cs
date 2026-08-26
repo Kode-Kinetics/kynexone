@@ -1,7 +1,12 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
@@ -121,6 +126,129 @@ public class AuthServiceTests
     }
 
     [Fact]
+    public async Task SecondSuccessfulLogin_DoesNotRevokeExistingTenantAccessSession()
+    {
+        var (db, user, tenant) = await SeedUserAsync();
+        user.IsGroupScope = true;
+        await db.SaveChangesAsync();
+        var auth = BuildService(db);
+
+        await auth.LoginAsync(
+            new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+        var firstStamp = TenantSessionSecurity.StampValue(user);
+        var principal = TenantPrincipal(user, tenant, firstStamp);
+        Assert.True(await TenantSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None));
+
+        await auth.LoginAsync(
+            new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+
+        Assert.Equal(firstStamp, TenantSessionSecurity.StampValue(user));
+        Assert.True(await TenantSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None));
+        Assert.Equal(2, await db.RefreshTokens.CountAsync(x => x.RevokedAtUtc == null));
+    }
+
+    [Fact]
+    public async Task FailedLoginBelowLockoutThreshold_DoesNotRevokeExistingTenantAccessSession()
+    {
+        var (db, user, tenant) = await SeedUserAsync(maxFailedAttempts: 5);
+        user.IsGroupScope = true;
+        await db.SaveChangesAsync();
+        var auth = BuildService(db);
+        await auth.LoginAsync(
+            new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+        var originalStamp = TenantSessionSecurity.StampValue(user);
+        var principal = TenantPrincipal(user, tenant, originalStamp);
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => auth.LoginAsync(
+            new LoginRequest("admin@zayra.local", "wrong-password", "zayra"), TestCtx, CancellationToken.None));
+
+        Assert.Equal(originalStamp, TenantSessionSecurity.StampValue(user));
+        Assert.True(await TenantSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None));
+    }
+
+    private static ClaimsPrincipal TenantPrincipal(User user, Tenant tenant, string stamp)
+    {
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new("tenant_id", tenant.Id.ToString()),
+            new(TenantSessionSecurity.SessionStampClaim, stamp),
+            new(ClaimTypes.Role, "Admin"),
+            new("permission", "dashboard.read")
+        };
+        claims.AddRange(EntityScopeClaims.Build(EntityScopeDescriptor.Group, Array.Empty<EntityAccessGrant>()));
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
+    }
+
+    [Fact]
+    public async Task RefreshRotation_PreservesAbsoluteFamilyExpiry()
+    {
+        var (db, _, _) = await SeedUserAsync();
+        var auth = BuildService(db);
+        var login = await auth.LoginAsync(
+            new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+        var parent = await db.RefreshTokens.SingleAsync();
+        var absoluteExpiry = DateTime.UtcNow.AddHours(2);
+        parent.ExpiresAtUtc = absoluteExpiry;
+        await db.SaveChangesAsync();
+
+        await auth.RefreshAsync(new RefreshTokenRequest(login.Tokens!.RefreshToken), TestCtx, CancellationToken.None);
+
+        var descendant = await db.RefreshTokens.SingleAsync(x => x.Id != parent.Id);
+        Assert.Equal(absoluteExpiry, descendant.ExpiresAtUtc);
+    }
+
+    [Fact]
+    public async Task Logout_InvalidatesAlreadyIssuedTenantAccessSession()
+    {
+        var (db, user, tenant) = await SeedUserAsync();
+        user.IsGroupScope = true;
+        await db.SaveChangesAsync();
+        var auth = BuildService(db);
+        var login = await auth.LoginAsync(
+            new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+        var oldStamp = TenantSessionSecurity.StampValue(user);
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new("tenant_id", tenant.Id.ToString()),
+            new(TenantSessionSecurity.SessionStampClaim, oldStamp),
+            new(ClaimTypes.Role, "Admin"),
+            new("permission", "dashboard.read")
+        };
+        claims.AddRange(EntityScopeClaims.Build(EntityScopeDescriptor.Group, Array.Empty<EntityAccessGrant>()));
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
+        Assert.True(await TenantSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None));
+
+        await auth.LogoutAsync(new LogoutRequest(login.Tokens!.RefreshToken), TestCtx, CancellationToken.None);
+
+        Assert.False(await TenantSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Refresh_RelationalRotationConsumesOldTokenOnce()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseSqlite(connection).Options);
+        await db.Database.EnsureCreatedAsync();
+        await SeedUserAsync(db);
+        var auth = BuildService(db);
+
+        var login = await auth.LoginAsync(
+            new LoginRequest("admin@zayra.local", "CorrectPassword1!", "zayra"), TestCtx, CancellationToken.None);
+        var originalToken = login.Tokens!.RefreshToken;
+        var rotated = await auth.RefreshAsync(new RefreshTokenRequest(originalToken), TestCtx, CancellationToken.None);
+
+        Assert.NotEqual(originalToken, rotated.RefreshToken);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => auth.RefreshAsync(new RefreshTokenRequest(originalToken), TestCtx, CancellationToken.None));
+        Assert.Equal(2, await db.RefreshTokens.CountAsync());
+        Assert.Empty(await db.RefreshTokens.Where(x => x.RevokedAtUtc == null).ToListAsync());
+        Assert.True(await db.AuditLogs.AnyAsync(x => x.Action == "auth.refresh_reuse_detected"));
+    }
+
+    [Fact]
     public async Task Login_UsesTenantRefreshTokenExpiryPolicy()
     {
         var (db, _, _) = await SeedUserAsync();
@@ -188,6 +316,45 @@ public class AuthServiceTests
             () => auth.RefreshAsync(new RefreshTokenRequest(login.Tokens!.RefreshToken), TestCtx, CancellationToken.None));
 
         Assert.NotNull((await db.RefreshTokens.SingleAsync()).RevokedAtUtc);
+    }
+
+    [Fact]
+    public async Task AcceptInvitation_ConsumesTokenAndRejectsReplay()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseSqlite(connection).Options);
+        await db.Database.EnsureCreatedAsync();
+        var (_, user, _) = await SeedUserAsync(db);
+        const string invitationToken = "one-time-invitation-token";
+        db.EmployeeUserAccounts.Add(new EmployeeUserAccount
+        {
+            TenantId = user.TenantId,
+            EmployeeId = 42,
+            UserId = user.Id,
+            AccessMode = AccessModes.EssOnly,
+            Status = "Invited",
+            RequiresPasswordSetup = true,
+            InvitationTokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(invitationToken))),
+            InvitationExpiresAtUtc = DateTime.UtcNow.AddHours(1)
+        });
+        await db.SaveChangesAsync();
+
+        var auth = BuildService(db);
+        var request = new AcceptInvitationRequest(user.Email, invitationToken, "NewPassword1!", "zayra");
+        var accepted = await auth.AcceptInvitationAsync(request, TestCtx, CancellationToken.None);
+
+        Assert.False(string.IsNullOrWhiteSpace(accepted.AccessToken));
+        var link = await db.EmployeeUserAccounts.SingleAsync();
+        Assert.Equal(string.Empty, link.InvitationTokenHash);
+        Assert.Null(link.InvitationExpiresAtUtc);
+        Assert.NotNull(link.InvitationAcceptedAtUtc);
+        Assert.False(link.RequiresPasswordSetup);
+        Assert.Equal("Active", link.Status);
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => auth.AcceptInvitationAsync(request, TestCtx, CancellationToken.None));
+        Assert.Single(await db.RefreshTokens.ToListAsync());
     }
 
     // ── Tenant-mandated MFA enforcement ───────────────────────────────────────
@@ -386,6 +553,261 @@ public class AuthServiceTests
         var shouldSeed = string.Equals(simulatedEnvValue, "true", StringComparison.OrdinalIgnoreCase);
         Assert.True(shouldSeed, "Demo seeder must run when SEED_DEMO_DATA=true");
     }
+}
+
+[Trait("Category", "Integration")]
+[Collection("Integration")]
+public sealed class AuthRefreshTokenSecurityTests
+{
+    private readonly PostgresFixture _fixture;
+    private static readonly RequestContext Context = new("203.0.113.10", "refresh-security-tests");
+
+    public AuthRefreshTokenSecurityTests(PostgresFixture fixture) => _fixture = fixture;
+
+    [Fact]
+    public async Task ConcurrentRotation_TwoPostgresContexts_CreatesExactlyOneDescendant()
+    {
+        var seeded = await SeedUserAsync();
+        string originalToken;
+        await using (var loginDb = _fixture.CreateDb())
+        {
+            var login = await BuildService(loginDb).LoginAsync(
+                new LoginRequest(seeded.Email, seeded.Password, seeded.TenantSlug),
+                Context,
+                CancellationToken.None);
+            originalToken = login.Tokens!.RefreshToken;
+        }
+
+        await using var dbA = _fixture.CreateDb();
+        await using var dbB = _fixture.CreateDb();
+        var authA = BuildService(dbA);
+        var authB = BuildService(dbB);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task<bool> AttemptAsync(AuthService service)
+        {
+            await gate.Task;
+            try
+            {
+                await service.RefreshAsync(new RefreshTokenRequest(originalToken), Context, CancellationToken.None);
+                return true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        var attemptA = AttemptAsync(authA);
+        var attemptB = AttemptAsync(authB);
+        gate.SetResult();
+        var outcomes = await Task.WhenAll(attemptA, attemptB);
+
+        Assert.Single(outcomes, x => x);
+        Assert.Single(outcomes, x => !x);
+
+        await using var verify = _fixture.CreateDb();
+        var tokens = await verify.RefreshTokens.AsNoTracking()
+            .Where(x => x.UserId == seeded.UserId)
+            .ToListAsync();
+        Assert.Equal(2, tokens.Count);
+        var original = Assert.Single(tokens, x => x.TokenHash == HashToken(originalToken));
+        var descendant = Assert.Single(tokens, x => x.TokenHash != HashToken(originalToken));
+        Assert.Single(tokens.Select(x => x.FamilyId).Distinct());
+        Assert.Equal(descendant.TokenHash, original.ReplacedByTokenHash);
+        Assert.All(tokens, token => Assert.NotNull(token.RevokedAtUtc));
+        Assert.True(await verify.AuditLogs.AnyAsync(x =>
+            x.TenantId == seeded.TenantId && x.Action == "auth.refresh_reuse_detected"));
+    }
+
+    [Fact]
+    public async Task ReusingConsumedAncestor_RevokesEveryActiveDescendantInFamily()
+    {
+        var seeded = await SeedUserAsync();
+        string originalToken;
+        await using (var db = _fixture.CreateDb())
+        {
+            var auth = BuildService(db);
+            var login = await auth.LoginAsync(
+                new LoginRequest(seeded.Email, seeded.Password, seeded.TenantSlug), Context, CancellationToken.None);
+            originalToken = login.Tokens!.RefreshToken;
+            var child = await auth.RefreshAsync(new RefreshTokenRequest(originalToken), Context, CancellationToken.None);
+            await auth.RefreshAsync(new RefreshTokenRequest(child.RefreshToken), Context, CancellationToken.None);
+        }
+
+        await using (var replayDb = _fixture.CreateDb())
+        {
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => BuildService(replayDb).RefreshAsync(
+                new RefreshTokenRequest(originalToken), Context, CancellationToken.None));
+        }
+
+        await using var verify = _fixture.CreateDb();
+        var tokens = await verify.RefreshTokens.AsNoTracking()
+            .Where(x => x.UserId == seeded.UserId)
+            .ToListAsync();
+        Assert.Equal(3, tokens.Count);
+        Assert.Single(tokens.Select(x => x.FamilyId).Distinct());
+        Assert.DoesNotContain(tokens, x => x.RevokedAtUtc == null);
+        var reuseAudit = await verify.AuditLogs.AsNoTracking().SingleAsync(x =>
+            x.TenantId == seeded.TenantId && x.Action == "auth.refresh_reuse_detected");
+        Assert.Contains(tokens[0].FamilyId.ToString("D"), reuseAudit.Metadata);
+        Assert.DoesNotContain(tokens[0].TokenHash, reuseAudit.Metadata);
+    }
+
+    [Fact]
+    public async Task ReusingOneFamily_DoesNotRevokeAnUnrelatedLoginSession()
+    {
+        var seeded = await SeedUserAsync();
+        string compromisedAncestor;
+        string independentSession;
+        await using (var db = _fixture.CreateDb())
+        {
+            var auth = BuildService(db);
+            var firstLogin = await auth.LoginAsync(
+                new LoginRequest(seeded.Email, seeded.Password, seeded.TenantSlug), Context, CancellationToken.None);
+            compromisedAncestor = firstLogin.Tokens!.RefreshToken;
+            await auth.RefreshAsync(new RefreshTokenRequest(compromisedAncestor), Context, CancellationToken.None);
+
+            var secondLogin = await auth.LoginAsync(
+                new LoginRequest(seeded.Email, seeded.Password, seeded.TenantSlug), Context, CancellationToken.None);
+            independentSession = secondLogin.Tokens!.RefreshToken;
+        }
+
+        await using (var replayDb = _fixture.CreateDb())
+        {
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => BuildService(replayDb).RefreshAsync(
+                new RefreshTokenRequest(compromisedAncestor), Context, CancellationToken.None));
+        }
+
+        await using var verify = _fixture.CreateDb();
+        var independent = await verify.RefreshTokens.AsNoTracking()
+            .SingleAsync(x => x.UserId == seeded.UserId && x.TokenHash == HashToken(independentSession));
+        Assert.Null(independent.RevokedAtUtc);
+
+        var compromisedFamily = await verify.RefreshTokens.AsNoTracking()
+            .Where(x => x.UserId == seeded.UserId && x.FamilyId != independent.FamilyId)
+            .ToListAsync();
+        Assert.Equal(2, compromisedFamily.Count);
+        Assert.All(compromisedFamily, token => Assert.NotNull(token.RevokedAtUtc));
+    }
+
+    [Fact]
+    public async Task Rotation_WhenAuditFails_RollsBackParentConsumptionAndDescendantInsert()
+    {
+        var seeded = await SeedUserAsync();
+        string originalToken;
+        await using (var loginDb = _fixture.CreateDb())
+        {
+            var login = await BuildService(loginDb).LoginAsync(
+                new LoginRequest(seeded.Email, seeded.Password, seeded.TenantSlug), Context, CancellationToken.None);
+            originalToken = login.Tokens!.RefreshToken;
+        }
+
+        await using (var faultDb = _fixture.CreateDb())
+        {
+            var faultingAuth = BuildService(faultDb, new ThrowingRefreshAuditService());
+            await Assert.ThrowsAsync<InvalidOperationException>(() => faultingAuth.RefreshAsync(
+                new RefreshTokenRequest(originalToken), Context, CancellationToken.None));
+        }
+
+        await using var verify = _fixture.CreateDb();
+        var stored = await verify.RefreshTokens.AsNoTracking()
+            .SingleAsync(x => x.UserId == seeded.UserId);
+        Assert.Null(stored.RevokedAtUtc);
+        Assert.Null(stored.ReplacedByTokenHash);
+        Assert.Equal(HashToken(originalToken), stored.TokenHash);
+        Assert.False(await verify.AuditLogs.AnyAsync(x =>
+            x.TenantId == seeded.TenantId && x.Action == "auth.refresh"));
+    }
+
+    private async Task<SeededAuthUser> SeedUserAsync()
+    {
+        await using var db = _fixture.CreateDb();
+        const string password = "CorrectPassword1!";
+        var tenantId = Guid.NewGuid();
+        var slug = $"auth-{Guid.NewGuid():N}";
+        var email = $"admin-{Guid.NewGuid():N}@example.test";
+        var tenant = new Tenant { Id = tenantId, Name = "Auth Security Tenant", Slug = slug };
+        var permission = new Permission
+        {
+            Id = Guid.NewGuid(),
+            Key = $"dashboard.read.{Guid.NewGuid():N}",
+            Module = "Dashboard",
+            Description = "Read"
+        };
+        var role = new Role
+        {
+            Id = Guid.NewGuid(),
+            TenantId = tenantId,
+            Tenant = tenant,
+            Name = "Admin",
+            NormalizedName = "ADMIN",
+            Description = "Admin"
+        };
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            TenantId = tenantId,
+            Tenant = tenant,
+            Email = email,
+            NormalizedEmail = email.ToUpperInvariant(),
+            FullName = "Refresh Security Admin",
+            PasswordHash = new Pbkdf2PasswordHasher().Hash(password)
+        };
+        db.Tenants.Add(tenant);
+        db.SecuritySettings.Add(new SecuritySetting { Id = Guid.NewGuid(), TenantId = tenantId });
+        db.Permissions.Add(permission);
+        db.Roles.Add(role);
+        db.RolePermissions.Add(new RolePermission { RoleId = role.Id, PermissionId = permission.Id });
+        db.Users.Add(user);
+        db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
+        await db.SaveChangesAsync();
+        return new SeededAuthUser(tenantId, user.Id, slug, email, password);
+    }
+
+    private static AuthService BuildService(ZayraDbContext db, IAuditService? audit = null)
+    {
+        var jwt = Options.Create(new JwtOptions
+        {
+            Issuer = "Zayra.Tests",
+            TenantAudience = "kynexone-tenant-test",
+            PlatformAudience = "kynexone-platform-test",
+            SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_AUTH_TESTS",
+            AccessTokenMinutes = 30,
+            RefreshTokenDays = 7
+        });
+        return new AuthService(
+            db,
+            new Pbkdf2PasswordHasher(),
+            new JwtTokenService(jwt),
+            audit ?? new AuditService(db),
+            new FakeEmailService(),
+            jwt,
+            new NullMfaService(),
+            NullLogger<AuthService>.Instance);
+    }
+
+    private static string HashToken(string token) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
+
+    private sealed record SeededAuthUser(
+        Guid TenantId,
+        Guid UserId,
+        string TenantSlug,
+        string Email,
+        string Password);
+}
+
+file sealed class ThrowingRefreshAuditService : IAuditService
+{
+    public Task WriteAsync(
+        string action,
+        string entityName,
+        string? entityId,
+        RequestContext context,
+        string? metadata,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("Injected refresh audit persistence failure.");
 }
 
 file sealed class NullMfaService : IMfaService

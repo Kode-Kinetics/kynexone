@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -17,6 +18,17 @@ namespace Zayra.Api.Controllers.Compliance;
 [Route("api/compliance/contracts")]
 public class ContractsController : ControllerBase
 {
+    private static readonly IReadOnlyDictionary<string, string[]> AllowedTransitions =
+        new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["Draft"] = ["PendingApproval"],
+            ["PendingApproval"] = ["Draft", "Active"],
+            ["Active"] = ["Expired", "Terminated"],
+            ["Expired"] = [],
+            ["Terminated"] = [],
+            ["Superseded"] = [],
+        };
+
     private readonly ZayraDbContext _db;
     public ContractsController(ZayraDbContext db) => _db = db;
 
@@ -123,8 +135,13 @@ public class ContractsController : ControllerBase
     public async Task<IActionResult> Create([FromBody] CreateContractRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
-
-        // EmployeeId in contracts is a Guid reference; name accepted from request
+        var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, null, ct);
+        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        var employee = identity.Employee!;
+        if (req.StartDate == default || (req.EndDate.HasValue && req.EndDate.Value < req.StartDate))
+            return BadRequest(new { error = "invalid_contract_dates", message = "End date must be on or after the start date." });
+        if (req.BasicSalary < 0m)
+            return BadRequest(new { error = "invalid_basic_salary", message = "Basic salary cannot be negative." });
 
         var count = await _db.EmployeeContracts.CountAsync(x => x.TenantId == tid, ct);
         var contractNumber = $"CON-{DateTime.UtcNow.Year}-{(count + 1):D4}";
@@ -147,8 +164,9 @@ public class ContractsController : ControllerBase
         var contract = new EmployeeContract
         {
             TenantId = tid,
-            EmployeeId = req.EmployeeId,
-            EmployeeName = req.EmployeeName ?? string.Empty,
+            CompanyId = employee.CompanyId,
+            EmployeeId = employee.PublicId,
+            EmployeeName = employee.FullName,
             TemplateId = req.TemplateId,
             ContractNumber = contractNumber,
             ContractType = req.ContractType ?? "Employment",
@@ -167,7 +185,7 @@ public class ContractsController : ControllerBase
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
         {
             TenantId = tid, EntityType = "Contract", EntityId = contract.Id.ToString(),
-            EmployeeId = req.EmployeeId,
+            EmployeeId = employee.PublicId,
             Action = "Created", PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
             MetadataJson = System.Text.Json.JsonSerializer.Serialize(new { contractNumber, contract.ContractType }),
         });
@@ -186,13 +204,37 @@ public class ContractsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (contract == null) return NotFound();
 
+        var requested = req.Status?.Trim();
+        if (string.IsNullOrWhiteSpace(requested)
+            || !AllowedTransitions.ContainsKey(requested))
+            return BadRequest(new
+            {
+                error = "invalid_contract_status",
+                message = $"Status must be one of: {string.Join(", ", AllowedTransitions.Keys)}.",
+            });
+
         var old = contract.Status;
-        contract.Status = req.Status;
+        if (string.Equals(old, requested, StringComparison.Ordinal))
+            return Conflict(new { error = "contract_status_unchanged", message = $"Contract is already '{old}'." });
+        if (!AllowedTransitions.TryGetValue(old, out var allowed) || !allowed.Contains(requested, StringComparer.Ordinal))
+            return Conflict(new
+            {
+                error = "invalid_contract_transition",
+                message = $"Contract cannot transition from '{old}' to '{requested}'.",
+                currentStatus = old,
+                allowedStatuses = allowed ?? [],
+            });
+        if (requested == "Active" && string.IsNullOrWhiteSpace(req.SignedByHrName))
+            return BadRequest(new { error = "hr_signature_required", message = "HR signatory name is required to activate a contract." });
+        if (requested == "Expired" && (!contract.EndDate.HasValue || contract.EndDate.Value > DateOnly.FromDateTime(DateTime.UtcNow)))
+            return BadRequest(new { error = "contract_not_expired", message = "A contract can only be marked Expired on or after its recorded end date." });
+
+        contract.Status = requested;
         contract.UpdatedAtUtc = DateTime.UtcNow;
 
-        if (req.Status == "Active" && !string.IsNullOrEmpty(req.SignedByHrName))
+        if (requested == "Active")
         {
-            contract.SignedByHrName = req.SignedByHrName;
+            contract.SignedByHrName = req.SignedByHrName!.Trim();
             contract.SignedByHrAtUtc = DateTime.UtcNow;
         }
 
@@ -201,7 +243,7 @@ public class ContractsController : ControllerBase
             TenantId = tid, EntityType = "Contract", EntityId = id.ToString(),
             EmployeeId = contract.EmployeeId,
             Action = "StatusChanged", PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
-            MetadataJson = System.Text.Json.JsonSerializer.Serialize(new { from = old, to = req.Status }),
+            MetadataJson = System.Text.Json.JsonSerializer.Serialize(new { from = old, to = requested }),
         });
 
         await _db.SaveChangesAsync(ct);
@@ -217,6 +259,18 @@ public class ContractsController : ControllerBase
         var old = await _db.EmployeeContracts
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (old == null) return NotFound();
+        if (old.Status != "Active")
+            return Conflict(new
+            {
+                error = "invalid_contract_transition",
+                message = $"Only an Active contract can be superseded (current: '{old.Status}').",
+                currentStatus = old.Status,
+            });
+        if (req.StartDate == default || req.StartDate < old.StartDate
+            || (req.EndDate.HasValue && req.EndDate.Value < req.StartDate))
+            return BadRequest(new { error = "invalid_contract_dates", message = "The replacement contract must start on or after the prior start date and end on or after its start date." });
+        if (req.BasicSalary < 0m)
+            return BadRequest(new { error = "invalid_basic_salary", message = "Basic salary cannot be negative." });
 
         old.Status = "Superseded";
         old.UpdatedAtUtc = DateTime.UtcNow;
@@ -226,7 +280,8 @@ public class ContractsController : ControllerBase
 
         var newContract = new EmployeeContract
         {
-            TenantId = tid, EmployeeId = old.EmployeeId, EmployeeName = old.EmployeeName,
+            TenantId = tid, CompanyId = old.CompanyId,
+            EmployeeId = old.EmployeeId, EmployeeName = old.EmployeeName,
             TemplateId = req.TemplateId ?? old.TemplateId,
             ContractNumber = contractNumber, ContractType = req.ContractType ?? old.ContractType,
             StartDate = req.StartDate, EndDate = req.EndDate,

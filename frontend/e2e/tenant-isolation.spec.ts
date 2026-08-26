@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import {
   apiLogin,
   INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN,
-  EVOSTEL_SLUG, EVOSTEL_ADMIN,
+  RASALMANAR_SLUG, RASALMANAR_ADMIN,
 } from './helpers';
 
 /**
@@ -13,16 +13,16 @@ import {
  */
 test.describe('Tenant isolation (API-level)', () => {
   let intelliflowToken: string;
-  let evostelToken: string;
+  let rasAlManarToken: string;
 
   test.beforeAll(async ({ request }) => {
     intelliflowToken = await apiLogin(request, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
-    evostelToken     = await apiLogin(request, EVOSTEL_ADMIN.email,    EVOSTEL_ADMIN.password,    EVOSTEL_SLUG);
+    rasAlManarToken  = await apiLogin(request, RASALMANAR_ADMIN.email, RASALMANAR_ADMIN.password, RASALMANAR_SLUG);
   });
 
   // ── Employee isolation ───────────────────────────────────────────────────────
 
-  test('IntelliFlow token cannot list Evostel employees', async ({ request }) => {
+  test('IntelliFlow and Ras Al-Manar employee sets are isolated', async ({ request }) => {
     // 1. Get IntelliFlow employee list
     const myEmps = await request.get('/api/employees', {
       headers: { Authorization: `Bearer ${intelliflowToken}` },
@@ -33,11 +33,14 @@ test.describe('Tenant isolation (API-level)', () => {
 
     // 2. Get Evostel employee list
     const theirEmps = await request.get('/api/employees', {
-      headers: { Authorization: `Bearer ${evostelToken}` },
+      headers: { Authorization: `Bearer ${rasAlManarToken}` },
     });
     expect(theirEmps.status()).toBe(200);
     const theirData = await theirEmps.json();
     const theirIds = (theirData.items ?? theirData.employees ?? theirData.data ?? []) as Array<{ id: unknown }>;
+
+    expect(myIds.length).toBeGreaterThan(0);
+    expect(theirIds.length).toBeGreaterThan(0);
 
     // 3. There must be no overlap
     const myIdList   = myIds.map((e: { id: unknown }) => e.id);
@@ -46,7 +49,7 @@ test.describe('Tenant isolation (API-level)', () => {
     expect(overlap).toHaveLength(0);
   });
 
-  test('Evostel token with IntelliFlow employee ID returns 403 or 404', async ({ request }) => {
+  test('Ras Al-Manar token with IntelliFlow employee ID returns 403 or 404', async ({ request }) => {
     // First get an IntelliFlow employee id
     const myEmps = await request.get('/api/employees', {
       headers: { Authorization: `Bearer ${intelliflowToken}` },
@@ -60,7 +63,7 @@ test.describe('Tenant isolation (API-level)', () => {
 
     // Evostel token tries to fetch IntelliFlow employee
     const crossTenantResp = await request.get(`/api/employees/${empId}`, {
-      headers: { Authorization: `Bearer ${evostelToken}` },
+      headers: { Authorization: `Bearer ${rasAlManarToken}` },
     });
     expect([403, 404]).toContain(crossTenantResp.status());
   });
@@ -69,7 +72,7 @@ test.describe('Tenant isolation (API-level)', () => {
 
   test('IntelliFlow leave requests are not visible to Evostel token', async ({ request }) => {
     const myLeave    = await request.get('/api/leave/requests', { headers: { Authorization: `Bearer ${intelliflowToken}` } });
-    const theirLeave = await request.get('/api/leave/requests', { headers: { Authorization: `Bearer ${evostelToken}` } });
+    const theirLeave = await request.get('/api/leave/requests', { headers: { Authorization: `Bearer ${rasAlManarToken}` } });
 
     if (!myLeave.ok() || !theirLeave.ok()) return;
 
@@ -86,7 +89,7 @@ test.describe('Tenant isolation (API-level)', () => {
 
   test('IntelliFlow attendance records not visible to Evostel token', async ({ request }) => {
     const myAtt    = await request.get('/api/attendance', { headers: { Authorization: `Bearer ${intelliflowToken}` } });
-    const theirAtt = await request.get('/api/attendance', { headers: { Authorization: `Bearer ${evostelToken}` } });
+    const theirAtt = await request.get('/api/attendance', { headers: { Authorization: `Bearer ${rasAlManarToken}` } });
 
     if (!myAtt.ok() || !theirAtt.ok()) return;
 
@@ -101,15 +104,15 @@ test.describe('Tenant isolation (API-level)', () => {
 
   // ── Tenant admin routes are isolated ──────────────────────────────────────────
 
-  test('Evostel token cannot read IntelliFlow settings', async ({ request }) => {
+  test('Ras Al-Manar token cannot read IntelliFlow settings', async ({ request }) => {
     // Tenant admin settings routes must be scoped by the JWT tenant_id
     const resp = await request.get('/api/tenant-admin/localization', {
-      headers: { Authorization: `Bearer ${evostelToken}` },
+      headers: { Authorization: `Bearer ${rasAlManarToken}` },
     });
     // Must succeed (Evostel's own settings) OR return 403 — never expose IntelliFlow data
     if (resp.ok()) {
       const data = await resp.json();
-      // The response must not include any IntelliFlow-specific data
+      // The response must not include any IntelliFlow-specific data.
       const text = JSON.stringify(data).toLowerCase();
       expect(text).not.toContain('intelliflow');
     }
@@ -135,7 +138,7 @@ test.describe('Tenant isolation (API-level)', () => {
 
   test('IntelliFlow audit logs not visible to Evostel token', async ({ request }) => {
     const myLogs    = await request.get('/api/audit-logs', { headers: { Authorization: `Bearer ${intelliflowToken}` } });
-    const theirLogs = await request.get('/api/audit-logs', { headers: { Authorization: `Bearer ${evostelToken}` } });
+    const theirLogs = await request.get('/api/audit-logs', { headers: { Authorization: `Bearer ${rasAlManarToken}` } });
 
     if (!myLogs.ok() || !theirLogs.ok()) return;
 

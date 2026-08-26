@@ -11,6 +11,11 @@ public class ApprovalRequest : ITenantOwned, ICompanyScopedOperational
     public string Title { get; set; } = string.Empty;
     public string Status { get; set; } = "Pending";
     public int CurrentStepOrder { get; set; } = 1;
+    /// <summary>
+    /// Optimistic decision version. Every workflow decision increments this value, so two
+    /// relational writers that observed the same pending step cannot both advance it.
+    /// </summary>
+    public int DecisionVersion { get; set; }
     public Guid? RequestedByUserId { get; set; }
     public int? RequestedForEmployeeId { get; set; }
     public Guid? CompanyId { get; set; }

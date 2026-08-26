@@ -37,16 +37,39 @@ public class LocalDocumentStorage : IDocumentStorage
 
     public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default)
     {
-        var path = ResolvePath(storageUrl);
+        var path = ResolveTenantPath(tenantId, storageUrl);
         if (!File.Exists(path)) throw new FileNotFoundException($"Stored document not found: {storageUrl}");
         return File.ReadAllBytesAsync(path, ct);
     }
 
     public string ResolvePath(string storageUrl)
     {
+        if (string.IsNullOrWhiteSpace(storageUrl) || Path.IsPathRooted(storageUrl))
+            throw new InvalidOperationException("Invalid document path.");
+
         var fullPath = Path.GetFullPath(Path.Combine(_environment.ContentRootPath, storageUrl));
         var storageRoot = Path.GetFullPath(Path.Combine(_environment.ContentRootPath, "storage"));
-        if (!fullPath.StartsWith(storageRoot, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Invalid document path.");
+        if (!IsChildPath(storageRoot, fullPath)) throw new InvalidOperationException("Invalid document path.");
         return fullPath;
+    }
+
+    private string ResolveTenantPath(Guid tenantId, string storageUrl)
+    {
+        var fullPath = ResolvePath(storageUrl);
+        var tenantRoot = Path.GetFullPath(Path.Combine(
+            _environment.ContentRootPath, "storage", "documents", tenantId.ToString("N")));
+
+        if (!IsChildPath(tenantRoot, fullPath))
+            throw new InvalidOperationException(
+                $"Cross-tenant storage access denied: key does not belong to tenant '{tenantId}'.");
+
+        return fullPath;
+    }
+
+    private static bool IsChildPath(string root, string candidate)
+    {
+        var rootedPrefix = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        return candidate.StartsWith(rootedPrefix, StringComparison.OrdinalIgnoreCase);
     }
 }

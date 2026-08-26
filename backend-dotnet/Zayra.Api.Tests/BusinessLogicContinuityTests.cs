@@ -319,13 +319,18 @@ public class BusinessLogicContinuityTests
             TenantId = tenantId, Code = "PERSONAL", NameEn = "Personal Loan",
             MaxAmount = 50000, MaxInstallments = 24, RequiresApproval = false, IsActive = true
         };
-        db.LoanTypes.Add(lt);
+        var empGuid = Guid.NewGuid();
+        var employee = new Employee
+        {
+            TenantId = tenantId, PublicId = empGuid, EmployeeCode = "EMP-LOAN-1",
+            FullName = "Noura Al-Ghamdi", EnglishName = "Noura Al-Ghamdi", Status = "Active",
+        };
+        db.AddRange(lt, employee);
         await db.SaveChangesAsync();
 
         var ctrl = CreateLoansController(db, tenantId);
-        var empGuid = Guid.NewGuid();
         var result = await ctrl.CreateLoan(
-            new CreateLoanRequest(empGuid, "Noura Al-Ghamdi", lt.Id, 12000, 6, "Emergency", null),
+            new CreateLoanRequest(empGuid, "Client supplied name is ignored", lt.Id, 12000, 6, "Emergency", employee.Id),
             CancellationToken.None);
 
         result.Should().BeOfType<OkObjectResult>("auto-approved loan must return 200");
@@ -334,6 +339,9 @@ public class BusinessLogicContinuityTests
         loans.Should().HaveCount(1);
         loans[0].Status.Should().Be("Active", "no-approval type activates immediately");
         loans[0].OutstandingBalance.Should().Be(12000);
+        loans[0].EmployeeId.Should().Be(employee.PublicId);
+        loans[0].EmployeeIntId.Should().Be(employee.Id);
+        loans[0].EmployeeName.Should().Be(employee.FullName, "employee display data is server-authoritative");
 
         var installments = await db.LoanInstallments
             .Where(i => i.LoanId == loans[0].Id)
@@ -357,12 +365,17 @@ public class BusinessLogicContinuityTests
             TenantId = tenantId, Code = "EMER", NameEn = "Emergency Loan",
             MaxAmount = 20000, MaxInstallments = 12, RequiresApproval = false, IsActive = true
         };
-        db.LoanTypes.Add(lt);
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "EMP-LOAN-2",
+            FullName = "Mohammed Al-Harbi", EnglishName = "Mohammed Al-Harbi", Status = "Active",
+        };
+        db.AddRange(lt, employee);
         await db.SaveChangesAsync();
 
         var ctrl = CreateLoansController(db, tenantId);
         await ctrl.CreateLoan(
-            new CreateLoanRequest(Guid.NewGuid(), "Mohammed Al-Harbi", lt.Id, 6000, 3, null, null),
+            new CreateLoanRequest(Guid.Empty, "Mohammed Al-Harbi", lt.Id, 6000, 3, null, employee.Id),
             CancellationToken.None);
 
         var loan = await db.EmployeeLoans.FirstAsync(l => l.TenantId == tenantId);

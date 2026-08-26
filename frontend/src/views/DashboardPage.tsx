@@ -35,6 +35,7 @@ import type { AIInsight } from '../api/intelligence';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { CalendarDays, Moon, Clock3 } from 'lucide-react';
+import { ErrorBanner } from '../components/ui/ErrorBanner';
 
 // ── Chart imports (SSR-safe) ──────────────────────────────────────────────────
 
@@ -441,6 +442,7 @@ export function DashboardPage() {
   const [data, setData] = useState<DashboardFull | null>(null);
   const [insights, setInsights] = useState<AIInsight[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(true);
   const loadRef = useRef(false);
 
@@ -448,8 +450,11 @@ export function DashboardPage() {
     if (loadRef.current) return;
     loadRef.current = true;
     setLoading(true);
+    setError(null);
     const tasks: Promise<void>[] = [
-      dashboardApi.full(6).then(setData).catch(() => {}),
+      dashboardApi.full(6)
+        .then(setData)
+        .catch(() => setError('Dashboard data could not be loaded. Check the API and cache service, then retry.')),
     ];
     if (isFeatureEnabled('ai_assistant')) {
       tasks.push(
@@ -595,6 +600,8 @@ export function DashboardPage() {
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-4" aria-label="Workforce Command Center">
+
+      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
       {/* ── Command header ─────────────────────────────────────────────────── */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

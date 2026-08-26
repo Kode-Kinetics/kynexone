@@ -2839,6 +2839,23 @@ public class PayrollController : ControllerBase
         await _db.PayrollAdjustments
             .Where(x => x.TenantId == tenantId && consumedAdjustmentIds.Contains(x.Id))
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
+        var consumedEncashmentIds = approvedAdjustments
+            .Where(a => employeeIdsForRun.Contains(a.EmployeeId)
+                && a.SourceType == PayrollAdjustmentSources.LeaveEncashment
+                && a.SourceId.HasValue)
+            .Select(a => a.SourceId!.Value)
+            .ToList();
+        if (consumedEncashmentIds.Count > 0)
+        {
+            // The request state follows the normal adjustment inside the same payroll transaction.
+            // No separate payment flag can claim success if payroll processing rolls back.
+            await _db.LeaveEncashmentRequests
+                .Where(e => e.TenantId == tenantId && consumedEncashmentIds.Contains(e.Id)
+                    && e.PayrollRunId == id && e.Status == LeaveEncashmentStatuses.PayrollApproved)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(e => e.Status, LeaveEncashmentStatuses.Processed)
+                    .SetProperty(e => e.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+        }
 
         // COMPLIANCE: Update loan/advance outstanding balances after payroll deduction.
         // Re-load mutable copies for update (AsNoTracking above was read-only).
@@ -3335,6 +3352,46 @@ public class PayrollController : ControllerBase
         var alreadyPosted = await _db.FinanceGlEntries
             .AnyAsync(x => x.SourceModule == "Payroll" && x.SourceEntityId == id && x.TenantId == tenantId
                         && x.EventType == GlEventTypes.Accrual && !x.IsReversed, cancellationToken);
+
+        // A run may only become finance-ready in its legal entity's currency. Resolve this before either
+        // branch so the idempotent "already posted" path is held to the same controls as a new journal.
+        // Otherwise a support-restored/legacy accrual can be stamped ReadyForErp merely because a row
+        // exists, even when that row is one-sided, unmapped, or denominated in another currency.
+        var glCompany = await _db.Companies.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId, cancellationToken);
+        if (glCompany is null || string.IsNullOrWhiteSpace(glCompany.DefaultCurrency))
+            return UnprocessableEntity(new
+            {
+                error = "gl_company_currency_missing",
+                message = "Payroll cannot be locked until its legal entity and company currency are configured.",
+                companyId = run.CompanyId,
+            });
+        var glCurrency = glCompany.DefaultCurrency.Trim().ToUpperInvariant();
+
+        if (alreadyPosted)
+        {
+            var liveAccrual = await _db.FinanceGlEntries.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id
+                         && !x.IsReversed
+                         && (x.EventType == GlEventTypes.Accrual
+                             || x.EventType == GlEventTypes.BonusPayrollClearing
+                             || x.EventType == GlEventTypes.SettlementPayrollClearing))
+                .ToListAsync(cancellationToken);
+            var readiness = ValidatePayrollGl(liveAccrual, glCurrency);
+            if (!readiness.IsReady)
+                return UnprocessableEntity(new
+                {
+                    error = "gl_not_finance_ready",
+                    message = "The existing payroll accrual is not finance-ready. Correct or reverse it before locking.",
+                    readiness.TotalDebits,
+                    readiness.TotalCredits,
+                    readiness.Difference,
+                    expectedCurrency = glCurrency,
+                    readiness.Currencies,
+                    readiness.UnmappedEntryIds,
+                    readiness.EmptySidedEntryIds,
+                });
+        }
         if (!alreadyPosted)
         {
             // POD-B1 — a closed GL period rejects NEW postings. Dated into the accrual (run) period, so
@@ -3355,10 +3412,6 @@ public class PayrollController : ControllerBase
             var totalNet   = run.TotalNetSalary;
             var uid        = GetUserId();
             var uname      = GetUserName();
-            // Use company currency for GL entries — not hard-coded "USD".
-            var glCompany  = await _db.Companies.AsNoTracking()
-                .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == run.CompanyId, cancellationToken);
-            var glCurrency = glCompany?.DefaultCurrency ?? "SAR";
             var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
             // POD-B1b — bonuses this run PAYS were already expensed when their batch was approved
             // (DR bonus expense / CR Bonus Payable). Clear that payable instead of expensing them again;
@@ -3380,15 +3433,35 @@ public class PayrollController : ControllerBase
             };
             var (glLines, totalDebits, totalCredits) = BuildPayrollGlEntries(
                 tenantId, id, period, earnings, dedxns, totalNet, uid, uname, glCurrency, glCtx);
-            if (Math.Abs(totalDebits - totalCredits) > 0.01m)
+            var readiness = ValidatePayrollGl(glLines, glCurrency);
+            if (!readiness.IsReady)
+            {
+                var currencyMismatch = readiness.Currencies.Count != 1
+                    || !string.Equals(readiness.Currencies.SingleOrDefault(), glCurrency, StringComparison.OrdinalIgnoreCase);
+                var error = readiness.UnmappedEntryIds.Count > 0 ? "gl_mapping_missing"
+                    : currencyMismatch ? "gl_currency_mismatch"
+                    : readiness.EmptySidedEntryIds.Count > 0 ? "gl_invalid_entry"
+                    : "gl_unbalanced";
+                var message = error switch
+                {
+                    "gl_mapping_missing" => "Payroll GL contains unmapped accounts. Complete the company GL mappings before locking.",
+                    "gl_currency_mismatch" => "Payroll GL must be denominated solely in the legal entity's company currency before locking.",
+                    "gl_invalid_entry" => "Payroll GL contains an entry with neither a debit nor a credit account.",
+                    _ => "Payroll GL is not balanced in the company currency. Total debits must equal total credits before locking.",
+                };
                 return UnprocessableEntity(new
                 {
-                    error         = "gl_unbalanced",
-                    message       = "Payroll GL is not balanced. Total debits must equal total credits before locking.",
+                    error,
+                    message,
                     totalDebits,
                     totalCredits,
-                    difference    = Math.Abs(totalDebits - totalCredits),
+                    readiness.Difference,
+                    expectedCurrency = glCurrency,
+                    readiness.Currencies,
+                    readiness.UnmappedEntryIds,
+                    readiness.EmptySidedEntryIds,
                 });
+            }
             _db.FinanceGlEntries.AddRange(glLines);
         }
 
@@ -3481,6 +3554,24 @@ public class PayrollController : ControllerBase
         return Ok(new PagedResult<PayrollSlipDto>(
             items.Select(s => PayrollSlipDto.Project(s, true, linesByEmployee.TryGetValue(s.EmployeeId, out var dl) ? dl : null)).ToList(),
             total, page, pageSize));
+    }
+
+    /// <summary>Returns the last persisted validation snapshot without re-running the engine.</summary>
+    [HttpGet("runs/{id:guid}/validate")]
+    [HasPermission("payroll.read")]
+    public async Task<IActionResult> ValidationResults(Guid id, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        if (!await _db.PayrollRuns.AsNoTracking()
+                .AnyAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken))
+            return NotFound();
+
+        var results = await _db.PayrollValidationResults.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)
+            .OrderByDescending(x => x.Severity)
+            .ThenBy(x => x.Code)
+            .ToListAsync(cancellationToken);
+        return Ok(results);
     }
 
     [HttpPost("runs/{id:guid}/validate")]
@@ -4339,15 +4430,51 @@ public class PayrollController : ControllerBase
             .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id)
             .ToListAsync(cancellationToken);
 
+        var companyCurrency = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.Id == run.CompanyId)
+            .Select(c => c.DefaultCurrency)
+            .FirstOrDefaultAsync(cancellationToken);
+        companyCurrency = string.IsNullOrWhiteSpace(companyCurrency)
+            ? string.Empty
+            : companyCurrency.Trim().ToUpperInvariant();
+        var postedCurrencies = posted
+            .Select(e => (e.Currency ?? string.Empty).Trim().ToUpperInvariant())
+            .Where(c => c.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(c => c, StringComparer.Ordinal)
+            .ToList();
+        if (postedCurrencies.Count > 1
+            || (postedCurrencies.Count == 1 && companyCurrency.Length > 0
+                && !string.Equals(postedCurrencies[0], companyCurrency, StringComparison.OrdinalIgnoreCase)))
+            return UnprocessableEntity(new
+            {
+                error = "gl_currency_mismatch",
+                message = "The posted payroll journal is not denominated solely in the legal entity's company currency.",
+                expectedCurrency = companyCurrency,
+                currencies = postedCurrencies,
+            });
+        var journalCurrency = postedCurrencies.SingleOrDefault() ?? companyCurrency;
+
         var isPosted = posted.Count > 0;
         if (isPosted)
         {
             foreach (var e in posted)
             {
-                var isDebit = !string.IsNullOrEmpty(e.DebitAccount);
-                var (code, name) = SplitAccountLabel(isDebit ? e.DebitAccount : e.CreditAccount);
                 var (compCode, compName) = DescribePostedLine(e.Description);
-                entries.Add((compCode, compName, code, name, isDebit ? "DR" : "CR", e.Amount));
+                // FinanceGlEntry deliberately supports both historical two-sided rows and newer
+                // one-sided ledger rows. A two-sided row is TWO journal lines. Choosing the debit side
+                // when it exists drops the paired credit and turns a balanced ledger into the exact
+                // DR>0/CR=0 false imbalance observed in the client pilot.
+                if (!string.IsNullOrWhiteSpace(e.DebitAccount))
+                {
+                    var (code, name) = SplitAccountLabel(e.DebitAccount);
+                    entries.Add((compCode, compName, code, name, "DR", e.Amount));
+                }
+                if (!string.IsNullOrWhiteSpace(e.CreditAccount))
+                {
+                    var (code, name) = SplitAccountLabel(e.CreditAccount);
+                    entries.Add((compCode, compName, code, name, "CR", e.Amount));
+                }
             }
             // Deterministic display order: debits first, then credits, each by account code.
             entries = entries.OrderByDescending(x => x.EntryType).ThenBy(x => x.Account, StringComparer.Ordinal).ToList();
@@ -4505,6 +4632,7 @@ public class PayrollController : ControllerBase
         {
             runId    = id,
             period   = $"{run.Year}-{run.Month:D2}",
+            currency = journalCurrency,
             isPosted, // true = immutable as-posted ledger; false = live preview through current mappings
             entries  = entries.Select(e => new { componentCode = e.Code, componentName = e.Name, glAccount = e.Account, glAccountName = e.AccountName, entryType = e.EntryType, amount = e.Amount }),
             totalDebits, totalCredits,
@@ -6312,9 +6440,14 @@ public class PayrollController : ControllerBase
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.EmployeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) return NotFound(new { message = "Employee not found." });
 
-        var gcc = await _db.GCCComplianceSettings.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
+        var (companyId, companyError) = await ResolveSettlementCompanyAsync(tenantId, employee, cancellationToken);
+        if (companyError is not null) return UnprocessableEntity(companyError);
+        var company = await _db.Companies.AsNoTracking()
+            .SingleAsync(c => c.TenantId == tenantId && c.Id == companyId, cancellationToken);
+        var gcc = await _db.GCCComplianceSettings.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.CountryCode == company.CountryCode, cancellationToken);
         if (gcc is null || !gcc.EosbEnabled)
-            return BadRequest(new { message = "EOSB is not enabled for this tenant. Enable it in GCC Settings first." });
+            return BadRequest(new { message = $"EOSB is not enabled for company country '{company.CountryCode}'. Configure that country in GCC Settings first." });
 
         var calcDate = req.AsOfDate ?? DateTime.UtcNow;
         var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
@@ -6322,7 +6455,8 @@ public class PayrollController : ControllerBase
             .OrderByDescending(x => x.EffectiveDate)
             .FirstOrDefaultAsync(cancellationToken);
 
-        var eligibleSalary = salary?.BasicSalary ?? employee.Salary ?? 0m;
+        var wageBasis = await ResolveEosbWageBasisAsync(tenantId, company.Id, salary, employee, cancellationToken);
+        var eligibleSalary = wageBasis.EligibleWage;
         var joiningDate = employee.JoiningDate;
         var dailySalary = eligibleSalary * 12 / 365m;
         var monthlySalary = eligibleSalary;
@@ -6337,7 +6471,8 @@ public class PayrollController : ControllerBase
         // forfeiture, the Art.80 dismissal forfeiture, and the non-KSA ≥1yr eligibility floors
         // are all owned by the country packs (the single source of truth).
         var (eosbResult, totalYears) = await ComputeEndOfServiceAsync(
-            gcc, eligibleSalary, joiningDate, calcDate, terminationReason, employee, cancellationToken);
+            company.CountryCode, company.Jurisdiction, company.Id, eligibleSalary,
+            joiningDate, calcDate, terminationReason, employee, cancellationToken);
         var eosbAmount  = Math.Round(eosbResult.TotalGratuity, 2);
         var eosbFormula = eosbResult.ApplicableRule;
 
@@ -6348,7 +6483,7 @@ public class PayrollController : ControllerBase
             existing.CalculationDate = DateOnly.FromDateTime(calcDate);
             existing.EligibleSalary = eligibleSalary;
             existing.CalculatedAmount = eosbAmount;
-            existing.RulesSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new { formula = eosbFormula, totalYears, dailySalary, monthlySalary, countryCode = gcc.CountryCode });
+            existing.RulesSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new { formula = eosbFormula, totalYears, dailySalary, monthlySalary, countryCode = company.CountryCode, company.Jurisdiction, wageBasis.IncludedComponents });
         }
         else
         {
@@ -6356,7 +6491,7 @@ public class PayrollController : ControllerBase
             {
                 TenantId = tenantId, EmployeeId = req.EmployeeId, CalculationDate = DateOnly.FromDateTime(calcDate),
                 EligibleSalary = eligibleSalary, CalculatedAmount = eosbAmount,
-                RulesSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new { formula = eosbFormula, totalYears, dailySalary, monthlySalary, countryCode = gcc.CountryCode })
+                RulesSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new { formula = eosbFormula, totalYears, dailySalary, monthlySalary, countryCode = company.CountryCode, company.Jurisdiction, wageBasis.IncludedComponents })
             });
         }
         await _db.SaveChangesAsync(cancellationToken);
@@ -6372,6 +6507,9 @@ public class PayrollController : ControllerBase
             dailySalary = Math.Round(dailySalary, 4),
             formula = eosbFormula,
             eosbAmount,
+            wageBasis = wageBasis.IncludedComponents,
+            countryCode = company.CountryCode,
+            jurisdiction = company.Jurisdiction,
             terminationReason,
             currency = salary?.Currency ?? "SAR",
             message = $"Calculated EOSB/Gratuity for {employee.FullName}: {salary?.Currency ?? "SAR"} {eosbAmount:N2}"
@@ -6385,36 +6523,54 @@ public class PayrollController : ControllerBase
     // the structured EndOfServiceResult — the clean seam the Wave-C settlement pipeline
     // (POD-C1 payable/GL/off-cycle WPS) can consume directly (this pod computes ONLY).
     //
-    // Wage base: the pack computes gratuity on the LAST BASIC wage (input.Salary.Basic).
-    // This is a per-company-policy FLOOR — it is NOT the full statutory Art.84 "last wage"
-    // (basic + regular allowances such as housing), which materially exceeds basic-only.
-    // Wiring eligible allowances (PayComponent.EosbIncluded / IsIncludedInEosb, and the
-    // above-floor company rates) is deliberately DEFERRED here to avoid changing the live
-    // /eosb figure; it needs product/legal sign-off. The SalaryBreakdown seam below can
-    // carry those allowances when that decision is made, without changing this contract.
+    // Wage base: the caller passes the legal entity's configured PayComponent.EosbIncluded sum as the
+    // pack's Basic slot. Country calculators deliberately apply their formula to that single resolved
+    // last-wage base; they do not reach back to tenant/global salary configuration.
     //
     // Service period: the pack derives service length from DateOnly start/end
     // (fullMonths/12 + remDays/365), eliminating the /365.0 leap drift the old inline
     // final-settlement formula suffered.
-    private async Task<(EndOfServiceResult Result, double ServiceYearsDisplay)> ComputeEndOfServiceAsync(
-        GCCComplianceSetting gcc, decimal basicWage, DateTime joiningDate,
-        DateTime asOfDate, string terminationReason, Employee employee, CancellationToken ct)
+    private sealed record EosbWageBasis(decimal EligibleWage, IReadOnlyList<string> IncludedComponents);
+
+    private async Task<EosbWageBasis> ResolveEosbWageBasisAsync(
+        Guid tenantId, Guid? companyId, EmployeeSalaryStructure? salary, Employee employee, CancellationToken ct)
     {
-        // Map GCC CountryCode (ISO-2 stored) → pack key; the resolver maps ISO-2→ISO-3.
-        var packCc = gcc.CountryCode switch
+        var basic = salary?.BasicSalary ?? employee.Salary ?? 0m;
+        var housing = salary?.HousingAllowance ?? 0m;
+        var transport = salary?.TransportAllowance ?? 0m;
+        var other = (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
+        var gross = basic + housing + transport + other;
+        var components = await LoadPayComponentsAsync(tenantId, companyId, ct);
+        var included = components
+            .Where(c => c.ComponentType == PayComponentTypes.Earning && c.EosbIncluded && c.IsActive && !c.IsDeleted)
+            .ToList();
+        var computed = PayComponentEngine.Compute(included, new PayComponentContext
         {
-            "SA" => CountryCodes.Saudi,
-            "AE" or "UAE" => CountryCodes.UAE,
-            "QA" or "QAT" => CountryCodes.Qatar,
-            _ => gcc.CountryCode ?? CountryCodes.Saudi,
-        };
-        const string jur = "mainland"; // GCCComplianceSetting has no jurisdiction field; default mainland
-        var calc = _packResolver.ResolveEndOfServiceCalculator(packCc, jur);
+            Basic = basic,
+            Housing = housing,
+            Transport = transport,
+            OtherAllowances = other,
+            Gross = gross,
+        }).Earnings;
+        var eligible = Math.Round(computed.Sum(l => l.Amount), 2);
+        if (eligible > 0m)
+            return new EosbWageBasis(eligible, computed.Select(l => l.Code).Distinct(StringComparer.Ordinal).ToList());
+
+        // Existing tenants may have a partially seeded component catalog with no EOSB flags. Preserve the
+        // historical basic-wage floor, but make the fallback explicit in every persisted result snapshot.
+        return new EosbWageBasis(Math.Round(basic, 2), ["BASIC (compatibility fallback: no positive EOSB-included component)"]);
+    }
+
+    private async Task<(EndOfServiceResult Result, double ServiceYearsDisplay)> ComputeEndOfServiceAsync(
+        string countryCode, string jurisdiction, Guid companyId, decimal eligibleWage,
+        DateTime joiningDate, DateTime asOfDate, string terminationReason, Employee employee, CancellationToken ct)
+    {
+        var calc = _packResolver.ResolveEndOfServiceCalculator(countryCode, jurisdiction);
 
         var input = new EndOfServiceInput(
-            EmployeeId:        Guid.Empty,
-            CompanyId:         Guid.Empty,
-            Salary:            new SalaryBreakdown(basicWage, 0m, 0m, 0m),
+            EmployeeId:        employee.PublicId,
+            CompanyId:         companyId,
+            Salary:            new SalaryBreakdown(eligibleWage, 0m, 0m, 0m),
             ServiceStartDate:  DateOnly.FromDateTime(joiningDate),
             ServiceEndDate:    DateOnly.FromDateTime(asOfDate),
             TerminationReason: terminationReason,
@@ -6784,6 +6940,59 @@ public class PayrollController : ControllerBase
         if (description.StartsWith(earnPrefix, StringComparison.Ordinal)) return (description[earnPrefix.Length..], description);
         if (description.StartsWith(dedPrefix, StringComparison.Ordinal))   return (description[dedPrefix.Length..], description);
         return (string.Empty, description);
+    }
+
+    private sealed record PayrollGlReadiness(
+        bool IsReady,
+        decimal TotalDebits,
+        decimal TotalCredits,
+        decimal Difference,
+        IReadOnlyList<string> Currencies,
+        IReadOnlyList<Guid> UnmappedEntryIds,
+        IReadOnlyList<Guid> EmptySidedEntryIds);
+
+    /// <summary>
+    /// The final, storage-shape-neutral gate before a payroll run may claim <c>ReadyForErp</c>.
+    /// FinanceGlEntry contains both historical two-sided rows and current one-sided rows, so totals count
+    /// every populated side. This is intentionally independent of the journal export/UI projections: the
+    /// persisted accounting facts themselves must balance, use real mapped accounts, and carry exactly the
+    /// legal entity's currency.
+    /// </summary>
+    private static PayrollGlReadiness ValidatePayrollGl(
+        IReadOnlyCollection<FinanceGlEntry> lines, string companyCurrency)
+    {
+        static bool IsUnmapped(string account)
+        {
+            if (string.IsNullOrWhiteSpace(account)) return false; // absent on the other side is legitimate
+            var (code, name) = SplitAccountLabel(account);
+            return string.IsNullOrWhiteSpace(code)
+                   || string.IsNullOrWhiteSpace(name)
+                   || code.Equals("UNMAPPED", StringComparison.OrdinalIgnoreCase)
+                   || name.Equals("Unmapped", StringComparison.OrdinalIgnoreCase);
+        }
+
+        var debits = Math.Round(lines.Where(l => !string.IsNullOrWhiteSpace(l.DebitAccount)).Sum(l => l.Amount), 2);
+        var credits = Math.Round(lines.Where(l => !string.IsNullOrWhiteSpace(l.CreditAccount)).Sum(l => l.Amount), 2);
+        var difference = Math.Abs(debits - credits);
+        var currencies = lines
+            .Select(l => (l.Currency ?? string.Empty).Trim().ToUpperInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(c => c, StringComparer.Ordinal)
+            .ToList();
+        var unmapped = lines
+            .Where(l => IsUnmapped(l.DebitAccount) || IsUnmapped(l.CreditAccount))
+            .Select(l => l.Id).Distinct().ToList();
+        var emptySided = lines
+            .Where(l => string.IsNullOrWhiteSpace(l.DebitAccount) && string.IsNullOrWhiteSpace(l.CreditAccount))
+            .Select(l => l.Id).Distinct().ToList();
+        var oneCompanyCurrency = currencies.Count == 1
+            && !string.IsNullOrWhiteSpace(companyCurrency)
+            && string.Equals(currencies[0], companyCurrency.Trim(), StringComparison.OrdinalIgnoreCase);
+
+        return new PayrollGlReadiness(
+            lines.Count > 0 && difference <= 0.01m && oneCompanyCurrency
+                && unmapped.Count == 0 && emptySided.Count == 0,
+            debits, credits, difference, currencies, unmapped, emptySided);
     }
 
     // Builds the double-entry GL lines for a payroll run.
@@ -7620,18 +7829,20 @@ public class PayrollController : ControllerBase
         // and refused rather than guessed.
         var (settlementCompanyId, companyError) = await ResolveSettlementCompanyAsync(tenantId, employee, cancellationToken);
         if (companyError is not null) return UnprocessableEntity(companyError);
+        var settlementCompany = await _db.Companies.AsNoTracking()
+            .SingleAsync(c => c.TenantId == tenantId && c.Id == settlementCompanyId, cancellationToken);
 
         // ── OPEN ITEM: FAIL LOUD WHEN EOSB IS NOT ENABLED ────────────────────────────────────────────
         // /eosb/calculate refuses outright when EosbEnabled is false while the pre-C1 /final-settlement
         // silently computed ZERO gratuity. That asymmetry was survivable while the figure was only
         // displayed; accruing a real payable with a silent zero gratuity is not.
         var gcc = await _db.GCCComplianceSettings.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.CountryCode == settlementCompany.CountryCode, cancellationToken);
         if (gcc is null || !gcc.EosbEnabled)
             return UnprocessableEntity(new
             {
                 error   = "eosb_not_enabled",
-                message = "End-of-service is not enabled for this tenant, so a settlement would accrue a payable " +
+                message = $"End-of-service is not enabled for company country '{settlementCompany.CountryCode}', so a settlement would accrue a payable " +
                           "with a silent ZERO gratuity. Enable EOSB in GCC Settings (or record the amount as an " +
                           "explicit other-dues line) before settling.",
             });
@@ -8337,6 +8548,12 @@ public class PayrollController : ControllerBase
         var currency = !string.IsNullOrWhiteSpace(salary?.Currency)
             ? salary!.Currency
             : await ResolveCurrencyAsync(tenantId, ct);
+        var company = companyId.HasValue
+            ? await _db.Companies.AsNoTracking().SingleAsync(c => c.TenantId == tenantId && c.Id == companyId.Value, ct)
+            : null;
+        var countryCode = !string.IsNullOrWhiteSpace(company?.CountryCode) ? company!.CountryCode : gcc.CountryCode;
+        var jurisdiction = company?.Jurisdiction ?? string.Empty;
+        var wageBasis = await ResolveEosbWageBasisAsync(tenantId, companyId, salary, employee, ct);
 
         var terminationReason = await ResolveTerminationReasonAsync(tenantId, employee.Id, req.TerminationReason, ct);
         var calcDate = lastDay.ToDateTime(TimeOnly.MinValue);
@@ -8345,20 +8562,22 @@ public class PayrollController : ControllerBase
         //    it and keeps only the rule string, so the Art.84 tier split and the Art.85/80 adjustment line
         //    were unrecoverable from anything the product persisted.
         var (eosbResult, serviceYears) = await ComputeEndOfServiceAsync(
-            gcc, basicWage, employee.JoiningDate, calcDate, terminationReason, employee, ct);
+            countryCode, jurisdiction, companyId ?? Guid.Empty, wageBasis.EligibleWage,
+            employee.JoiningDate, calcDate, terminationReason, employee, ct);
         var gratuity = Math.Round(eosbResult.TotalGratuity, 2);
 
         // [FLAG-COMPLIANCE-KSA] the Art. 84 wage-base delta, computed by re-running the SAME pack on the
         // full package. Purely indicative and never paid automatically — it is the number the approver
         // must consciously accept or correct.
         decimal wageBaseDelta = 0m;
-        if (monthlyGross > basicWage && gratuity > 0m)
+        if (monthlyGross > wageBasis.EligibleWage && gratuity > 0m)
         {
             var (fullResult, _) = await ComputeEndOfServiceAsync(
-                gcc, monthlyGross, employee.JoiningDate, calcDate, terminationReason, employee, ct);
+                countryCode, jurisdiction, companyId ?? Guid.Empty, monthlyGross,
+                employee.JoiningDate, calcDate, terminationReason, employee, ct);
             wageBaseDelta = Math.Max(0m, Math.Round(fullResult.TotalGratuity - gratuity, 2));
             if (wageBaseDelta > 0m)
-                warnings.Add($"[FLAG-COMPLIANCE-KSA] Gratuity is computed on the BASIC wage ({basicWage:N2}). On the " +
+                warnings.Add($"[FLAG-COMPLIANCE-KSA] Gratuity is computed on the configured EOSB wage base ({wageBasis.EligibleWage:N2}: {string.Join(", ", wageBasis.IncludedComponents)}). On the " +
                              $"full package ({monthlyGross:N2}) it would be {wageBaseDelta:N2} {currency} higher. " +
                              "KSA Art. 84 measures the award on the LAST WAGE, which is read as including regular " +
                              "allowances. Approval requires an explicit acknowledgement of this floor.");
@@ -8549,14 +8768,16 @@ public class PayrollController : ControllerBase
             }),
             JsonSerializer.Serialize(new
             {
-                basicWage, monthlyGross, currency,
+                basicWage, monthlyGross, eligibleEosbWage = wageBasis.EligibleWage,
+                eosbIncludedComponents = wageBasis.IncludedComponents, currency,
                 serviceStart = DateOnly.FromDateTime(employee.JoiningDate),
                 serviceEnd = lastDay,
                 terminationReason,
-                countryCode = gcc.CountryCode,
+                countryCode,
+                jurisdiction,
                 contractType = employee.ContractType,
                 nationality = employee.Nationality,
-                wageBase = "basic",
+                wageBase = "configured PayComponent.EosbIncluded",
             }),
             gratuity, encashment.TotalAmount, encashment.TotalDays,
             noticePay, Math.Max(0m, req.OtherDuesAmount),
@@ -8597,6 +8818,7 @@ public class PayrollController : ControllerBase
         var now = DateTime.UtcNow;
         var targetYear = year ?? now.Year;
         var targetMonth = month ?? now.Month;
+        var targetPeriodEnd = new DateOnly(targetYear, targetMonth, 1).AddMonths(1).AddDays(-1);
 
         var companies = await _db.Companies
             .AsNoTracking()
@@ -8615,11 +8837,13 @@ public class PayrollController : ControllerBase
 
         var salaryAssignedByCompany = await _db.EmployeeSalaryStructures
             .AsNoTracking()
-            .Where(s => s.TenantId == tenantId && s.IsActive)
+            // Coverage is a period fact, not a count of every salary-history row. Use the same
+            // effective-dated assignment source as Process/GOSI and count each employee once.
+            .Where(s => s.TenantId == tenantId && s.IsActive && s.EffectiveDate <= targetPeriodEnd)
             .Join(_db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted && e.Status == "Active"),
-                  s => s.EmployeeId, e => e.Id, (s, e) => new { e.CompanyId })
+                  s => s.EmployeeId, e => e.Id, (s, e) => new { s.EmployeeId, e.CompanyId })
             .GroupBy(x => x.CompanyId)
-            .Select(g => new { CompanyId = g.Key, Count = g.Count() })
+            .Select(g => new { CompanyId = g.Key, Count = g.Select(x => x.EmployeeId).Distinct().Count() })
             .ToListAsync(cancellationToken);
 
         var runsForMonth = await _db.PayrollRuns
@@ -8734,11 +8958,13 @@ public class PayrollController : ControllerBase
         var now = DateTime.UtcNow;
         var targetYear = year ?? now.Year;
         var targetMonth = month ?? now.Month;
+        var targetPeriodEnd = new DateOnly(targetYear, targetMonth, 1).AddMonths(1).AddDays(-1);
 
         var hasComponents = await _db.SalaryComponents
             .AnyAsync(c => c.TenantId == tenantId && c.IsActive, cancellationToken);
 
-        var structureQuery = _db.SalaryStructures.Where(s => s.TenantId == tenantId && !s.IsDeleted && s.IsActive);
+        var structureQuery = _db.SalaryStructures.Where(s => s.TenantId == tenantId && !s.IsDeleted && s.IsActive
+                                                           && s.EffectiveDate <= targetPeriodEnd);
         if (companyId.HasValue)
             structureQuery = structureQuery.Where(s => s.CompanyId == companyId || s.CompanyId == null);
         var hasStructures = await structureQuery.AnyAsync(cancellationToken);
@@ -8749,8 +8975,9 @@ public class PayrollController : ControllerBase
         var totalActive = await activeEmployeeQuery.CountAsync(cancellationToken);
 
         var assignedCount = await _db.EmployeeSalaryStructures
-            .Where(s => s.TenantId == tenantId && s.IsActive)
-            .Join(activeEmployeeQuery, s => s.EmployeeId, e => e.Id, (s, e) => s.Id)
+            .Where(s => s.TenantId == tenantId && s.IsActive && s.EffectiveDate <= targetPeriodEnd)
+            .Join(activeEmployeeQuery, s => s.EmployeeId, e => e.Id, (s, e) => s.EmployeeId)
+            .Distinct()
             .CountAsync(cancellationToken);
 
         var coveragePercent = totalActive > 0 ? Math.Round(assignedCount * 100.0 / totalActive, 1) : 0.0;

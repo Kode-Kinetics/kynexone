@@ -132,6 +132,39 @@ public class EosbUnificationTests
         return (T?)body.GetType().GetProperty(name)?.GetValue(body);
     }
 
+    [Fact]
+    public async Task CalculateEosb_UsesCompanyPayComponentInclusionFlagsForWageBasis()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employeeId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1));
+        var company = await db.Companies.SingleAsync(c => c.TenantId == tenantId);
+        company.Jurisdiction = Jurisdictions.KsaMainland;
+        var salary = await db.EmployeeSalaryStructures.SingleAsync(s => s.EmployeeId == employeeId);
+        salary.HousingAllowance = 2_000m;
+        db.PayComponents.AddRange(
+            new PayComponent
+            {
+                TenantId = tenantId, CompanyId = company.Id, Code = "BASIC", NameEn = "Basic",
+                ComponentType = PayComponentTypes.Earning, CalcMethod = PayComponentCalcMethods.StructureField,
+                StructureField = PayComponentStructureFields.BasicSalary, EosbIncluded = true, IsActive = true,
+            },
+            new PayComponent
+            {
+                TenantId = tenantId, CompanyId = company.Id, Code = "HOUSING", NameEn = "Housing",
+                ComponentType = PayComponentTypes.Earning, CalcMethod = PayComponentCalcMethods.StructureField,
+                StructureField = PayComponentStructureFields.HousingAllowance, EosbIncluded = true, IsActive = true,
+            });
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tenantId).CalculateEosb(
+            new EosbCalculationRequest(employeeId, new DateTime(2023, 1, 1), "Termination"), CancellationToken.None);
+
+        Prop<decimal>(result, "eligibleSalary").Should().Be(12_000m);
+        EosbFrom(result).Should().Be(18_000m, "three KSA years use half of the configured 12,000 last-wage base per year");
+        Prop<string>(result, "jurisdiction").Should().Be(Jurisdictions.KsaMainland);
+    }
+
     // ── 1. PARITY: both endpoints → identical eosbAmount for identical inputs ──────
 
     [Theory]

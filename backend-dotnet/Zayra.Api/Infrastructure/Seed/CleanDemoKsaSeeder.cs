@@ -20,9 +20,15 @@ public static class CleanDemoKsaSeeder
     public const string AdminEmail    = "admin@rasalmanar.com";
     public const string AdminPassword = "RasAlManar@2026!";
 
-    // Slugs NOT renamed — idempotency guards in DemoDataSeeder + KsaDemoTenantSeeder
-    // find the existing row (even with IsActive=false) and skip re-creation.
-    private static readonly string[] GarbageSlugs = ["intelliflow", "evostel", "alnakheel"];
+    // IntelliFlow is deliberately NOT in this list. IntelliFlowFragmentCleanup owns the legacy
+    // IntelliFlow conversion because it can distinguish the old split/legacy shape from the
+    // canonical pilot tenant. Treating every active "intelliflow" row as garbage made every
+    // backend restart deactivate the healthy pilot, revoke its sessions, rename its slug, and
+    // seed a replacement tenant.
+    //
+    // Slugs below are not renamed here — the legacy seeders' idempotency guards find the existing
+    // row (even with IsActive=false) and skip re-creation.
+    private static readonly string[] GarbageSlugs = ["evostel", "alnakheel"];
 
     // ── Cleanup ────────────────────────────────────────────────────────────────
 
@@ -645,8 +651,8 @@ public static class CleanDemoKsaSeeder
 
         db.EmployeeBonuses.Add(new EmployeeBonus
         {
-            TenantId = tenantId, BonusBatchId = bonusBatch.Id,
-            EmployeeId = Guid.NewGuid(),          // placeholder Guid per model design
+            TenantId = tenantId, CompanyId = empAbdulrahman.CompanyId, BonusBatchId = bonusBatch.Id,
+            EmployeeId = empAbdulrahman.PublicId,
             EmployeeIntId = empAbdulrahman.Id,
             EmployeeName = empAbdulrahman.FullName,
             Department = empAbdulrahman.Department ?? "Information Technology",

@@ -22,7 +22,7 @@ public sealed class SandboxQiwaApiAdapter : IQiwaApiAdapter
         // Sandbox never needs real auth; return a synthetic token.
         => Task.FromResult<string?>($"sandbox-token-{Guid.NewGuid():N}");
 
-    public Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, CancellationToken ct)
+    public Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
     {
         var missing = MissingFields(payload);
         if (missing.Count > 0)

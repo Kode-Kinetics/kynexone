@@ -58,8 +58,42 @@ public class NotificationDeliveryTests
         public NotificationDeliveryWorker Worker =>
             new(Provider.GetRequiredService<IServiceScopeFactory>(),
                 Provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<NotificationDeliveryWorker>>());
+        public ComplianceReminderWorker ReminderWorker =>
+            new(Provider.GetRequiredService<IServiceScopeFactory>(),
+                Provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ComplianceReminderWorker>>());
 
         public void Dispose() => Provider.Dispose();
+    }
+
+    [Fact]
+    public async Task DueComplianceReminder_IsEnqueuedOnceAndMarkedSentOnlyWithOutboxEvidence()
+    {
+        using var h = new Harness();
+        await using var db = h.NewDb();
+        var tenantId = SeedTenantUserAndEmployee(db, "compliance@example.com", "+971500000001");
+        var employee = await db.Employees.SingleAsync(e => e.TenantId == tenantId);
+        var reminder = new ComplianceReminder
+        {
+            TenantId = tenantId, EmployeeId = employee.PublicId, EmployeeName = "untrusted snapshot",
+            ReminderType = "PassportExpiry", DocumentType = "Passport",
+            ExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(30)),
+            ScheduledAtUtc = DateTime.UtcNow.AddMinutes(-1), Status = "Pending",
+        };
+        db.ComplianceReminders.Add(reminder);
+        await db.SaveChangesAsync();
+
+        (await h.ReminderWorker.DrainOnceAsync(CancellationToken.None)).Should().Be(1);
+        db.ChangeTracker.Clear();
+        var sent = await db.ComplianceReminders.SingleAsync(r => r.Id == reminder.Id);
+        sent.Status.Should().Be("Sent");
+        sent.SentAtUtc.Should().NotBeNull();
+        (await db.NotificationDeliveries.CountAsync(d => d.TenantId == tenantId
+            && d.EntityName == "ComplianceReminder" && d.EntityId == reminder.Id.ToString())).Should().BeGreaterThan(0);
+        (await db.EmployeeNotifications.CountAsync(n => n.TenantId == tenantId && n.EmployeeId == employee.Id)).Should().Be(1);
+
+        var deliveryCount = await db.NotificationDeliveries.CountAsync(d => d.TenantId == tenantId);
+        (await h.ReminderWorker.DrainOnceAsync(CancellationToken.None)).Should().Be(0);
+        (await db.NotificationDeliveries.CountAsync(d => d.TenantId == tenantId)).Should().Be(deliveryCount);
     }
 
     private sealed class UnconfiguredEmailService : IEmailService

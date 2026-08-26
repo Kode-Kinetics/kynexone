@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
@@ -265,6 +266,15 @@ public class BonusesController : ControllerBase
         if (batch.Status != "Draft") return BadRequest("Can only add employees to a Draft batch.");
 
         var bonusType = await _db.BonusTypes.FirstOrDefaultAsync(x => x.Id == batch.BonusTypeId && x.TenantId == tid, ct);
+        if (bonusType == null) return NotFound("Bonus type not found.");
+
+        var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, req.EmployeeIntId, ct);
+        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        var employee = identity.Employee!;
+        if (await _db.EmployeeBonuses.AnyAsync(
+                x => x.TenantId == tid && x.BonusBatchId == batchId &&
+                     x.EmployeeIntId == employee.Id && !x.IsDeleted, ct))
+            return Conflict("Employee is already included in this bonus batch.");
 
         decimal grossBonusAmount = req.CalculationMethod switch
         {
@@ -272,30 +282,24 @@ public class BonusesController : ControllerBase
             _ => req.CalculationValue,
         };
 
-        // Resolve int PK (Employee.Id) for payroll-run matching + company (for tax policy) up front.
-        var linked = await _db.Employees
-            .Where(e => e.TenantId == tid && e.FullName == req.EmployeeName && !e.IsDeleted)
-            .Select(e => new { e.Id, e.CompanyId })
-            .FirstOrDefaultAsync(ct);
-        var linkedEmployee = (int?)linked?.Id;
-
         // Tax: per-company CompanyTaxPolicy override (FIX 3) → legacy region switch. GCC = zero PIT.
-        var bonusTaxRate = bonusType?.IsTaxable == true
-            ? await ResolveBonusTaxRateAsync(tid, linked?.CompanyId, bonusType!, DateOnly.FromDateTime(DateTime.UtcNow), ct)
+        var bonusTaxRate = bonusType.IsTaxable
+            ? await ResolveBonusTaxRateAsync(tid, employee.CompanyId, bonusType, DateOnly.FromDateTime(DateTime.UtcNow), ct)
             : 0m;
         decimal taxWithheld = Math.Round(grossBonusAmount * bonusTaxRate, 2);
         decimal netBonusAmount = grossBonusAmount - taxWithheld;
 
         var eb = new EmployeeBonus
         {
-            TenantId = tid, BonusBatchId = batchId, EmployeeId = req.EmployeeId,
-            EmployeeIntId = linkedEmployee,
-            EmployeeName = req.EmployeeName, Department = req.Department ?? string.Empty,
+            TenantId = tid, CompanyId = employee.CompanyId,
+            BonusBatchId = batchId, EmployeeId = employee.PublicId,
+            EmployeeIntId = employee.Id,
+            EmployeeName = employee.FullName, Department = employee.Department,
             BonusTypeId = batch.BonusTypeId, BonusTypeName = batch.BonusTypeName,
             BasicSalary = req.BasicSalary, CalculationMethod = req.CalculationMethod,
             CalculationValue = req.CalculationValue,
             GrossBonusAmount = grossBonusAmount, TaxWithheld = taxWithheld, BonusAmount = netBonusAmount,
-            TaxRegion = bonusType?.TaxRegion ?? "GCC",
+            TaxRegion = bonusType.TaxRegion,
             PaymentPeriod = batch.PaymentPeriod, Status = "Draft", Notes = req.Notes ?? string.Empty,
             CreatedBy = uid,
         };
@@ -322,15 +326,9 @@ public class BonusesController : ControllerBase
         var bonusType = await _db.BonusTypes.FirstOrDefaultAsync(x => x.Id == batch.BonusTypeId && x.TenantId == tid, ct);
         if (bonusType == null) return NotFound("Bonus type not found.");
 
-        // Already-added employee int IDs (to skip duplicates)
-        var alreadyAdded = await _db.EmployeeBonuses
-            .Where(x => x.BonusBatchId == batchId && !x.IsDeleted)
-            .Select(x => x.EmployeeId)
-            .ToListAsync(ct);
-
         // Load active employees for this tenant
         var empQuery = _db.Employees
-            .Where(e => e.TenantId == tid && e.Status == "Active");
+            .Where(e => e.TenantId == tid && e.Status == "Active" && !e.IsDeleted);
         if (req.DepartmentId.HasValue)
             empQuery = empQuery.Where(e => e.DepartmentId == req.DepartmentId.Value);
         else if (!string.IsNullOrEmpty(req.Department))
@@ -358,19 +356,16 @@ public class BonusesController : ControllerBase
         decimal totalNetAdded = 0m;
         var newBonuses = new List<EmployeeBonus>();
 
-        // Build a set of already-added EmployeeId GUIDs for fast lookup — but our EmployeeBonus.EmployeeId is Guid
-        // We track by employee int Id via EmployeeIntId linkage; fall back to name match if needed
-        // Use a simpler approach: load existing by employee int ids
         var alreadyAddedIntIds = await _db.EmployeeBonuses
             .Where(x => x.BonusBatchId == batchId && !x.IsDeleted)
-            .Select(x => x.EmployeeName)
+            .Where(x => x.EmployeeIntId.HasValue)
+            .Select(x => x.EmployeeIntId!.Value)
             .ToListAsync(ct);
-        var alreadyAddedSet = new HashSet<string>(alreadyAddedIntIds);
+        var alreadyAddedSet = new HashSet<int>(alreadyAddedIntIds);
 
         foreach (var emp in employees)
         {
-            // Duplicate check by name (EmployeeBonus.EmployeeName)
-            if (alreadyAddedSet.Contains(emp.FullName)) { skippedDuplicate++; continue; }
+            if (alreadyAddedSet.Contains(emp.Id)) { skippedDuplicate++; continue; }
 
             // Min service months
             if (bonusType.MinServiceMonths > 0 && emp.JoiningDate > minServiceCutoff) { skippedMinService++; continue; }
@@ -388,7 +383,8 @@ public class BonusesController : ControllerBase
 
             var eb = new EmployeeBonus
             {
-                TenantId = tid, BonusBatchId = batchId, EmployeeId = Guid.NewGuid(),
+                TenantId = tid, CompanyId = emp.CompanyId,
+                BonusBatchId = batchId, EmployeeId = emp.PublicId,
                 EmployeeIntId = emp.Id,   // int PK for payroll-run join
                 EmployeeName = emp.FullName, Department = emp.Department,
                 BonusTypeId = bonusType.Id, BonusTypeName = bonusType.NameEn,
@@ -1032,7 +1028,7 @@ public record BonusTypeRequest(
 public record BulkAddRequest(Guid? CompanyId, Guid? DepartmentId, string? Department, Guid? GradeId, decimal? OverrideCalculationValue);
 public record CreateBatchRequest(Guid BonusTypeId, string BatchName, string PaymentPeriod, DateOnly PaymentDate, string? Notes);
 public record UpdateBatchRequest(string? BatchName, string? PaymentPeriod, DateOnly? PaymentDate, string? Notes);
-public record AddEmployeeBonusRequest(Guid EmployeeId, string EmployeeName, string? Department, decimal BasicSalary, string CalculationMethod, decimal CalculationValue, string? Notes);
+public record AddEmployeeBonusRequest(Guid EmployeeId, string EmployeeName, string? Department, decimal BasicSalary, string CalculationMethod, decimal CalculationValue, string? Notes, int? EmployeeIntId = null);
 public record UpdateEmployeeBonusRequest(string? CalculationMethod, decimal? CalculationValue, decimal? BasicSalary, string? Notes);
 public record BatchApproveRequest(string? Comments);
 public record MarkBatchPaidRequest(Guid? PayrollRunId);

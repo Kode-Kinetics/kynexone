@@ -14,6 +14,8 @@ import type {
   EmployeeContract, VisaRecord, PassportRecord, WorkPermitRecord,
   ComplianceRenewal, ComplianceDashboard, ExpiryAlert, ComplianceAIInsight,
 } from '../api/compliance';
+import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
+import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -111,8 +113,11 @@ function ContractsTab() {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<EmployeeSelection | null>(null);
   const [form, setForm] = useState({ employeeId: '', contractType: 'Employment', startDate: '', basicSalary: '', currencyCode: 'USD', language: 'en' });
   const [saving, setSaving] = useState(false);
+  const [transitioning, setTransitioning] = useState<string | null>(null);
+  const [hrSignatories, setHrSignatories] = useState<Record<string, string>>({});
 
   const load = async () => {
     setLoading(true);
@@ -128,6 +133,20 @@ function ContractsTab() {
       await complianceContractsApi.create({ ...form, basicSalary: Number(form.basicSalary) });
       setShowCreate(false); load();
     } catch (e) { notifyApiError(e); } finally { setSaving(false); }
+  };
+
+  const transition = async (contract: EmployeeContract, status: string) => {
+    const signedByHrName = hrSignatories[contract.id]?.trim();
+    if (status === 'Active' && !signedByHrName) {
+      notifyApiError({ response: { data: { message: 'Enter the HR signatory name before activating the contract.' } } });
+      return;
+    }
+    setTransitioning(contract.id);
+    try {
+      await complianceContractsApi.updateStatus(contract.id, status, signedByHrName || undefined);
+      await load();
+    } catch (e) { notifyApiError(e); }
+    finally { setTransitioning(null); }
   };
 
   const STATUS_COLORS: Record<string, string> = {
@@ -157,7 +176,18 @@ function ContractsTab() {
         <div className="surface p-4 space-y-3">
           <h4 className="text-sm font-semibold text-slate-800 dark:text-white">New Employee Contract</h4>
           <div className="grid grid-cols-2 gap-3">
-            {[['employeeId', 'Employee ID (UUID)', 'text'], ['startDate', 'Start Date', 'date'], ['basicSalary', 'Basic Salary', 'number']].map(([k, l, t]) => (
+            <div className="col-span-2">
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Employee</label>
+              <EmployeeSearchSelect
+                value={selectedEmployee}
+                onChange={(employee) => {
+                  setSelectedEmployee(employee);
+                  setForm(current => ({ ...current, employeeId: employee?.publicId ?? '' }));
+                }}
+                required
+              />
+            </div>
+            {[['startDate', 'Start Date', 'date'], ['basicSalary', 'Basic Salary', 'number']].map(([k, l, t]) => (
               <div key={k}>
                 <label htmlFor={`contract-${k}`} className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">{l}</label>
                 <input id={`contract-${k}`} type={t} title={l} value={(form as Record<string, string>)[k]} onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))}
@@ -193,7 +223,7 @@ function ContractsTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 dark:border-white/10">
-                {['Contract #', 'Employee', 'Type', 'Start', 'End', 'Salary', 'Version', 'Status'].map(h => (
+                {['Contract #', 'Employee', 'Type', 'Start', 'End', 'Salary', 'Version', 'Status', 'Actions'].map(h => (
                   <th key={h} className="p-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr>
@@ -209,6 +239,21 @@ function ContractsTab() {
                   <td className="p-3 font-semibold text-slate-900 dark:text-white">{c.currencyCode} {c.basicSalary.toLocaleString()}</td>
                   <td className="p-3 text-slate-500 dark:text-slate-400">v{c.version}</td>
                   <td className="p-3"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[c.status] ?? ''}`}>{c.status}</span></td>
+                  <td className="p-3">
+                    <div className="flex min-w-[230px] flex-wrap items-center gap-2">
+                      {c.status === 'Draft' && <button type="button" disabled={transitioning === c.id} onClick={() => transition(c, 'PendingApproval')} className="rounded bg-sapphire px-2 py-1 text-xs text-white disabled:opacity-50">Submit</button>}
+                      {c.status === 'PendingApproval' && <>
+                        <input className="min-w-[150px] rounded border border-slate-200 px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5" aria-label={`HR signatory for ${c.contractNumber}`} placeholder="HR signatory name" value={hrSignatories[c.id] ?? ''} onChange={e => setHrSignatories(x => ({ ...x, [c.id]: e.target.value }))} />
+                        <button type="button" disabled={transitioning === c.id} onClick={() => transition(c, 'Active')} className="rounded bg-emerald-600 px-2 py-1 text-xs text-white disabled:opacity-50">Activate</button>
+                        <button type="button" disabled={transitioning === c.id} onClick={() => transition(c, 'Draft')} className="rounded bg-slate-200 px-2 py-1 text-xs text-slate-700 disabled:opacity-50">Send back</button>
+                      </>}
+                      {c.status === 'Active' && <>
+                        {c.endDate && c.endDate <= new Date().toISOString().slice(0, 10) && <button type="button" disabled={transitioning === c.id} onClick={() => transition(c, 'Expired')} className="rounded bg-amber-600 px-2 py-1 text-xs text-white disabled:opacity-50">Mark expired</button>}
+                        <button type="button" disabled={transitioning === c.id} onClick={() => transition(c, 'Terminated')} className="rounded bg-rose-600 px-2 py-1 text-xs text-white disabled:opacity-50">Terminate</button>
+                      </>}
+                      {['Expired', 'Terminated', 'Superseded'].includes(c.status) && <span className="text-xs text-slate-400">Terminal</span>}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -15,9 +15,9 @@ namespace Zayra.Api.Infrastructure.Boot;
 ///   2. Entity implements ICompanyScoped but has no Guid? CompanyId property, or the EF
 ///      model does not map a CompanyId property → violation.
 ///
-/// ROLLOUT BEHAVIOR: strict (throw ⇒ failed boot) everywhere except Production.
-/// In Production it logs errors only, unless ZAYRA_COMPANY_SCOPE_ASSERT=strict is set —
-/// flip that env var once a deploy cycle has proven clean, then it hard-fails there too.
+/// ROLLOUT BEHAVIOR: strict (throw ⇒ failed boot) in every environment, including Production.
+/// A model that can cross legal-entity boundaries must never be allowed to boot merely because
+/// it reached the environment where the consequence is largest.
 /// Tests call Assert(db, strict: true) directly, so CI is always strict.
 /// </summary>
 public static class CompanyScopeBootAssertion
@@ -119,8 +119,6 @@ public static class CompanyScopeBootAssertion
         logger?.LogError("{Message}", message);
     }
 
-    /// <summary>Strict everywhere except Production; Production opts in via ZAYRA_COMPANY_SCOPE_ASSERT=strict.</summary>
-    public static bool ResolveStrictMode(bool isProduction) =>
-        !isProduction ||
-        string.Equals(Environment.GetEnvironmentVariable(StrictEnvVar), "strict", StringComparison.OrdinalIgnoreCase);
+    /// <summary>Company-scope model validation always fails closed.</summary>
+    public static bool ResolveStrictMode(bool isProduction) => true;
 }

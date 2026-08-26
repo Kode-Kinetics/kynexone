@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
@@ -85,22 +86,11 @@ public class AdvancesController : ControllerBase
 
         if (!scope.IsUnrestricted)
         {
-            var callerUserId = GetUserId();
-            if (callerUserId.HasValue)
-            {
-                var allowedId = callerUserId.Value;
-                var effectiveId = (employeeId.HasValue && employeeId.Value == allowedId) ? employeeId : allowedId;
-                q = q.Where(x => x.EmployeeId == effectiveId);
-            }
-            else
-            {
-                return Ok(new { total = 0, items = Array.Empty<SalaryAdvanceDto>() });
-            }
+            var allowedEmployeeIds = scope.AllowedEmployeeIds!.ToArray();
+            q = q.Where(x => x.EmployeeIntId.HasValue && allowedEmployeeIds.Contains(x.EmployeeIntId.Value));
         }
-        else if (employeeId.HasValue)
-        {
+        if (employeeId.HasValue)
             q = q.Where(x => x.EmployeeId == employeeId);
-        }
 
         if (!string.IsNullOrEmpty(status)) q = q.Where(x => x.Status == status);
         var total = await q.CountAsync(ct);
@@ -132,17 +122,20 @@ public class AdvancesController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, req.EmployeeIntId, ct);
+        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        var employee = identity.Employee!;
+        var scope = await _scopeService.ResolveAsync(User, tid, ct);
+        if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
+
         var policy = await _db.AdvancePolicies.FirstOrDefaultAsync(x => x.TenantId == tid && x.IsActive, ct);
 
         // Policy compliance checks
-        // Auto-generate EmployeeId Guid when client omits it (frontend uses EmployeeIntId for payroll)
-        var resolvedEmployeeId = req.EmployeeId == Guid.Empty ? Guid.NewGuid() : req.EmployeeId;
-
-        if (policy != null && req.EmployeeIntId.HasValue)
+        if (policy != null)
         {
             var currentYear = DateTime.UtcNow.Year;
             var advancesThisYear = await _db.SalaryAdvances.CountAsync(
-                x => x.TenantId == tid && x.EmployeeIntId == req.EmployeeIntId && !x.IsDeleted
+                x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
                      && x.CreatedAtUtc.Year == currentYear, ct);
             if (advancesThisYear >= policy.MaxAdvancesPerYear)
                 return BadRequest($"Employee has already used {advancesThisYear} advance(s) this year. Maximum allowed is {policy.MaxAdvancesPerYear}.");
@@ -151,7 +144,7 @@ public class AdvancesController : ControllerBase
             {
                 var cooldownCutoff = DateTime.UtcNow.AddMonths(-policy.CooldownMonths);
                 var recentlySettled = await _db.SalaryAdvances.AnyAsync(
-                    x => x.TenantId == tid && x.EmployeeIntId == req.EmployeeIntId && !x.IsDeleted
+                    x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
                          && x.Status == "Settled" && x.UpdatedAtUtc > cooldownCutoff, ct);
                 if (recentlySettled)
                     return BadRequest($"Employee must wait {policy.CooldownMonths} month(s) after settling an advance before requesting a new one.");
@@ -163,8 +156,9 @@ public class AdvancesController : ControllerBase
 
         var adv = new SalaryAdvance
         {
-            TenantId = tid, EmployeeId = resolvedEmployeeId, EmployeeName = req.EmployeeName,
-            EmployeeIntId = req.EmployeeIntId,
+            TenantId = tid, CompanyId = employee.CompanyId,
+            EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
+            EmployeeIntId = employee.Id,
             AdvanceNumber = advNumber, RequestedAmount = req.RequestedAmount,
             RepaymentType = req.RepaymentType, Installments = req.Installments,
             Reason = req.Reason ?? string.Empty,

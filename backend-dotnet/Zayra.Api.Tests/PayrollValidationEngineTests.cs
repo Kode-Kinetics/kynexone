@@ -558,6 +558,28 @@ public class PayrollValidationEngineTests
     }
 
     [Fact]
+    public async Task ValidationResults_GetReturnsPersistedSnapshotWithoutReRunningEngine()
+    {
+        var db = CreateSqliteDb(out var conn);
+        await using var _ = conn;
+        var tid = Guid.NewGuid();
+        var run = new PayrollRun { TenantId = tid, Year = 2026, Month = 8, Status = "Processed" };
+        var stored = new PayrollValidationResult
+        {
+            TenantId = tid, PayrollRunId = run.Id, Severity = "Error", Code = "SAVED_ERROR",
+            Message = "Persisted result", IsResolved = false,
+        };
+        db.AddRange(run, stored);
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tid, "Admin").ValidationResults(run.Id, CancellationToken.None);
+
+        var rows = Assert.IsType<OkObjectResult>(result).Value.Should()
+            .BeAssignableTo<IEnumerable<PayrollValidationResult>>().Subject.ToList();
+        rows.Should().ContainSingle(x => x.Id == stored.Id && x.Code == "SAVED_ERROR");
+    }
+
+    [Fact]
     public async Task Approve_WithUnresolvedErrorResult_Returns422()
     {
         var db  = CreateSqliteDb(out var conn);
@@ -818,4 +840,3 @@ file sealed class _ValNullLetterService : Zayra.Api.Infrastructure.Documents.Let
     public Task<byte[]> GenerateExperienceLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.LetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateOfferLetterAsync(Zayra.Api.Infrastructure.Documents.Letters.OfferLetterData d, CancellationToken ct = default) => Task.FromResult(Array.Empty<byte>());
 }
-

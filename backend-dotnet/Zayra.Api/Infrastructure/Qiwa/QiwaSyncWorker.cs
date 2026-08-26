@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Operations;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Qiwa;
@@ -18,36 +20,42 @@ namespace Zayra.Api.Infrastructure.Qiwa;
 public sealed class QiwaSyncWorker : BackgroundService
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IQiwaApiAdapter _adapter;
     private readonly QiwaOAuthTokenCache _tokenCache;
     private readonly IDataProtectionProvider _protectionProvider;
     private readonly ILogger<QiwaSyncWorker> _log;
+    private readonly WorkerHeartbeatReporter? _heartbeat;
 
     public QiwaSyncWorker(
         IServiceScopeFactory scopeFactory,
         IQiwaApiAdapter adapter,
         QiwaOAuthTokenCache tokenCache,
         IDataProtectionProvider protectionProvider,
-        ILogger<QiwaSyncWorker> log)
+        ILogger<QiwaSyncWorker> log,
+        WorkerHeartbeatReporter? heartbeat = null)
     {
         _scopeFactory = scopeFactory;
         _adapter = adapter;
         _tokenCache = tokenCache;
         _protectionProvider = protectionProvider;
         _log = log;
+        _heartbeat = heartbeat;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _log.LogInformation("QiwaSyncWorker started (adapter={Adapter}, poll={Poll}s).", _adapter.AdapterName, PollInterval.TotalSeconds);
+        if (_heartbeat is not null) await _heartbeat.StartedAsync(ProductionWorkerNames.Qiwa, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 await ProcessOnceAsync(stoppingToken);
+                if (_heartbeat is not null) await _heartbeat.SucceededAsync(ProductionWorkerNames.Qiwa, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -56,6 +64,9 @@ public sealed class QiwaSyncWorker : BackgroundService
             catch (Exception ex)
             {
                 _log.LogError(ex, "QiwaSyncWorker iteration failed.");
+                if (_heartbeat is not null)
+                    try { await _heartbeat.FailedAsync(ProductionWorkerNames.Qiwa, ex, stoppingToken); }
+                    catch (Exception heartbeatEx) { _log.LogWarning(heartbeatEx, "Could not persist Qiwa worker failure heartbeat."); }
             }
 
             try { await Task.Delay(PollInterval, stoppingToken); }
@@ -74,6 +85,28 @@ public sealed class QiwaSyncWorker : BackgroundService
         // Requeue Failed logs whose exponential backoff window has elapsed.
         // Backoff = 2^retryCount * 30s → 60s, 120s, 240s before each subsequent attempt.
         var now = DateTime.UtcNow;
+        // A process can disappear after claiming a row. Re-open an expired lease; the
+        // stable sync-log id is also sent as the provider idempotency key, so an
+        // ambiguous post/commit outcome remains replay-safe.
+        if (db.Database.IsRelational())
+        {
+            await ScopedBypass.SystemWide(db.QiwaSyncLogs, 50,
+                    "Qiwa worker reclaims expired cross-tenant processing leases.",
+                    l => l.Status == QiwaSyncLogStatuses.Processing && l.LastRetriedAtUtc < now - ProcessingLease,
+                    l => l.LastRetriedAtUtc)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(l => l.Status, QiwaSyncLogStatuses.Pending), ct);
+        }
+        else
+        {
+            var expired = await ScopedBypass.SystemWide(db.QiwaSyncLogs, 50,
+                    "Qiwa worker reclaims expired cross-tenant processing leases.",
+                    l => l.Status == QiwaSyncLogStatuses.Processing && l.LastRetriedAtUtc < now - ProcessingLease,
+                    l => l.LastRetriedAtUtc)
+                .ToListAsync(ct);
+            foreach (var item in expired) item.Status = QiwaSyncLogStatuses.Pending;
+            if (expired.Count > 0) await db.SaveChangesAsync(ct);
+        }
         // SYSTEM CONTEXT: tenant scope intentionally bypassed — background worker has no HTTP
         // request context; must process logs for all tenants in a single pass.
         var failed = await db.QiwaSyncLogs
@@ -87,11 +120,13 @@ public sealed class QiwaSyncWorker : BackgroundService
                 f.Status = QiwaSyncLogStatuses.Pending;
         }
         if (failed.Count > 0) await db.SaveChangesAsync(ct);
+        db.ChangeTracker.Clear();
 
         // SYSTEM CONTEXT: tenant scope intentionally bypassed — same reasoning as above.
         // Tenant scoping is re-applied per-group inside the foreach below.
         var pending = await db.QiwaSyncLogs
             .IgnoreQueryFilters()
+            .AsNoTracking()
             .Where(l => l.Status == QiwaSyncLogStatuses.Pending && l.RetryCount < l.MaxRetries && l.Direction == "Push")
             .OrderBy(l => l.CreatedAtUtc)
             .Take(50)
@@ -155,6 +190,7 @@ public sealed class QiwaSyncWorker : BackgroundService
 
                     foreach (var log in group)
                     {
+                        if (!await TryClaimAsync(db, log, now, ct)) continue;
                         log.ErrorMessage     = reason;
                         log.Status           = QiwaSyncLogStatuses.DeadLetter;
                         log.DeadLetterReason = reason.Length > 500 ? reason[..500] : reason;
@@ -181,6 +217,7 @@ public sealed class QiwaSyncWorker : BackgroundService
 
             foreach (var log in group)
             {
+                if (!await TryClaimAsync(db, log, DateTime.UtcNow, ct)) continue;
                 await ProcessLogAsync(db, connection, token, log, tenantId, ct);
             }
 
@@ -221,6 +258,8 @@ public sealed class QiwaSyncWorker : BackgroundService
                 _log.LogInformation(
                     "QiwaSyncWorker: skipping sync log {SyncLogId} — employee {EmployeeId} belongs to inactive company {CompanyId} in tenant {TenantId}.",
                     log.Id, log.EmployeeId, employeeCompanyId, tenantId);
+                log.Status = QiwaSyncLogStatuses.Pending;
+                log.LastRetriedAtUtc = null;
                 return;
             }
         }
@@ -263,7 +302,7 @@ public sealed class QiwaSyncWorker : BackgroundService
         QiwaApiResult result;
         try
         {
-            result = await _adapter.PushEmployeeAsync(token, payload, ct);
+            result = await _adapter.PushEmployeeAsync(token, payload, log.Id, ct);
         }
         catch (Exception ex)
         {
@@ -295,6 +334,43 @@ public sealed class QiwaSyncWorker : BackgroundService
             if (connection is not null && result.ErrorCode is "NETWORK_ERROR" or "NO_TOKEN")
                 connection.Status = QiwaConnectionStatuses.ApiError;
         }
+    }
+
+    private static async Task<bool> TryClaimAsync(
+        ZayraDbContext db, QiwaSyncLog candidate, DateTime claimedAtUtc, CancellationToken ct)
+    {
+        if (db.Database.IsRelational())
+        {
+            var claimed = await ScopedBypass.TenantWide(db.QiwaSyncLogs, candidate.TenantId,
+                    "Qiwa worker atomically claims one tenant-owned pending sync log.")
+                .Where(l => l.Id == candidate.Id
+                            && l.Status == QiwaSyncLogStatuses.Pending
+                            && l.Direction == "Push"
+                            && l.RetryCount < l.MaxRetries)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(l => l.Status, QiwaSyncLogStatuses.Processing)
+                    .SetProperty(l => l.LastRetriedAtUtc, claimedAtUtc), ct);
+            if (claimed != 1) return false;
+        }
+        else
+        {
+            // In-memory provider support is only for deterministic unit tests. Production
+            // providers use the single-statement compare-and-set above.
+            var current = await ScopedBypass.TenantWide(db.QiwaSyncLogs, candidate.TenantId,
+                    "Qiwa unit-test claim pins the pending sync log to its tenant.")
+                .FirstOrDefaultAsync(l => l.Id == candidate.Id
+                                          && l.Status == QiwaSyncLogStatuses.Pending, ct);
+            if (current is null) return false;
+            current.Status = QiwaSyncLogStatuses.Processing;
+            current.LastRetriedAtUtc = claimedAtUtc;
+            await db.SaveChangesAsync(ct);
+            db.Entry(current).State = EntityState.Detached;
+        }
+
+        candidate.Status = QiwaSyncLogStatuses.Processing;
+        candidate.LastRetriedAtUtc = claimedAtUtc;
+        db.Attach(candidate);
+        return true;
     }
 
     private void FailOrDeadLetter(

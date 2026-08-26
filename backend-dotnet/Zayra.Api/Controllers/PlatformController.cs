@@ -80,16 +80,18 @@ public class PlatformController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.Email) || string.IsNullOrWhiteSpace(req.Password))
             return BadRequest(new { message = "Email and password are required." });
 
-        string loginEmail;
-        string loginRole = PlatformRoles.Owner;
-        Guid? platformUserId = null;
+        PlatformUser authenticatedUser;
 
-        // 1. Try DB-based platform user lookup first
+        // 1. Try DB-based platform user lookup first. Include inactive rows so the bootstrap
+        // environment credential can never resurrect a deliberately deactivated owner.
         var dbUser = await _db.PlatformUsers
-            .FirstOrDefaultAsync(u => u.Email.ToLower() == req.Email.ToLower() && u.IsActive, ct);
+            .FirstOrDefaultAsync(u => u.Email.ToLower() == req.Email.ToLower(), ct);
 
         if (dbUser is not null)
         {
+            if (!dbUser.IsActive)
+                return Unauthorized(new { message = "Invalid platform admin credentials." });
+
             // Brute-force lockout (see PlatformUser.FailedLoginCount): reject while a lockout is active.
             if (dbUser.LockoutEndUtc.HasValue && dbUser.LockoutEndUtc > DateTime.UtcNow)
             {
@@ -109,7 +111,6 @@ public class PlatformController : ControllerBase
                 dbUser.FailedLoginCount++;
                 if (dbUser.FailedLoginCount >= PlatformUser.MaxFailedLogins)
                     dbUser.LockoutEndUtc = DateTime.UtcNow.AddMinutes(PlatformUser.LockoutMinutes);
-                dbUser.UpdatedAtUtc = DateTime.UtcNow;
                 _db.LoginActivities.Add(new LoginActivity
                 {
                     UserId        = dbUser.Id,
@@ -139,12 +140,11 @@ public class PlatformController : ControllerBase
             // Update last login audit fields
             dbUser.LastLoginAtUtc = DateTime.UtcNow;
             dbUser.LastLoginIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-            dbUser.UpdatedAtUtc = DateTime.UtcNow;
+            if (!dbUser.UpdatedAtUtc.HasValue)
+                PlatformSessionSecurity.RotateStamp(dbUser);
             await _db.SaveChangesAsync(ct);
 
-            loginEmail = dbUser.Email;
-            loginRole = dbUser.Role;
-            platformUserId = dbUser.Id;
+            authenticatedUser = dbUser;
         }
         else
         {
@@ -174,38 +174,36 @@ public class PlatformController : ControllerBase
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
             }
 
-            loginEmail = expectedEmail;
-            loginRole = PlatformRoles.Owner;
+            // The environment credential is bootstrap-only. Materialize it as a DB user on
+            // first successful login so every issued token has server-side active/role/stamp
+            // state and can be revoked just like an ordinary platform team member.
+            authenticatedUser = new PlatformUser
+            {
+                Email = expectedEmail.Trim().ToLowerInvariant(),
+                FullName = "Platform Owner",
+                PasswordHash = _passwordHasher.Hash(expectedPassword),
+                Role = PlatformRoles.Owner,
+                IsActive = true,
+                LastLoginAtUtc = DateTime.UtcNow,
+                LastLoginIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                CreatedAtUtc = DateTime.UtcNow,
+            };
+            PlatformSessionSecurity.RotateStamp(authenticatedUser);
+            _db.PlatformUsers.Add(authenticatedUser);
         }
 
         // Record successful platform login
         _db.LoginActivities.Add(new LoginActivity
         {
-            UserId        = platformUserId,
-            EmailAttempted = loginEmail,
+            UserId        = authenticatedUser.Id,
+            EmailAttempted = authenticatedUser.Email,
             EventType     = LoginEventTypes.PlatformLoginSuccess,
             IpAddress     = HttpContext.Connection.RemoteIpAddress?.ToString(),
             UserAgent     = HttpContext.Request.Headers.UserAgent.ToString(),
         });
         await _db.SaveChangesAsync(ct);
 
-        var expiresAt = DateTime.UtcNow.AddHours(8);
-        var claims = new List<Claim>
-        {
-            new(JwtRegisteredClaimNames.Sub, platformUserId?.ToString() ?? "platform-admin"),
-            new(JwtRegisteredClaimNames.Email, loginEmail),
-            new(ClaimTypes.Role, "PlatformAdmin"),
-            new("is_platform_admin", "true"),
-            new("platform_role", loginRole),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-        };
-
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var token = new JwtSecurityToken(_jwt.Issuer, _jwt.PlatformAudience, claims, expires: expiresAt, signingCredentials: credentials);
-        var tokenString = new JwtSecurityTokenHandler().WriteToken(token);
-
-        return Ok(new { token = tokenString, expiresAt, role = loginRole });
+        return Ok(CreatePlatformToken(authenticatedUser));
     }
 
     // ── Platform MFA ─────────────────────────────────────────────────────────
@@ -240,23 +238,10 @@ public class PlatformController : ControllerBase
 
         pu.LastLoginAtUtc = DateTime.UtcNow;
         pu.LastLoginIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-        pu.UpdatedAtUtc = DateTime.UtcNow;
+        if (!pu.UpdatedAtUtc.HasValue)
+            PlatformSessionSecurity.RotateStamp(pu);
         await _db.SaveChangesAsync(ct);
-
-        var expiresAt = DateTime.UtcNow.AddHours(8);
-        var claims = new List<Claim>
-        {
-            new(JwtRegisteredClaimNames.Sub, pu.Id.ToString()),
-            new(JwtRegisteredClaimNames.Email, pu.Email),
-            new(ClaimTypes.Role, "PlatformAdmin"),
-            new("is_platform_admin", "true"),
-            new("platform_role", pu.Role),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-        };
-        var key         = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var token       = new JwtSecurityToken(_jwt.Issuer, _jwt.PlatformAudience, claims, expires: expiresAt, signingCredentials: credentials);
-        return Ok(new { token = new JwtSecurityTokenHandler().WriteToken(token), expiresAt, role = pu.Role });
+        return Ok(CreatePlatformToken(pu));
     }
 
     [HttpPost("auth/mfa/disable")]
@@ -267,6 +252,52 @@ public class PlatformController : ControllerBase
         if (platformUserId is null) return Unauthorized();
         var ok = await _mfa.DisablePlatformAsync(platformUserId.Value, request.TotpCode, ct);
         return ok ? NoContent() : BadRequest(new { message = "Invalid TOTP code or MFA not enabled." });
+    }
+
+    [HttpPost("auth/logout")]
+    public async Task<IActionResult> PlatformLogout(CancellationToken ct)
+    {
+        var platformUserId = GetPlatformUserId();
+        if (platformUserId is null) return Unauthorized();
+
+        var user = await _db.PlatformUsers.FirstOrDefaultAsync(x => x.Id == platformUserId.Value, ct);
+        if (user is null || !user.IsActive) return Unauthorized();
+
+        PlatformSessionSecurity.RotateStamp(user);
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId = Guid.Empty,
+            EntityType = "PlatformSession",
+            EntityId = user.Id.ToString(),
+            Action = "PlatformLogout",
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { allSessionsRevoked = true }),
+            PerformedByName = user.Email,
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
+        });
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    private object CreatePlatformToken(PlatformUser user)
+    {
+        if (!user.UpdatedAtUtc.HasValue)
+            throw new InvalidOperationException("Platform user session stamp was not initialized.");
+
+        var expiresAt = DateTime.UtcNow.AddHours(8);
+        var claims = new List<Claim>
+        {
+            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            new(JwtRegisteredClaimNames.Email, user.Email),
+            new(ClaimTypes.Role, "PlatformAdmin"),
+            new("is_platform_admin", "true"),
+            new("platform_role", user.Role),
+            new(PlatformSessionSecurity.SessionStampClaim, PlatformSessionSecurity.StampValue(user.UpdatedAtUtc.Value)),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+        };
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
+        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        var token = new JwtSecurityToken(_jwt.Issuer, _jwt.PlatformAudience, claims, expires: expiresAt, signingCredentials: credentials);
+        return new { token = new JwtSecurityTokenHandler().WriteToken(token), expiresAt, role = user.Role };
     }
 
     private Guid? GetPlatformUserId()
@@ -410,7 +441,7 @@ public class PlatformController : ControllerBase
         if (req.IsActive.HasValue) user.IsActive = req.IsActive.Value;
         if (!string.IsNullOrWhiteSpace(req.FullName)) user.FullName = req.FullName.Trim();
 
-        user.UpdatedAtUtc = DateTime.UtcNow;
+        PlatformSessionSecurity.RotateStamp(user);
         _db.AdminAuditLogs.Add(new AdminAuditLog
         {
             TenantId        = Guid.Empty,
@@ -437,7 +468,7 @@ public class PlatformController : ControllerBase
 
         // Soft deactivate — never hard-delete platform users
         user.IsActive = false;
-        user.UpdatedAtUtc = DateTime.UtcNow;
+        PlatformSessionSecurity.RotateStamp(user);
         _db.AdminAuditLogs.Add(new AdminAuditLog
         {
             TenantId        = Guid.Empty,
@@ -611,7 +642,7 @@ public class PlatformController : ControllerBase
             EntityType = "Subscription",
             EntityId = tenantId.ToString(),
             Action = "SubscriptionUpdated",
-            OldValuesJson = oldSnap is null ? null : System.Text.Json.JsonSerializer.Serialize(oldSnap),
+            OldValuesJson = oldSnap is null ? "{}" : System.Text.Json.JsonSerializer.Serialize(oldSnap),
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
             {
                 plan = req.Plan,
@@ -1192,6 +1223,40 @@ public class PlatformController : ControllerBase
             return BadRequest(new { message = "AccountType must be 'SingleCompany' or 'Group'." });
         if (req.CompanyCreationMode is not null && !CompanyCreationModes.IsValid(req.CompanyCreationMode))
             return BadRequest(new { message = "CompanyCreationMode must be PlatformControlled, GroupSelfServiceWithinLimit or GroupDraftPlatformApproval." });
+
+        if (_db.Database.IsRelational())
+        {
+            // The provisioning bundle performs several SaveChanges calls. Execute all of them
+            // inside one retry-aware database transaction so a seeder/config/admin/subscription
+            // failure cannot leave a tenant shell that cannot be logged into or re-provisioned.
+            var strategy = _db.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                _db.ChangeTracker.Clear();
+                await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+                try
+                {
+                    var result = await CreateTenantCore(req, name, slug, ct);
+                    await transaction.CommitAsync(ct);
+                    return result;
+                }
+                catch
+                {
+                    await transaction.RollbackAsync(ct);
+                    throw;
+                }
+            });
+        }
+
+        return await CreateTenantCore(req, name, slug, ct);
+    }
+
+    private async Task<IActionResult> CreateTenantCore(
+        CreateTenantRequest req,
+        string name,
+        string slug,
+        CancellationToken ct)
+    {
 
         var tenant = new Tenant
         {
