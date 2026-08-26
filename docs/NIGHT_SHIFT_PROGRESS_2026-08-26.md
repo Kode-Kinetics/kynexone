@@ -77,3 +77,59 @@ G-6 Chrome gate not yet a required check.
 
 **Current activity:** opening the governance PR.
 **Next:** Phase B1 — one authoritative entity-scope resolver, on `wave1/security-scope-browser-gate`.
+
+
+---
+
+## Checkpoint 3 — 05:00Z — Phase A complete, Gate 0 B1/B2 implemented
+
+**Branch:** `wave1/security-scope-browser-gate` @ base `5583b12` · **main SHA:** `5583b12`
+
+**Completed**
+
+- **PR #44 merged.** All 8 required checks + both CodeQL analyses green. `main` `f23a0009` → `5583b12`.
+  Branch protection and the production environment gate are now in force **in the workflow**, not just
+  in the API. The resulting push to `main` runs the new workflow, so `migrate-backend` and
+  `deploy-backend` sit awaiting production approval. **They were not approved** — no production deploy
+  this shift.
+- Annotated tag `wave0-engineering-baseline-2026-08-26` pushed on `f23a0009`.
+- **B1 — authoritative resolver.** `IRequestEntityScopeResolver` + immutable `RequestEntityScope`.
+  All three previously divergent call sites now read one cached per-request decision. Architecture
+  ratchet added. The claim parser was deliberately NOT rewritten — it already failed closed; the defect
+  was in the callers.
+- **B2 — payment-batch matrix** written and verified route by route.
+
+**Tests executed**
+
+| Suite | Result |
+|---|---|
+| `RequestEntityScopeResolverTests` | **25 passed** |
+| `EntityScopeResolutionRatchetTests` | **2 passed** |
+| `QueryFilterBypassRatchet` + `BypassLint` | **8 passed** |
+| Full backend suite | **1709 passed, 0 failed, 0 skipped** (from 1682) |
+| EF model drift | **None** |
+
+**Defect found and fixed — P1, live in production**
+
+Device attendance ingest matched **zero employees**. `/api/attendance/ingest` is `[AllowAnonymous]`;
+`Employee` is `ICompanyScopedOperational`; the company clause of the read filter derives from the
+request principal and is independent of the system-scope bypass. Under strict mode (forced in
+Production) an anonymous request resolves to an empty company scope, so `ResolveEmployee` returned null
+for every punch — every punch unmatched, `processedDays` 0, no daily record ever created from a device.
+Raw events ARE persisted, so the data is recoverable by reprocessing. Fixed; bypass ratchet 2 → 4.
+
+**Deliberately NOT closed**
+
+Invariants 15/16 (system scope must be explicit, not the default for any unauthenticated request) are
+**PARTIAL**. A bounded blast-radius scan established that tightening the gate today breaks: login,
+refresh, forgot/reset password, invitation acceptance, tenant AND platform MFA verification, all SCIM,
+SAML/OIDC metadata (500 + unique-index pollution), pre-auth localization, device ingest — and silently
+forks the audit hash chain on every anonymous-origin audit row. Correct order is **wrap, then tighten**.
+Wrap list: `AuthService` (7 pre-auth methods), `MfaService` (5), `EnterpriseIdentityService` (7),
+`AuditService` chain-tail read, `SmtpEmailService` ambient config load, `AttendanceService`
+`ProcessEmployeeDay` reads, `TenantAdminController` localization, `ProductionReadinessEvidence` SMTP probe.
+
+**Open blockers:** G-1…G-6 (governance gaps), PB-1…PB-3 (batch matrix), invariants 15/16 partial.
+
+**Current activity:** pushing Gate 0 B1/B2 and opening its PR.
+**Next:** B3 real Chrome role/isolation gate.
