@@ -1,6 +1,12 @@
 using FluentAssertions;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text.Json;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Controllers;   // PlatformLoginRequest, CreateTenantRequest, etc. (declared in PlatformController.cs)
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Models;        // PlatformUser, PlatformRoles
 
 namespace Zayra.Api.Tests.Platform;
@@ -21,6 +27,90 @@ public class PlatformAuthTests : PlatformTestBase
         var ok = result.Should().BeOfType<OkObjectResult>().Subject;
         var body = ok.Value!.ToString()!;
         body.Should().Contain("token");
+    }
+
+    [Fact]
+    public async Task BootstrapLogin_MaterializesRevocablePlatformUserAndStampedToken()
+    {
+        await using var db = CreateDb();
+        var controller = CreateController(db);
+
+        var result = await controller.Login(
+            new PlatformLoginRequest(AdminEmail, AdminPassword), CancellationToken.None);
+
+        var ok = result.Should().BeOfType<OkObjectResult>().Subject;
+        var body = JsonSerializer.SerializeToElement(ok.Value);
+        var principal = PrincipalFrom(body.GetProperty("token").GetString()!);
+        var stored = await db.PlatformUsers.SingleAsync();
+
+        principal.FindFirstValue(JwtRegisteredClaimNames.Sub).Should().Be(stored.Id.ToString());
+        principal.FindFirstValue(PlatformSessionSecurity.SessionStampClaim).Should().NotBeNullOrWhiteSpace();
+        (await PlatformSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PlatformLogout_RevokesPreviouslyIssuedTokenServerSide()
+    {
+        await using var db = CreateDb();
+        var controller = CreateController(db);
+        var login = (OkObjectResult)await controller.Login(
+            new PlatformLoginRequest(AdminEmail, AdminPassword), CancellationToken.None);
+        var token = JsonSerializer.SerializeToElement(login.Value).GetProperty("token").GetString()!;
+        var principal = PrincipalFrom(token);
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = principal }
+        };
+
+        (await controller.PlatformLogout(CancellationToken.None)).Should().BeOfType<NoContentResult>();
+
+        (await PlatformSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None))
+            .Should().BeFalse("logout rotates the server-side session stamp");
+    }
+
+    [Fact]
+    public async Task FailedLogin_DoesNotRevokeAnExistingPlatformSession()
+    {
+        await using var db = CreateDb();
+        var controller = CreateController(db);
+        var login = (OkObjectResult)await controller.Login(
+            new PlatformLoginRequest(AdminEmail, AdminPassword), CancellationToken.None);
+        var token = JsonSerializer.SerializeToElement(login.Value).GetProperty("token").GetString()!;
+        var principal = PrincipalFrom(token);
+
+        var rejected = await controller.Login(
+            new PlatformLoginRequest(AdminEmail, "WRONG_PASSWORD"), CancellationToken.None);
+
+        rejected.Should().BeOfType<UnauthorizedObjectResult>();
+        (await PlatformSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None))
+            .Should().BeTrue("login telemetry is not an administrative security-stamp change");
+        (await db.PlatformUsers.SingleAsync()).FailedLoginCount.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(false, PlatformRoles.Owner)]
+    [InlineData(true, PlatformRoles.Auditor)]
+    public async Task PlatformToken_IsRejectedAfterDeactivationOrRoleChange(bool active, string currentRole)
+    {
+        await using var db = CreateDb();
+        var controller = CreateController(db);
+        var login = (OkObjectResult)await controller.Login(
+            new PlatformLoginRequest(AdminEmail, AdminPassword), CancellationToken.None);
+        var token = JsonSerializer.SerializeToElement(login.Value).GetProperty("token").GetString()!;
+        var principal = PrincipalFrom(token);
+        var stored = await db.PlatformUsers.SingleAsync();
+        stored.IsActive = active;
+        stored.Role = currentRole;
+        await db.SaveChangesAsync();
+
+        (await PlatformSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None))
+            .Should().BeFalse("active state and current role are checked on every platform request");
+    }
+
+    private static ClaimsPrincipal PrincipalFrom(string token)
+    {
+        var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token);
+        return new ClaimsPrincipal(new ClaimsIdentity(jwt.Claims, "Bearer"));
     }
 
     [Fact]

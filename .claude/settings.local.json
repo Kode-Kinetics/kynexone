@@ -20,7 +20,9 @@
       "Bash(/usr/local/share/dotnet/dotnet build *)",
       "Bash(git -C /Users/zackkhan/Downloads/zayra-ai-workforce add backend-dotnet/Zayra.Api/Zayra.Api.csproj backend-dotnet/Zayra.Api/Program.cs backend-dotnet/Zayra.Api/Migrations/ render.yaml)",
       "Bash(git -C /Users/zackkhan/Downloads/zayra-ai-workforce status --short)",
-      "Bash(echo \"TSC=$?\")"
+      "Bash(echo \"TSC=$?\")",
+      "Bash(cd /Users/zackkhan/Downloads/zayra-ai-workforce/backend-dotnet/Zayra.Api && ls Migrations | tail -12; echo \"=== tests ===\"; ls ../Zayra.Api.Tests | head -60)",
+      "Read(//Users/zackkhan/Downloads/**)"
     ]
   }
 }

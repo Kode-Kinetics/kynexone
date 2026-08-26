@@ -15,7 +15,11 @@ public sealed class OnboardingControllerTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
-        var employeeId = Guid.NewGuid();
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "EMP-ONBOARD-1",
+            FullName = "Onboarding Employee", EnglishName = "Onboarding Employee", Status = EmployeeStatuses.Active,
+        };
         var checklist = new OnboardingChecklist
         {
             TenantId = tenantId,
@@ -23,7 +27,7 @@ public sealed class OnboardingControllerTests
             Name = "New Hire",
             ApplicableTo = "All"
         };
-        db.OnboardingChecklists.Add(checklist);
+        db.AddRange(checklist, employee);
         await db.SaveChangesAsync();
         var controller = CreateController(db, tenantId);
 
@@ -32,11 +36,11 @@ public sealed class OnboardingControllerTests
         Assert.IsType<OkObjectResult>(templateResult);
 
         var bulkResult = await controller.CreateBulkFromChecklist(new BulkOnboardingRequest(
-            checklist.Id, employeeId, null, new DateOnly(2026, 3, 1), null), CancellationToken.None);
+            checklist.Id, employee.PublicId, null, new DateOnly(2026, 3, 1), null), CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(bulkResult);
 
         Assert.NotNull(ok.Value);
-        var task = await db.OnboardingTasks.SingleAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId);
+        var task = await db.OnboardingTasks.SingleAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.PublicId);
         Assert.Equal("Issue laptop", task.TaskTitle);
         Assert.Equal("IT", task.Category);
         Assert.True(task.IsMandatory);

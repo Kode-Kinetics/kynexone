@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
@@ -75,22 +76,11 @@ public class LoansController : ControllerBase
 
         if (!scope.IsUnrestricted)
         {
-            var callerUserId = GetUserId();
-            if (callerUserId.HasValue)
-            {
-                var allowedId = callerUserId.Value;
-                var effectiveId = (employeeId.HasValue && employeeId.Value == allowedId) ? employeeId : allowedId;
-                q = q.Where(x => x.EmployeeId == effectiveId);
-            }
-            else
-            {
-                return Ok(new { total = 0, items = Array.Empty<EmployeeLoanDto>() });
-            }
+            var allowedEmployeeIds = scope.AllowedEmployeeIds!.ToArray();
+            q = q.Where(x => x.EmployeeIntId.HasValue && allowedEmployeeIds.Contains(x.EmployeeIntId.Value));
         }
-        else if (employeeId.HasValue)
-        {
+        if (employeeId.HasValue)
             q = q.Where(x => x.EmployeeId == employeeId);
-        }
 
         if (!string.IsNullOrEmpty(status)) q = q.Where(x => x.Status == status);
         var total = await q.CountAsync(ct);
@@ -123,6 +113,12 @@ public class LoansController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, req.EmployeeIntId, ct);
+        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        var employee = identity.Employee!;
+        var scope = await _scopeService.ResolveAsync(User, tid, ct);
+        if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
+
         var loanType = await _db.LoanTypes.FirstOrDefaultAsync(x => x.Id == req.LoanTypeId && x.TenantId == tid && !x.IsDeleted, ct);
         if (loanType == null) return NotFound("Loan type not found.");
         if (req.RequestedAmount > loanType.MaxAmount && loanType.MaxAmount > 0)
@@ -132,10 +128,10 @@ public class LoansController : ControllerBase
 
         // Policy: check for loan policy and enforce max concurrent loans + cooldown
         var policy = await _db.Set<LoanPolicy>().FirstOrDefaultAsync(x => x.TenantId == tid && x.LoanTypeId == loanType.Id && x.IsActive, ct);
-        if (policy != null && req.EmployeeIntId.HasValue)
+        if (policy != null)
         {
             var activeCount = await _db.EmployeeLoans.CountAsync(
-                x => x.TenantId == tid && x.EmployeeIntId == req.EmployeeIntId && !x.IsDeleted
+                x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
                      && (x.Status == "Active" || x.Status == "Pending"), ct);
             if (activeCount >= policy.MaxConcurrentLoans)
                 return BadRequest($"Employee already has {activeCount} active/pending loan(s). Maximum allowed is {policy.MaxConcurrentLoans}.");
@@ -144,7 +140,7 @@ public class LoansController : ControllerBase
             {
                 var cooldownCutoff = DateTime.UtcNow.AddMonths(-policy.CooldownMonthsAfterRepayment);
                 var recentlySettled = await _db.EmployeeLoans.AnyAsync(
-                    x => x.TenantId == tid && x.EmployeeIntId == req.EmployeeIntId && !x.IsDeleted
+                    x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
                          && x.Status == "Settled" && x.UpdatedAtUtc > cooldownCutoff, ct);
                 if (recentlySettled)
                     return BadRequest($"Employee must wait {policy.CooldownMonthsAfterRepayment} month(s) after settling a loan before requesting a new one.");
@@ -154,13 +150,11 @@ public class LoansController : ControllerBase
         var count = await _db.EmployeeLoans.CountAsync(x => x.TenantId == tid, ct);
         var loanNumber = $"LN-{DateTime.UtcNow.Year}-{(count + 1):D5}";
 
-        // Auto-generate EmployeeId Guid when client omits it (frontend now uses EmployeeIntId for payroll)
-        var resolvedEmployeeId = req.EmployeeId == Guid.Empty ? Guid.NewGuid() : req.EmployeeId;
-
         var loan = new EmployeeLoan
         {
-            TenantId = tid, EmployeeId = resolvedEmployeeId, EmployeeName = req.EmployeeName,
-            EmployeeIntId = req.EmployeeIntId,
+            TenantId = tid, CompanyId = employee.CompanyId,
+            EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
+            EmployeeIntId = employee.Id,
             LoanTypeId = req.LoanTypeId, LoanTypeName = loanType.NameEn, LoanNumber = loanNumber,
             RequestedAmount = req.RequestedAmount, RequestedInstallments = req.RequestedInstallments,
             RepaymentFrequency = loanType.RepaymentFrequency, Notes = req.Notes ?? string.Empty,

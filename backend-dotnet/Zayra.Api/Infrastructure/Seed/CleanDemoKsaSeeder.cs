@@ -20,9 +20,15 @@ public static class CleanDemoKsaSeeder
     public const string AdminEmail    = "admin@rasalmanar.com";
     public const string AdminPassword = "RasAlManar@2026!";
 
-    // Slugs NOT renamed — idempotency guards in DemoDataSeeder + KsaDemoTenantSeeder
-    // find the existing row (even with IsActive=false) and skip re-creation.
-    private static readonly string[] GarbageSlugs = ["intelliflow", "evostel", "alnakheel"];
+    // IntelliFlow is deliberately NOT in this list. IntelliFlowFragmentCleanup owns the legacy
+    // IntelliFlow conversion because it can distinguish the old split/legacy shape from the
+    // canonical pilot tenant. Treating every active "intelliflow" row as garbage made every
+    // backend restart deactivate the healthy pilot, revoke its sessions, rename its slug, and
+    // seed a replacement tenant.
+    //
+    // Slugs below are not renamed here — the legacy seeders' idempotency guards find the existing
+    // row (even with IsActive=false) and skip re-creation.
+    private static readonly string[] GarbageSlugs = ["evostel", "alnakheel"];
 
     // ── Cleanup ────────────────────────────────────────────────────────────────
 
@@ -158,6 +164,7 @@ public static class CleanDemoKsaSeeder
             ("Auditor",           "Tariq Al-Zahrani",           "audit@rasalmanar.com.sa"),
         };
 
+        var seededUsers = new List<(User User, string Role)>();
         foreach (var (roleName, fullName, email) in userSpecs)
         {
             if (!roleMap.TryGetValue(roleName, out var role))
@@ -179,6 +186,7 @@ public static class CleanDemoKsaSeeder
             };
             u.UserRoles.Add(new UserRole { User = u, RoleId = role.Id });
             db.Users.Add(u);
+            seededUsers.Add((u, roleName));
         }
         await db.SaveChangesAsync(ct);
 
@@ -196,6 +204,27 @@ public static class CleanDemoKsaSeeder
             IsActive           = true,
         };
         db.Companies.Add(company);
+        await db.SaveChangesAsync(ct);
+
+        // Every non-group-scope portal user needs an explicit legal-entity grant before its JWT can
+        // see operational records. Without it the token carries entity_scope=none, so the ambient
+        // company query filter strips every row and an admin authenticates correctly but reads an
+        // empty employee list. IntelliFlowDemoSeeder already seeds these grants; this seeder did
+        // not, which is exactly what the browser-pilot tenant-isolation gate caught (Ras Al-Manar
+        // returned 0 employees while IntelliFlow returned its full set).
+        foreach (var (user, role) in seededUsers.Where(x => !x.User.IsGroupScope))
+        {
+            db.UserEntityAccesses.Add(new UserEntityAccess
+            {
+                TenantId = tenantId,
+                UserId = user.Id,
+                CompanyId = company.Id,
+                GrantMode = EntityGrantModes.SelectedCompanies,
+                Role = role,
+                IsActive = true,
+                GrantedAt = now,
+            });
+        }
         await db.SaveChangesAsync(ct);
 
         var branch = new Branch
@@ -645,8 +674,8 @@ public static class CleanDemoKsaSeeder
 
         db.EmployeeBonuses.Add(new EmployeeBonus
         {
-            TenantId = tenantId, BonusBatchId = bonusBatch.Id,
-            EmployeeId = Guid.NewGuid(),          // placeholder Guid per model design
+            TenantId = tenantId, CompanyId = empAbdulrahman.CompanyId, BonusBatchId = bonusBatch.Id,
+            EmployeeId = empAbdulrahman.PublicId,
             EmployeeIntId = empAbdulrahman.Id,
             EmployeeName = empAbdulrahman.FullName,
             Department = empAbdulrahman.Department ?? "Information Technology",

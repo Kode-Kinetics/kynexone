@@ -342,12 +342,24 @@ public class PayrollModuleTests
         var run = new PayrollRun { TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 1 };
         db.PayrollRuns.Add(run);
         await db.SaveChangesAsync();
+        var encashmentId = Guid.NewGuid();
+        var encashmentAdjustment = new PayrollAdjustment
+        {
+            TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = employee.Id,
+            AdjustmentType = "Leave Encashment", Amount = 250m, Reason = "Approved leave encashment", Status = "Approved",
+            SourceType = PayrollAdjustmentSources.LeaveEncashment, SourceId = encashmentId
+        };
+        db.LeaveEncashmentRequests.Add(new LeaveEncashmentRequest
+        {
+            Id = encashmentId, TenantId = tenantId, CompanyId = company.Id,
+            EmployeeId = employee.Id, EmployeeName = employee.FullName,
+            LeaveTypeId = Guid.NewGuid(), LeaveTypeName = "Annual", Year = 2026,
+            DaysToEncash = 1m, AmountPerDay = 250m, TotalAmount = 250m, Currency = "AED",
+            Status = LeaveEncashmentStatuses.PayrollApproved,
+            PayrollRunId = run.Id, PayrollAdjustmentId = encashmentAdjustment.Id
+        });
         db.PayrollAdjustments.AddRange(
-            new PayrollAdjustment
-            {
-                TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = employee.Id,
-                AdjustmentType = "Retro Earning", Amount = 250m, Reason = "Backdated allowance", Status = "Approved"
-            },
+            encashmentAdjustment,
             new PayrollAdjustment
             {
                 TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = employee.Id,
@@ -365,6 +377,12 @@ public class PayrollModuleTests
         (await db.PayrollEarnings.AnyAsync(e => e.PayrollRunId == run.Id && e.Source == "Adjustment" && e.Amount == 250m)).Should().BeTrue();
         (await db.PayrollDeductions.AnyAsync(d => d.PayrollRunId == run.Id && d.Source == "Adjustment" && d.Amount == 100m)).Should().BeTrue();
         (await db.PayrollAdjustments.Where(a => a.PayrollRunId == run.Id).Select(a => a.Status).Distinct().SingleAsync()).Should().Be("Processed");
+        var encashment = await db.LeaveEncashmentRequests.AsNoTracking().SingleAsync(x => x.Id == encashmentId);
+        encashment.Status.Should().Be(LeaveEncashmentStatuses.Processed);
+        encashment.ProcessedAtUtc.Should().NotBeNull();
+        (await db.PayrollRunConsumptions.AnyAsync(x => x.PayrollRunId == run.Id
+            && x.ArtifactType == PayrollConsumptionArtifacts.Adjustment
+            && x.ArtifactId == encashmentAdjustment.Id)).Should().BeTrue();
     }
 
     // ── Section 2: Salary structure export — both route aliases ──────────────
@@ -439,6 +457,39 @@ public class PayrollModuleTests
         companies.Should().HaveCount(1);
         companies.Single().GetType().GetProperty("CompanyName")!.GetValue(companies.Single())
             .Should().Be("Company A");
+    }
+
+    [Fact]
+    public async Task Overview_Coverage_IsDistinctAndEffectiveAtRequestedPeriodEnd()
+    {
+        var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Period Co", CountryCode = "SAU" };
+        var structure = new SalaryStructure
+        {
+            TenantId = tenantId, CompanyId = company.Id, Code = "KSA", Name = "KSA",
+            Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true,
+        };
+        var covered = new Employee { TenantId=tenantId, CompanyId=company.Id, EmployeeCode="E1", FullName="Covered", Status="Active" };
+        var futureOnly = new Employee { TenantId=tenantId, CompanyId=company.Id, EmployeeCode="E2", FullName="Future", Status="Active" };
+        db.AddRange(company, structure, covered, futureOnly);
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.AddRange(
+            new EmployeeSalaryStructure { TenantId=tenantId, EmployeeId=covered.Id, SalaryStructureId=structure.Id, BasicSalary=8_000m, EffectiveDate=new DateOnly(2025, 1, 1), IsActive=true },
+            // A second history row must not make coverage exceed 100%.
+            new EmployeeSalaryStructure { TenantId=tenantId, EmployeeId=covered.Id, SalaryStructureId=structure.Id, BasicSalary=9_000m, EffectiveDate=new DateOnly(2025, 6, 1), IsActive=true },
+            // Not effective in the requested July period.
+            new EmployeeSalaryStructure { TenantId=tenantId, EmployeeId=futureOnly.Id, SalaryStructureId=structure.Id, BasicSalary=7_000m, EffectiveDate=new DateOnly(2025, 8, 1), IsActive=true });
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tenantId).PayrollOverview(company.Id, 2025, 7, CancellationToken.None);
+
+        var body = Assert.IsType<OkObjectResult>(result).Value!;
+        var rows = (IEnumerable<object>)body.GetType().GetProperty("Companies")!.GetValue(body)!;
+        var row = Assert.Single(rows);
+        row.GetType().GetProperty("EmployeesWithSalary")!.GetValue(row).Should().Be(1);
+        row.GetType().GetProperty("EmployeesMissingSalary")!.GetValue(row).Should().Be(1);
+        row.GetType().GetProperty("SalaryCoveragePercent")!.GetValue(row).Should().Be(50d);
     }
 
     // ── Section 5: Readiness — zero completion when nothing configured ─────────

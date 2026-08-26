@@ -1,5 +1,4 @@
 import { test, expect, Page } from '@playwright/test';
-import { platformLogin } from './helpers';
 
 /**
  * Navigate to the billing page for the first tenant in the list.
@@ -23,10 +22,6 @@ async function goToFirstTenantBilling(page: Page): Promise<string> {
 }
 
 test.describe('Platform billing / invoices', () => {
-  test.beforeEach(async ({ page }) => {
-    await platformLogin(page);
-  });
-
   test('billing page loads without JS errors', async ({ page }) => {
     const jsErrors: string[] = [];
     page.on('pageerror', e => jsErrors.push(e.message));

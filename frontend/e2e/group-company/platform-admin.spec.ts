@@ -69,9 +69,11 @@ test.describe('Group→Company: platform admin', () => {
   });
 
   test('API: platform admin can create a Group tenant (accountType=Group)', async () => {
+    test.setTimeout(120_000);
     const api = await newApi();
     const stamp = Date.now();
     const slug = `e2e-group-${stamp}`;
+    let createdId: string | undefined;
     try {
       const create = await api.post('/api/platform/tenants', {
         headers: platformHeaders(),
@@ -94,31 +96,28 @@ test.describe('Group→Company: platform admin', () => {
 
       // Cleanup (best-effort): suspend the throwaway tenant so it does not pollute the list.
       const id = created.id ?? created.Id;
-      if (id) {
-        await api.post(`/api/platform/tenants/${id}/suspend`, {
-          headers: platformHeaders(),
-          data: { reason: 'E2E throwaway tenant (group-company suite)' },
-        }).catch(() => {});
-      }
+      createdId = id ? String(id) : undefined;
     } finally {
+      if (createdId) {
+        const deleted = await api.delete(`/api/platform/tenants/${createdId}?confirm=DELETE`, {
+          headers: platformHeaders(),
+        });
+        expect(deleted.ok(), await deleted.text()).toBe(true);
+        const purged = await api.delete(`/api/platform/tenants/${createdId}/purge?confirm=PURGE`, {
+          headers: platformHeaders(),
+        });
+        expect(purged.ok(), await purged.text()).toBe(true);
+      }
       await api.dispose().catch(() => {});
     }
   });
 
   test('UI: tenant creation offers a Group / company-creation-mode choice', async ({ page }) => {
-    // UI login (same flow as the legacy platform specs).
-    await page.goto('/platform/login', { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    await page.getByRole('textbox', { name: 'Email address' }).fill(PLATFORM_EMAIL, { timeout: 30_000 });
-    await page.getByRole('textbox', { name: 'Password' }).fill(PLATFORM_PASSWORD);
-    await page.getByRole('button', { name: /sign in/i }).click();
-    await page.waitForURL(/\/platform\/dashboard/, { timeout: 30_000 });
-
     await page.goto('/platform/tenants', { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
 
     const createBtn = page.getByRole('button', { name: /(new|add|create).*tenant|tenant.*(new|add|create)/i }).first();
-    const hasCreate = await createBtn.isVisible({ timeout: 10_000 }).catch(() => false);
-    test.skip(!hasCreate, 'no tenant-create button found on /platform/tenants — UI surface differs; API path is covered by the previous test');
+    await expect(createBtn).toBeVisible({ timeout: 10_000 });
 
     await createBtn.click();
     await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
@@ -127,24 +126,24 @@ test.describe('Group→Company: platform admin', () => {
     const groupChoice = page
       .getByText(/account type|company creation|group account|multi-?company/i)
       .first();
-    const hasChoice = await groupChoice.isVisible({ timeout: 10_000 }).catch(() => false);
-    test.skip(!hasChoice, 'Group / companyCreationMode selection not present in the create-tenant form yet — being built in parallel');
+    await expect(groupChoice).toBeVisible({ timeout: 10_000 });
 
     // Do not actually submit from the UI (the API test covers creation end-to-end);
-    // just prove the Group option is selectable.
-    await expect(page.getByText(/\bgroup\b/i).first()).toBeVisible({ timeout: 10_000 });
+    // select the native option and assert its value. Native <option> nodes are not independently
+    // visible in Chromium, so getByText(...).toBeVisible() is the wrong semantic assertion here.
+    const accountType = page.locator('select').filter({
+      has: page.locator('option[value="Group"]'),
+    }).first();
+    await expect(accountType).toBeVisible({ timeout: 10_000 });
+    await expect(accountType.locator('option[value="Group"]')).toHaveCount(1);
+    await accountType.selectOption('Group');
+    await expect(accountType).toHaveValue('Group');
   });
 
   test('UI: existing group tenant (almarai-test) detail page opens', async ({ page }) => {
     const almarai = await findTenantBySlug(ALMARAI.slug);
     test.skip(!almarai, `tenant ${ALMARAI.slug} not found — enterprise group seed missing (SEED_ENTERPRISE_TEST_DATA=true)`);
     const id = almarai.id ?? almarai.Id;
-
-    await page.goto('/platform/login', { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    await page.getByRole('textbox', { name: 'Email address' }).fill(PLATFORM_EMAIL, { timeout: 30_000 });
-    await page.getByRole('textbox', { name: 'Password' }).fill(PLATFORM_PASSWORD);
-    await page.getByRole('button', { name: /sign in/i }).click();
-    await page.waitForURL(/\/platform\/dashboard/, { timeout: 30_000 });
 
     await page.goto(`/platform/tenants/${id}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});

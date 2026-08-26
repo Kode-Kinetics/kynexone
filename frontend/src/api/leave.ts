@@ -174,18 +174,24 @@ export interface LeaveEncashmentRequest {
   id: string;
   employeeId: number;
   employeeName: string;
+  companyId: string | null;
   leaveTypeId: string;
   leaveTypeName: string;
   year: number;
   daysToEncash: number;
   amountPerDay: number;
   totalAmount: number;
+  currency: string;
   reason: string;
   status: string;
   hrNotes: string;
   payrollNotes: string;
+  payrollRunId: string | null;
+  payrollAdjustmentId: string | null;
   createdAtUtc: string;
   processedAtUtc: string | null;
+  voidedAtUtc: string | null;
+  voidReason: string;
 }
 
 export interface CompOffCredit {
@@ -375,12 +381,14 @@ export const holidayCalendarApi = {
 export const encashmentApi = {
   list: (params: { status?: string; employeeId?: number; companyId?: string; branchId?: string } = {}) =>
     client.get<PagedResult<LeaveEncashmentRequest>>('/api/leave/encashment', { params }).then(r => r.data.items ?? []),
-  create: (body: { employeeId: number; leaveTypeId: string; year: number; daysToEncash: number; amountPerDay: number; reason: string }) =>
+  create: (body: { employeeId: number; leaveTypeId: string; year: number; daysToEncash: number; reason: string }) =>
     client.post<LeaveEncashmentRequest>('/api/leave/encashment', body).then(r => r.data),
   hrApprove: (id: string, notes?: string) =>
     client.post<LeaveEncashmentRequest>(`/api/leave/encashment/${id}/hr-approve`, { notes }).then(r => r.data),
-  payrollApprove: (id: string, notes?: string) =>
-    client.post<LeaveEncashmentRequest>(`/api/leave/encashment/${id}/payroll-approve`, { notes }).then(r => r.data),
+  payrollApprove: (id: string, payrollRunId: string, notes?: string) =>
+    client.post<LeaveEncashmentRequest>(`/api/leave/encashment/${id}/payroll-approve`, { notes, payrollRunId }).then(r => r.data),
+  void: (id: string, reason: string) =>
+    client.post<LeaveEncashmentRequest>(`/api/leave/encashment/${id}/void`, { reason }).then(r => r.data),
   reject: (id: string, notes: string) =>
     client.post<LeaveEncashmentRequest>(`/api/leave/encashment/${id}/reject`, { notes }).then(r => r.data),
 };

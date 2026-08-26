@@ -152,52 +152,19 @@ public class OffersController : ControllerBase
     public async Task<IActionResult> Accept(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
-        var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-        if (offer == null) return NotFound();
+        var acceptance = await _svc.AcceptOfferAsync(tid, id, GetUserId() ?? Guid.Empty, GetUserName(), ct);
+        if (acceptance.Outcome == OfferAcceptanceOutcome.NotFound) return NotFound();
+        if (!acceptance.IsSuccess)
+            return Conflict(new { message = acceptance.Message, outcome = acceptance.Outcome.ToString() });
 
-        offer.Status = "Accepted";
-        offer.AcceptedAtUtc = DateTime.UtcNow;
-
-        // Advance application to Hired and fill the opening seat.
-        var app = await _db.JobApplications.FirstOrDefaultAsync(x => x.Id == offer.ApplicationId && x.TenantId == tid, ct);
-        if (app != null)
+        var offer = await _db.OfferLetters.AsNoTracking()
+            .FirstAsync(x => x.Id == id && x.TenantId == tid, ct);
+        return Ok(new
         {
-            app.Stage = "Hired"; app.StageOrder = 6; app.Status = "Hired"; app.HiredAtUtc = DateTime.UtcNow;
-            _db.ApplicationEvents.Add(new ApplicationEvent
-            {
-                TenantId = tid, ApplicationId = app.Id, EventType = "OfferAccepted",
-                Stage = "Hired", Notes = "Candidate accepted offer — Hired",
-                PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
-            });
-
-            var opening = await _db.JobOpenings.FirstOrDefaultAsync(j => j.Id == app.JobOpeningId && j.TenantId == tid, ct);
-            if (opening is not null)
-            {
-                opening.FilledCount++;
-                if (opening.FilledCount >= opening.HeadCount) opening.Status = "Closed";
-            }
-        }
-
-        _db.RecruitmentAuditLogs.Add(new RecruitmentAuditLog
-        {
-            TenantId = tid, EntityType = "Offer", EntityId = id.ToString(),
-            Action = "Accepted", PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
+            offer,
+            onboardingDraftId = acceptance.OnboardingDraftId,
+            alreadyAccepted = !acceptance.WasAcceptedNow,
         });
-
-        // Trigger onboarding: convert the accepted offer into an employee draft. Without this
-        // the Offers-tab accept path marked the candidate Hired but never created the employee /
-        // started onboarding (only the application-drawer accept path did the conversion).
-        // Guard against double-conversion (ConvertToEmployeeDraftAsync is not idempotent):
-        // only convert when this application hasn't already been linked to a draft.
-        Guid? draftId = app?.OnboardingDraftId;
-        if (app is not null && app.OnboardingDraftId is null)
-        {
-            draftId = await _svc.ConvertToEmployeeDraftAsync(tid, id, GetUserId() ?? Guid.Empty, ct);
-            if (draftId.HasValue) app.OnboardingDraftId = draftId;
-        }
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { offer, onboardingDraftId = draftId });
     }
 
     // PATCH /api/recruitment/offers/{id}/decline
@@ -208,6 +175,12 @@ public class OffersController : ControllerBase
         var tid = GetTenantId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
+        if (offer.Status != "Sent")
+            return Conflict(new
+            {
+                error = "invalid_offer_state",
+                message = $"Only a Sent offer can be declined (current: {offer.Status}). Accepted offers require an explicit onboarding reversal workflow."
+            });
 
         offer.Status = "Declined";
         offer.DeclinedAtUtc = DateTime.UtcNow;
@@ -257,6 +230,12 @@ public class OffersController : ControllerBase
         var tid = GetTenantId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
+        if (offer.Status is not ("Draft" or "PendingApproval"))
+            return Conflict(new
+            {
+                error = "invalid_offer_state",
+                message = $"Approval steps can only be configured while an offer is Draft or PendingApproval (current: {offer.Status})."
+            });
 
         var nextStep = (await _db.OfferApprovals.Where(a => a.TenantId == tid && a.OfferLetterId == id).CountAsync(ct)) + 1;
 
@@ -279,22 +258,36 @@ public class OffersController : ControllerBase
     public async Task<IActionResult> DecideApproval(Guid id, Guid approvalId, [FromBody] DecideApprovalRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        if (req.Decision is not ("Approved" or "Rejected"))
+            return BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." });
+
         var approval = await _db.OfferApprovals
             .FirstOrDefaultAsync(x => x.Id == approvalId && x.TenantId == tid && x.OfferLetterId == id, ct);
         if (approval == null) return NotFound();
+        if (approval.Status != "Pending")
+            return Conflict(new
+            {
+                error = "approval_already_decided",
+                message = $"This approval is already in '{approval.Status}' status."
+            });
+
+        var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+        if (offer == null) return NotFound();
+        if (offer.Status != "PendingApproval")
+            return Conflict(new
+            {
+                error = "invalid_offer_state",
+                message = $"Offer approval decisions require PendingApproval status (current: {offer.Status})."
+            });
 
         approval.Status = req.Decision;
         approval.Comments = req.Comments ?? string.Empty;
         approval.DecidedAtUtc = DateTime.UtcNow;
 
         // If all approvals are done, mark offer as Approved
-        var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-        if (offer != null)
-        {
-            var allApprovals = await _db.OfferApprovals.Where(a => a.TenantId == tid && a.OfferLetterId == id).ToListAsync(ct);
-            if (allApprovals.All(a => a.Status == "Approved")) offer.Status = "Approved";
-            else if (req.Decision == "Rejected") offer.Status = "Draft";
-        }
+        var allApprovals = await _db.OfferApprovals.Where(a => a.TenantId == tid && a.OfferLetterId == id).ToListAsync(ct);
+        if (allApprovals.All(a => a.Status == "Approved")) offer.Status = "Approved";
+        else if (req.Decision == "Rejected") offer.Status = "Draft";
 
         await _db.SaveChangesAsync(ct);
         return Ok(approval);

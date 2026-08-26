@@ -95,9 +95,13 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
     return pathname === href || pathname.startsWith(href + '/');
   }
 
-  function logout() {
-    localStorage.removeItem('platform_access_token');
-    router.replace('/platform/login');
+  async function logout() {
+    try {
+      await platformApi.logout();
+    } finally {
+      localStorage.removeItem('platform_access_token');
+      router.replace('/platform/login');
+    }
   }
 
   const token   = typeof window !== 'undefined' ? localStorage.getItem('platform_access_token') : null;
@@ -338,7 +342,7 @@ function PlatformShell({ children }: { children: React.ReactNode }) {
 
   return (
     <PlatformToastProvider>
-      <div className="min-h-screen bg-[#0a0e14] text-white">
+      <div className="platform-shell min-h-screen bg-[#0a0e14] text-white">
         <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
         <CommandBar onMenuOpen={() => setSidebarOpen(true)} />
         <main className="lg:pl-60 pt-[52px] min-h-screen">

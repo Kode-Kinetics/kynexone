@@ -242,7 +242,7 @@ export function LoginPage() {
         }
       `}</style>
 
-      <div className="grid min-h-[100svh] w-full lg:grid-cols-2">
+      <div className="tenant-login-shell grid min-h-[100svh] w-full lg:grid-cols-2">
         {/* ── Brand panel ───────────────────────────────────────────────── */}
         <section
           onMouseMove={(e) => {

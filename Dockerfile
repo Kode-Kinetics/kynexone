@@ -17,7 +17,12 @@ COPY backend-dotnet/Zayra.Api/Zayra.Api.csproj ./
 RUN dotnet restore
 COPY backend-dotnet/Zayra.Api/ ./
 # ── DECISIVE OOM FIX: do not compile EF migrations into the RUNTIME image ──
-# The 38+ migration Designer.cs files embed ~280k lines of duplicate model snapshots — the bulk of
+# DO NOT REMOVE without first proving the build fits in Render's builder. This was reverted once
+# (Aug 2026) on the theory that workstation GC alone bounded the build; the repo's own history
+# disproves it — #40 "workstation GC + trimmed Docker build" came FIRST and was insufficient, which
+# is why #41 landed this line and called it "decisive". Migrations have since grown 38 -> 59, each
+# Designer ~23k lines, so the compile load is now LARGER than when GC tuning already failed.
+# The 59 migration Designer.cs files embed ~1.4M lines of duplicate model snapshots — the bulk of
 # the compiler's memory. The RUNTIME app never applies migrations (Database__RunMigrationsOnStartup
 # is "false"; schema is applied by CI's `dotnet ef database update` — a SEPARATE build that keeps the
 # migrations — before the deploy hook fires). EF builds its runtime model from ZayraDbContext

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -148,6 +149,17 @@ public class OnboardingController : ControllerBase
         if (!req.EmployeeId.HasValue && !req.ApplicationId.HasValue)
             return BadRequest("Either employeeId or applicationId is required.");
 
+        Guid? employeePublicId = null;
+        if (req.EmployeeId.HasValue)
+        {
+            var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, null, ct);
+            if (!identity.IsSuccess) return BadRequest(identity.Error);
+            employeePublicId = identity.Employee!.PublicId;
+        }
+        if (req.ApplicationId.HasValue &&
+            !await _db.JobApplications.AnyAsync(x => x.TenantId == tid && x.Id == req.ApplicationId.Value, ct))
+            return BadRequest("Application was not found in this tenant.");
+
         var tasks = new List<OnboardingTask>();
 
         if (req.ChecklistId.HasValue)
@@ -168,7 +180,7 @@ public class OnboardingController : ControllerBase
                 {
                     TenantId = tid,
                     ChecklistId = req.ChecklistId,
-                    EmployeeId = req.EmployeeId,
+                    EmployeeId = employeePublicId,
                     ApplicationId = req.ApplicationId,
                     TaskTitle = t.TaskTitle,
                     TaskDescription = t.TaskDescription,
@@ -191,7 +203,7 @@ public class OnboardingController : ControllerBase
                 {
                     TenantId = tid,
                     ChecklistId = req.ChecklistId,
-                    EmployeeId = req.EmployeeId,
+                    EmployeeId = employeePublicId,
                     ApplicationId = req.ApplicationId,
                     TaskTitle = t.TaskTitle,
                     TaskDescription = t.TaskDescription ?? string.Empty,
@@ -220,11 +232,25 @@ public class OnboardingController : ControllerBase
     {
         var tid = GetTenantId();
 
+        if (!req.EmployeeId.HasValue && !req.ApplicationId.HasValue)
+            return BadRequest("Either employeeId or applicationId is required.");
+
+        Guid? employeePublicId = null;
+        if (req.EmployeeId.HasValue)
+        {
+            var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, null, ct);
+            if (!identity.IsSuccess) return BadRequest(identity.Error);
+            employeePublicId = identity.Employee!.PublicId;
+        }
+        if (req.ApplicationId.HasValue &&
+            !await _db.JobApplications.AnyAsync(x => x.TenantId == tid && x.Id == req.ApplicationId.Value, ct))
+            return BadRequest("Application was not found in this tenant.");
+
         var task = new OnboardingTask
         {
             TenantId = tid,
             ChecklistId = req.ChecklistId,
-            EmployeeId = req.EmployeeId,
+            EmployeeId = employeePublicId,
             ApplicationId = req.ApplicationId,
             TaskTitle = req.TaskTitle,
             TaskDescription = req.TaskDescription ?? string.Empty,

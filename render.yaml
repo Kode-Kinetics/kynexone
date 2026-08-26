@@ -30,6 +30,17 @@ services:
         value: http://0.0.0.0:8080
       - key: PORT
         value: 8080
+      # Render terminates TLS at its load balancer. Opt in to X-Forwarded-For/Proto handling so
+      # secure links, scheme checks, audit IPs, and rate-limit partitions reflect the real request.
+      - key: Proxy__TrustForwardedHeaders
+        value: "true"
+      # REQUIRED: trusted Render proxy CIDR(s), comma-separated. Deployment intentionally
+      # fails closed if forwarding is enabled without an explicit trust boundary.
+      - key: Proxy__KnownNetworks
+        sync: false
+      # Fail closed on unexpected Host headers instead of appsettings' local-development wildcard.
+      - key: AllowedHosts
+        value: zayra-ai-workforce.onrender.com;localhost
 
       # ── REQUIRED SECRETS: set these in the Render dashboard (Environment → Secret Files / Env Vars) ──
       #
@@ -114,16 +125,10 @@ services:
       # PDPL/GDPR RESIDENCY: pin the bucket to an APPROVED GCC/KSA (or adequacy) jurisdiction.
       # Set Storage__Region/Storage__Endpoint to that region's endpoint — do NOT leave a generic
       # "auto" for personal-data buckets. Record the chosen jurisdiction in the deploy runbook.
-      # TRANSITION STATE (2026-07-29): S3 not yet provisioned. Provider=local + AllowEphemeral=true so
-      # the service BOOTS (with a loud, logged ephemeral-storage warning every start) instead of hard-
-      # failing. Uploaded documents are LOST on restart until S3 is set up. TO HARDEN (closes P0-5):
-      #   1. set Storage__Provider=s3, fill Storage__Bucket/AccessKey/SecretKey/Region/Endpoint
-      #      (pin Region to an approved GCC/KSA jurisdiction for PDPL residency),
-      #   2. REMOVE Storage__AllowEphemeral (or set "false") — the app then enforces durable storage.
-      - key: Storage__Provider          # "s3" to enable durable storage; "local" is ephemeral
-        value: local
-      - key: Storage__AllowEphemeral    # REMOVE once Provider=s3 is configured (restores fail-fast)
-        value: "true"
+      # Production fails closed until these durable object-storage settings are provisioned.
+      # No local/ephemeral escape hatch is accepted outside Development.
+      - key: Storage__Provider
+        value: s3
       - key: Storage__Bucket
         sync: false
       - key: Storage__Endpoint          # R2: https://<acct>.r2.cloudflarestorage.com ; empty for AWS

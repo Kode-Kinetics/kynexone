@@ -1131,7 +1131,8 @@ public class AuthSeeder : IAuthSeeder
                 var approved = l.Status == "Pending" ? 0 : l.Amount;
                 _db.EmployeeLoans.Add(new EmployeeLoan
                 {
-                    TenantId = tenantId, EmployeeId = Guid.NewGuid(), EmployeeName = emp.FullName,
+                    TenantId = tenantId, CompanyId = emp.CompanyId,
+                    EmployeeId = emp.PublicId, EmployeeIntId = emp.Id, EmployeeName = emp.FullName,
                     LoanTypeId = l.Type.Id, LoanTypeName = l.Type.NameEn,
                     LoanNumber = $"LN-{today.Year}-{i + 1:00000}",
                     RequestedAmount = l.Amount, ApprovedAmount = approved,
@@ -1154,7 +1155,8 @@ public class AuthSeeder : IAuthSeeder
                 var emp = employees[a.EmpIdx % employees.Count];
                 _db.SalaryAdvances.Add(new SalaryAdvance
                 {
-                    TenantId = tenantId, EmployeeId = Guid.NewGuid(), EmployeeName = emp.FullName,
+                    TenantId = tenantId, CompanyId = emp.CompanyId,
+                    EmployeeId = emp.PublicId, EmployeeIntId = emp.Id, EmployeeName = emp.FullName,
                     AdvanceNumber = $"ADV-{today.Year}-{i + 1:00000}",
                     RequestedAmount = a.Amount, ApprovedAmount = a.Status == "Pending" ? 0 : a.Amount,
                     InstallmentAmount = a.Status == "Pending" ? 0 : a.Amount,

@@ -90,6 +90,8 @@ public class EmployeeDuplicateDetectionTests
             new("tenant_id", tenantId.ToString()),
             new(ClaimTypes.NameIdentifier, (userId ?? Guid.NewGuid()).ToString()),
             new(ClaimTypes.Role, role),
+            new("permission", "employees.read"),
+            new("permission", "employees.write"),
         };
         if (extraClaims is not null) claims.AddRange(extraClaims);
         controller.ControllerContext = new ControllerContext

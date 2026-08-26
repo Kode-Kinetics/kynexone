@@ -285,7 +285,7 @@ public class EmployeeBonus : ITenantOwned, ICompanyScopedOperational
     /// <summary>Legal-entity scope. Backfilled by CompanyScopeBackfill; required for new operational writes.</summary>
     public Guid? CompanyId { get; set; }
     public Guid BonusBatchId { get; set; }
-    public Guid EmployeeId { get; set; }       // placeholder Guid — use EmployeeIntId for payroll join
+    public Guid EmployeeId { get; set; }       // Employee.PublicId (stable public/domain identifier)
     public int? EmployeeIntId { get; set; }    // Employee.Id (int PK) for payroll-run matching
     public string EmployeeName { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;

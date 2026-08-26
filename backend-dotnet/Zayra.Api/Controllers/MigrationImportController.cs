@@ -97,9 +97,25 @@ public sealed class MigrationImportController : ControllerBase
         var validation = ValidatePackage(request);
         if (validation.Errors.Count > 0) return UnprocessableEntity(validation.Errors);
         var checksum = PackageChecksum(request);
+        await using var lease = await MigrationImportLease.AcquireAsync(
+            _db, tenantId, request.ExternalBatchId ?? checksum, ct);
         var existing = await FindBatchAsync(tenantId, request.ExternalBatchId, checksum, ct);
         if (existing is not null && existing.Status == "Completed")
             return Ok(ToDto(existing, ReadCounts(existing.ReconciliationJson), ReadErrors(existing.ErrorJson)));
+        if (existing is not null && existing.Status == "Processing" && !_db.Database.IsNpgsql())
+            return Conflict(new { message = "This migration package is already being processed." });
+        // On PostgreSQL the session advisory lock above is held for the whole import. Therefore a
+        // Processing row observed after acquiring it cannot still have a live owner; it is a crash/
+        // cancellation remnant. Reuse the governed ledger and idempotent upserts instead of leaving
+        // the batch permanently unresumable.
+        if (existing is not null && existing.Status == "Processing")
+        {
+            existing.Status = "Failed";
+            existing.CompletedAtUtc = DateTime.UtcNow;
+            existing.ErrorJson = JsonSerializer.Serialize(new[] { "Recovered an interrupted migration attempt." });
+            existing.UpdatedAtUtc = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+        }
         if (existing is not null && existing.PackageChecksum != checksum)
             return Conflict(new { message = "ExternalBatchId is already associated with a different package checksum." });
 
@@ -123,7 +139,8 @@ public sealed class MigrationImportController : ControllerBase
         batch.ReconciliationJson = "{}";
         batch.ErrorJson = "[]";
         batch.ResultJson = "{}";
-        batch.StartedAtUtc ??= DateTime.UtcNow;
+        batch.StartedAtUtc = DateTime.UtcNow;
+        batch.CompletedAtUtc = null;
         batch.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
 
@@ -160,6 +177,7 @@ public sealed class MigrationImportController : ControllerBase
             batch.Status = "Failed";
             batch.ErrorJson = JsonSerializer.Serialize(new[] { ex.Message });
             batch.ErrorRows++;
+            batch.CompletedAtUtc = DateTime.UtcNow;
             batch.UpdatedAtUtc = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
             return UnprocessableEntity(ToDto(batch, ReadCounts(batch.ReconciliationJson), ReadErrors(batch.ErrorJson)));
@@ -192,6 +210,41 @@ public sealed class MigrationImportController : ControllerBase
         return await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PackageChecksum == checksum && x.Status != "Previewed", ct);
     }
 
+    private sealed class MigrationImportLease : IAsyncDisposable
+    {
+        private readonly ZayraDbContext? _db;
+        private readonly long _key;
+
+        private MigrationImportLease(ZayraDbContext? db, long key) { _db = db; _key = key; }
+
+        public static async Task<MigrationImportLease> AcquireAsync(
+            ZayraDbContext db, Guid tenantId, string packageKey, CancellationToken ct)
+        {
+            if (!db.Database.IsNpgsql()) return new MigrationImportLease(null, 0);
+            var material = Encoding.UTF8.GetBytes($"migration-import:{tenantId:D}:{packageKey}");
+            var digest = SHA256.HashData(material);
+            var key = System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(digest.AsSpan(0, 8));
+            await db.Database.OpenConnectionAsync(ct);
+            try
+            {
+                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_lock({key})", ct);
+                return new MigrationImportLease(db, key);
+            }
+            catch
+            {
+                await db.Database.CloseConnectionAsync();
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_db is null) return;
+            try { await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_unlock({_key})"); }
+            finally { await _db.Database.CloseConnectionAsync(); }
+        }
+    }
+
     private async Task<PlanTotals> BuildPlanAsync(Guid tenantId, MigrationPackageRequest request, CancellationToken ct)
     {
         var totals = new PlanTotals();
@@ -216,7 +269,12 @@ public sealed class MigrationImportController : ControllerBase
         var result = new SectionResult { Received = rows.Count };
         foreach (var (row, index) in rows.Select((r, i) => (r, i + 2)))
         {
-            try { await ValidateRowAsync(section, row, tenantId, ct); result.WouldCreate++; }
+            try
+            {
+                var action = await ValidateRowAsync(section, row, tenantId, ct);
+                if (action == "updated") result.WouldUpdate++;
+                else result.WouldCreate++;
+            }
             catch (Exception ex) { result.WouldSkip++; result.Errors.Add($"{section} row {index}: {ex.Message}"); }
         }
         return result;
@@ -252,65 +310,81 @@ public sealed class MigrationImportController : ControllerBase
         return result;
     }
 
-    private async Task ValidateRowAsync(string section, Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
+    private async Task<string> ValidateRowAsync(string section, Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
     {
         switch (section)
         {
-            case "roles": Require(row, "Name"); break;
+            case "roles":
+                var roleName = Require(row, "Name").Trim().ToUpperInvariant();
+                return await _db.Roles.AnyAsync(x => x.TenantId == tenantId && x.NormalizedName == roleName && !x.IsDeleted, ct)
+                    ? "updated" : "created";
             case "users":
                 var email = Require(row, "Email");
                 if (!email.Contains('@')) throw new FormatException("Email is invalid.");
                 Require(row, "FullName");
-                if (await _db.Users.AnyAsync(x => x.TenantId == tenantId && x.NormalizedEmail == email.Trim().ToUpperInvariant() && !x.IsDeleted, ct)) { }
-                break;
+                return await _db.Users.AnyAsync(x => x.TenantId == tenantId && x.NormalizedEmail == email.Trim().ToUpperInvariant() && !x.IsDeleted, ct)
+                    ? "updated" : "created";
             case "leaveBalances":
                 var employee = await Employee(row, tenantId, ct);
                 var leave = await LeaveType(row, tenantId, ct);
-                _ = employee; _ = leave;
-                _ = Int(row, "Year");
-                break;
+                var leaveYear = Int(row, "Year");
+                return await _db.EmployeeLeaveBalances.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.LeaveTypeId == leave.Id && x.Year == leaveYear, ct)
+                    ? "updated" : "created";
             case "attendanceDaily":
-                _ = await Employee(row, tenantId, ct);
-                _ = DateOnly.Parse(Require(row, "WorkDate"));
-                break;
+                var attendanceEmployee = await Employee(row, tenantId, ct);
+                var workDate = DateOnly.Parse(Require(row, "WorkDate"));
+                return await _db.AttendanceDailyRecords.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == attendanceEmployee.Id && x.WorkDate == workDate, ct)
+                    ? "updated" : "created";
             case "employeeHistory":
-                _ = await Employee(row, tenantId, ct);
-                Require(row, "EventType");
-                Require(row, "FieldName");
-                _ = DateOnly.Parse(Require(row, "EffectiveDate"));
-                break;
+                var historyEmployee = await Employee(row, tenantId, ct);
+                var eventType = Require(row, "EventType").Trim();
+                var fieldName = Require(row, "FieldName").Trim();
+                var effectiveDate = DateOnly.Parse(Require(row, "EffectiveDate"));
+                var reason = Val(row, "Reason");
+                return await _db.EmployeeHistories.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == historyEmployee.Id
+                    && x.EventType == eventType && x.FieldName == fieldName && x.EffectiveDate == effectiveDate && x.Reason == reason, ct)
+                    ? "updated" : "created";
             case "payrollOpeningBalances":
-                _ = await Employee(row, tenantId, ct);
-                _ = Int(row, "Year");
-                Require(row, "BalanceType");
-                Require(row, "ComponentCode");
+                var payrollEmployee = await Employee(row, tenantId, ct);
+                var payrollYear = Int(row, "Year");
+                var balanceType = Require(row, "BalanceType").Trim();
+                var componentCode = Require(row, "ComponentCode").Trim();
                 _ = Dec(row, "Amount");
-                break;
+                return await _db.PayrollOpeningBalances.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == payrollEmployee.Id
+                    && x.Year == payrollYear && x.BalanceType == balanceType && x.ComponentCode == componentCode, ct)
+                    ? "updated" : "created";
             case "benefitsEnrollments":
-                _ = await Employee(row, tenantId, ct);
-                Require(row, "PlanCode");
+                var benefitEmployee = await Employee(row, tenantId, ct);
+                var planCode = Require(row, "PlanCode").Trim();
                 Require(row, "PlanName");
                 Require(row, "CoverageTier");
-                _ = DateOnly.Parse(Require(row, "EffectiveDate"));
+                var benefitEffectiveDate = DateOnly.Parse(Require(row, "EffectiveDate"));
                 _ = DateOnlyNullable(row, "EndDate");
                 _ = Dec(row, "EmployeeContribution");
                 _ = Dec(row, "EmployerContribution");
-                break;
+                var plan = await _db.BenefitPlans.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Code == planCode && !x.IsDeleted
+                    && (x.CompanyId == benefitEmployee.CompanyId || x.CompanyId == null), ct);
+                return plan is not null && await _db.BenefitEnrollments.AnyAsync(x => x.TenantId == tenantId
+                    && x.EmployeeId == benefitEmployee.Id && x.BenefitPlanId == plan.Id && x.EffectiveFrom == benefitEffectiveDate, ct)
+                    ? "updated" : "created";
             case "documentManifests":
-                _ = await Employee(row, tenantId, ct);
-                Require(row, "DocumentType");
-                Require(row, "FileName");
-                Require(row, "StorageUrl");
+                var documentEmployee = await Employee(row, tenantId, ct);
+                var documentType = Require(row, "DocumentType").Trim();
+                var fileName = Require(row, "FileName").Trim();
+                var storageUrl = Require(row, "StorageUrl").Trim();
                 _ = Int(row, "VersionNumber", 1);
-                break;
+                return await _db.EmployeeDocuments.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == documentEmployee.Id
+                    && x.DocumentType == documentType && x.FileName == fileName && x.StorageUrl == storageUrl && !x.IsDeleted, ct)
+                    ? "updated" : "created";
             case "contracts":
                 _ = await Employee(row, tenantId, ct);
-                Require(row, "ContractNumber");
+                var contractNumber = Require(row, "ContractNumber").Trim();
                 Require(row, "ContractType");
                 _ = DateOnly.Parse(Require(row, "StartDate"));
                 _ = DateOnlyNullable(row, "EndDate");
                 _ = Dec(row, "BasicSalary");
-                break;
+                return await _db.EmployeeContracts.AnyAsync(x => x.TenantId == tenantId && x.ContractNumber == contractNumber && !x.IsDeleted, ct)
+                    ? "updated" : "created";
             case "reconciliationSignoffs":
                 Require(row, "ReconciliationType");
                 Require(row, "PreparedBy");
@@ -320,7 +394,9 @@ public sealed class MigrationImportController : ControllerBase
                 _ = Dec(row, "VarianceAmount");
                 if (!Val(row, "Status", "Signed").Equals("Signed", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("Status must be Signed for migration sign-off.");
-                break;
+                return "created";
+            default:
+                throw new InvalidOperationException($"Unsupported section '{section}'.");
         }
     }
 
@@ -563,7 +639,8 @@ public sealed class MigrationImportController : ControllerBase
         var contractNumber = Require(row, "ContractNumber").Trim();
         var item = await _db.EmployeeContracts.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ContractNumber == contractNumber && !x.IsDeleted, ct);
         var created = item is null;
-        item ??= new EmployeeContract { TenantId = tenantId, ContractNumber = contractNumber, EmployeeId = Guid.NewGuid(), CompanyId = employee.CompanyId };
+        item ??= new EmployeeContract { TenantId = tenantId, ContractNumber = contractNumber, CompanyId = employee.CompanyId };
+        item.EmployeeId = employee.PublicId;
         item.EmployeeName = employee.FullName;
         item.ContractType = Val(row, "ContractType", "Employment");
         item.Status = Val(row, "Status", "Active");

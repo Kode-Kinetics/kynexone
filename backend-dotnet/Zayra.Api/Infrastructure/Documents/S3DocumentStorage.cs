@@ -1,6 +1,7 @@
 using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.Extensions.Logging;
+using System.Net;
 
 namespace Zayra.Api.Infrastructure.Documents;
 
@@ -70,7 +71,16 @@ public sealed class S3DocumentStorage : IDocumentStorage
     public async Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default)
     {
         AssertTenantOwnership(tenantId, storageUrl);
-        return await _s3.GetBytesAsync(_opts.Bucket, storageUrl, ct);
+        try
+        {
+            return await _s3.GetBytesAsync(_opts.Bucket, storageUrl, ct);
+        }
+        catch (AmazonS3Exception ex) when (
+            ex.StatusCode == HttpStatusCode.NotFound ||
+            string.Equals(ex.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FileNotFoundException($"Stored document not found: {storageUrl}", ex);
+        }
     }
 
     public string ResolvePath(string storageUrl) =>

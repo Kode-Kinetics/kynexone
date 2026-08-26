@@ -33,6 +33,16 @@ namespace Zayra.Api.Infrastructure.Data;
 /// </summary>
 public static class ScopedBypass
 {
+    /// <summary>Tenant-pinned bypass for legacy entities whose TenantId is nullable.</summary>
+    public static IQueryable<T> NullableTenantWide<T>(DbSet<T> set, Guid? tenantId, string justification)
+        where T : class, INullableTenantOwned
+    {
+        RequireJustification(justification);
+        // IgnoreQueryFilters is intentional: nullable legacy rows need an exact tenant-wide read;
+        // the requested tenant (including the platform-default null tenant) is immediately re-applied.
+        return set.IgnoreQueryFilters().Where(x => x.TenantId == tenantId);
+    }
+
     /// <summary>
     /// Drops the COMPANY filter for a single tenant. The tenant predicate is applied here, so a
     /// caller cannot produce a cross-tenant query by forgetting a <c>Where</c>.

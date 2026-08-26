@@ -7,6 +7,7 @@ import type { EmployeeListItem } from '../api/employees';
 
 export interface EmployeeSelection {
   intId: number;
+  publicId: string;
   fullName: string;
   employeeCode: string;
   department: string;
@@ -57,7 +58,7 @@ export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by
   }, [query, open, search]);
 
   const select = (emp: EmployeeListItem) => {
-    onChange({ intId: emp.id, fullName: emp.fullName, employeeCode: emp.employeeCode, department: emp.department ?? '' });
+    onChange({ intId: emp.id, publicId: emp.publicId, fullName: emp.fullName, employeeCode: emp.employeeCode, department: emp.department ?? '' });
     setQuery('');
     setResults([]);
     setOpen(false);

@@ -2,11 +2,15 @@ using System.Security.Claims;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Approvals;
+using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
@@ -19,6 +23,100 @@ public class LeaveApprovalScopeTests
         new(new DbContextOptionsBuilder<ZayraDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options);
+
+    [Fact]
+    public async Task MissingPolicy_FallsBackToActionableManagerQueue_InsteadOfOrphanedSubmittedState()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var managerUserId = Guid.NewGuid();
+        var employeeUserId = Guid.NewGuid();
+        var leaveType = new LeaveType { TenantId = tenantId, Code = "AL", NameEn = "Annual Leave", IsActive = true };
+        var manager = new Employee
+        {
+            TenantId = tenantId, UserAccountId = managerUserId, EmployeeCode = "MGR-FALLBACK",
+            FullName = "Fallback Manager", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-3)
+        };
+        db.LeaveTypes.Add(leaveType);
+        db.Employees.Add(manager);
+        await db.SaveChangesAsync();
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "EMP-FALLBACK", FullName = "Needs Approval",
+            UserAccountId = employeeUserId, ManagerEmployeeId = manager.Id,
+            Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1)
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        var start = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(7));
+        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
+            LeaveTypeId = leaveType.Id, LeaveTypeName = leaveType.NameEn, Year = start.Year, Entitled = 21
+        });
+        await db.SaveChangesAsync();
+
+        var service = new LeaveService(db, new ApprovalPolicyService(db));
+        var submitted = await service.SubmitRequestAsync(tenantId, new LeaveRequest
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,
+            StartDate = start, EndDate = start, DayType = "Full"
+        });
+
+        submitted.Status.Should().Be("PendingManagerApproval");
+        var approval = await db.LeaveApprovals.SingleAsync(a => a.LeaveRequestId == submitted.Id);
+        approval.Decision.Should().Be("Pending");
+        approval.ApproverRole.Should().Be("Manager");
+        approval.ApproverId.Should().Be(managerUserId);
+        approval.ApproverName.Should().Be(manager.FullName);
+
+        var projection = await db.ApprovalRequests.Include(a => a.Decisions).SingleAsync(a => a.Id == submitted.Id);
+        projection.EntityId.Should().Be(submitted.Id.ToString());
+        projection.RequestedByUserId.Should().Be(employeeUserId);
+        projection.RequestedForEmployeeId.Should().Be(employee.Id);
+        projection.CurrentApproverUserId.Should().Be(managerUserId);
+        projection.CurrentApproverRole.Should().Be("Manager");
+        projection.Status.Should().Be("Pending");
+
+        var directSelfReject = () => service.RejectRequestAsync(
+            tenantId, submitted.Id, employeeUserId, employee.FullName, "self rejection");
+        await directSelfReject.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*Maker-checker*");
+
+        var approvalCenter = new ApprovalWorkflowService(db, new AuditService(db));
+        (await approvalCenter.DecideAsync(Guid.NewGuid(), projection.Id,
+            new ApprovalDecisionRequest("Approve", "wrong tenant"),
+            new RequestContext("127.0.0.1", "tests", managerUserId, Guid.NewGuid(), ["Manager"], ["approvals.decide"]),
+            CancellationToken.None)).Should().BeNull("tenant scope must be applied before resolving the leave link");
+
+        var selfDecision = () => approvalCenter.DecideAsync(tenantId, projection.Id,
+            new ApprovalDecisionRequest("Approve", "self approval"),
+            new RequestContext("127.0.0.1", "tests", employeeUserId, tenantId, ["Manager"], ["approvals.decide"]),
+            CancellationToken.None);
+        await selfDecision.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*Maker-checker*");
+
+        var managerContext = new RequestContext("127.0.0.1", "tests", managerUserId, tenantId, ["Manager"], ["approvals.decide"]);
+        var decided = await approvalCenter.DecideAsync(tenantId, projection.Id,
+            new ApprovalDecisionRequest("Approve", "Approved in the global queue"), managerContext, CancellationToken.None);
+
+        decided!.Status.Should().Be("Approved");
+        decided.Decisions.Should().ContainSingle(d => d.StepOrder == 1 && d.Decision == "Approved");
+        (await db.LeaveRequests.SingleAsync(r => r.Id == submitted.Id)).Status.Should().Be("Approved");
+        (await db.LeaveApprovals.SingleAsync(a => a.LeaveRequestId == submitted.Id)).Decision.Should().Be("Approved");
+        var decidedBalance = await db.EmployeeLeaveBalances.SingleAsync(b => b.EmployeeId == employee.Id);
+        decidedBalance.Pending.Should().Be(0);
+        decidedBalance.Used.Should().Be(1);
+        (await db.LeaveBalanceTransactions.CountAsync(t => t.Reference == submitted.Id.ToString() && t.TransactionType == "Used"))
+            .Should().Be(1);
+
+        var replay = () => approvalCenter.DecideAsync(tenantId, projection.Id,
+            new ApprovalDecisionRequest("Approve", "replay"), managerContext, CancellationToken.None);
+        await replay.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*already completed*");
+        (await db.LeaveBalanceTransactions.CountAsync(t => t.Reference == submitted.Id.ToString() && t.TransactionType == "Used"))
+            .Should().Be(1, "a replay must not consume the balance twice");
+    }
 
     [Fact]
     public async Task MultiStepApproval_FirstStepAdvancesWithoutConsumingBalance_FinalStepApproves()
@@ -99,6 +197,13 @@ public class LeaveApprovalScopeTests
         approvals[1].Decision.Should().Be("Pending");
         approvals[1].ApproverId.Should().Be(hrUserId);
 
+        var afterManagerProjection = await db.ApprovalRequests.Include(a => a.Decisions)
+            .SingleAsync(a => a.Id == submitted.Id);
+        afterManagerProjection.Status.Should().Be("Pending");
+        afterManagerProjection.CurrentStepOrder.Should().Be(2);
+        afterManagerProjection.CurrentApproverUserId.Should().Be(hrUserId);
+        afterManagerProjection.Decisions.Should().ContainSingle(d => d.StepOrder == 1 && d.Decision == "Approved");
+
         await service.ApproveRequestAsync(tenantId, submitted.Id, hrUserId, "HR One", "final");
 
         var finalRequest = await db.LeaveRequests.SingleAsync(r => r.Id == submitted.Id);
@@ -107,6 +212,101 @@ public class LeaveApprovalScopeTests
         var finalBalance = await db.EmployeeLeaveBalances.SingleAsync(b => b.EmployeeId == employee.Id);
         finalBalance.Pending.Should().Be(0);
         finalBalance.Used.Should().Be(2);
+        var finalProjection = await db.ApprovalRequests.Include(a => a.Decisions)
+            .SingleAsync(a => a.Id == submitted.Id);
+        finalProjection.Status.Should().Be("Approved");
+        finalProjection.CompletedAtUtc.Should().NotBeNull();
+        finalProjection.Decisions.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task RelationalDecision_ConsumesPendingStepOnce_AndKeepsProjectionBalanceAndAuditAtomic()
+    {
+        var connectionString = $"Data Source=leave-cas-{Guid.NewGuid():N};Mode=Memory;Cache=Shared;Default Timeout=10";
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(); // anchor keeps the shared in-memory database alive
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseSqlite(connection)
+            .Options);
+        await db.Database.EnsureCreatedAsync();
+
+        var tenantId = Guid.NewGuid();
+        var managerUserId = Guid.NewGuid();
+        var leaveType = new LeaveType { TenantId = tenantId, Code = "CAS", NameEn = "CAS Leave", IsActive = true };
+        var manager = new Employee
+        {
+            TenantId = tenantId, UserAccountId = managerUserId, EmployeeCode = "MGR-CAS",
+            FullName = "CAS Manager", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-4)
+        };
+        db.AddRange(leaveType, manager);
+        await db.SaveChangesAsync();
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "EMP-CAS", FullName = "CAS Employee",
+            ManagerEmployeeId = manager.Id, Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2)
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(10));
+        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
+            LeaveTypeId = leaveType.Id, LeaveTypeName = leaveType.NameEn, Year = start.Year, Entitled = 10
+        });
+        await db.SaveChangesAsync();
+
+        var service = new LeaveService(db, new ApprovalPolicyService(db));
+        var submitted = await service.SubmitRequestAsync(tenantId, new LeaveRequest
+        {
+            EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,
+            StartDate = start, EndDate = start, DayType = "Full"
+        });
+
+        async Task<bool> TryApproveAsync(string comment)
+        {
+            try
+            {
+                await using var workerConnection = new SqliteConnection(connectionString);
+                await workerConnection.OpenAsync();
+                await using var workerDb = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+                    .UseSqlite(workerConnection)
+                    .Options);
+                await new LeaveService(workerDb, new ApprovalPolicyService(workerDb))
+                    .ApproveRequestAsync(tenantId, submitted.Id, managerUserId, manager.FullName, comment);
+                return true;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or SqliteException)
+            {
+                // SQLite can surface the losing writer as a lock error before it reaches the CAS;
+                // PostgreSQL reaches the zero-row CAS. Both prove that only one transition commits.
+                return false;
+            }
+        }
+
+        var outcomes = await Task.WhenAll(
+            TryApproveAsync("CAS contender A"),
+            TryApproveAsync("CAS contender B"));
+        outcomes.Count(x => x).Should().Be(1, "only one concurrent approver may consume the pending step");
+
+        await using var verifyConnection = new SqliteConnection(connectionString);
+        await verifyConnection.OpenAsync();
+        await using var verifyDb = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseSqlite(verifyConnection)
+            .Options);
+
+        (await verifyDb.LeaveApprovals.CountAsync(a => a.LeaveRequestId == submitted.Id && a.Decision == "Approved"))
+            .Should().Be(1);
+        (await verifyDb.ApprovalDecisions.CountAsync(a => a.ApprovalRequestId == submitted.Id && a.Decision == "Approved"))
+            .Should().Be(1);
+        (await verifyDb.LeaveBalanceTransactions.CountAsync(t => t.Reference == submitted.Id.ToString() && t.TransactionType == "Used"))
+            .Should().Be(1);
+        (await verifyDb.ApprovalRequests.SingleAsync(a => a.Id == submitted.Id)).Status.Should().Be("Approved");
+
+        var replayService = new LeaveService(verifyDb, new ApprovalPolicyService(verifyDb));
+        var replay = () => replayService.ApproveRequestAsync(tenantId, submitted.Id, managerUserId, manager.FullName, "CAS replay");
+        await replay.Should().ThrowAsync<InvalidOperationException>();
+        (await verifyDb.LeaveBalanceTransactions.CountAsync(t => t.Reference == submitted.Id.ToString() && t.TransactionType == "Used"))
+            .Should().Be(1);
     }
 
     [Fact]

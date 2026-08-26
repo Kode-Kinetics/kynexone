@@ -148,6 +148,53 @@ public class AccessManagementScopeTests
         token.RevokedByIp.Should().Be("10.20.30.40");
     }
 
+    [Fact]
+    public async Task ConcurrentAdminCreation_EnforcesSubscriptionSeatLimitAcrossDbContexts()
+    {
+        var w = await SeedWorld();
+        await using (var seed = _fx.CreateDb())
+        {
+            await EnsureRoleAsync(seed, w.TenantId, "Admin");
+            seed.TenantSubscriptions.Add(new TenantSubscription
+            {
+                TenantId = w.TenantId,
+                Plan = "Starter",
+                Status = SubscriptionStatuses.Active,
+                MaxAdminUsers = 1
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task<Exception?> Create(string email)
+        {
+            await using var db = _fx.CreateDb();
+            var service = CreateService(db);
+            await gate.Task;
+            try
+            {
+                await service.CreateUserAsync(w.TenantId,
+                    new CreateUserRequest(email, email, "StrongPassword!123", new[] { "Admin" }),
+                    new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), w.TenantId),
+                    CancellationToken.None);
+                return null;
+            }
+            catch (Exception ex) { return ex; }
+        }
+
+        var first = Create("admin-one@example.test");
+        var second = Create("admin-two@example.test");
+        gate.SetResult();
+        var results = await Task.WhenAll(first, second);
+
+        results.Count(x => x is null).Should().Be(1);
+        results.Count(x => x is InvalidOperationException ioe
+            && ioe.Message.Contains("at most 1 active administrator", StringComparison.Ordinal)).Should().Be(1);
+        await using var verify = _fx.CreateDb();
+        (await verify.Users.CountAsync(x => x.TenantId == w.TenantId && x.IsActive
+            && x.UserRoles.Any(ur => ur.Role!.NormalizedName == "ADMIN"))).Should().Be(1);
+    }
+
     private async Task<World> SeedWorld()
     {
         await using var db = _fx.CreateDb();

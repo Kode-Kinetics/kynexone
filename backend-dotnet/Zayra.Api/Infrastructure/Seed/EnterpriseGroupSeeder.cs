@@ -220,21 +220,27 @@ public sealed class EnterpriseGroupSeeder
             await _db.SaveChangesAsync(ct);
         }
 
-        // Payroll run + tax policy for the first company of the group.
-        var first = companies[0];
-        var firstEmployees = await _db.Employees.Where(e => e.TenantId == tenant.Id && e.CompanyId == first.Id).ToListAsync(ct);
+        // One real payroll run per legal entity. Besides making the enterprise demo representative,
+        // this gives authorization tests an existing sibling-company financial artifact: testing an
+        // inaccessible random/nonexistent ID would prove only 404 handling, not data-scope isolation.
         var lastMonth = DateTime.UtcNow.AddMonths(-1);
-        _db.PayrollRuns.Add(new PayrollRun
+        foreach (var company in companies)
         {
-            TenantId = tenant.Id, CompanyId = first.Id, Year = lastMonth.Year, Month = lastMonth.Month,
-            Status = "Approved",
-            TotalGrossSalary = firstEmployees.Sum(e => e.Salary ?? 0m),
-            TotalNetSalary = firstEmployees.Sum(e => e.Salary ?? 0m),
-            EmployeeCount = firstEmployees.Count,
-        });
+            var companyEmployees = await _db.Employees
+                .Where(e => e.TenantId == tenant.Id && e.CompanyId == company.Id)
+                .ToListAsync(ct);
+            _db.PayrollRuns.Add(new PayrollRun
+            {
+                TenantId = tenant.Id, CompanyId = company.Id, Year = lastMonth.Year, Month = lastMonth.Month,
+                Status = "Approved",
+                TotalGrossSalary = companyEmployees.Sum(e => e.Salary ?? 0m),
+                TotalNetSalary = companyEmployees.Sum(e => e.Salary ?? 0m),
+                EmployeeCount = companyEmployees.Count,
+            });
+        }
         _db.CompanyTaxPolicies.Add(new CompanyTaxPolicy
         {
-            TenantId = tenant.Id, CompanyId = first.Id, CountryCode = specs[0].CountryCode,
+            TenantId = tenant.Id, CompanyId = companies[0].Id, CountryCode = specs[0].CountryCode,
             EffectiveFrom = new DateOnly(2026, 1, 1), Status = CompanyPolicyStatuses.Active,
             IncomeTaxRatePercent = specs[0].CountryCode == "IN" ? 10m : 0m, AppliesToBonus = true,
             Notes = "TEST DATA — configurable policy foundation, not legal tax advice.",

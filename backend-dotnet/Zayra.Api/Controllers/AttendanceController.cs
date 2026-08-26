@@ -31,10 +31,12 @@ public class AttendanceController : ControllerBase
     }
 
     [HttpGet("dashboard")]
+    [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer,Manager,Supervisor,Auditor")]
     public Task<AttendanceDashboardDto> Dashboard([FromQuery] DateOnly? date, CancellationToken ct) =>
         _attendance.DashboardAsync(RequireTenant(), date ?? DateOnly.FromDateTime(DateTime.UtcNow), ct);
 
     [HttpGet("today")]
+    [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer,Manager,Supervisor,Auditor")]
     public async Task<IActionResult> Today(CancellationToken ct)
     {
         var date = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -51,6 +53,7 @@ public class AttendanceController : ControllerBase
     }
 
     [HttpGet("devices/{id:guid}")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<ActionResult<AttendanceDeviceDto>> Device(Guid id, CancellationToken ct) =>
         await _attendance.GetDeviceAsync(RequireTenant(), id, ct) is { } device ? Ok(AttendanceDeviceDto.Project(device)) : NotFound();
 
@@ -84,16 +87,19 @@ public class AttendanceController : ControllerBase
         await _attendance.DeleteDeviceAsync(RequireTenant(), id, Context(), ct) ? NoContent() : NotFound();
 
     [HttpPost("devices/{id:guid}/test-connection")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: DeviceId, SyncMethod, Status, StartedAtUtc, CompletedAtUtc, RawEventsReceived, RawEventsProcessed, ErrorMessage. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<AttendanceDeviceSyncLog>> TestConnection(Guid id, CancellationToken ct) =>
         await _attendance.TestConnectionAsync(RequireTenant(), id, Context(), ct) is { } log ? Ok(log) : NotFound();
 
     [HttpPost("devices/{id:guid}/sync")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: DeviceId, SyncMethod, Status, StartedAtUtc, CompletedAtUtc, RawEventsReceived, RawEventsProcessed, ErrorMessage. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<AttendanceDeviceSyncLog>> Sync(Guid id, CancellationToken ct) =>
         await _attendance.SyncDeviceAsync(RequireTenant(), id, Context(), ct) is { } log ? Ok(log) : NotFound();
 
     [HttpGet("devices/{id:guid}/sync-logs")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: DeviceId, SyncMethod, Status, StartedAtUtc, CompletedAtUtc, RawEventsReceived, RawEventsProcessed, ErrorMessage. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public Task<IReadOnlyCollection<AttendanceDeviceSyncLog>> SyncLogs(Guid id, CancellationToken ct) =>
         _attendance.GetSyncLogsAsync(RequireTenant(), id, ct);
@@ -179,27 +185,36 @@ public class AttendanceController : ControllerBase
     }
 
     [HttpPost("process")]
-    public Task<int> Process(ProcessAttendanceRequest request, CancellationToken ct) =>
-        _attendance.ProcessAsync(RequireTenant(), request, Context(), ct);
+    [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
+    public async Task<ActionResult<int>> Process(ProcessAttendanceRequest request, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        if ((!request.EmployeeId.HasValue && !scope.IsUnrestricted)
+            || (request.EmployeeId.HasValue && !scope.CanAccessEmployee(request.EmployeeId.Value)))
+            return Forbid();
+        try { return Ok(await _attendance.ProcessAsync(RequireTenant(), request, Context(), ct)); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
 
     [HttpPost("reprocess")]
-    public Task<int> Reprocess(ProcessAttendanceRequest request, CancellationToken ct) =>
-        _attendance.ProcessAsync(RequireTenant(), request, Context(), ct);
+    [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
+    public Task<ActionResult<int>> Reprocess(ProcessAttendanceRequest request, CancellationToken ct) =>
+        Process(request, ct);
 
     [HttpPost("punch/web")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public Task<AttendanceRawEvent> WebPunch(WebPunchRequest request, CancellationToken ct) =>
-        _attendance.PunchAsync(RequireTenant(), request, "Web punch", Context(), ct);
+    public Task<ActionResult<AttendanceRawEvent>> WebPunch(WebPunchRequest request, CancellationToken ct) =>
+        Punch(request, "Web punch", ct);
 
     [HttpPost("punch/mobile")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public Task<AttendanceRawEvent> MobilePunch(WebPunchRequest request, CancellationToken ct) =>
-        _attendance.PunchAsync(RequireTenant(), request, "Mobile app punch", Context(), ct);
+    public Task<ActionResult<AttendanceRawEvent>> MobilePunch(WebPunchRequest request, CancellationToken ct) =>
+        Punch(request, "Mobile app punch", ct);
 
     [HttpPost("punch/kiosk")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public Task<AttendanceRawEvent> KioskPunch(WebPunchRequest request, CancellationToken ct) =>
-        _attendance.PunchAsync(RequireTenant(), request, "Tablet/kiosk punch", Context(), ct);
+    public Task<ActionResult<AttendanceRawEvent>> KioskPunch(WebPunchRequest request, CancellationToken ct) =>
+        Punch(request, "Tablet/kiosk punch", ct);
 
     [HttpPost("regularization")]
     public async Task<IActionResult> Regularization(RegularizationRequestDto request, CancellationToken ct)
@@ -347,6 +362,7 @@ public class AttendanceController : ControllerBase
     }
 
     [HttpGet("reports/device-sync")]
+    [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer,Auditor")]
     public Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> ReportDeviceSync(CancellationToken ct) =>
         _attendance.DeviceSyncReportAsync(RequireTenant(), ct);
 
@@ -357,6 +373,14 @@ public class AttendanceController : ControllerBase
         _attendance.GenerateInsightsAsync(RequireTenant(), ct);
 
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id")!);
+
+    private async Task<ActionResult<AttendanceRawEvent>> Punch(WebPunchRequest request, string source, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        if (!scope.CanAccessEmployee(request.EmployeeId)) return Forbid();
+        try { return Ok(await _attendance.PunchAsync(RequireTenant(), request, source, Context(), ct)); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
 

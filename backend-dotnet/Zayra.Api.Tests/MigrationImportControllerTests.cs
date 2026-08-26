@@ -63,6 +63,50 @@ public sealed class MigrationImportControllerTests
     }
 
     [Fact]
+    public async Task Preview_ClassifiesExistingUpsertsAsUpdates()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = new Employee { TenantId = tenantId, EmployeeCode = "EMP-001", FullName = "Imported Employee" };
+        var leaveType = new LeaveType { TenantId = tenantId, Code = "ANNUAL", NameEn = "Annual Leave" };
+        db.Employees.Add(employee);
+        db.LeaveTypes.Add(leaveType);
+        db.Roles.Add(new Role { TenantId = tenantId, Name = "Imported HR", NormalizedName = "IMPORTED HR" });
+        db.Users.Add(new User
+        {
+            TenantId = tenantId,
+            Email = "hr@example.com",
+            NormalizedEmail = "HR@EXAMPLE.COM",
+            FullName = "Existing HR User",
+            PasswordHash = "hash"
+        });
+        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = tenantId,
+            EmployeeId = employee.Id,
+            EmployeeName = employee.FullName,
+            LeaveTypeId = leaveType.Id,
+            LeaveTypeName = leaveType.NameEn,
+            Year = 2026
+        });
+        db.AttendanceDailyRecords.Add(new AttendanceDailyRecord
+        {
+            TenantId = tenantId,
+            EmployeeId = employee.Id,
+            EmployeeName = employee.FullName,
+            WorkDate = new DateOnly(2026, 1, 2)
+        });
+        await db.SaveChangesAsync();
+
+        var result = await CreateController(db, tenantId).Preview(Package(true), CancellationToken.None);
+        var dto = Assert.IsType<MigrationReconciliationDto>(Assert.IsType<OkObjectResult>(result.Result).Value);
+
+        Assert.Equal(0, dto.CreatedRows);
+        Assert.Equal(4, dto.UpdatedRows);
+        Assert.Equal(0, dto.SkippedRows);
+    }
+
+    [Fact]
     public async Task Commit_ImportsEnterpriseCompletionSections_WithGovernedLedger()
     {
         await using var db = CreateDb();

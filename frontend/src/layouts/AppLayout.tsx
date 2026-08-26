@@ -337,7 +337,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
 
   return (
     <LocaleProvider>
-    <div className="min-h-screen overflow-x-hidden bg-lightBg text-slate-950 dark:bg-midnight dark:text-white">
+    <div className="tenant-app-shell min-h-screen overflow-x-hidden bg-lightBg text-slate-950 dark:bg-midnight dark:text-white">
       <div className="flex min-h-screen">
         <Sidebar
           isOpen={sidebarOpen}

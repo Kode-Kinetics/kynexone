@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.AI;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Operations;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.AI;
@@ -18,11 +19,14 @@ public sealed class AiInsightEngine : BackgroundService
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<AiInsightEngine> _log;
+    private readonly WorkerHeartbeatReporter? _heartbeat;
 
-    public AiInsightEngine(IServiceScopeFactory scopeFactory, ILogger<AiInsightEngine> log)
+    public AiInsightEngine(IServiceScopeFactory scopeFactory, ILogger<AiInsightEngine> log,
+        WorkerHeartbeatReporter? heartbeat = null)
     {
         _scopeFactory = scopeFactory;
         _log = log;
+        _heartbeat = heartbeat;
     }
 
     /// <summary>Exposed for integration tests — runs one analysis cycle synchronously.</summary>
@@ -30,14 +34,24 @@ public sealed class AiInsightEngine : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (_heartbeat is not null) await _heartbeat.StartedAsync(ProductionWorkerNames.AiInsights, stoppingToken);
         // stagger startup by 2 minutes so DB migrations have applied
         await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            try { await RunAnalysisForAllTenantsAsync(stoppingToken); }
+            try
+            {
+                await RunAnalysisForAllTenantsAsync(stoppingToken);
+                if (_heartbeat is not null) await _heartbeat.SucceededAsync(ProductionWorkerNames.AiInsights, stoppingToken);
+            }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
-            { _log.LogError(ex, "AiInsightEngine: unhandled error during analysis cycle"); }
+            {
+                _log.LogError(ex, "AiInsightEngine: unhandled error during analysis cycle");
+                if (_heartbeat is not null)
+                    try { await _heartbeat.FailedAsync(ProductionWorkerNames.AiInsights, ex, stoppingToken); }
+                    catch (Exception heartbeatEx) { _log.LogWarning(heartbeatEx, "Could not persist AI insight worker failure heartbeat."); }
+            }
 
             await Task.Delay(RunInterval, stoppingToken);
         }

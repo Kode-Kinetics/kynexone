@@ -20,7 +20,7 @@ public record QiwaApiResult(bool Success, string? ErrorCode, string? ErrorMessag
 public interface IQiwaApiAdapter
 {
     string AdapterName { get; }
-    Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, CancellationToken ct);
+    Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct);
     Task<QiwaApiResult> GetEmployeeStatusAsync(string accessToken, string establishmentId, string employeeIdNumber, CancellationToken ct);
     Task<string?> AcquireAccessTokenAsync(string clientId, string clientSecret, string environment, CancellationToken ct);
 }
