@@ -160,6 +160,12 @@ public class GlJournalExportsController : ControllerBase
             // artifacts carried the flag before trying to download them.
             q = q.Where(x => x.CompanyId != null && ids.Contains(x.CompanyId!.Value));
         }
+        // D2: an artifact BUILT with the flag carries tenant-wide NULL-company rows, so its Summary
+        // (IncludeUnattributed, TotalDebits, TotalCredits, LineCount) reports the magnitude of the
+        // unattributed pool folded into it. Get/Download/Confirm/Reject already refuse these to a
+        // company-scoped caller; listing their totals would hand back in aggregate exactly what those
+        // four refuse in detail. Group callers still see the whole list.
+        if (!this.GetEntityScope().IsGroupLevel) q = q.Where(x => !x.IncludeUnattributed);
         if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
 
         var rows = await q.OrderByDescending(x => x.ExportedAtUtc).Take(200).ToListAsync(ct);
