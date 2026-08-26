@@ -2,6 +2,7 @@ using System.Text;
 using System.Net;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
+using Zayra.Api.Infrastructure.Observability;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -391,6 +392,16 @@ builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Documents.PdfRenderGa
 builder.Services.AddScoped<IRecruitmentService, RecruitmentService>();
 builder.Services.AddScoped<IPerformanceService, PerformanceService>();
 builder.Services.AddScoped<ILeaveService, LeaveService>();
+// WAVE 1 B1 — THE authoritative entity-scope resolver. Registered before every consumer so that
+// controllers, authorization helpers and ZayraDbContext all read one decision per request instead of
+// three independent ones that disagreed on strict mode and on the X-Company-Id switcher.
+// WAVE 1 G3 — provider-neutral OpenTelemetry. Registers instrumentation always, and an OTLP exporter
+// only when Observability:OtlpEndpoint names one: an exporter pointed at nothing retries forever on a
+// background thread and adds latency to the requests you are trying to observe.
+builder.Services.AddZayraObservability(builder.Configuration, builder.Environment);
+
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver,
+                           Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver>();
 builder.Services.AddScoped<IDataScopeService, DataScopeService>();
 builder.Services.AddSingleton(AiOptions.Load(builder.Configuration));
 builder.Services.AddScoped<AiRedactionService>();
@@ -638,7 +649,20 @@ var app = builder.Build();
 if (trustForwardedHeaders)
     app.UseForwardedHeaders();
 
-// Global exception handler — must be the outermost middleware.
+// WAVE 1 G3 — the correlation id is established FIRST, ahead of everything that can produce a
+// response on its own. It used to sit below UseCors/UseRateLimiter, which meant the two responses a
+// support engineer is most likely to be asked about carried no X-Correlation-ID at all: the rate
+// limiter's 429 ("why does it say too many requests?") and a rejected CORS preflight both short-
+// circuit the pipeline before the middleware would have run. It is placed above UseExceptionHandler
+// too, so the "Unhandled exception" log line written by the handler below is inside the correlation
+// log scope — a 500 is the other call support actually gets.
+//
+// Safe to sit outside the exception handler: this middleware cannot throw. Sanitize is a pure string
+// check, Items/SetTag/BeginScope do not throw, and Response.OnStarting only throws once the response
+// has started, which cannot have happened at the top of the pipeline.
+app.UseMiddleware<Zayra.Api.Infrastructure.Observability.CorrelationIdMiddleware>();
+
+// Global exception handler — the outermost middleware that produces a response.
 // Converts unhandled exceptions into structured JSON so clients always get a typed error body
 // instead of an empty 500. InvalidOperationException (the service-layer sentinel for bad state)
 // maps to 400; authorization failures map to 403; everything else is 500 with a traceId.
@@ -873,6 +897,30 @@ using (var scope = app.Services.CreateScope())
 
     logger.LogInformation("Demo data seeding: {State} (environment={Env})",
         seedDemoData ? "ENABLED" : "DISABLED", app.Environment.EnvironmentName);
+
+    // ── WAVE 1 B3: bootstrap the FIRST platform operator, independently of demo data ──────────────
+    // This used to run only inside the demo-data block, so a Production or dedicated deployment — where
+    // demo seeding is deliberately refused — could never get a platform operator account seeded at all.
+    // Creating an operator and fabricating demo tenants are different acts and are now gated separately.
+    //
+    // It is inert unless PLATFORM_ADMIN_PASSWORD is explicitly supplied, and it no-ops once ANY platform
+    // user exists, so it can only ever create the first. On Production it additionally requires
+    // PLATFORM_ADMIN_BOOTSTRAP=true, so a password left in the environment cannot silently mint an
+    // operator on a live system.
+    var platformBootstrapRequested =
+        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
+    var platformBootstrapPermitted =
+        !app.Environment.IsProduction()
+        || string.Equals(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_BOOTSTRAP"), "true",
+                         StringComparison.OrdinalIgnoreCase);
+
+    if (platformBootstrapRequested && platformBootstrapPermitted)
+        await TrySeedAsync("PlatformOwnerBootstrap", () => DemoDataSeeder.SeedPlatformOwnerOnlyAsync(
+            dbContext, scope.ServiceProvider.GetRequiredService<IPasswordHasher>(), logger), logger);
+    else if (platformBootstrapRequested)
+        logger.LogWarning(
+            "Platform owner bootstrap REQUESTED but REFUSED — this is a Production environment and "
+            + "PLATFORM_ADMIN_BOOTSTRAP is not 'true'. No platform operator was created.");
 
     if (seedDemoData)
         await TrySeedAsync("DemoDataSeeder", () => DemoDataSeeder.SeedAsync(
