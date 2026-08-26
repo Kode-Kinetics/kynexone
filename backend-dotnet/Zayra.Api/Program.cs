@@ -1,6 +1,7 @@
 using System.Text;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
+using Zayra.Api.Infrastructure.Observability;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -334,6 +335,11 @@ builder.Services.AddScoped<ILeaveService, LeaveService>();
 // WAVE 1 B1 — THE authoritative entity-scope resolver. Registered before every consumer so that
 // controllers, authorization helpers and ZayraDbContext all read one decision per request instead of
 // three independent ones that disagreed on strict mode and on the X-Company-Id switcher.
+// WAVE 1 G3 — provider-neutral OpenTelemetry. Registers instrumentation always, and an OTLP exporter
+// only when Observability:OtlpEndpoint names one: an exporter pointed at nothing retries forever on a
+// background thread and adds latency to the requests you are trying to observe.
+builder.Services.AddZayraObservability(builder.Configuration, builder.Environment);
+
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver,
                            Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver>();
 builder.Services.AddScoped<IDataScopeService, DataScopeService>();
@@ -618,6 +624,9 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+// WAVE 1 G3 — first in the pipeline that matters, so every log line and span of the request
+// carries the correlation id, including those written by authentication itself.
+app.UseMiddleware<Zayra.Api.Infrastructure.Observability.CorrelationIdMiddleware>();
 app.UseAuthentication();
 // Per-route audience segregation (defence-in-depth): reject platform-audience tokens on tenant
 // /api/* routes so a platform token can never exercise the cross-tenant read bypass on tenant data.
