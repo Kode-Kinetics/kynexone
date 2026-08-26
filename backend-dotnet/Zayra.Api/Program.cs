@@ -803,6 +803,30 @@ using (var scope = app.Services.CreateScope())
     logger.LogInformation("Demo data seeding: {State} (environment={Env})",
         seedDemoData ? "ENABLED" : "DISABLED", app.Environment.EnvironmentName);
 
+    // ── WAVE 1 B3: bootstrap the FIRST platform operator, independently of demo data ──────────────
+    // This used to run only inside the demo-data block, so a Production or dedicated deployment — where
+    // demo seeding is deliberately refused — could never get a platform operator account seeded at all.
+    // Creating an operator and fabricating demo tenants are different acts and are now gated separately.
+    //
+    // It is inert unless PLATFORM_ADMIN_PASSWORD is explicitly supplied, and it no-ops once ANY platform
+    // user exists, so it can only ever create the first. On Production it additionally requires
+    // PLATFORM_ADMIN_BOOTSTRAP=true, so a password left in the environment cannot silently mint an
+    // operator on a live system.
+    var platformBootstrapRequested =
+        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
+    var platformBootstrapPermitted =
+        !app.Environment.IsProduction()
+        || string.Equals(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_BOOTSTRAP"), "true",
+                         StringComparison.OrdinalIgnoreCase);
+
+    if (platformBootstrapRequested && platformBootstrapPermitted)
+        await TrySeedAsync("PlatformOwnerBootstrap", () => DemoDataSeeder.SeedPlatformOwnerOnlyAsync(
+            dbContext, scope.ServiceProvider.GetRequiredService<IPasswordHasher>(), logger), logger);
+    else if (platformBootstrapRequested)
+        logger.LogWarning(
+            "Platform owner bootstrap REQUESTED but REFUSED — this is a Production environment and "
+            + "PLATFORM_ADMIN_BOOTSTRAP is not 'true'. No platform operator was created.");
+
     if (seedDemoData)
         await TrySeedAsync("DemoDataSeeder", () => DemoDataSeeder.SeedAsync(
             dbContext,
