@@ -312,9 +312,35 @@ public class EmployeeManagementService : IEmployeeManagementService
             // serving iff the status we are leaving was an occupying one; if it was not, a completed
             // separation already closed their last period and repeating the command is a no-op.
             var wasServing = EstablishmentOccupancy.IsOccupyingStatus(oldStatus);
-            var periodAlreadyClosed = !wasServing && await _db.EmployeeOffboardings
-                .AnyAsync(o => o.TenantId == tenantId && o.EmployeeId == id && o.Status == "Completed",
-                          cancellationToken);
+
+            // oldStatus ALONE cannot answer "was a new period served?". Inactive is a product-supported
+            // bulk-deactivate target and is not occupying, so a rehired employee deactivated before being
+            // terminated read as "already closed" and got NO separation — the original D1 dead end,
+            // restored for exactly the population that had been rehired. Draft and Invited behave the same.
+            //
+            // The evidence is the status history: a period was served if the employee returned to an
+            // OCCUPYING status after the last completed separation's last working day. When they did not,
+            // this is the same closed period and repeating the command must stay a no-op.
+            var periodAlreadyClosed = false;
+            if (!wasServing)
+            {
+                var lastClosed = await _db.EmployeeOffboardings
+                    .Where(o => o.TenantId == tenantId && o.EmployeeId == id && o.Status == "Completed")
+                    .OrderByDescending(o => o.LastWorkingDay)
+                    .Select(o => (DateOnly?)o.LastWorkingDay)
+                    .FirstOrDefaultAsync(cancellationToken);
+                if (lastClosed is { } closedOn)
+                {
+                    var returnedToWork = await _db.EmployeeStatusHistories
+                        .AnyAsync(h => h.TenantId == tenantId && h.EmployeeId == id
+                                    && h.EffectiveDate >= closedOn
+                                    && (h.NewStatus == EmployeeStatuses.Active
+                                     || h.NewStatus == "Offboarded"
+                                     || h.NewStatus == "Suspended"),
+                                  cancellationToken);
+                    periodAlreadyClosed = !returnedToWork;
+                }
+            }
 
             if (liveSeparation is null && !periodAlreadyClosed)
             {
@@ -365,7 +391,14 @@ public class EmployeeManagementService : IEmployeeManagementService
         // termination create a separation of its own. Only separations with no accrued settlement are
         // closed; if money has been drafted against one, it is left alone for the settlement-cancel flow
         // (which posts the GL contra) rather than silently detached.
-        if (string.Equals(request.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
+        // REACTIVATION IS ANY RETURN TO OCCUPANCY, not only a return to Active. This was gated on
+        // request.Status == "Active" while occupancy is {Active, Offboarded, Suspended} — and the
+        // establishment guard below, in this same method, already charges a seat for any transition into
+        // occupancy and calls it "reactivate". The two disagreed, and the gap was reachable in two
+        // ordinary PATCHes: Terminated -> Suspended (branch skipped) -> Active (oldStatus now occupying,
+        // branch skipped again) left the old separation live, so the next termination reused it and
+        // settled the NEW period against the OLD last working day.
+        if (EstablishmentOccupancy.IsOccupyingStatus(request.Status)
             && !EstablishmentOccupancy.IsOccupyingStatus(oldStatus))
         {
             // Only an ACCRUED settlement is a posted liability. The earlier revision protected any
@@ -376,11 +409,18 @@ public class EmployeeManagementService : IEmployeeManagementService
             // the new period was then settled against the OLD last working day. The partial unique index
             // means no correct second separation could be made either. A Cancelled settlement pinned it
             // permanently, so the documented remedy — cancel the settlement — could never release it.
-            var accruedOffboardingIds = await _db.EmployeeFinalSettlements
+            // LIVE, not merely accrued. Narrowing this to Approved/Disbursing/Paid fixed the Draft-pins-
+            // forever defect but overshot: a Draft or PendingApproval settlement then had its offboarding
+            // cancelled out from under it — which OffboardingController.Cancel explicitly refuses
+            // (final_settlement_live). ApproveFinalSettlement has no offboarding precondition, so the
+            // approver would post an accrual against a separation the system says never happened, and the
+            // settlement run admits employees whose status is Active — disbursing an exit payment to
+            // somebody presently employed. FinalSettlementStatuses.IsLive is the domain's own predicate:
+            // anything not Cancelled. A Cancelled settlement no longer pins anything, which is the whole
+            // point of the original fix.
+            var liveSettlementOffboardingIds = await _db.EmployeeFinalSettlements
                 .Where(f => f.TenantId == tenantId && f.EmployeeId == id
-                         && (f.Status == FinalSettlementStatuses.Approved
-                          || f.Status == FinalSettlementStatuses.Disbursing
-                          || f.Status == FinalSettlementStatuses.Paid))
+                         && f.Status != FinalSettlementStatuses.Cancelled)
                 .Select(f => f.OffboardingId)
                 .ToListAsync(cancellationToken);
             var open = await _db.EmployeeOffboardings
@@ -393,13 +433,14 @@ public class EmployeeManagementService : IEmployeeManagementService
             // settle a NEW period against this one's last working day. It refuses instead: the operator
             // completes the offboarding (once paid) or cancels the settlement, and the GL contra posts
             // through the flow that owns it.
-            var accruedOpen = open.Where(o => accruedOffboardingIds.Contains(o.Id)).ToList();
-            if (accruedOpen.Count > 0)
+            var blockedOpen = open.Where(o => liveSettlementOffboardingIds.Contains(o.Id)).ToList();
+            if (blockedOpen.Count > 0)
                 throw new InvalidOperationException(
-                    "This employee has an open separation carrying an ACCRUED final settlement "
-                    + $"(offboarding {accruedOpen[0].Id}). Reactivating would leave the closed service "
-                    + "period settleable against a stale last working day. Complete the offboarding once "
-                    + "the settlement is paid, or cancel the settlement, then reactivate.");
+                    "This employee has an open separation with a live final settlement against it "
+                    + $"(offboarding {blockedOpen[0].Id}). Cancelling it here would strand that settlement, "
+                    + "and leaving it open would let the next termination settle a NEW service period "
+                    + "against this one's last working day. Complete the offboarding (once the settlement "
+                    + "is paid) or cancel the settlement first, then reactivate.");
 
             foreach (var stale in open)
             {

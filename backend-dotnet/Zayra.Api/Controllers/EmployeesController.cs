@@ -2422,6 +2422,10 @@ public class EmployeesController : ControllerBase
         catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        // PATCH /status reaches the identical separation insert whenever the target is an exit status, so
+        // two concurrent calls hit the same partial unique index. Without this it surfaced as a 500 — the
+        // defect the /terminate catch was added for, on the other door into the same code.
+        catch (DbUpdateException) { return Conflict(SeparationConflictBody); }
     }
 
     [HttpPost("{id:int}/documents")]
@@ -2501,7 +2505,6 @@ public class EmployeesController : ControllerBase
         catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-        catch (DbUpdateException) { return Conflict(SeparationConflictBody); }
     }
 
     [HttpPost("{id:int}/terminate")]

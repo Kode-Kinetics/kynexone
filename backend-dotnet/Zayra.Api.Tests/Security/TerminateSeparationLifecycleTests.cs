@@ -434,36 +434,83 @@ public class TerminateSeparationLifecycleTests
     }
 
     /// <summary>
-    /// CRITICAL 1 — a DRAFT settlement must not pin the prior period's separation live. Reviewed
-    /// independently by two SMEs. One /final-settlement preview is enough to persist a Draft.
+    /// CRITICAL 1, as finally resolved. A Draft settlement must not PIN the prior period open forever —
+    /// but round 2 overshot by cancelling the separation out from under it. The rule that holds both ends
+    /// is the domain's own: a LIVE settlement blocks the close and says so, and once it is cancelled the
+    /// period closes and the next termination gets its own separation. This drives the whole path.
     /// </summary>
     [Fact]
     public async Task ADraftSettlement_DoesNotPinThePriorSeparation_AndTheNewPeriodGetsItsOwn()
     {
-        await using var db = NewDb(Guid.NewGuid().ToString());
+        // Deliberately one context per REQUEST. A refused reactivation throws AFTER the status change and
+        // both history rows are staged, so the change-tracker is left dirty; in production the scoped
+        // DbContext dies with the request, but a test that kept using it would commit the refused
+        // transition on its next SaveChanges and quietly test the wrong thing.
+        var store = Guid.NewGuid().ToString();
         var tenantId = Guid.NewGuid();
-        var (svc, emp) = Seed(db, tenantId);
-
-        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
-        var first = await db.EmployeeOffboardings.SingleAsync();
-        db.EmployeeFinalSettlements.Add(SettlementFor(tenantId, emp.Id, first.Id, FinalSettlementStatuses.Draft));
-        await db.SaveChangesAsync();
-
-        // Rehire, then leave again a year later.
-        await svc.ActivateAsync(tenantId, emp.Id,
-            new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 1), "Rehired"), Ctx, default);
         var secondLwd = new DateOnly(2027, 3, 31);
-        await svc.TerminateAsync(tenantId, emp.Id,
-            new EmployeeStatusChangeRequest("Terminated", secondLwd, "Second exit", null), Ctx, default);
+        int empId;
+        Guid firstId;
 
-        var all = await db.EmployeeOffboardings.AsNoTracking().OrderBy(o => o.CreatedAtUtc).ToListAsync();
-        all.Should().HaveCount(2, "the draft settlement must not have blocked the new service period");
-        all.Single(o => o.Id == first.Id).Status.Should().Be("Cancelled");
+        await using (var db = NewDb(store))
+        {
+            var (svc, emp) = Seed(db, tenantId);
+            empId = emp.Id;
+            await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+            var first = await db.EmployeeOffboardings.SingleAsync();
+            firstId = first.Id;
+            db.EmployeeFinalSettlements.Add(
+                SettlementFor(tenantId, emp.Id, first.Id, FinalSettlementStatuses.Draft));
+            await db.SaveChangesAsync();
+        }
+
+        // While the draft is live the rehire is refused rather than stranding it.
+        await using (var db = NewDb(store))
+        {
+            var blocked = async () => await SvcFor(db).ActivateAsync(tenantId, empId,
+                new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 1), "Rehired"), Ctx, default);
+            await blocked.Should().ThrowAsync<InvalidOperationException>();
+        }
+
+        // Nothing of the refused call survived it.
+        await using (var db = NewDb(store))
+        {
+            (await db.Employees.SingleAsync(e => e.Id == empId)).Status.Should().Be("Terminated");
+            (await db.EmployeeOffboardings.SingleAsync()).Status.Should().Be("InProgress");
+        }
+
+        // Cancel the settlement — the remedy the message names. Round 2's defect was that a CANCELLED
+        // settlement pinned the separation permanently, so this path could never release it.
+        await using (var db = NewDb(store))
+        {
+            var settlement = await db.EmployeeFinalSettlements.SingleAsync();
+            settlement.Status = FinalSettlementStatuses.Cancelled;
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = NewDb(store))
+        {
+            var svc = SvcFor(db);
+            await svc.ActivateAsync(tenantId, empId,
+                new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 1), "Rehired"), Ctx, default);
+            await svc.TerminateAsync(tenantId, empId,
+                new EmployeeStatusChangeRequest("Terminated", secondLwd, "Second exit", null), Ctx, default);
+        }
+
+        await using var check = NewDb(store);
+        var all = await check.EmployeeOffboardings.AsNoTracking().OrderBy(o => o.CreatedAtUtc).ToListAsync();
+        all.Should().HaveCount(2, "once the settlement is cancelled the new service period gets its own");
+        all.Single(o => o.Id == firstId).Status.Should().Be("Cancelled");
         var live = all.Single(o => o.Status == "InProgress");
         live.LastWorkingDay.Should().Be(secondLwd, "the new period must be settled against ITS OWN last working day");
         // The original reason is evidence and must survive the supersede note.
-        all.Single(o => o.Id == first.Id).Reason.Should().Contain("Role eliminated");
+        all.Single(o => o.Id == firstId).Reason.Should().Contain("Role eliminated");
     }
+
+    /// <summary>The service over an existing store — a second "request" against the same data.</summary>
+    private static EmployeeManagementService SvcFor(ZayraDbContext db) =>
+        new(db, new Zayra.Api.Infrastructure.Audit.AuditService(db), new NullDocumentStorage(),
+            TestNotifications.For(db));
 
     /// <summary>
     /// The other half of the same rule: an ACCRUED settlement has a posted journal behind it, so this
@@ -486,7 +533,7 @@ public class TerminateSeparationLifecycleTests
             new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 1), "Rehired"), Ctx, default);
 
         (await act.Should().ThrowAsync<InvalidOperationException>())
-            .WithMessage("*ACCRUED final settlement*");
+            .WithMessage("*live final settlement*");
         (await db.EmployeeOffboardings.AsNoTracking().SingleAsync()).Status.Should().Be("InProgress");
     }
 
@@ -554,6 +601,150 @@ public class TerminateSeparationLifecycleTests
         var act = () => EmployeeManagementService.NormalizeSeparationType("Abscondment");
         act.Should().Throw<InvalidOperationException>();
         EmployeeManagementService.NormalizeSeparationType("Article80").Should().Be("Article80");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+    // D1 ROUND 3 — what review found in ROUND 2's own fix.
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Round 2 gated the period close on `request.Status == "Active"`, but occupancy is
+    /// {Active, Offboarded, Suspended} — and the establishment guard in the same method already charges a
+    /// seat for any transition into occupancy. Two ordinary PATCHes walked straight through the gap and
+    /// restored the stale-last-working-day underpayment.
+    /// </summary>
+    [Fact]
+    public async Task ReturningToWorkViaSuspended_StillClosesThePriorPeriod()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+
+        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+        var first = await db.EmployeeOffboardings.SingleAsync();
+
+        // Terminated -> Suspended -> Active: never once passing through the old `== Active` condition
+        // from a non-occupying status.
+        await svc.ChangeStatusAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Suspended", new DateOnly(2026, 9, 1), "Under review", null), Ctx, default);
+        await svc.ActivateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 15), "Reinstated"), Ctx, default);
+
+        (await db.EmployeeOffboardings.AsNoTracking().SingleAsync(o => o.Id == first.Id))
+            .Status.Should().Be("Cancelled", "returning to occupancy by ANY route ends the prior period");
+
+        var secondLwd = new DateOnly(2027, 3, 31);
+        await svc.TerminateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Terminated", secondLwd, "Second exit", null), Ctx, default);
+
+        var live = await db.EmployeeOffboardings.AsNoTracking().SingleAsync(o => o.Status == "InProgress");
+        live.LastWorkingDay.Should().Be(secondLwd, "the new period must be settled against ITS OWN date");
+    }
+
+    /// <summary>
+    /// Round 2 narrowed the block to ACCRUED settlements, which overshot: a Draft or PendingApproval
+    /// settlement had its offboarding cancelled out from under it — something OffboardingController.Cancel
+    /// explicitly refuses. The approver could then post an accrual against a separation the system says
+    /// never happened, for an employee who is by then Active.
+    /// </summary>
+    [Theory]
+    [InlineData("Draft")]
+    [InlineData("PendingApproval")]
+    [InlineData("Approved")]
+    [InlineData("Paid")]
+    public async Task ALiveSettlement_BlocksTheReactivation_RatherThanBeingStranded(string settlementStatus)
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+
+        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+        var first = await db.EmployeeOffboardings.SingleAsync();
+        db.EmployeeFinalSettlements.Add(SettlementFor(tenantId, emp.Id, first.Id, settlementStatus));
+        await db.SaveChangesAsync();
+
+        var act = async () => await svc.ActivateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 1), "Rehired"), Ctx, default);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        (await db.EmployeeOffboardings.AsNoTracking().SingleAsync()).Status
+            .Should().Be("InProgress", "the separation the settlement is attached to must survive");
+    }
+
+    /// <summary>A CANCELLED settlement must not block anything — that was the whole point of round 2.</summary>
+    [Fact]
+    public async Task ACancelledSettlement_DoesNotBlockTheReactivation()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+
+        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+        var first = await db.EmployeeOffboardings.SingleAsync();
+        db.EmployeeFinalSettlements.Add(SettlementFor(tenantId, emp.Id, first.Id, FinalSettlementStatuses.Cancelled));
+        await db.SaveChangesAsync();
+
+        await svc.ActivateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 1), "Rehired"), Ctx, default);
+
+        (await db.EmployeeOffboardings.AsNoTracking().SingleAsync()).Status.Should().Be("Cancelled");
+    }
+
+    /// <summary>
+    /// "Was a new period served?" cannot be read off oldStatus. Inactive is a product-supported bulk
+    /// deactivate target and is not occupying, so a REHIRED employee deactivated before being terminated
+    /// was misread as "period already closed" and got no separation at all — the original D1 dead end,
+    /// restored for precisely the population that had been rehired.
+    /// </summary>
+    [Fact]
+    public async Task ARehiredEmployee_DeactivatedBeforeTermination_StillGetsASeparation()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+
+        // Period 1 ran its full course and was completed.
+        db.EmployeeOffboardings.Add(Separation(tenantId, emp.Id, "Completed", new DateOnly(2022, 6, 30)));
+        emp.Status = "Archived";
+        await db.SaveChangesAsync();
+
+        // Rehired — this is what makes period 2 real, and what the status history records.
+        await svc.ActivateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Active", new DateOnly(2022, 9, 1), "Rehired"), Ctx, default);
+        // ...then bulk-deactivated to Inactive before the eventual exit.
+        await svc.ChangeStatusAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Inactive", new DateOnly(2026, 6, 1), "Bulk deactivate", null), Ctx, default);
+
+        var secondLwd = new DateOnly(2026, 8, 25);
+        await svc.TerminateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Terminated", secondLwd, "Second exit", null), Ctx, default);
+
+        var live = await db.EmployeeOffboardings.AsNoTracking()
+            .SingleOrDefaultAsync(o => o.Status == "InProgress");
+        live.Should().NotBeNull("the second service period must be settleable");
+        live!.LastWorkingDay.Should().Be(secondLwd);
+    }
+
+    /// <summary>
+    /// The counterpart: an employee who was NEVER rehired after a completed separation still must not get
+    /// a second one, however many times the remediation sweep runs over them.
+    /// </summary>
+    [Fact]
+    public async Task ACompletedLeaverNeverRehired_StaysClosed_EvenFromANonOccupyingStatus()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+
+        db.EmployeeOffboardings.Add(Separation(tenantId, emp.Id, "Completed", new DateOnly(2022, 6, 30)));
+        emp.Status = "Inactive";
+        await db.SaveChangesAsync();
+
+        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+
+        var all = await db.EmployeeOffboardings.AsNoTracking().ToListAsync();
+        all.Should().ContainSingle();
+        all[0].Status.Should().Be("Completed");
     }
 }
 
