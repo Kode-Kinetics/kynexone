@@ -5,10 +5,16 @@
 AI-Powered HRM and Workforce Operating System.
 
 ## Stack
-- Frontend: React + Vite + TypeScript + Tailwind CSS
-- Enterprise API: .NET 8 Web API + EF Core
-- AI/Automation Microservice: Node.js + Express
-- Database: MySQL
+- Frontend: Next.js (App Router) + TypeScript + Tailwind CSS — deployed on Vercel
+- Enterprise API: .NET 8 Web API + EF Core — deployed on Render
+- Database: PostgreSQL (Neon)
+- Document storage: S3-compatible object storage (Backblaze B2)
+
+> Internal note: the .NET assemblies and namespaces are still `Zayra.*`, and the Render hostname
+> is still `zayra-ai-workforce.onrender.com`. Both predate the KynexOne rebrand and are load-bearing
+> — the namespace appears in 713 files including every migration's `[DbContext]` attribute, and the
+> hostname is fixed at Render service creation and cannot follow a rename. Neither is customer
+> visible; do not "tidy" them without a planned migration.
 
 ## Run Frontend
 cd frontend
