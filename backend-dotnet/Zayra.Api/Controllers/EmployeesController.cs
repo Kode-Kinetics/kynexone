@@ -2501,15 +2501,35 @@ public class EmployeesController : ControllerBase
         catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (DbUpdateException) { return Conflict(SeparationConflictBody); }
     }
 
     [HttpPost("{id:int}/terminate")]
     [HasPermission("employees.approve")]
     public async Task<ActionResult<EmployeeDetailDto>> Terminate(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
-        var employee = await employeeManagement.TerminateAsync(RequireTenant(), id, request, Context(), cancellationToken);
-        return employee is null ? NotFound() : Ok(employee);
+        try
+        {
+            var employee = await employeeManagement.TerminateAsync(RequireTenant(), id, request, Context(), cancellationToken);
+            return employee is null ? NotFound() : Ok(employee);
+        }
+        catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        // The closed separation-type vocabulary and the joining-date bound both refuse deliberately.
+        // Without this they left the service as 500 internal_error, which reads as a product fault
+        // rather than a rejected command.
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        // D1: two concurrent terminates both read "no live separation" and both insert; the partial
+        // unique index refuses the loser. That is the constraint doing its job, and the winner's
+        // termination did happen — so this is a 409 on an already-open separation, not a 500.
+        catch (DbUpdateException) { return Conflict(SeparationConflictBody); }
     }
+
+    private static object SeparationConflictBody => new
+    {
+        error = "separation_already_open",
+        message = "A separation for this employee was opened concurrently by another request. "
+                + "That termination succeeded; re-read the employee rather than retrying.",
+    };
 
     /// <summary>Live readiness for one employee (§8.3): the itemized activation checklist + policy
     /// provenance + disclaimer. Server-computed — the single source of truth for the badge, the

@@ -325,6 +325,236 @@ public class TerminateSeparationLifecycleTests
         ctrl.ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = httpCtx };
         return ctrl;
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+    // D1 REVIEW ROUND 2 — the service-period boundary.
+    //
+    // Independent HR-lifecycle and database reviewers, working separately, found the SAME Critical:
+    // the reactivation carve-out protected an offboarding named by ANY settlement row, so a single
+    // /final-settlement PREVIEW (which persists a Draft) pinned the prior period's separation live
+    // forever. The next termination's live lookup then found it, created nothing, and the NEW service
+    // period was settled against the OLD last working day — and the partial unique index meant no
+    // correct second separation could be made either. These tests pin the corrected boundary.
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>A named store so a SECOND context can read what the first actually committed.</summary>
+    private static ZayraDbContext NewDb(string store) =>
+        new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options);
+
+    private static EmployeeOffboarding Separation(Guid tenantId, int employeeId, string status, DateOnly lwd) =>
+        new()
+        {
+            TenantId = tenantId, EmployeeId = employeeId, EmployeeName = "Ahmed Al-Rashidi",
+            EmployeeCode = "E-100", SeparationType = "Termination", Reason = "First exit",
+            NoticeDate = lwd, LastWorkingDay = lwd, Status = status, CreatedAtUtc = DateTime.UtcNow.AddYears(-2),
+        };
+
+    private static EmployeeFinalSettlement SettlementFor(Guid tenantId, int employeeId, Guid offboardingId, string status) =>
+        new()
+        {
+            TenantId = tenantId, EmployeeId = employeeId, EmployeeCode = "E-100",
+            EmployeeName = "Ahmed Al-Rashidi", OffboardingId = offboardingId, Status = status,
+        };
+
+    /// <summary>
+    /// C1 — the atomicity requirement, driven through the REAL command rather than asserted about a
+    /// successful one. NormalizeSeparationType throws AFTER the status and both history rows are
+    /// staged, which is precisely the "status changed, separation missing" window. Nothing may survive.
+    /// </summary>
+    [Fact]
+    public async Task ARefusedSeparationType_CommitsNothing_NotEvenTheStatusChange()
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        int empId;
+
+        await using (var db = NewDb(store))
+        {
+            var (svc, emp) = Seed(db, tenantId);
+            empId = emp.Id;
+            // "Article 80" with a space is NOT in the closed vocabulary — it would otherwise have been
+            // passed through to a FULL Art. 84 award.
+            var act = async () => await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd("Article 80"), Ctx, default);
+            await act.Should().ThrowAsync<InvalidOperationException>();
+        }
+
+        // A genuinely fresh context over the same store — not AsNoTracking on the one that failed.
+        await using var fresh = NewDb(store);
+        (await fresh.Employees.SingleAsync(e => e.Id == empId)).Status.Should().Be(EmployeeStatuses.Active);
+        (await fresh.EmployeeOffboardings.CountAsync()).Should().Be(0);
+        (await fresh.EmployeeStatusHistories.CountAsync()).Should().Be(0);
+        (await fresh.EmployeeHistories.CountAsync()).Should().Be(0);
+    }
+
+    /// <summary>
+    /// CRITICAL 2 — a completed, settled service period is not reopened by repeating the command.
+    /// The commit's own remediation advice is to re-run terminate across the archive; doing that over
+    /// a properly offboarded leaver used to mint a brand-new separation dated today, and
+    /// /final-settlement measures service from JoiningDate with its settle-twice guard keyed on
+    /// OffboardingId — so it would accrue the ENTIRE tenure a second time.
+    /// </summary>
+    [Fact]
+    public async Task ReTerminatingACompletedLeaver_CreatesNoSecondSeparation()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+
+        emp.Status = "Archived";
+        db.EmployeeOffboardings.Add(Separation(tenantId, emp.Id, "Completed", new DateOnly(2022, 6, 30)));
+        await db.SaveChangesAsync();
+
+        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+
+        var all = await db.EmployeeOffboardings.AsNoTracking().ToListAsync();
+        all.Should().ContainSingle("a closed and settled period must not be reopened by re-running terminate");
+        all[0].Status.Should().Be("Completed");
+        all[0].LastWorkingDay.Should().Be(new DateOnly(2022, 6, 30));
+    }
+
+    /// <summary>
+    /// The backlog case R2 exists for is NOT caught by that guard: an employee already sitting at
+    /// Terminated with NO separation at all still gets one, or the migrated-leaver population stays
+    /// permanently unsettleable.
+    /// </summary>
+    [Fact]
+    public async Task ReTerminatingATerminatedEmployeeWithNoSeparation_StillRemediatesThem()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+        emp.Status = "Terminated";
+        await db.SaveChangesAsync();
+
+        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+
+        var all = await db.EmployeeOffboardings.AsNoTracking().ToListAsync();
+        all.Should().ContainSingle();
+        all[0].LastWorkingDay.Should().Be(Lwd);
+    }
+
+    /// <summary>
+    /// CRITICAL 1 — a DRAFT settlement must not pin the prior period's separation live. Reviewed
+    /// independently by two SMEs. One /final-settlement preview is enough to persist a Draft.
+    /// </summary>
+    [Fact]
+    public async Task ADraftSettlement_DoesNotPinThePriorSeparation_AndTheNewPeriodGetsItsOwn()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+
+        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+        var first = await db.EmployeeOffboardings.SingleAsync();
+        db.EmployeeFinalSettlements.Add(SettlementFor(tenantId, emp.Id, first.Id, FinalSettlementStatuses.Draft));
+        await db.SaveChangesAsync();
+
+        // Rehire, then leave again a year later.
+        await svc.ActivateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 1), "Rehired"), Ctx, default);
+        var secondLwd = new DateOnly(2027, 3, 31);
+        await svc.TerminateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Terminated", secondLwd, "Second exit", null), Ctx, default);
+
+        var all = await db.EmployeeOffboardings.AsNoTracking().OrderBy(o => o.CreatedAtUtc).ToListAsync();
+        all.Should().HaveCount(2, "the draft settlement must not have blocked the new service period");
+        all.Single(o => o.Id == first.Id).Status.Should().Be("Cancelled");
+        var live = all.Single(o => o.Status == "InProgress");
+        live.LastWorkingDay.Should().Be(secondLwd, "the new period must be settled against ITS OWN last working day");
+        // The original reason is evidence and must survive the supersede note.
+        all.Single(o => o.Id == first.Id).Reason.Should().Contain("Role eliminated");
+    }
+
+    /// <summary>
+    /// The other half of the same rule: an ACCRUED settlement has a posted journal behind it, so this
+    /// code may neither cancel it silently nor leave it live for the next termination to reuse. It
+    /// refuses the reactivation instead, and says what to do.
+    /// </summary>
+    [Fact]
+    public async Task AnAccruedSettlement_RefusesTheReactivationRatherThanSettlingTwice()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+
+        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+        var first = await db.EmployeeOffboardings.SingleAsync();
+        db.EmployeeFinalSettlements.Add(SettlementFor(tenantId, emp.Id, first.Id, FinalSettlementStatuses.Approved));
+        await db.SaveChangesAsync();
+
+        var act = async () => await svc.ActivateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 1), "Rehired"), Ctx, default);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*ACCRUED final settlement*");
+        (await db.EmployeeOffboardings.AsNoTracking().SingleAsync()).Status.Should().Be("InProgress");
+    }
+
+    /// <summary>
+    /// The effective date becomes the last working day and drives the award, so a date before the
+    /// employee ever joined is refused — including the 0001-01-01 an omitted [Required] DateOnly binds
+    /// to, which would otherwise mint a separation that /final-settlement rejects as not_a_leaver while
+    /// the live lookup makes the corrected retry a no-op.
+    /// </summary>
+    [Theory]
+    [InlineData("0001-01-01")]
+    [InlineData("2019-06-30")]
+    public async Task ALastWorkingDayBeforeJoining_IsRefused_AndPersistsNothing(string effective)
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+
+        var act = async () => await svc.TerminateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Terminated", DateOnly.Parse(effective), "Bad date", null), Ctx, default);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        (await db.EmployeeOffboardings.CountAsync()).Should().Be(0);
+    }
+
+    /// <summary>
+    /// The brief requires the payroll-footprint change to be atomic with the status transition. It used
+    /// to run in a LATER transaction, so a cancelled request left a Terminated employee still
+    /// WPS-export-eligible. It is now staged into the same SaveChanges.
+    /// </summary>
+    [Fact]
+    public async Task Terminate_DeactivatesTheWpsFootprint_InTheSameCommitAsTheStatusChange()
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        int empId;
+
+        await using (var db = NewDb(store))
+        {
+            var (svc, emp) = Seed(db, tenantId);
+            empId = emp.Id;
+            db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
+            {
+                TenantId = tenantId, EmployeeId = emp.Id, WpsEligible = true,
+            });
+            await db.SaveChangesAsync();
+            await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+        }
+
+        await using var fresh = NewDb(store);
+        (await fresh.EmployeePayrollProfiles.SingleAsync(p => p.EmployeeId == empId))
+            .WpsEligible.Should().BeFalse();
+        (await fresh.Employees.SingleAsync(e => e.Id == empId)).Status.Should().Be("Terminated");
+        (await fresh.EmployeeOffboardings.CountAsync()).Should().Be(1);
+    }
+
+    /// <summary>
+    /// The vocabulary must not admit a value that pays a full award where the doc-comment's own
+    /// rationale says the statute forfeits it. NormalizeTerminationReason recognises only Resignation
+    /// and Article80; "Abscondment" fell through to a FULL Art. 84 award.
+    /// </summary>
+    [Fact]
+    public void TheSeparationVocabulary_DoesNotAdmitAValueThatSilentlyPaysAFullAward()
+    {
+        var act = () => EmployeeManagementService.NormalizeSeparationType("Abscondment");
+        act.Should().Throw<InvalidOperationException>();
+        EmployeeManagementService.NormalizeSeparationType("Article80").Should().Be("Article80");
+    }
 }
 
 // ── File-scoped doubles (isolated from other test files) ─────────────────────

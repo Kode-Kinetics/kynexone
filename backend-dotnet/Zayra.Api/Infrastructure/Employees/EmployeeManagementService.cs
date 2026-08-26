@@ -272,6 +272,11 @@ public class EmployeeManagementService : IEmployeeManagementService
         // change, the status history, the lifecycle history and the separation all commit in ONE
         // transaction — a failure cannot leave a Terminated employee with no separation.
         var separationCreated = false;
+        // Normalised ONCE, here, so the row we persist and the audit evidence we write are the same
+        // string. Serialising request.SeparationType instead logged "ARTICLE80" against a stored
+        // "Article80" — the evidence line for a gratuity-determining fact not matching the fact.
+        var separationType = NormalizeSeparationType(request.SeparationType);
+        var cancelledSeparationIds = new List<Guid>();
         // Deliberately NOT conditioned on oldStatus. An earlier revision also required the PREVIOUS
         // status to be non-exit, which quietly excluded the exact population this fix exists for:
         // anyone already sitting at Terminated/Archived/Exited with no separation — every employee
@@ -293,8 +298,37 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .OrderByDescending(o => o.CreatedAtUtc)
                 .FirstOrDefaultAsync(cancellationToken);
 
-            if (liveSeparation is null)
+            // ── A CLOSED SERVICE PERIOD IS NOT REOPENED BY REPEATING THE COMMAND ───────────────────
+            // Dropping the oldStatus condition (R2) let the archive be remediated, but it also made the
+            // command unable to tell "Archived with NO separation" (the migrated-leaver backlog it exists
+            // for) from "Archived with a COMPLETED, PAID separation" — the normal end state of every
+            // properly offboarded leaver. A remediation sweep over the second group minted a brand-new
+            // separation dated today, and /final-settlement measures service from JoiningDate with its
+            // settle-twice guard keyed on OffboardingId — so it accrued the ENTIRE tenure a second time
+            // over a period already paid, and dropped the ex-employee into the next live payroll run as a
+            // leaver owed a prorated wage.
+            //
+            // A new separation is owed only if a new service period was actually served. The employee was
+            // serving iff the status we are leaving was an occupying one; if it was not, a completed
+            // separation already closed their last period and repeating the command is a no-op.
+            var wasServing = EstablishmentOccupancy.IsOccupyingStatus(oldStatus);
+            var periodAlreadyClosed = !wasServing && await _db.EmployeeOffboardings
+                .AnyAsync(o => o.TenantId == tenantId && o.EmployeeId == id && o.Status == "Completed",
+                          cancellationToken);
+
+            if (liveSeparation is null && !periodAlreadyClosed)
             {
+                // The effective date becomes the last working day, which drives service length and the
+                // award. A date before the employee ever joined is not a shorter tenure, it is nonsense —
+                // and an omitted [Required] DateOnly binds to 0001-01-01, which would mint a separation
+                // that /final-settlement rejects as not_a_leaver while the live lookup makes the corrected
+                // retry a no-op. Refused rather than persisted.
+                if (request.EffectiveDate < DateOnly.FromDateTime(employee.JoiningDate))
+                    throw new InvalidOperationException(
+                        $"The effective date {request.EffectiveDate:yyyy-MM-dd} precedes this employee's "
+                        + $"joining date {employee.JoiningDate:yyyy-MM-dd}. It becomes the last working day "
+                        + "and decides the end-of-service award, so it is refused rather than persisted.");
+
                 _db.EmployeeOffboardings.Add(new EmployeeOffboarding
                 {
                     TenantId = tenantId,
@@ -306,7 +340,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                     // Derived from the COMMAND, which is the only authoritative source here: the caller
                     // stated the effective date, so that is the last working day. A direct termination is
                     // immediate by construction — there is no notice being served.
-                    SeparationType = NormalizeSeparationType(request.SeparationType),
+                    SeparationType = separationType,
                     Reason = request.Reason,
                     NoticeDate = request.EffectiveDate,
                     NoticePeriodDays = 0,
@@ -334,27 +368,73 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (string.Equals(request.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
             && !EstablishmentOccupancy.IsOccupyingStatus(oldStatus))
         {
-            var settledOffboardingIds = await _db.EmployeeFinalSettlements
-                .Where(f => f.TenantId == tenantId && f.EmployeeId == id)
+            // Only an ACCRUED settlement is a posted liability. The earlier revision protected any
+            // offboarding named by ANY settlement row — Draft, PendingApproval, even Cancelled — which
+            // reinstated the exact underpayment this branch exists to prevent: a Draft settlement (one
+            // /final-settlement preview is enough to persist one) pinned the prior period's offboarding
+            // InProgress forever, the next termination's live lookup found it and created nothing, and
+            // the new period was then settled against the OLD last working day. The partial unique index
+            // means no correct second separation could be made either. A Cancelled settlement pinned it
+            // permanently, so the documented remedy — cancel the settlement — could never release it.
+            var accruedOffboardingIds = await _db.EmployeeFinalSettlements
+                .Where(f => f.TenantId == tenantId && f.EmployeeId == id
+                         && (f.Status == FinalSettlementStatuses.Approved
+                          || f.Status == FinalSettlementStatuses.Disbursing
+                          || f.Status == FinalSettlementStatuses.Paid))
                 .Select(f => f.OffboardingId)
                 .ToListAsync(cancellationToken);
-            var stale = await _db.EmployeeOffboardings
+            var open = await _db.EmployeeOffboardings
                 .Where(o => o.TenantId == tenantId && o.EmployeeId == id
-                         && o.Status != "Cancelled" && o.Status != "Completed"
-                         && !settledOffboardingIds.Contains(o.Id))
+                         && o.Status != "Cancelled" && o.Status != "Completed")
                 .ToListAsync(cancellationToken);
-            foreach (var open in stale)
+
+            // An accrued settlement has a journal behind it, so this code may not quietly cancel the
+            // record it was raised against. Nor may it leave it live, because the next termination would
+            // settle a NEW period against this one's last working day. It refuses instead: the operator
+            // completes the offboarding (once paid) or cancels the settlement, and the GL contra posts
+            // through the flow that owns it.
+            var accruedOpen = open.Where(o => accruedOffboardingIds.Contains(o.Id)).ToList();
+            if (accruedOpen.Count > 0)
+                throw new InvalidOperationException(
+                    "This employee has an open separation carrying an ACCRUED final settlement "
+                    + $"(offboarding {accruedOpen[0].Id}). Reactivating would leave the closed service "
+                    + "period settleable against a stale last working day. Complete the offboarding once "
+                    + "the settlement is paid, or cancel the settlement, then reactivate.");
+
+            foreach (var stale in open)
             {
-                open.Status = "Cancelled";
-                open.Reason = $"Superseded: employee reactivated on {request.EffectiveDate:yyyy-MM-dd}. "
-                            + "A new service period starts here and will get its own separation.";
-                open.UpdatedAtUtc = DateTime.UtcNow;
+                stale.Status = "Cancelled";
+                // APPEND. The original reason is evidence for a record that drove a payable; the earlier
+                // revision overwrote it, destroying why the person left.
+                stale.Reason = string.IsNullOrWhiteSpace(stale.Reason)
+                    ? $"Superseded: employee reactivated on {request.EffectiveDate:yyyy-MM-dd}."
+                    : $"{stale.Reason} | Superseded: employee reactivated on {request.EffectiveDate:yyyy-MM-dd}. "
+                      + "A new service period starts here and will get its own separation.";
+                stale.UpdatedAtUtc = DateTime.UtcNow;
+                cancelledSeparationIds.Add(stale.Id);
             }
         }
 
         // Stamp ActivatedAtUtc on the first successful activation (the gate above already passed).
         if (string.Equals(request.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase) && employee.ActivatedAtUtc is null)
             employee.ActivatedAtUtc = DateTime.UtcNow;
+        // ── EXIT CASCADE — STAGED INTO THIS TRANSACTION, NOT A LATER ONE ────────────────────────────
+        // Deactivate the WPS footprint so an ex-employee cannot be swept into a SIF export. This used to
+        // run AFTER the status transition had already committed, in a transaction of its own: a client
+        // disconnect in between (the cancellation token is threaded all the way down, so no crash is
+        // needed) left a Terminated employee with a live separation and WpsEligible still true, and
+        // WpsSifValidator's profile flag is the only gate on that path. Staged here, it commits with the
+        // status change or not at all — which is what the invariant claims.
+        //
+        // The salary STRUCTURE is intentionally left active: CalculateEosb / FinalSettlement read the
+        // active salary row for a Terminated (still non-deleted) employee, so deactivating it now would
+        // corrupt end-of-service money. It is deactivated instead where those calculators can no longer
+        // read it (soft-delete; offboarding-complete once the settlement is done). Idempotent.
+        var footprintStaged = (Profiles: 0, SalaryStructures: 0);
+        if (ExitEmployeeStatuses.PayrollDeactivation.Contains(request.Status, StringComparer.OrdinalIgnoreCase))
+            footprintStaged = await StagePayrollFootprintDeactivationAsync(
+                _db, tenantId, id, deactivateSalaryStructure: false, context, cancellationToken);
+
         // ESTABLISHMENT GUARD (path "reactivate"): only a transition INTO an occupying status
         // (Draft/Invited/Terminated/… → Active, activation, rehire) consumes a seat and is
         // enforced. Occupying→occupying (e.g. Suspended→Active reinstatement, Active→Offboarded
@@ -380,20 +460,22 @@ public class EmployeeManagementService : IEmployeeManagementService
                 oldStatus, request.Status, request.Reason,
                 // D1: the separation is part of the evidence for this transition, not a side effect.
                 separationCreated,
-                separationType = separationCreated ? (string.IsNullOrWhiteSpace(request.SeparationType) ? "Termination" : request.SeparationType.Trim()) : null,
+                separationType = separationCreated ? separationType : null,
                 lastWorkingDay = separationCreated ? request.EffectiveDate : (DateOnly?)null,
+                // Cancelling a separation decides which record /final-settlement picks, so it is
+                // evidence in its own right — it used to happen silently.
+                cancelledSeparationIds = cancelledSeparationIds.Count == 0 ? null : cancelledSeparationIds,
             }), cancellationToken);
 
-        // EXIT CASCADE (terminate / direct status change into a terminal state): deactivate the
-        // WPS footprint so an ex-employee cannot be swept into a SIF export. The salary STRUCTURE is
-        // intentionally left active here — CalculateEosb / FinalSettlement (PayrollController) read the
-        // active salary row and are computed for a Terminated (still non-deleted) employee, so
-        // deactivating it now would corrupt end-of-service / final-settlement money. It is deactivated
-        // instead at the points where those calculators can no longer read it (soft-delete;
-        // offboarding-complete once final settlement is done). Idempotent — safe to re-run.
-        if (ExitEmployeeStatuses.PayrollDeactivation.Contains(request.Status, StringComparer.OrdinalIgnoreCase))
-            await DeactivatePayrollFootprintAsync(_db, _audit, tenantId, id,
-                $"status:{oldStatus}->{request.Status}", deactivateSalaryStructure: false, context, cancellationToken);
+        // The cascade itself already committed with the status change above; this is only its evidence.
+        if (footprintStaged.Profiles > 0 || footprintStaged.SalaryStructures > 0)
+            await _audit.WriteAsync("employee.payroll_footprint_deactivated", "Employee", id.ToString(), context,
+                JsonSerializer.Serialize(new
+                {
+                    reason = $"status:{oldStatus}->{request.Status}",
+                    salaryDeactivated = footprintStaged.SalaryStructures,
+                    profileDeactivated = footprintStaged.Profiles,
+                }), cancellationToken);
 
         return await GetAsync(tenantId, id, true, context, cancellationToken);
     }
@@ -411,6 +493,28 @@ public class EmployeeManagementService : IEmployeeManagementService
     public static async Task<int> DeactivatePayrollFootprintAsync(
         ZayraDbContext db, IAuditService audit, Guid tenantId, int employeeId,
         string reason, bool deactivateSalaryStructure, RequestContext context, CancellationToken cancellationToken)
+    {
+        var (profileDeactivated, salaryDeactivated) = await StagePayrollFootprintDeactivationAsync(
+            db, tenantId, employeeId, deactivateSalaryStructure, context, cancellationToken);
+        if (profileDeactivated > 0 || salaryDeactivated > 0)
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            await audit.WriteAsync("employee.payroll_footprint_deactivated", "Employee", employeeId.ToString(),
+                context, JsonSerializer.Serialize(new { reason, salaryDeactivated, profileDeactivated }), cancellationToken);
+        }
+        return profileDeactivated + salaryDeactivated;
+    }
+
+    /// <summary>
+    /// The same cascade, STAGED ONLY — no <c>SaveChanges</c>, no audit. A caller that is already
+    /// building a transaction (the status transition) stages this into it, so the footprint commits
+    /// with the status change instead of in a transaction of its own that a cancelled request can
+    /// simply never reach. Returns (profiles, salaryStructures) touched so the caller can decide
+    /// whether the audit line is warranted.
+    /// </summary>
+    public static async Task<(int Profiles, int SalaryStructures)> StagePayrollFootprintDeactivationAsync(
+        ZayraDbContext db, Guid tenantId, int employeeId,
+        bool deactivateSalaryStructure, RequestContext context, CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
 
@@ -444,15 +548,7 @@ public class EmployeeManagementService : IEmployeeManagementService
             salaryDeactivated = structures.Count;
         }
 
-        var profileDeactivated = profiles.Count;
-        if (profileDeactivated > 0 || salaryDeactivated > 0)
-        {
-            await db.SaveChangesAsync(cancellationToken);
-            await audit.WriteAsync("employee.payroll_footprint_deactivated", "Employee", employeeId.ToString(),
-                context, JsonSerializer.Serialize(new { reason, salaryDeactivated, profileDeactivated }), cancellationToken);
-        }
-
-        return profileDeactivated + salaryDeactivated;
+        return (profiles.Count, salaryDeactivated);
     }
 
 
@@ -558,7 +654,11 @@ public class EmployeeManagementService : IEmployeeManagementService
     private static readonly string[] AllowedSeparationTypes =
     [
         "Termination", "Resignation", "Retirement", "EndOfContract", "Redundancy",
-        "ProbationFailure", "Article80", "Death", "Abscondment",
+        // NOTE: no "Abscondment". PayrollController.NormalizeTerminationReason recognises only
+        // Resignation and Article80; anything else falls through to a FULL Art. 84 award. Admitting
+        // "Abscondment" would have paid a full gratuity in exactly the case this doc-comment cites as
+        // the reason the vocabulary is closed. An absconding case is recorded as "Article80".
+        "ProbationFailure", "Article80", "Death",
     ];
 
     internal static string NormalizeSeparationType(string? requested)
