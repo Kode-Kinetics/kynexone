@@ -34,7 +34,12 @@ export default defineConfig({
       name: 'chromium',
       use: { ...devices['Desktop Chrome'], storageState: 'e2e/.auth/platform.json' },
       dependencies: ['setup'],
-      testIgnore: [/auth\.setup\.ts/, /fixture\.teardown\.ts/, /pilot-critical\.spec\.ts/],
+      // A project-level testIgnore REPLACES the top-level one rather than merging with it, so the
+      // root `testIgnore: /security-gate\//` above stops applying the moment this array exists.
+      // Without repeating it here the browser-pilot lane collects the 14 security-gate specs,
+      // which depend on fixtures only the dedicated chrome-security-gate job provisions, and they
+      // fail in milliseconds. Keep these two lists in sync.
+      testIgnore: [/auth\.setup\.ts/, /fixture\.teardown\.ts/, /pilot-critical\.spec\.ts/, /security-gate\//],
     },
     {
       name: 'cleanup',
