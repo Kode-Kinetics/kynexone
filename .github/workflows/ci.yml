@@ -300,6 +300,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [backend-tests, frontend-typecheck, frontend-build, schema-gates, secret-scan, dependency-scan]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # WAVE 1 A4 — this job writes to the PRODUCTION DATABASE. It now runs only inside the protected
+    # `production` GitHub environment, which requires a named reviewer's approval and is restricted to
+    # protected branches. Before this, a merge to main migrated production with no human in the loop.
+    # The production connection string is scoped to this environment, so no other job can reach it.
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
@@ -346,6 +351,19 @@ jobs:
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${{ github.sha }}"
           echo "Pushed $IMAGE:${{ github.sha }} and :latest"
+          # Immutable digest, recorded so a rollback names an exact artifact rather than a tag that
+          # has since moved. Render currently builds from the branch and does NOT consume this image
+          # — see docs/REPOSITORY_AND_DEPLOYMENT_GOVERNANCE.md, "Known gap: image is built, not deployed".
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:${{ github.sha }}" 2>/dev/null || echo "unknown")
+          echo "Image digest: $digest"
+          {
+            echo "### Image"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tag | \`$IMAGE:${{ github.sha }}\` |"
+            echo "| Digest | \`$digest\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Deploy: trigger Render redeploy after tests + security gates + migrations pass (main only) ──
   deploy-backend:
@@ -353,11 +371,39 @@ jobs:
     runs-on: ubuntu-latest
     needs: [backend-tests, frontend-typecheck, secret-scan, dependency-scan, migrate-backend]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # WAVE 1 A4 — protected environment: production deploys require explicit approval.
+    environment: production
     steps:
+      # Rollback anchor. Captured BEFORE the new release goes out, because after it lands the
+      # question "what was running a minute ago?" has no answer anywhere else — Render builds from
+      # the branch, so there is no image digest to roll back to on its side.
+      - name: Record currently-deployed commit (rollback anchor)
+        env:
+          BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+        run: |
+          set -uo pipefail
+          if [ -z "${BASE_URL:-}" ]; then
+            echo "::error::vars.PRODUCTION_BASE_URL is not set — deploy verification is impossible."
+            exit 1
+          fi
+          prev=$(curl -sf -m 60 "$BASE_URL/health/live" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("commit","unknown"))' 2>/dev/null || echo "unreachable")
+          echo "PREVIOUS_COMMIT=$prev" >> "$GITHUB_ENV"
+          echo "Previously deployed commit: $prev"
+          {
+            echo "### Deployment"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Previous commit (rollback target) | \`$prev\` |"
+            echo "| New commit | \`${{ github.sha }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Trigger Render deploy hook
         run: |
           if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
-            curl -sf -X POST "$RENDER_DEPLOY_HOOK_URL"
+            # -sf so an HTTP error is a non-zero exit rather than a body we ignore. The response
+            # body carries a deploy id but no status; the verify step below is what proves anything.
+            curl -sf -X POST "$RENDER_DEPLOY_HOOK_URL" >/dev/null
             echo "Render deploy triggered."
           else
             # autoDeploy is OFF (render.yaml), so a missing hook means NOTHING deploys.
@@ -367,3 +413,36 @@ jobs:
           fi
         env:
           RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
+      # THE FIX FOR THE REAL DEFECT. Until now this job POSTed a webhook and exited 0 — so a green
+      # "Deploy Backend" meant only "Render accepted the request", never "the new code is serving
+      # traffic". A failed build, a crash loop, or a deploy that never started all reported success.
+      # Wave 1 A1 caught exactly this: main was green while production still ran older code.
+      - name: Verify the deployed commit is actually serving traffic
+        env:
+          BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          EXPECTED: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          deadline=$(( $(date +%s) + 900 ))   # 15 min: a Render free-tier Docker build is slow
+          attempt=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            attempt=$((attempt + 1))
+            live=$(curl -sf -m 30 "$BASE_URL/health/live" 2>/dev/null || echo '{}')
+            got=$(echo "$live" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("commit",""))' 2>/dev/null || echo "")
+            if [ "$got" = "$EXPECTED" ]; then
+              echo "Deployed commit verified: $got (attempt $attempt)"
+              ready=$(curl -s -m 60 -o /tmp/ready.json -w '%{http_code}' "$BASE_URL/health/ready" || echo 000)
+              if [ "$ready" != "200" ]; then
+                echo "::error::Commit $EXPECTED is live but /health/ready returned $ready — not serving."
+                python3 -c 'import json;d=json.load(open("/tmp/ready.json"));print("pendingMigrations:",d.get("pendingMigrations"))' 2>/dev/null || true
+                exit 1
+              fi
+              echo "/health/ready is 200."
+              exit 0
+            fi
+            echo "attempt $attempt: live commit='$got' expected='$EXPECTED' — waiting"
+            sleep 20
+          done
+          echo "::error::Timed out after 15m. Production is NOT running $EXPECTED (last seen: '${got:-unreachable}'). Previous commit was ${PREVIOUS_COMMIT:-unknown}. See docs/DEPLOY_ROLLBACK_RUNBOOK.md."
+          exit 1
