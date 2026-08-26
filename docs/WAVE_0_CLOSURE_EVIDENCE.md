@@ -463,3 +463,61 @@ left untouched. Whoever commits the in-flight branch must reconcile the two, and
 `PayrollController` and `EmployeeManagementService` changes forward — those two files exist in the commit as
 `HEAD + this change`, while the working tree holds `HEAD + foreign work`, so a wholesale commit of the tree
 would revert the D3 batch guards.
+
+### 11.5 Round 3 — independent review of round 2's own changes
+
+Round 2's changes were themselves put through two independent reviewers before this was called done. They
+found **two Criticals in my own fixes**, which is the reason this section exists rather than a claim that
+round 2 closed it.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| C1 | **Critical** | **Closing the prior period was gated on `request.Status == "Active"`, but occupancy is {Active, Offboarded, Suspended}** — and the establishment guard in the *same method* already charges a seat for any transition into occupancy and calls it a reactivate. The two disagreed about what a rehire is, and the gap was two ordinary PATCHes wide: `Terminated → Suspended` (branch skipped) `→ Active` (oldStatus now occupying, skipped again) left the old separation live, so the next termination reused it and settled the NEW period against the OLD last working day. The exact underpayment round 2 claimed to have closed. | **FIXED.** Any return to occupancy closes the prior period. |
+| C2 | **Critical** | **"Was a new period served?" cannot be read off `oldStatus`.** `Inactive` is a product-supported bulk-deactivate target and is not occupying, so a REHIRED employee deactivated before being terminated was misread as "period already closed" and got **no separation at all** — the original D1 dead end, restored for precisely the population that had been rehired. `Draft` and `Invited` behave the same. | **FIXED.** The status history is the evidence: a period was served if the employee returned to an occupying status after the last completed separation's last working day. |
+| C3 | High | **Narrowing the block to ACCRUED settlements overshot.** A Draft or PendingApproval settlement had its offboarding cancelled out from under it — which `OffboardingController.Cancel` explicitly refuses (`final_settlement_live`). `ApproveFinalSettlement` has no offboarding precondition, so the approver would post an accrual against a separation the system says never happened, and the settlement run admits employees whose status is `Active` — disbursing an exit payment to somebody presently employed. | **FIXED.** A LIVE settlement (anything not Cancelled, the domain's own `IsLive`) blocks and says so. A Cancelled one still releases, which was round 2's whole point. |
+| C4 | High | **`unattributedExcluded { count, total }` handed a company-scoped caller the size and value of the tenant-wide NULL-company pool** — on `Preview`, `Create` and `Reconciliation`, with no flag set and no artifact needed. One request per period walks the whole residue. This is the aggregate form of exactly what D2 refuses in detail. | **FIXED.** The magnitude is group-only; a company caller still learns rows *were* excluded, which is what they need to escalate. |
+| C5 | High | **`GET /reconciliation` re-listed the flagged artifacts `List` now hides**, with their totals, line/entry counts, hashes and ids — the round-2 `List` fix was applied in one place and the reconciler reads the same table. | **FIXED.** Same rule, passed in explicitly: the reconciler is a service with no principal of its own, so there is deliberately **no default** parameter to inherit a fail-open. |
+| C6 | Medium | A company-scoped caller could **supersede** a group-created flagged artifact via `Create` — a write to a row they are refused sight of, visible only in the audit log. | **FIXED.** The supersede probe honours the same predicate as the reads. |
+| C7 | Medium | The `DbUpdateException` → 409 catch landed on **`Activate`** (which only cancels separations) instead of **`PATCH /status`** (which reaches the identical separation insert). Concurrent PATCHes still 500'd; Activate mislabelled generic failures. | **FIXED.** Moved to the endpoint that actually inserts. |
+| C8 | Low | The docblock claimed an unauthorised caller "must not even get their payload consumed". For a `[FromBody]` action ASP.NET Core has already model-bound the body before the action runs — no action can change that. Two routes also validated the bound body *before* the entity check. | **FIXED.** Guard moved ahead of body validation; the docblock now states the limit honestly and names where the stronger claim does hold. |
+| C9 | Low | A comment justified the sanctioned bypass by saying the ambient filter "would silently fail OPEN for the null-company case". It would fail **closed**. | **FIXED.** The bypass is justified on its real grounds — the run's `CompanyId` is the input to the decision, and 403 must not be conflated with 404. |
+
+**And a finding against my own test.** The round-2 source ratchet bounded each action at the next `[Http`
+attribute, so for the **last** action in a file the region ran to end-of-file and swallowed the private
+helper whose name it greps for: deleting the real guard in `BankConfirmationsController` left it green.
+It now brace-matches the actual method body and discovers controllers across the tree. Fixing it exposed a
+second bug of the same family — the attribute line's own braces, from the route template `{batchId:guid}`,
+stopped the matcher dead — which is why the test now also asserts a **minimum discovery count**, so a scan
+that silently stops matching cannot read as success.
+
+**One test was testing the wrong thing, and said so.** The round-2 draft-settlement test shared a single
+`DbContext` across what are really three separate requests. A refused reactivation throws *after* the
+status change is staged, so the next `SaveChanges` on that context committed the refused transition. It
+now uses one context per request, and asserts explicitly that nothing of the refused call survived it.
+
+### 11.6 Round 3 results
+
+| Check | Result |
+|---|---|
+| Targeted D1 / D2 / D3 | **65 passed** across the four suites |
+| Full backend suite (committed tree) | **1682 passed, 0 failed, 0 skipped** (1648 → 1674 → 1682) |
+| EF model drift | **None** |
+| Frontend typecheck | **pass** (no frontend file changed in round 3) |
+| Negative-tested | defeating the round-3 D1 guards fails exactly the 5 tests written for them |
+
+### 11.7 The top carry-over, stated plainly
+
+**A rehire still pays the whole original tenure a second time.** `/final-settlement` measures service from
+`Employee.JoiningDate` (`ServiceStartDate = DateOnly.FromDateTime(employee.JoiningDate)`) and its
+settle-twice guard keys on `OffboardingId`, and nothing anywhere subtracts a previously paid settlement. So
+an employee who joined 2016, was settled in 2022 for 3.5 months of gratuity, was rehired, and leaves again
+in 2026 is settled for **10.65 years** — roughly 60,000 SAR overpaid on a 10,000 basic.
+
+This is **not** introduced by D1: it is reachable through the canonical `POST /api/offboarding` path just
+as it is through terminate, and it lives in the settlement engine's service-period computation, not in the
+separation lifecycle. It is recorded here rather than fixed because the correct behaviour is a statutory
+and product determination (does a rehire start a new service period for end-of-service purposes, and is
+the prior award offset or the clock simply reset?), and changing `ServiceStartDate` blindly would move
+money on **every** settlement, including single-period ones, in a direction nobody has signed off.
+
+It is the single most valuable thing on the carry-over list and should be the next defect opened.
