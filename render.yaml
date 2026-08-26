@@ -1,6 +1,11 @@
 services:
   - type: web
-    name: zayra-ai-workforce
+    # Renamed 2026-08-26 to match the product. NOTE: the .onrender.com hostname is fixed at
+    # service creation and does NOT follow the name — the service is "kynexone" but still serves
+    # on zayra-ai-workforce.onrender.com, which is why AllowedHosts below is unchanged and why the
+    # frontend's NEXT_PUBLIC_API_BASE_URL did not need updating. Do not "correct" that hostname to
+    # match the name; it would point at nothing.
+    name: kynexone
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
