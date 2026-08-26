@@ -366,3 +366,100 @@ three fixes.** Every Critical and High was fixed in `5a664e7`; nothing was waive
 > idempotency test only exercised a status short-circuit, and the rehire test hand-built a state the
 > product cannot reach. Both were rewritten to drive the real paths. This is exactly what the
 > independent round was for, and it is why "green" was not treated as done.
+
+
+---
+
+## 11. Wave 0 P0 closure — D1–D3 review round 2
+
+**Precondition truth, recorded before any edit.** The brief expected head `a27a12c` and a clean tree.
+Neither held. The branch had already advanced to `f4853d9` (local == `origin/wave0/engineering-baseline`),
+carrying the first D1–D3 round and its review fixes, and **CI was already green on that head, both CodeQL
+analyses included**. The working tree carried **153 modified tracked files** of another agent's in-flight
+work (document storage, `PublicId` identity, refresh-token families, transactional HR invariants, leave
+encashment, GL currency readiness) plus five untracked migrations. Nothing of it was reset, stashed or
+overwritten. Per the brief's "rebase the plan on runtime truth", this round **verified the existing work
+rather than re-implementing it**, then fixed what independent review found.
+
+> **A note the previous round's evidence got wrong.** §10.4 recorded both "1648" and "1639" for the same
+> quantity. Re-run here on an isolated export of the committed tree: **1648 passed / 0 failed / 0 skipped**.
+> 1648 is correct; the 1639 line was wrong. §10.2's "final head `e9aa84c`" was also stale — `5a664e7`
+> (review fixes) and `f4853d9` (evidence) came after it.
+
+### 11.1 What independent review found
+
+Four reviewers (HR/offboarding lifecycle, multi-entity authorization, database/transaction/idempotency,
+and an SDET on test quality) examined the committed diff. **Two of them independently found the same
+Critical**, which is the strongest signal in this round.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| A1 | **Critical** | **A Draft — or even Cancelled — settlement pinned the prior period's separation live forever.** The reactivation carve-out excluded any offboarding named by ANY `EmployeeFinalSettlement` row, with no status filter, while the repo's own accrual predicate is `Approved/Disbursing/Paid`. One `/final-settlement` preview persists a Draft. So: terminate → preview → rehire (carve-out skips the cancel) → terminate again → the live lookup finds the OLD record, creates nothing, and the NEW service period is settled against the **OLD last working day**. Worked example: 26,500 SAR underpaid on a 10,000 SAR basic. The new unique index meant no correct second separation could be created either, and a *Cancelled* settlement pinned it permanently — so the documented remedy could never release it. **Found independently by the HR and DB reviewers.** | **FIXED.** Only `Approved/Disbursing/Paid` protect a separation. An accrued-but-open one now **refuses the reactivation** with an actionable message rather than silently reusing the record later. |
+| A2 | **Critical** | **Re-terminating a completed, paid leaver minted a second full-service gratuity.** Round 1 removed the `oldStatus` condition so the migrated-leaver backlog could be remediated — but that left the command unable to distinguish "Archived with NO separation" (the backlog it exists for) from "Archived with a COMPLETED, PAID separation" (every properly offboarded leaver). The commit's own advice is to re-run terminate across the archive; doing so minted a separation dated today, and `/final-settlement` measures service from `JoiningDate` with its settle-twice guard keyed on `OffboardingId` — 91,500 SAR accrued a second time over a period already paid, per employee. It also dropped ex-employees into the next live payroll run as leavers owed a prorated wage. | **FIXED.** A new separation is created only if a new period was actually served (the status being left was occupying), or there is no completed separation at all — which preserves the backlog case exactly. |
+| A3 | **High** | **The claimed one-transaction atomicity was false for the payroll footprint.** The brief requires the status transition, separation, history *and payroll-footprint* changes to be atomic; they ran as five separate transactions. A client disconnect (no crash needed — the cancellation token is threaded throughout) left an employee Terminated, with a live separation, and still `WpsEligible = true`, which is the only gate `WpsSifValidator` applies. | **FIXED.** The cascade is split into a stage-only half and staged into the status transition's own `SaveChanges`. The saving wrapper is kept for the soft-delete and offboarding-complete callers. |
+| A4 | **High** | **Nine batch-specific routes on `PayrollController` defeated D3's stated outcome from a different URL.** D3 round 1 authorised `BankConfirmationsController` and stopped. But `PayrollPaymentBatch`, `PayrollPaymentRecord`, `FinanceGlEntry` and `SIFFileRecord` are `ITenantOwned` only. `GET payment-batches/{id}/records` returned a sibling entity's per-employee amounts, WPS/bank references and **full unmasked IBANs**; `GET payment-batches` listed every entity's batch totals; `settle/reverse` reversed another company's net-pay settlement GL. The run-status guards were no defence — they read the company-filtered `PayrollRun`, so cross-company the run came back null and `run?.Status == "Voided"` **failed OPEN**. Round 1 recorded this as R7/Medium; that understated it. | **FIXED.** All seven single-batch routes plus the list now derive the entity through the same rule. |
+| A5 | **Critical (tests)** | **"Transaction failure cannot leave status and separation inconsistent" had no coverage.** The test forced no failure — it ran one *successful* terminate and asserted both rows exist, a strictly weaker duplicate of another test. Meanwhile the product has a genuinely reachable mid-operation throw (`NormalizeSeparationType`, after the status and both history rows are staged) that the suite tested as a pure function instead. | **FIXED.** Driven through the real command, asserted on a genuinely fresh context. |
+| A6 | **Critical (tests)** | **D2's positive claim was unfalsifiable.** The file never created a single `FinanceGlEntry`, so `BuildAsync` short-circuited at 422 Empty and "a group caller may include unattributed rows" was asserted only as "was not refused" — it would still have passed if the flag had been fixed by making it a **no-op for everyone**. | **FIXED.** A real two-row ledger (one attributed, one NULL-company) with exact counts and amounts asserted on both sides. |
+| A7 | High | `Reject` — a required D2 entry point performing a cross-entity write — had **zero** tests; deleting its guard broke nothing. | **FIXED.** Test added. |
+| A8 | Medium | The `List` route still advertised group-created `includeUnattributed` artifacts to a company-scoped caller. `Summary` exposes `IncludeUnattributed`, `TotalDebits` and `TotalCredits`, handing back in aggregate what Get/Download/Confirm/Reject refuse in detail. | **FIXED.** Non-group callers no longer see flagged artifacts. |
+| A9 | Medium | The unique-index migration had **no guard against pre-existing duplicates**. `CREATE UNIQUE INDEX` aborts with 23505 if any tenant already holds two live separations — a blocked deploy, or a host that will not boot where `RunMigrationsOnStartup` is true. | **FIXED.** The migration cancels older duplicates first, keeping the newest — the same row the service's own lookup treats as live. |
+| A10 | Medium | Concurrent terminates produced an unhandled **500**, and `/terminate` had no exception handling at all, so the deliberate vocabulary and date refusals surfaced as `internal_error`. | **FIXED.** 409 `separation_already_open` on the index violation; 400 on the deliberate refusals. |
+| A11 | Medium | The audit recorded `request.SeparationType` (`"ARTICLE80"`) while the row stored the canonical `"Article80"`, and the reactivation cancelled separations **with no audit at all**. | **FIXED.** One normalized value feeds both; cancelled ids are audited. |
+| A12 | Medium | The vocabulary admitted `"Abscondment"`, which `NormalizeTerminationReason` does not recognise and therefore pays a **full Art. 84 award** — the exact case the doc-comment cites as its reason for being closed. | **FIXED.** Removed. |
+| A13 | Medium | The reactivation **overwrote** the original separation `Reason`, destroying why the person left. | **FIXED.** Appended. |
+| A14 | Low | A `[Required]` non-nullable `DateOnly` binds an omitted value to `0001-01-01`, minting a separation that settlement rejects while the live lookup makes the corrected retry a no-op. | **FIXED.** A last working day before the joining date is refused. |
+
+**Recorded, deliberately not fixed** (each is real, and each is outside the three authorized defects —
+expanding into them without their own review is the larger risk):
+
+| # | Sev | Finding | Why recorded |
+|---|---|---|---|
+| B1 | High | `GetEntityScope()` resolves with `strictMode:false` and ignores `NarrowTo`, while the DB layer is strict in production. | Round 1's R6. A shared auth helper used app-wide. Reviewer confirmed reachability is bounded: every issuance path emits the v2 claim. |
+| B2 | High | `NoticePeriodDays = 0` on a direct termination silences the Art. 75/76 payment-in-lieu prompt, which is gated on `> 0`. A 60-day notice at 10,000 SAR is 20,000 short, and nothing says so. | Real, and a statutory-advice change. The brief scopes D1's derivation to last working day and separation type; a correct notice figure is a product decision, not a guess this code may make. |
+| B3 | High | `PATCH /status` (`employees.write`) still supplies the effective date that becomes the last working day, unbounded into the future, while `/terminate` is `employees.approve`. | Partially mitigated (dates before joining are now refused). A future-date bound is a policy choice. |
+| B4 | Medium | `already_imported_to_batch` returns `priorBatchIds` probed tenant-wide, disclosing sibling-entity batch ids. | In D3's path. Its chaining payoff is removed by A4's fix; the remaining disclosure is an id. |
+| B5 | Medium | `GET /finance/gl/control-accounts/health` returns tenant-wide and NULL-company aggregate GL balances to a company-scoped caller. | A different endpoint and a different feature from the `includeUnattributed` flag. |
+| B6 | Medium | Soft delete and bulk deactivate still produce no separation, and soft delete makes settlement permanently impossible. | A status-vocabulary problem wider than D1. |
+| B7 | Medium | Reactivation racing termination can still yield **zero** live separations. A unique index forbids duplicates, not absences. | Needs a locking strategy (advisory lock or concurrency token), not a constraint. |
+| B8 | Medium | `Article80` changes nothing in the UAE and Qatar packs — only KSA reads the termination reason. | Pre-existing country-pack asymmetry. |
+| B9 | Low | Audit still writes outside the business transaction. | Round 1's R11; a pattern across the service. |
+
+### 11.2 Verification
+
+Every number below was produced in this session against an **isolated export of the committed tree**,
+because the working tree's 153 in-flight files inflate the count by ~94 tests and would not be what CI sees.
+
+| Check | Result |
+|---|---|
+| Targeted D1 / D2 / D3 | **22 / 14 / 13 passed** |
+| Full backend suite (committed tree) | **1674 passed, 0 failed, 0 skipped (from 1648)** |
+| EF model drift | **None** — "No changes have been made to the model since the last migration." |
+| Frontend typecheck (`tsc --noEmit`) | **pass** |
+| Frontend production build (`next build`) | **pass** — compiled successfully, 59 static pages |
+| Isolation / bypass / PII-logging guards | **pass**, within the full run |
+| Raw-bypass ratchet | **unchanged** — `ScopedBypass` is the sanctioned helper, not a raw `.IgnoreQueryFilters()` |
+
+**Negative-tested, not trusted.** Defeating the D1 service-period guards fails exactly the 4 tests written
+for them; defeating the 7 `PayrollController` batch guards fails 8 of the 13 D3 tests. A guard whose
+removal breaks nothing is not a guard, which is how A7 was found in the first place.
+
+`PaymentBatchScopeTests.EveryBatchSpecificRoute_CallsTheSharedCompanyGuard` is a source-level ratchet: it
+scans both controllers and fails if any route whose template carries a batch id ships without the check.
+The failure mode here is a *new* endpoint added later — which is exactly how the nine routes in A4 came to
+be tenant-only.
+
+### 11.3 One implementation, not two
+
+The batch authorization rule lives once, in `PaymentBatchScopeExtensions.PaymentBatchScopeErrorAsync`.
+`BankConfirmationsController`'s private helper was rewired to delegate to it rather than keeping a second
+copy that could drift.
+
+### 11.4 A landmine the next session must know about
+
+The working tree **deletes** the committed migration `20260816200703_AddLiveSeparationUniqueIndex.{cs,Designer.cs}`
+and carries an untracked `20260816200334_AddLiveSeparationUniqueIndex.{cs,Designer.cs}` pair with the **same
+class name**. If both ever land in one build it is a duplicate-partial-class compile failure. That work was
+left untouched. Whoever commits the in-flight branch must reconcile the two, and must carry this round's
+`PayrollController` and `EmployeeManagementService` changes forward — those two files exist in the commit as
+`HEAD + this change`, while the working tree holds `HEAD + foreign work`, so a wholesale commit of the tree
+would revert the D3 batch guards.
