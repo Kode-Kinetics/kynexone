@@ -879,7 +879,7 @@ public class AttendanceService : IAttendanceService
         daily.ProcessedAtUtc = DateTime.UtcNow;
         daily.UpdatedAtUtc = DateTime.UtcNow;
         foreach (var raw in events) raw.IsProcessed = true;
-        await UpsertLegacyRecord(tenantId, daily, ct);
+        await UpsertLegacyRecord(tenantId, employee.CompanyId, daily, ct);
         await UpsertImpacts(tenantId, daily, ct);
         await UpsertExceptions(tenantId, daily, ct);
     }
@@ -895,7 +895,35 @@ public class AttendanceService : IAttendanceService
         if (daily is not null) daily.ManualCorrectionStatus = "Approved";
     }
 
-    private async Task UpsertLegacyRecord(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)
+    /// <summary>
+    /// WAVE 1 B1 (round 2) — THE SECOND HALF OF THE DEVICE-INGEST DEFECT.
+    ///
+    /// <para><c>AttendanceRecord</c> is <c>ICompanyScopedOperational</c>, so a row whose
+    /// <c>CompanyId</c> is null is invisible to every company-scoped user — the "poison default" the
+    /// operational tier exists to prevent. This method used to resolve that company by RE-QUERYING
+    /// <c>_db.Employees</c> through the ambient filter. On the <c>[AllowAnonymous]</c> device-ingest
+    /// path that filter denies everything (empty company scope), so the lookup returned null and every
+    /// legacy row created from a device punch was born invisible.</para>
+    ///
+    /// <para>Nothing rescued it downstream. <c>ZayraDbContext.EnforceCompanyScopeOnWritesAsync</c>
+    /// returns early when there is no tenant claim — a device webhook has none — so its server-side
+    /// stamping, including the "follow the owning employee's company" branch, never ran on this path.</para>
+    ///
+    /// <para>Before the ingest fix this was latent: device punches matched nothing, so no legacy rows
+    /// were created at all. Fixing the match is what STARTED creating them, which is why both halves
+    /// have to ship together.</para>
+    ///
+    /// <para>The company is now HANDED IN by the caller, taken from the <c>Employee</c> that
+    /// <c>ProcessEmployeeDay</c> already holds — the same entity the punch was matched against. There
+    /// is deliberately no employee query in scope here to re-introduce the bug with, and no new
+    /// <c>IgnoreQueryFilters</c>: the value is already in memory, correctly resolved, on both paths.</para>
+    /// </summary>
+    /// <param name="employeeCompanyId">
+    /// The owning employee's company, from the caller's already-resolved entity. Null is legitimate
+    /// (an employee with no company, or a tenant with no company dimension yet) and passes through
+    /// unchanged — this method must not invent a company it was not given.
+    /// </param>
+    private async Task UpsertLegacyRecord(Guid tenantId, Guid? employeeCompanyId, AttendanceDailyRecord daily, CancellationToken ct)
     {
         var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate, ct);
         if (record is null)
@@ -903,10 +931,10 @@ public class AttendanceService : IAttendanceService
             record = new AttendanceRecord { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate };
             _db.AttendanceRecords.Add(record);
         }
-        record.CompanyId ??= await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.Id == daily.EmployeeId && !e.IsDeleted)
-            .Select(e => e.CompanyId)
-            .FirstOrDefaultAsync(ct);
+        // ??= not =: an existing row's company is never reassigned here. EnforceCompanyScopeOnWritesAsync
+        // throws company_reassignment_blocked on exactly that, and repairing a null is the only
+        // transition this path is allowed to make.
+        record.CompanyId ??= employeeCompanyId;
         record.TimeIn = daily.FirstInUtc is null ? null : TimeOnly.FromDateTime(daily.FirstInUtc.Value);
         record.TimeOut = daily.LastOutUtc is null ? null : TimeOnly.FromDateTime(daily.LastOutUtc.Value);
         record.OvertimeHours = Math.Round(daily.OvertimeMinutes / 60m, 2);

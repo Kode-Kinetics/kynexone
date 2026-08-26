@@ -1,8 +1,12 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using FluentAssertions.Execution;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
@@ -141,6 +145,182 @@ public class AttendanceCompanyScopeTests
         await using var check = new ZayraDbContext(
             new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options);
         (await check.AttendanceRawEvents.CountAsync()).Should().Be(1);
+    }
+
+    /// <summary>
+    /// A context that presents what the <c>[AllowAnonymous]</c> device webhook actually presents: an
+    /// HttpContext whose principal is NOT authenticated, under strict mode (which Production forces via
+    /// <c>EntityScopeOptions.ResolveStrictMode</c>).
+    ///
+    /// <para>The resolver's unauthenticated branch returns <c>IsGroupLevel:false</c> with an EMPTY
+    /// company list, so <c>ZayraDbContext._isGroupScope</c> is false and <c>_companyScopeIds</c> is
+    /// empty — while <c>_isSystemScope</c> is true, because an unauthenticated request is treated as
+    /// pre-HTTP/system context for the TENANT clause. That split is the whole defect: the tenant filter
+    /// steps aside and the company filter does not.</para>
+    /// </summary>
+    private static ZayraDbContext AnonymousDeviceWebhookDb(string store) =>
+        new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options,
+            new _AttendanceHttpAccessor(new DefaultHttpContext()),
+            logger: null,
+            scopeOptions: Options.Create(new EntityScopeOptions { StrictMode = true }));
+
+    /// <summary>The plaintext device API key used by the ingest tests. The service stores only its hash.</summary>
+    private const string DeviceKey = "knx_ingest_key_for_the_company_scope_test";
+
+    /// <summary>The day both ingest tests punch on.</summary>
+    private static readonly DateOnly PunchDay = new(2026, 8, 26);
+
+    /// <summary>Adds an active device owned by <see cref="Tenant"/> and authenticated by <see cref="DeviceKey"/>.</summary>
+    private static async Task SeedDeviceAsync(string store)
+    {
+        await using var seed = new ZayraDbContext(
+            new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options);
+        seed.AttendanceDevices.Add(new AttendanceDevice
+        {
+            TenantId = Tenant,
+            DeviceName = "Gate A",
+            DeviceType = "Biometric",
+            Vendor = "Test",
+            SerialNumber = "SN-A-001",
+            LocationName = "Main Entrance",
+            // Only the hash is stored; the plaintext key IS the credential presented by the webhook.
+            ApiKeyReference = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(DeviceKey))),
+            IsActive = true,
+        });
+        await seed.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// One in-punch and one out-punch for the Company-A employee, auto-processed — the shape a real
+    /// device sends. Shared by both ingest tests so the two regressions are always exercised against
+    /// exactly the same request; they are two failures of one call, not two scenarios.
+    /// </summary>
+    private static Task<DeviceIngestResult?> IngestADayOfPunchesAsync(ZayraDbContext db)
+    {
+        var punchIn = PunchDay.ToDateTime(new TimeOnly(6, 0));
+        return Service(db).IngestByDeviceKeyAsync(
+            DeviceKey,
+            new DeviceIngestRequest(
+                Punches: new[]
+                {
+                    new DeviceIngestPunch("A-001", DateTime.SpecifyKind(punchIn, DateTimeKind.Utc),
+                        "In", null, null, null, null, null, null),
+                    new DeviceIngestPunch("A-001", DateTime.SpecifyKind(punchIn.AddHours(9), DateTimeKind.Utc),
+                        "Out", null, null, null, null, null, null),
+                },
+                AutoProcess: true),
+            "127.0.0.1",
+            CancellationToken.None);
+    }
+
+    /// <summary>
+    /// THE P1 THIS BRANCH EXISTS TO FIX — and, until now, the fix nobody was testing.
+    ///
+    /// <para>Mutation-tested: reverting <c>bypassCompanyFilter: true</c> to <c>false</c> at the
+    /// <c>IngestByDeviceKeyAsync</c> call site left the entire suite green. Every device punch silently
+    /// resolved to no employee, so <c>Unmatched</c> equalled the punch count and <c>Processed</c> stayed
+    /// 0 — a total, silent loss of device attendance in Production. The existing coverage could not see
+    /// it: <c>CrossTenantQueryFilterTests.DeviceIngest_RawEventsCreated_AlwaysTaggedWithDeviceTenant</c>
+    /// builds its DbContext with NO IHttpContextAccessor, which resolves to group scope and therefore
+    /// never engages the company filter at all, and it asserts <c>Unmatched == 1</c> for a deliberately
+    /// non-matching code — the exact value the bug produces.</para>
+    ///
+    /// <para>This test asserts the OPPOSITE of the bug: a punch carrying a code that DOES exist in the
+    /// device's tenant must match, and auto-processing must produce a day.</para>
+    /// </summary>
+    [Fact]
+    public async Task AnAnonymousDeviceWebhookMatchesTheEmployeeAndProcessesTheDay()
+    {
+        var (store, _) = await SeedAsync();
+        await SeedDeviceAsync(store);
+
+        await using var db = AnonymousDeviceWebhookDb(store);
+
+        // PREMISE — without this, the test could pass for the wrong reason. Under the anonymous
+        // webhook's scope the AMBIENT read filter hides every employee, because Employee is
+        // ICompanyScopedOperational and the company clause resolves to an empty set. The rows are
+        // there; the filter is what is hiding them. If this ever stops holding, the assertions below
+        // no longer prove the bypass is doing anything and must be re-derived, not deleted.
+        (await db.Employees.CountAsync()).Should().Be(0,
+            "an anonymous request resolves to an EMPTY company scope, so the ambient filter must hide "
+            + "both seeded employees — this is the condition that made device ingest match nothing");
+        (await db.Employees.IgnoreQueryFilters().CountAsync()).Should().Be(2,
+            "...and the rows must actually exist, or the assertion above is vacuous");
+
+        var result = await IngestADayOfPunchesAsync(db);
+        result.Should().NotBeNull("the device key is valid, so the webhook must not reject the batch");
+
+        // One scope so a failure reports BOTH halves of the symptom. They are not independent —
+        // Processed is 0 precisely because matchedEmployees stayed empty — and an engineer reading a
+        // CI log needs the whole shape of the regression, not just the first assertion to trip.
+        using (new AssertionScope())
+        {
+            result!.Accepted.Should().Be(2, "both punches are new");
+            result.Unmatched.Should().Be(0,
+                "employee A-001 exists in the device's tenant. If this is 2, ResolveEmployee is being "
+                + "run through the company filter again on the anonymous path and every device punch "
+                + "in Production is being discarded as unmatched.");
+            result.Processed.Should().BeGreaterThan(0,
+                "auto-processing must produce a day for the matched employee. This is 0 whenever the "
+                + "employee does not resolve, because matchedEmployees stays empty.");
+        }
+
+        await using var check = new ZayraDbContext(
+            new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options);
+        var daily = await check.AttendanceDailyRecords.ToListAsync();
+        daily.Should().ContainSingle("one employee, one day")
+            .Which.WorkDate.Should().Be(PunchDay);
+    }
+
+    /// <summary>
+    /// THE SECOND HALF OF THE SAME DEFECT — the one the first fix created rather than cured.
+    ///
+    /// <para><c>AttendanceRecord</c> is <c>ICompanyScopedOperational</c>, so a null <c>CompanyId</c>
+    /// makes the row invisible to every company-scoped user: the poison default the operational tier
+    /// exists to prevent. <c>UpsertLegacyRecord</c> used to resolve that company by re-querying
+    /// <c>_db.Employees</c> through the ambient filter — which, on this path, denies everything. So the
+    /// row was written with a null company.</para>
+    ///
+    /// <para>Nothing downstream rescued it: <c>ZayraDbContext.EnforceCompanyScopeOnWritesAsync</c>
+    /// returns early when there is no tenant claim, and an anonymous device webhook has none, so the
+    /// server-side stamping — including the branch that follows the owning employee's company — never
+    /// ran here at all.</para>
+    ///
+    /// <para>This was LATENT before the ingest fix: nothing matched, so no legacy rows were written.
+    /// Fixing the match is what started writing them, which is why the two fixes ship together.</para>
+    /// </summary>
+    [Fact]
+    public async Task TheLegacyRecordFromADeviceIngestCarriesTheEmployeesCompany()
+    {
+        var (store, _) = await SeedAsync();
+        await SeedDeviceAsync(store);
+
+        await using (var db = AnonymousDeviceWebhookDb(store))
+        {
+            var result = await IngestADayOfPunchesAsync(db);
+            result!.Unmatched.Should().Be(0, "the punch must match before there is a legacy row to check");
+        }
+
+        using (new AssertionScope())
+        {
+            // The STORED VALUE, read with no filter in the way at all.
+            await using var raw = new ZayraDbContext(
+                new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options);
+            var legacy = await raw.AttendanceRecords.IgnoreQueryFilters().ToListAsync();
+            legacy.Should().ContainSingle("one employee, one day");
+            legacy[0].CompanyId.Should().Be(CompanyA,
+                "the legacy row must carry the company of the employee the punch matched. A null here "
+                + "is the poison default: AttendanceRecord is ICompanyScopedOperational, so the row is "
+                + "written invisible to every company-scoped user and only group scope can see it.");
+
+            // ...and the CONSEQUENCE, which is what actually harms a customer: an ordinary Company-A
+            // HR user must be able to see the attendance their own device recorded.
+            await using var scoped = CompanyScopedDb(store);
+            (await scoped.AttendanceRecords.CountAsync()).Should().Be(1,
+                "a Company-A-scoped user must see the row their Company-A device produced. If this is "
+                + "0 the attendance exists in the database but has vanished from the product for every "
+                + "scoped user, while group-scope admins still see it — a silent split-brain.");
+        }
     }
 }
 

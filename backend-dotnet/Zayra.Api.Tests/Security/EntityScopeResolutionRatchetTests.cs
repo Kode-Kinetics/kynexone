@@ -26,6 +26,25 @@ public class EntityScopeResolutionRatchetTests
         ["Application/Common/EntityScopeClaims.cs"] = "Token issuance — WRITES the claims.",
         ["Infrastructure/Auth/AuthService.cs"] = "Token issuance — builds the scope descriptor at login.",
         ["Infrastructure/Auth/JwtTokenService.cs"] = "Token issuance — stamps the claims onto the token.",
+
+        // TenantSessionSecurity is the ONE consumer that is deliberately not a consumer of the
+        // resolver's answer, and the distinction matters. Every other caller asks "what may this
+        // request see?" and must get the narrowed, header-aware decision. This one asks a different
+        // question: "does the scope this TOKEN claims still match the grants in the database?" — and
+        // it must therefore read the token's own, UN-narrowed scope. Routing it through
+        // IRequestEntityScopeResolver would compare the DB grants against a scope already narrowed by
+        // X-Company-Id, so a user whose entity-access grants had been REVOKED would still pass
+        // revalidation for as long as they sent a header selecting one company they had kept — which
+        // is precisely the stale-session escalation this check exists to close. It reads the claims
+        // with strictMode:true, compares against EntityScopeClaims.Resolve(...) over live grants, and
+        // returns a boolean; it never hands a scope to anything downstream.
+        //
+        // The narrow shape of this exception is the reason it is safe: if this file ever starts
+        // USING the parsed scope to decide what data to read or write, it no longer belongs here and
+        // must move onto the resolver.
+        ["Infrastructure/Auth/TenantSessionSecurity.cs"] =
+            "Session revalidation — compares the TOKEN's un-narrowed scope against live DB grants; "
+            + "the resolver's header-narrowed answer would let a revoked grant pass revalidation.",
     };
 
     /// <summary>Markers that indicate a file is interpreting scope claims rather than being handed a decision.</summary>
