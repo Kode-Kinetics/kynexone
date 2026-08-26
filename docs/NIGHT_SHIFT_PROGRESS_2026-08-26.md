@@ -223,3 +223,58 @@ production deploy, which is out of bounds for this shift.**
 
 **Current activity:** awaiting independent review findings and CodeQL.
 **Next:** fix any Critical/High review finding, then the morning report.
+
+
+---
+
+## Checkpoint 6 — 07:10Z — independent review round; one real regression found and fixed
+
+**Branch:** `wave1/security-scope-browser-gate` @ `98a87ab`
+
+Two independent reviewers (security/entity-scope, SDET) examined **this branch**. They found one
+genuine regression I had introduced and six tests that would have passed with their control deleted.
+
+### The regression — HIGH, and mine
+
+The device-ingest fix applied `IgnoreQueryFilters` to `ResolveEmployee` **unconditionally**, and that
+method has a second caller: the **authenticated** `PushEventAsync` behind `POST /api/attendance/events/push`.
+Its controller pre-check resolves the employee through a **filtered** query, so a cross-company target
+came back null, `employeeId is not null` was false, and the `Forbid()` was skipped — after which the
+now-unfiltered lookup found the row and recorded a punch against another company's employee.
+`AttendanceRawEvent` is `ITenantOwned` only, so the write-side company guard does not cover it either.
+Employee ids are sequential ints, so it was trivially enumerable.
+
+**Fixed:** the bypass is gated to the anonymous device path only. **Negative-tested:** removing the
+gate makes the cross-company push succeed and the regression test fail.
+
+### Also fixed
+
+System-scope checked before the cache · controllers use the cached `Resolve()` · fallbacks no longer
+drop `IOptions` · `entity_scope_strict` compared case-insensitively · empty legacy rows no longer widen
+to group · platform bootstrap uses the `dedicatedDeployment` predicate and refuses weak/default
+passwords.
+
+### Six tests that proved nothing
+
+Payroll-maker accepted 404 (control deletion would keep it green) · platform browser test was a
+localStorage key-presence check · logout test had no positive control and passed on an empty session ·
+setup never verified the session it wrote · scoped-admin asserted "fewer than five" · 404 accepted as
+"access denied". All fixed, plus a **test-count floor** (a renamed spec left the project resolving zero
+tests and reporting green) and the advisory config now ignores the gate directory.
+
+Two assertions failed **honestly** after hardening and were corrected rather than deleted: the platform
+body check was matching the caller's own tenant slug (legitimate in an account header) and now matches
+only siblings; the logout positive control asserted employee rows and now asserts the authenticated
+shell, because whether a table finished loading is a timing fact, not a security one.
+
+| Check | Result |
+|---|---|
+| Backend suite | **1719 passed, 0 failed, 0 skipped** |
+| Chrome gate (real stack) | **24 passed, 0 failed** |
+| EF model drift | **None** |
+
+**Note:** one `--force-with-lease` was used on this branch to amend my own commit and remove an
+accidentally-committed `node_modules` symlink. No user work was touched.
+
+**Carry-over:** `wave1/observability-foundation` (#46) was branched before these fixes and must be
+rebased onto Gate 0 to inherit them.
