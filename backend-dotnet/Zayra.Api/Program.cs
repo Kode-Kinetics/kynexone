@@ -713,7 +713,7 @@ app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, Can
         : Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
 }).AllowAnonymous();
 
-app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config, CancellationToken ct) =>
+app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config, ILoggerFactory loggerFactory, CancellationToken ct) =>
 {
     try
     {
@@ -721,11 +721,17 @@ app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config,
     }
     catch (Exception ex)
     {
+        // Authenticated, but still not a place for driver text. Npgsql messages routinely carry the
+        // host, database and username, and SLO_AND_ALERT_CATALOG.md states plainly that health
+        // endpoints leak "no connection strings, no driver detail, no secret". Returning ex.Message
+        // made that claim false for every signed-in user. The public /health endpoint was corrected
+        // the same way; this is the last of the pair.
+        loggerFactory.CreateLogger("TelemetryHealthCheck")
+            .LogError(ex, "Telemetry health check failed");
         return Results.Json(new
         {
             status = "telemetry_unavailable",
             utc = DateTime.UtcNow,
-            error = ex.Message
         }, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 }).RequireAuthorization();
