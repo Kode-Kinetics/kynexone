@@ -876,10 +876,41 @@ public class AttendanceService : IAttendanceService
         if (!exists) _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = type, Severity = daily.MissingPunch ? "High" : "Medium", Details = daily.MissingPunch ? "Missing in or out punch." : $"{daily.LateMinutes} late minutes." });
     }
 
+    /// <summary>
+    /// WAVE 1 B1 — DEVICE INGEST WAS SILENTLY MATCHING NOTHING IN PRODUCTION.
+    ///
+    /// <para>This is reached from <c>IngestByDeviceKeyAsync</c>, an <c>[AllowAnonymous]</c> webhook where
+    /// the device API key is the credential and there is no JWT. Two reads on that path already carry a
+    /// documented <c>IgnoreQueryFilters()</c> for exactly that reason — the device lookup and the
+    /// duplicate-event probe. This one was missed, and it is the only read on the path whose entity is
+    /// <c>ICompanyScopedOperational</c> as well as tenant-owned.</para>
+    ///
+    /// <para>That distinction is what made it fail. The COMPANY clause of the read filter is independent
+    /// of the system-scope bypass: it is <c>_isGroupScope || (CompanyId != null &amp;&amp; _companyScopeIds
+    /// .Contains(...))</c>, both of which derive from the request principal. An anonymous request in
+    /// Production — where <c>EntityScopeOptions.ResolveStrictMode</c> forces strict — resolves to an
+    /// EMPTY company scope, so this query matched zero rows for every punch. Every punch was therefore
+    /// recorded as unmatched, <c>processedDays</c> stayed 0, and no daily attendance record was ever
+    /// created from a device. The raw events were stored, so the data is recoverable by reprocessing.</para>
+    ///
+    /// <para>The tenant is <c>device.TenantId</c> — a value read from the database after authenticating
+    /// the device key, never anything the caller supplied — so re-applying it explicitly here is the same
+    /// scope the global filter would have given, and no wider.</para>
+    /// </summary>
     private async Task<Employee?> ResolveEmployee(Guid tenantId, int? employeeId, string? employeeCode, CancellationToken ct)
     {
-        if (employeeId is not null) return await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, ct);
-        if (!string.IsNullOrWhiteSpace(employeeCode)) return await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeCode == employeeCode && !x.IsDeleted, ct);
+        if (employeeId is not null)
+            // IgnoreQueryFilters is intentional: anonymous device webhook, so the request principal
+            // carries no company scope and Employee is ICompanyScopedOperational — the ambient filter
+            // matched zero rows. tenantId is device.TenantId, read from the DB after the device key was
+            // authenticated, and is re-applied below.
+            return await _db.Employees.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, ct);
+        if (!string.IsNullOrWhiteSpace(employeeCode))
+            // IgnoreQueryFilters is intentional: same anonymous device-webhook context as above; the
+            // tenant is re-applied explicitly from the authenticated device's own row.
+            return await _db.Employees.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeCode == employeeCode && !x.IsDeleted, ct);
         return null;
     }
 

@@ -331,6 +331,11 @@ builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Documents.PdfRenderGa
 builder.Services.AddScoped<IRecruitmentService, RecruitmentService>();
 builder.Services.AddScoped<IPerformanceService, PerformanceService>();
 builder.Services.AddScoped<ILeaveService, LeaveService>();
+// WAVE 1 B1 — THE authoritative entity-scope resolver. Registered before every consumer so that
+// controllers, authorization helpers and ZayraDbContext all read one decision per request instead of
+// three independent ones that disagreed on strict mode and on the X-Company-Id switcher.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver,
+                           Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver>();
 builder.Services.AddScoped<IDataScopeService, DataScopeService>();
 builder.Services.AddSingleton(AiOptions.Load(builder.Configuration));
 builder.Services.AddScoped<AiRedactionService>();
