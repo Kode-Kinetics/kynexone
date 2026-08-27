@@ -520,21 +520,32 @@ public static class IntelliFlowDemoSeeder
         await db.SaveChangesAsync(ct);
 
         // ── 13. Attendance (last 30 working days) ─────────────────────────────
-        var rng     = new Random(tenantId.GetHashCode() & 0x7fffffff);
-        var attRecs = new List<AttendanceRecord>();
+        // Seeds AttendanceDailyRecord (what GET /api/attendance and /monthly read), the punches
+        // behind it, and the legacy projection. This tenant sets DefaultTimezone=Asia/Riyadh, so
+        // the local wall-clock punches below are converted to UTC before any late/worked arithmetic
+        // — the same conversion ProcessEmployeeDay performs.
+        var rng       = new Random(tenantId.GetHashCode() & 0x7fffffff);
+        var attPolicy = await AttendanceDemoSeed.ResolvePolicyAsync(db, tenantId, ct);
+        var attTz     = await AttendanceDemoSeed.ResolveTimeZoneAsync(db, tenantId, ct);
+        var approvedLeave = await db.LeaveRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Status == "Approved")
+            .Select(x => new { x.EmployeeId, x.StartDate, x.EndDate })
+            .ToListAsync(ct);
         for (var d = today.AddDays(-30); d <= today; d = d.AddDays(1))
         {
             if (d.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday) continue;
             foreach (var emp in allEmps)
-                attRecs.Add(new AttendanceRecord
-                {
-                    TenantId   = tenantId, EmployeeId = emp.Id, WorkDate = d,
-                    TimeIn     = new TimeOnly(8,  30 + rng.Next(0, 15)),
-                    TimeOut    = new TimeOnly(17, 30 + rng.Next(0, 25)),
-                    Status     = "Present", Notes = string.Empty,
-                });
+            {
+                var inLocal  = new TimeOnly(8,  30 + rng.Next(0, 15));
+                var outLocal = new TimeOnly(17, 30 + rng.Next(0, 25));
+                var onLeave  = approvedLeave.Any(l => l.EmployeeId == emp.Id && l.StartDate <= d && l.EndDate >= d);
+                AttendanceDemoSeed.AddDay(db, tenantId, AttendanceDemoSeed.EmployeeFacts.From(emp), d,
+                    onLeave ? null : inLocal,
+                    onLeave ? null : outLocal,
+                    attPolicy, attTz,
+                    onLeave ? AttendanceDemoSeed.DayContext.ApprovedLeave : AttendanceDemoSeed.DayContext.WorkingDay);
+            }
         }
-        db.AttendanceRecords.AddRange(attRecs);
         await db.SaveChangesAsync(ct);
 
         // ── 14. Locked payroll run ─────────────────────────────────────────────

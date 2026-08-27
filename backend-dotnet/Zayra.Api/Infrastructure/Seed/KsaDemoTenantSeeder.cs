@@ -498,8 +498,16 @@ public static class KsaDemoTenantSeeder
         await db.SaveChangesAsync(ct);
 
         // ── 16. Attendance (last 60 working days, first 10 employees) ─────────
-        var rng = new Random(tenantId.GetHashCode() & 0x7fffffff);
-        var attendanceRecords = new List<AttendanceRecord>();
+        // Seeds AttendanceDailyRecord (what GET /api/attendance and /monthly read), the punches
+        // behind it, and the legacy projection. Punch times are the only input; status and every
+        // minute figure are derived by AttendanceDemoSeed through the pipeline's own formulas.
+        var rng       = new Random(tenantId.GetHashCode() & 0x7fffffff);
+        var attPolicy = await AttendanceDemoSeed.ResolvePolicyAsync(db, tenantId, ct);
+        var attTz     = await AttendanceDemoSeed.ResolveTimeZoneAsync(db, tenantId, ct);
+        var approvedLeave = await db.LeaveRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Status == "Approved")
+            .Select(x => new { x.EmployeeId, x.StartDate, x.EndDate })
+            .ToListAsync(ct);
         var first10 = allEmps.Take(10).ToArray();
         for (var d = today.AddDays(-60); d <= today; d = d.AddDays(1))
         {
@@ -508,19 +516,14 @@ public static class KsaDemoTenantSeeder
             {
                 var checkInMin  = rng.Next(0, 16);   // 08:30 + 0–15 min
                 var checkOutMin = rng.Next(0, 31);   // 17:30 + 0–30 min
-                attendanceRecords.Add(new AttendanceRecord
-                {
-                    TenantId   = tenantId,
-                    EmployeeId = emp.Id,
-                    WorkDate   = d,
-                    TimeIn     = new TimeOnly(8, 30).AddMinutes(checkInMin),
-                    TimeOut    = new TimeOnly(17, 30).AddMinutes(checkOutMin),
-                    Status     = "Present",
-                    Notes      = string.Empty,
-                });
+                var onLeave = approvedLeave.Any(l => l.EmployeeId == emp.Id && l.StartDate <= d && l.EndDate >= d);
+                AttendanceDemoSeed.AddDay(db, tenantId, AttendanceDemoSeed.EmployeeFacts.From(emp), d,
+                    onLeave ? null : new TimeOnly(8, 30).AddMinutes(checkInMin),
+                    onLeave ? null : new TimeOnly(17, 30).AddMinutes(checkOutMin),
+                    attPolicy, attTz,
+                    onLeave ? AttendanceDemoSeed.DayContext.ApprovedLeave : AttendanceDemoSeed.DayContext.WorkingDay);
             }
         }
-        db.AttendanceRecords.AddRange(attendanceRecords);
         await db.SaveChangesAsync(ct);
 
         // ── 17. Locked payroll run (previous calendar month) ──────────────────

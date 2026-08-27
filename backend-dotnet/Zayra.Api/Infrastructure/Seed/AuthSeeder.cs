@@ -771,31 +771,8 @@ public class AuthSeeder : IAuthSeeder
         }
         await _db.SaveChangesAsync(ct);
 
-        // ── Attendance (last 6 months of working days) ───────────────────────────
-        // Per-employee guard: employees that already have attendance keep it; new ones get history.
-        var attendanceSeededIds = await _db.AttendanceRecords.Where(x => x.TenantId == tenantId)
-            .Select(x => x.EmployeeId).Distinct().ToListAsync(ct);
-        var attendanceTargets = employees.Where(e => !attendanceSeededIds.Contains(e.Id)).ToList();
-        var rng = new Random(42);
-        var attendance = new List<AttendanceRecord>();
-        for (var offset = 0; offset <= 180; offset++)
-        {
-            var date = today.AddDays(-offset);
-            if (date.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday) continue;
-            foreach (var emp in attendanceTargets)
-            {
-                var roll = rng.Next(100);
-                var status = roll < 83 ? "Present" : roll < 91 ? "Late" : roll < 96 ? "Leave" : "Absent";
-                attendance.Add(new AttendanceRecord
-                {
-                    TenantId = tenantId, EmployeeId = emp.Id, WorkDate = date, Status = status,
-                    OvertimeHours = status == "Present" && rng.Next(100) < 18 ? rng.Next(1, 4) : 0,
-                    Notes = string.Empty,
-                });
-            }
-        }
-        _db.AttendanceRecords.AddRange(attendance);
-        await _db.SaveChangesAsync(ct);
+        // Attendance now runs AFTER the leave requests below, so a day covered by an approved
+        // leave request cannot also be seeded as "Present" — see "── Attendance" further down.
 
         // ── Leave types ──────────────────────────────────────────────────────────
         var leaveTypeDefs = new (string Code, string En, string Ar, string Cat, bool Paid)[]
@@ -837,6 +814,64 @@ public class AuthSeeder : IAuthSeeder
             new LeaveRequest { TenantId=tenantId, EmployeeId=employees[20].Id, EmployeeName=employees[20].FullName, DepartmentName=employees[20].Department, LeaveTypeId=unpaid.Id,  LeaveTypeName=unpaid.NameEn,  StartDate=today.AddDays(-15), EndDate=today.AddDays(-11), DayType="Full", Reason="Emergency travel",            Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-18), DecidedAtUtc=DateTime.UtcNow.AddDays(-17) },
             new LeaveRequest { TenantId=tenantId, EmployeeId=employees[22].Id, EmployeeName=employees[22].FullName, DepartmentName=employees[22].Department, LeaveTypeId=annual.Id,  LeaveTypeName=annual.NameEn,  StartDate=today.AddDays(7),   EndDate=today.AddDays(11),  DayType="Full", Reason="Eid Al-Adha extended break",  Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddHours(-1) }
         );
+        await _db.SaveChangesAsync(ct);
+
+        // ── Attendance (last 6 months of working days) ───────────────────────────
+        // Writes AttendanceDailyRecord — the table GET /api/attendance and /monthly read — plus the
+        // punches behind it and the legacy projection, via AttendanceDemoSeed.
+        //
+        // This block used to pick a status string and an overtime figure straight out of the RNG
+        // while leaving TimeIn/TimeOut null: a "Present" day with no punches at all and up to three
+        // hours of overtime that no clock-in/clock-out could ever justify. Now the RNG picks only
+        // the SHAPE of the day and that shape is expressed as punches; status, worked minutes,
+        // late/early/overtime/undertime all fall out of those punches through the pipeline's own
+        // formulas. Overtime in particular is now a consequence of a later clock-out.
+        //
+        // The old ~5% "Leave" roll is seeded as a half day rather than "On leave": nothing here
+        // creates a backing leave request for those days, and ProcessEmployeeDay only ever produces
+        // "On leave" when one exists. A half day is fully derivable from its own punches; an
+        // unbacked leave day would be a status the real pipeline could not reproduce. Days that ARE
+        // covered by the approved leave requests seeded above get no punches and read "On leave".
+        //
+        // Per-employee guard: employees that already have attendance keep it; new ones get history.
+        var attendanceSeededIds = await _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId)
+            .Select(x => x.EmployeeId).Distinct().ToListAsync(ct);
+        var attendanceTargets = employees.Where(e => !attendanceSeededIds.Contains(e.Id)).ToList();
+        var rng = new Random(42);
+        var attPolicy = await AttendanceDemoSeed.ResolvePolicyAsync(_db, tenantId, ct);
+        var attTz     = await AttendanceDemoSeed.ResolveTimeZoneAsync(_db, tenantId, ct);
+        var approvedLeave = await _db.LeaveRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Status == "Approved")
+            .Select(x => new { x.EmployeeId, x.StartDate, x.EndDate })
+            .ToListAsync(ct);
+        for (var offset = 0; offset <= 180; offset++)
+        {
+            var date = today.AddDays(-offset);
+            if (date.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday) continue;
+            foreach (var emp in attendanceTargets)
+            {
+                var roll = rng.Next(100);
+                var worksLate = rng.Next(100) < 18;   // drawn every day so the RNG walk is stable
+                TimeOnly? inLocal, outLocal;
+                var context = AttendanceDemoSeed.DayContext.WorkingDay;
+                if (approvedLeave.Any(l => l.EmployeeId == emp.Id && l.StartDate <= date && l.EndDate >= date))
+                {
+                    (inLocal, outLocal) = (null, null);
+                    context = AttendanceDemoSeed.DayContext.ApprovedLeave;
+                }
+                else if (roll < 83)                                  // on time; sometimes stays late
+                    (inLocal, outLocal) = (new TimeOnly(8, 45), new TimeOnly(worksLate ? 19 : 17, 45));
+                else if (roll < 91)                                  // late arrival → derives "Late"
+                    (inLocal, outLocal) = (new TimeOnly(9, 25), new TimeOnly(17, 45));
+                else if (roll < 96)                                  // short day → derives "Half day"
+                    (inLocal, outLocal) = (new TimeOnly(8, 45), new TimeOnly(12, 15));
+                else                                                 // no punches → derives "Absent"
+                    (inLocal, outLocal) = (null, null);
+
+                AttendanceDemoSeed.AddDay(_db, tenantId, AttendanceDemoSeed.EmployeeFacts.From(emp),
+                    date, inLocal, outLocal, attPolicy, attTz, context);
+            }
+        }
         await _db.SaveChangesAsync(ct);
 
         // ── Payroll runs: 6 completed months + 1 pending current month ───────────

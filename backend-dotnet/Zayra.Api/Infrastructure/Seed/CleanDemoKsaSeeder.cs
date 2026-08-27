@@ -496,21 +496,33 @@ public static class CleanDemoKsaSeeder
         await db.SaveChangesAsync(ct);
 
         // ── 14. Attendance (last 45 working days, all 15 employees) ──────────
-        var rng     = new Random(tenantId.GetHashCode() & 0x7fffffff);
-        var attRecs = new List<AttendanceRecord>();
+        // Seeds AttendanceDailyRecord — the table GET /api/attendance and /monthly actually read —
+        // plus the punches behind it and the legacy projection. Only the punch times are chosen
+        // here; status/worked/late/overtime are derived by AttendanceDemoSeed through the pipeline's
+        // own formulas. Days already covered by the approved leave seeded above get no punches and
+        // read "On leave" rather than contradicting their own leave request with "Present".
+        var rng       = new Random(tenantId.GetHashCode() & 0x7fffffff);
+        var attPolicy = await AttendanceDemoSeed.ResolvePolicyAsync(db, tenantId, ct);
+        var attTz     = await AttendanceDemoSeed.ResolveTimeZoneAsync(db, tenantId, ct);
+        var approvedLeave = await db.LeaveRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Status == "Approved")
+            .Select(x => new { x.EmployeeId, x.StartDate, x.EndDate })
+            .ToListAsync(ct);
         for (var d = today.AddDays(-45); d <= today; d = d.AddDays(1))
         {
             if (d.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday) continue;
             foreach (var emp in allEmps)
-                attRecs.Add(new AttendanceRecord
-                {
-                    TenantId   = tenantId, EmployeeId = emp.Id, WorkDate = d,
-                    TimeIn     = new TimeOnly(8,  30 + rng.Next(0, 20)),
-                    TimeOut    = new TimeOnly(17, 30 + rng.Next(0, 29)),
-                    Status     = "Present", Notes = string.Empty,
-                });
+            {
+                var inLocal  = new TimeOnly(8,  30 + rng.Next(0, 20));
+                var outLocal = new TimeOnly(17, 30 + rng.Next(0, 29));
+                var onLeave  = approvedLeave.Any(l => l.EmployeeId == emp.Id && l.StartDate <= d && l.EndDate >= d);
+                AttendanceDemoSeed.AddDay(db, tenantId, AttendanceDemoSeed.EmployeeFacts.From(emp), d,
+                    onLeave ? null : inLocal,
+                    onLeave ? null : outLocal,
+                    attPolicy, attTz,
+                    onLeave ? AttendanceDemoSeed.DayContext.ApprovedLeave : AttendanceDemoSeed.DayContext.WorkingDay);
+            }
         }
-        db.AttendanceRecords.AddRange(attRecs);
         await db.SaveChangesAsync(ct);
 
         // ── 15. Bonus type + batch (paid in locked payroll run) ───────────────
