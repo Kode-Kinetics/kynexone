@@ -99,12 +99,21 @@ test.describe('Subscription guard enforcement', () => {
   // ── Auth and platform routes bypass subscription guard ────────────────────────
 
   test('/api/auth/login is not blocked by subscription guard (even if suspended)', async ({ request }) => {
-    // Login itself must always succeed so the subscription status page can load
+    // Login itself must always succeed so the subscription status page can load.
+    //
+    // The old assertion was `expect([200, 401, 429]).toContain(status)`, which
+    // accepted a REJECTED login (401) and a RATE-LIMITED login (429) as proof
+    // that login is not blocked. Both are failures of the claim: if the guard
+    // ever started rejecting PastDue credentials the test would still be green.
     const resp = await request.post('/api/auth/login', {
       data: { email: EVOSTEL_ADMIN.email, password: EVOSTEL_ADMIN.password, tenantSlug: EVOSTEL_SLUG },
     });
-    // 429 is an authentication-layer result when setup has consumed the per-IP budget; login
-    // must never be transformed into the protected-route subscription response (402).
-    expect([200, 401, 429]).toContain(resp.status());
+    expect(resp.status(), `login for a PastDue tenant must succeed: ${(await resp.text()).slice(0, 200)}`).toBe(200);
+
+    // …and it must be a real session, not a 200 shell.
+    const body = await resp.json() as { accessToken?: string; token?: string };
+    const accessToken = body.accessToken ?? body.token;
+    expect(accessToken, 'login response must carry an access token').toBeTruthy();
+    expect(accessToken!.split('.')).toHaveLength(3);
   });
 });

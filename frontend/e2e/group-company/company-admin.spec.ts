@@ -70,12 +70,15 @@ test.describe('Group→Company: company admin (ALM-DAIRY-KSA)', () => {
 
       const me = await fetchMe(api, token);
       expect(me.status).toBe(200);
-      if (Array.isArray(me.json?.companies)) {
-        expect(me.json.companies.length).toBe(1);
-      }
-      if (me.json?.isGroupScope !== undefined) {
-        expect(me.json.isGroupScope).toBeFalsy();
-      }
+      // Both checks were `if (field present) { expect(...) }`. A response that
+      // dropped `companies` or `isGroupScope` — which is how a scope regression
+      // would surface — made this test assert nothing about scope at all.
+      expect(Array.isArray(me.json?.companies), '/api/auth/me must report a companies array').toBe(true);
+      expect(me.json.companies.length).toBe(1);
+      expect(JSON.stringify(me.json.companies)).toContain(DAIRY);
+
+      expect(me.json?.isGroupScope, '/api/auth/me must report isGroupScope').toBeDefined();
+      expect(me.json.isGroupScope, 'a company-scoped admin must not be group scope').toBeFalsy();
     } finally {
       await api.dispose().catch(() => {});
     }

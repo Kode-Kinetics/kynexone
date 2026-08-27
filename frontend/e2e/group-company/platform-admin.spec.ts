@@ -89,14 +89,24 @@ test.describe('Group→Company: platform admin', () => {
 
       const created = await findTenantBySlug(slug);
       expect(created, `created tenant ${slug} not found in /api/platform/tenants`).not.toBeNull();
-      const accountType = created.accountType ?? created.AccountType;
-      if (accountType !== undefined) {
-        expect(String(accountType)).toMatch(/group/i);
-      }
-
-      // Cleanup (best-effort): suspend the throwaway tenant so it does not pollute the list.
+      // `if (accountType !== undefined)` meant a creation that silently
+      // downgraded the account type asserted nothing — and the accountType IS
+      // the claim of this test. GET /api/platform/tenants (the listing) does
+      // not carry accountType at all, so the guard could never have fired;
+      // read it from the tenant DETAIL endpoint, which does report it.
       const id = created.id ?? created.Id;
-      createdId = id ? String(id) : undefined;
+      expect(id, `created tenant ${slug} has no id: ${JSON.stringify(created).slice(0, 300)}`).toBeTruthy();
+      createdId = String(id);
+
+      const detail = await api.get(`/api/platform/tenants/${createdId}`, { headers: platformHeaders() });
+      expect(detail.status(), await detail.text()).toBe(200);
+      const detailJson = await detail.json();
+      const accountType = detailJson.accountType ?? detailJson.AccountType;
+      expect(accountType, `created tenant ${slug} must report an accountType: ${JSON.stringify(detailJson).slice(0, 300)}`)
+        .toBeDefined();
+      expect(String(accountType)).toMatch(/group/i);
+      // `createdId` is set above, before the assertions, so the finally block
+      // still purges the throwaway tenant when one of them fails.
     } finally {
       if (createdId) {
         const deleted = await api.delete(`/api/platform/tenants/${createdId}?confirm=DELETE`, {
