@@ -221,7 +221,7 @@ public static class KsaDemoTenantSeeder
             Department dept, Designation desig,
             decimal basic, DateTime joining,
             string nationality, string saudiFlag, string idType, string idNumber,
-            int? managerId = null) => new()
+            int? managerId = null, DateOnly? iqamaExpiry = null) => new()
         {
             TenantId          = tid,
             CompanyId         = co.Id,
@@ -249,6 +249,9 @@ public static class KsaDemoTenantSeeder
             IdType            = idType,
             IdNumber          = idNumber,
             IqamaNumber       = idType == "Iqama" ? idNumber : string.Empty,
+            // Fail-closed PAY gate for non-GCC expats (GccReadinessFloor) — an Iqama number seeded
+            // without its expiry leaves the employee unpayable. Saudi nationals never hold one.
+            IqamaExpiryDate   = idType == "Iqama" ? iqamaExpiry : null,
             GosiReference     = GosiEmployerId,
             EstablishmentId   = "7000456789",
             IsDeleted         = false,
@@ -267,15 +270,19 @@ public static class KsaDemoTenantSeeder
         var empKhalid    = MakeEmp(tenantId, company, branch, "ANK-009", "Khalid Al-Mutairi",   "خالد المطيري",       deptSale, desigSalesDir,21_000m, new DateTime(2020, 1, 15), "Saudi", "Saudi", "NationalId", "1010987654");
         var empSara      = MakeEmp(tenantId, company, branch, "ANK-010", "Sara Al-Anzi",        "سارة العنزي",        deptSale, desigAccExe,  10_000m, new DateTime(2023, 7,  1), "Saudi", "Saudi", "NationalId", "1009876543");
 
-        // Expat employees 11–18
-        var empAhmed     = MakeEmp(tenantId, company, branch, "ANK-011", "Ahmed Hassan",         "أحمد حسن",          deptIT,   desigSWE,     14_000m, new DateTime(2022, 3, 15), "Egyptian",   "NonSaudi", "Iqama", "2345678901");
-        var empPriya     = MakeEmp(tenantId, company, branch, "ANK-012", "Priya Krishnamurthy",  "بريا كريشنامورثي",  deptIT,   desigQA,      11_000m, new DateTime(2023, 1, 20), "Indian",     "NonSaudi", "Iqama", "2234567890");
-        var empOmar      = MakeEmp(tenantId, company, branch, "ANK-013", "Omar Abdelnabi",       "عمر عبدالنبي",      deptHR,   desigHRCoord,  9_500m, new DateTime(2022,11,  1), "Sudanese",   "NonSaudi", "Iqama", "2123456789");
-        var empJames     = MakeEmp(tenantId, company, branch, "ANK-014", "James Okafor",         "جيمس أوكافور",       deptSale, desigSalesExe,10_500m, new DateTime(2023, 4,  1), "Nigerian",   "NonSaudi", "Iqama", "2012345678");
-        var empSiti      = MakeEmp(tenantId, company, branch, "ANK-015", "Siti Rahayu",          "سيتي راهايو",        deptFin,  desigFinAP,    8_500m, new DateTime(2023, 6,  1), "Indonesian", "NonSaudi", "Iqama", "2901234567");
-        var empMichael   = MakeEmp(tenantId, company, branch, "ANK-016", "Michael Fernandez",    "مايكل فيرنانديز",    deptOps,  desigOpsCoord, 9_000m, new DateTime(2022, 8, 15), "Filipino",   "NonSaudi", "Iqama", "2890123456");
-        var empNadia     = MakeEmp(tenantId, company, branch, "ANK-017", "Nadia Boukhari",       "نادية بوخاري",       deptHR,   desigTrainer, 10_000m, new DateTime(2023, 3,  1), "Moroccan",   "NonSaudi", "Iqama", "2789012345");
-        var empDavid     = MakeEmp(tenantId, company, branch, "ANK-018", "David Chen",           "ديفيد تشن",          deptIT,   desigDevOps,  15_000m, new DateTime(2021,12,  1), "Chinese",    "NonSaudi", "Iqama", "2678901234");
+        // Expat employees 11–18.
+        // Iqama expiry anchored on seed day so the demo never goes stale: a spread with two inside the
+        // 60-day alert window for Compliance to show as amber. Nothing back-dated — an expired Iqama is
+        // a fail-closed PAY blocker (GccReadinessFloor), a state to demo deliberately, not to ship.
+        var ksaIqamaFrom = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var empAhmed     = MakeEmp(tenantId, company, branch, "ANK-011", "Ahmed Hassan",         "أحمد حسن",          deptIT,   desigSWE,     14_000m, new DateTime(2022, 3, 15), "Egyptian",   "NonSaudi", "Iqama", "2345678901", iqamaExpiry: ksaIqamaFrom.AddDays(430));
+        var empPriya     = MakeEmp(tenantId, company, branch, "ANK-012", "Priya Krishnamurthy",  "بريا كريشنامورثي",  deptIT,   desigQA,      11_000m, new DateTime(2023, 1, 20), "Indian",     "NonSaudi", "Iqama", "2234567890", iqamaExpiry: ksaIqamaFrom.AddDays(41));
+        var empOmar      = MakeEmp(tenantId, company, branch, "ANK-013", "Omar Abdelnabi",       "عمر عبدالنبي",      deptHR,   desigHRCoord,  9_500m, new DateTime(2022,11,  1), "Sudanese",   "NonSaudi", "Iqama", "2123456789", iqamaExpiry: ksaIqamaFrom.AddDays(275));
+        var empJames     = MakeEmp(tenantId, company, branch, "ANK-014", "James Okafor",         "جيمس أوكافور",       deptSale, desigSalesExe,10_500m, new DateTime(2023, 4,  1), "Nigerian",   "NonSaudi", "Iqama", "2012345678", iqamaExpiry: ksaIqamaFrom.AddDays(58));
+        var empSiti      = MakeEmp(tenantId, company, branch, "ANK-015", "Siti Rahayu",          "سيتي راهايو",        deptFin,  desigFinAP,    8_500m, new DateTime(2023, 6,  1), "Indonesian", "NonSaudi", "Iqama", "2901234567", iqamaExpiry: ksaIqamaFrom.AddDays(690));
+        var empMichael   = MakeEmp(tenantId, company, branch, "ANK-016", "Michael Fernandez",    "مايكل فيرنانديز",    deptOps,  desigOpsCoord, 9_000m, new DateTime(2022, 8, 15), "Filipino",   "NonSaudi", "Iqama", "2890123456", iqamaExpiry: ksaIqamaFrom.AddDays(205));
+        var empNadia     = MakeEmp(tenantId, company, branch, "ANK-017", "Nadia Boukhari",       "نادية بوخاري",       deptHR,   desigTrainer, 10_000m, new DateTime(2023, 3,  1), "Moroccan",   "NonSaudi", "Iqama", "2789012345", iqamaExpiry: ksaIqamaFrom.AddDays(360));
+        var empDavid     = MakeEmp(tenantId, company, branch, "ANK-018", "David Chen",           "ديفيد تشن",          deptIT,   desigDevOps,  15_000m, new DateTime(2021,12,  1), "Chinese",    "NonSaudi", "Iqama", "2678901234", iqamaExpiry: ksaIqamaFrom.AddDays(130));
 
         // Fix GradeId (captured after grade was saved)
         foreach (var emp in new[] {

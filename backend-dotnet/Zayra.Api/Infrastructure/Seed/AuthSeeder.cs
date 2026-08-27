@@ -825,18 +825,47 @@ public class AuthSeeder : IAuthSeeder
         var sick     = leaveTypes.First(x => x.Code == "SICK");
         var casual   = leaveTypes.First(x => x.Code == "CASUAL");
         var unpaid   = leaveTypes.First(x => x.Code == "UNPAID");
+        // Built through DemoLeaveSeed so each row carries the employee's CompanyId. LeaveRequest is
+        // ICompanyScopedOperational: the nine rows this block used to write with CompanyId null were
+        // readable only by the group-scope admin, so any ordinary company-scoped login opened Leave on
+        // an empty list. See DemoLeaveSeed's remarks for why no backfill rescued them.
+        var leaveWorkflowId = (await _db.ApprovalWorkflows
+            .Where(x => x.TenantId == tenantId).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct)) ?? Guid.Empty;
+        var nowUtc = DateTime.UtcNow;
         if (!await _db.LeaveRequests.AnyAsync(x => x.TenantId == tenantId, ct))
-        _db.LeaveRequests.AddRange(
-            new LeaveRequest { TenantId=tenantId, EmployeeId=employees[3].Id,  EmployeeName=employees[3].FullName,  DepartmentName=employees[3].Department,  LeaveTypeId=annual.Id,  LeaveTypeName=annual.NameEn,  StartDate=today.AddDays(5),   EndDate=today.AddDays(9),   DayType="Full", Reason="Family vacation",            Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddDays(-1) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=employees[5].Id,  EmployeeName=employees[5].FullName,  DepartmentName=employees[5].Department,  LeaveTypeId=sick.Id,    LeaveTypeName=sick.NameEn,    StartDate=today.AddDays(-2),  EndDate=today.AddDays(-1),  DayType="Full", Reason="Flu",                        Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-3), DecidedAtUtc=DateTime.UtcNow.AddDays(-2) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=employees[6].Id,  EmployeeName=employees[6].FullName,  DepartmentName=employees[6].Department,  LeaveTypeId=annual.Id,  LeaveTypeName=annual.NameEn,  StartDate=today.AddDays(12),  EndDate=today.AddDays(14),  DayType="Full", Reason="Personal",                   Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddHours(-6) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=employees[9].Id,  EmployeeName=employees[9].FullName,  DepartmentName=employees[9].Department,  LeaveTypeId=casual.Id,  LeaveTypeName=casual.NameEn,  StartDate=today.AddDays(2),   EndDate=today.AddDays(2),   DayType="Full", Reason="Bank errand",                Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-2), DecidedAtUtc=DateTime.UtcNow.AddDays(-1) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=employees[11].Id, EmployeeName=employees[11].FullName, DepartmentName=employees[11].Department, LeaveTypeId=sick.Id,    LeaveTypeName=sick.NameEn,    StartDate=today.AddDays(-5),  EndDate=today.AddDays(-4),  DayType="Full", Reason="Medical checkup",            Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-6), DecidedAtUtc=DateTime.UtcNow.AddDays(-5) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=employees[14].Id, EmployeeName=employees[14].FullName, DepartmentName=employees[14].Department, LeaveTypeId=annual.Id,  LeaveTypeName=annual.NameEn,  StartDate=today.AddDays(20),  EndDate=today.AddDays(30),  DayType="Full", Reason="Summer holiday",             Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddHours(-3) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=employees[18].Id, EmployeeName=employees[18].FullName, DepartmentName=employees[18].Department, LeaveTypeId=sick.Id,    LeaveTypeName=sick.NameEn,    StartDate=today.AddDays(-1),  EndDate=today.AddDays(-1),  DayType="Full", Reason="Headache",                   Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddHours(-10) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=employees[20].Id, EmployeeName=employees[20].FullName, DepartmentName=employees[20].Department, LeaveTypeId=unpaid.Id,  LeaveTypeName=unpaid.NameEn,  StartDate=today.AddDays(-15), EndDate=today.AddDays(-11), DayType="Full", Reason="Emergency travel",            Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-18), DecidedAtUtc=DateTime.UtcNow.AddDays(-17) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=employees[22].Id, EmployeeName=employees[22].FullName, DepartmentName=employees[22].Department, LeaveTypeId=annual.Id,  LeaveTypeName=annual.NameEn,  StartDate=today.AddDays(7),   EndDate=today.AddDays(11),  DayType="Full", Reason="Eid Al-Adha extended break",  Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddHours(-1) }
-        );
+        {
+            var demoLeave = new (LeaveRequest Request, string Role)[]
+            {
+                (DemoLeaveSeed.Request(tenantId, employees[3], annual, today.AddDays(5), today.AddDays(9),
+                    DemoLeaveSeed.PendingManager, "Family vacation", nowUtc.AddDays(-1)), "Manager"),
+                (DemoLeaveSeed.Request(tenantId, employees[5], sick, today.AddDays(-2), today.AddDays(-1),
+                    DemoLeaveSeed.Approved, "Flu", nowUtc.AddDays(-3), nowUtc.AddDays(-2)), "Manager"),
+                (DemoLeaveSeed.Request(tenantId, employees[6], annual, today.AddDays(12), today.AddDays(14),
+                    DemoLeaveSeed.PendingManager, "Personal", nowUtc.AddHours(-6)), "Manager"),
+                (DemoLeaveSeed.Request(tenantId, employees[9], casual, today.AddDays(2), today.AddDays(2),
+                    DemoLeaveSeed.Approved, "Bank errand", nowUtc.AddDays(-2), nowUtc.AddDays(-1)), "Manager"),
+                (DemoLeaveSeed.Request(tenantId, employees[11], sick, today.AddDays(-5), today.AddDays(-4),
+                    DemoLeaveSeed.Approved, "Medical checkup", nowUtc.AddDays(-6), nowUtc.AddDays(-5)), "Manager"),
+                (DemoLeaveSeed.Request(tenantId, employees[14], annual, today.AddDays(20), today.AddDays(30),
+                    DemoLeaveSeed.PendingHr, "Summer holiday", nowUtc.AddHours(-3)), "HR Manager"),
+                (DemoLeaveSeed.Request(tenantId, employees[18], sick, today.AddDays(-1), today.AddDays(-1),
+                    DemoLeaveSeed.PendingManager, "Headache", nowUtc.AddHours(-10)), "Manager"),
+                (DemoLeaveSeed.Request(tenantId, employees[20], unpaid, today.AddDays(-15), today.AddDays(-11),
+                    DemoLeaveSeed.Approved, "Emergency travel", nowUtc.AddDays(-18), nowUtc.AddDays(-17)), "Manager"),
+                (DemoLeaveSeed.Request(tenantId, employees[22], annual, today.AddDays(7), today.AddDays(11),
+                    DemoLeaveSeed.PendingManager, "Eid Al-Adha extended break", nowUtc.AddHours(-1)), "Manager"),
+                (DemoLeaveSeed.Request(tenantId, employees[16], annual, today.AddDays(3), today.AddDays(17),
+                    DemoLeaveSeed.Rejected, "Extended personal travel", nowUtc.AddDays(-12), nowUtc.AddDays(-11),
+                    rejectionReason: "Requested inside the quarter-end close window."), "Manager"),
+            };
+            foreach (var (request, role) in demoLeave)
+            {
+                _db.LeaveRequests.Add(request);
+                DemoLeaveSeed.AddApprovalTrail(_db, request, role,
+                    approverUserId: null, approverName: string.Empty, approverEmployeeId: null,
+                    workflowId: leaveWorkflowId);
+            }
+        }
         await _db.SaveChangesAsync(ct);
 
         // ── Payroll runs: 6 completed months + 1 pending current month ───────────
@@ -970,14 +999,15 @@ public class AuthSeeder : IAuthSeeder
         var workflowId = (await _db.ApprovalWorkflows.FirstOrDefaultAsync(x => x.TenantId == tenantId, ct))?.Id ?? Guid.NewGuid();
         var currentPeriod = new DateOnly(today.Year, today.Month, 1);
         var currentRunId = (await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Year == currentPeriod.Year && x.Month == currentPeriod.Month, ct))?.Id ?? Guid.NewGuid();
-        if (!await _db.ApprovalRequests.AnyAsync(x => x.TenantId == tenantId && x.Status == "Pending", ct))
+        // The four LeaveRequest rows this block used to add pointed at Guid.NewGuid() EntityIds — an
+        // Approvals queue whose items opened onto nothing. The leave seed above now writes the real
+        // routing projections, so only the non-leave demo approvals remain here (and the guard no
+        // longer counts those real rows as "already seeded"). CompanyId is stamped for the same
+        // reason it is on the leave rows: ApprovalRequest is ICompanyScopedOperational.
+        if (!await _db.ApprovalRequests.AnyAsync(x => x.TenantId == tenantId && x.Status == "Pending" && x.EntityName != nameof(LeaveRequest), ct))
         _db.ApprovalRequests.AddRange(
-            new ApprovalRequest { TenantId=tenantId, WorkflowId=workflowId, EntityName="LeaveRequest",         EntityId=Guid.NewGuid().ToString(), Title=$"Annual leave — {employees[3].FullName}",         Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddDays(-1) },
-            new ApprovalRequest { TenantId=tenantId, WorkflowId=workflowId, EntityName="LeaveRequest",         EntityId=Guid.NewGuid().ToString(), Title=$"Annual leave — {employees[14].FullName}",        Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-3) },
-            new ApprovalRequest { TenantId=tenantId, WorkflowId=workflowId, EntityName="LeaveRequest",         EntityId=Guid.NewGuid().ToString(), Title=$"Sick leave — {employees[18].FullName}",          Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-10) },
-            new ApprovalRequest { TenantId=tenantId, WorkflowId=workflowId, EntityName="PayrollRun",           EntityId=currentRunId.ToString(),   Title=$"Payroll approval — {currentPeriod:MMM yyyy}",   Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-20) },
-            new ApprovalRequest { TenantId=tenantId, WorkflowId=workflowId, EntityName="EmployeeTransferRequest", EntityId=Guid.NewGuid().ToString(), Title=$"Transfer request — {employees[5].FullName}", Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-8) },
-            new ApprovalRequest { TenantId=tenantId, WorkflowId=workflowId, EntityName="LeaveRequest",         EntityId=Guid.NewGuid().ToString(), Title=$"Annual leave — {employees[22].FullName}",        Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-1) }
+            new ApprovalRequest { TenantId=tenantId, CompanyId=companyId, WorkflowId=workflowId, EntityName="PayrollRun",           EntityId=currentRunId.ToString(),   Title=$"Payroll approval — {currentPeriod:MMM yyyy}",   Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-20) },
+            new ApprovalRequest { TenantId=tenantId, CompanyId=companyId, WorkflowId=workflowId, EntityName="EmployeeTransferRequest", EntityId=Guid.NewGuid().ToString(), Title=$"Transfer request — {employees[5].FullName}", Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-8) }
         );
         await _db.SaveChangesAsync(ct);
 
