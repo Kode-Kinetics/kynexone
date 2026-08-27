@@ -10,6 +10,11 @@
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.11" />
+    <!-- Boots the REAL Program.cs composition (middleware order, JWT validation parameters,
+         authorization policies) in-process so authentication/authorization can be asserted over
+         HTTP instead of around it. Before this, nothing in the suite started the ASP.NET pipeline
+         and every [Authorize]/[HasPermission]/[RequirePlatformRole] attribute was inert in tests. -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.11" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />

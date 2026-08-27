@@ -995,3 +995,10 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.Run();
+
+// Top-level statements generate an INTERNAL Program class. WebApplicationFactory<Program> in
+// Zayra.Api.Tests boots THIS file — the real middleware order, the real JWT TokenValidationParameters,
+// the real authorization policies — so authentication and authorization are asserted over HTTP
+// instead of around it. Exposing the generated class is the documented ASP.NET convention for that
+// and changes no runtime behaviour.
+public partial class Program { }
