@@ -3880,6 +3880,12 @@ public class EmployeesController : ControllerBase
                 case "visaIssueDate": employee.VisaIssueDate = ReadDateOnly(value); break;
                 case "visaExpiryDate": employee.VisaExpiryDate = ReadDateOnly(value); break;
                 case "iqamaNumber": employee.IqamaNumber = value.GetString() ?? employee.IqamaNumber; break;
+                // IqamaExpiry was readable and CSV-importable but had no edit path: it is exported at
+                // the employee-detail projection and read by both CSV importers, yet ApplyChanges had
+                // no case for it. GccReadinessFloor treats it as a fail-closed PAY gate for non-GCC
+                // expats, so an employee whose iqama expiry was wrong could be blocked from payroll
+                // with no supported way to correct it. Mirrors passportExpiryDate directly above.
+                case "iqamaExpiryDate": employee.IqamaExpiryDate = ReadDateOnly(value); break;
                 case "muqeemNumber": employee.MuqeemNumber = value.GetString() ?? employee.MuqeemNumber; break;
                 case "gosiReference": employee.GosiReference = value.GetString() ?? employee.GosiReference; break;
                 case "emiratesId": employee.EmiratesId = value.GetString() ?? employee.EmiratesId; break;

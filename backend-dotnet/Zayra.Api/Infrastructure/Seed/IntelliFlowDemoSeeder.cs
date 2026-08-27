@@ -280,7 +280,8 @@ public static class IntelliFlowDemoSeeder
             string code, string en, string ar,
             Department dept, Designation desig,
             decimal basic, DateTime joining,
-            string nationality, string saudiFlag, string idType, string idNum) => new()
+            string nationality, string saudiFlag, string idType, string idNum,
+            DateOnly? iqamaExpiry = null) => new()
         {
             TenantId        = tid,
             CompanyId       = co.Id,
@@ -306,6 +307,10 @@ public static class IntelliFlowDemoSeeder
             IdType          = idType,
             IdNumber        = idNum,
             IqamaNumber     = idType == "Iqama" ? idNum : string.Empty,
+            // GccReadinessFloor makes IqamaExpiry a fail-closed PAY gate for non-GCC expats, so an
+            // Iqama number without its expiry leaves every expat unpayable and the Compliance module
+            // with nothing to show. A Saudi national never holds one (EmployeeFieldRegistry hides it).
+            IqamaExpiryDate = idType == "Iqama" ? iqamaExpiry : null,
             GosiReference   = $"GOSI-{code}",
             EstablishmentId = DemoEstablishmentId,
             OccupationCode  = desig.Code switch
@@ -330,13 +335,20 @@ public static class IntelliFlowDemoSeeder
         var empWalid  = Emp(tenantId, company, branch, grade, "IFI-005", "Walid Al-Harbi",      "وليد الحربي",     deptEng, desigSrSWE,  13_000m, new DateTime(2022, 5,  5, 0, 0, 0, DateTimeKind.Utc), "Saudi",    "Saudi",    "NationalId", "1050005005");
         var empAmira  = Emp(tenantId, company, branch, grade, "IFI-006", "Amira Al-Shehri",     "أميرة الشهري",    deptHR,  desigHRSpec,  9_000m, new DateTime(2023, 1, 10, 0, 0, 0, DateTimeKind.Utc), "Saudi",    "Saudi",    "NationalId", "2060006006");
 
-        // 6 expat employees
-        var empRaj    = Emp(tenantId, company, branch, grade, "IFI-007", "Raj Krishnamurthy",  "راج كريشنامورثي",   deptEng, desigSrSWE,  13_500m, new DateTime(2021, 9,  1, 0, 0, 0, DateTimeKind.Utc), "Indian",    "NonSaudi", "Iqama", "2530000001");
-        var empLiu    = Emp(tenantId, company, branch, grade, "IFI-008", "Liu Wei",            "ليو وي",             deptEng, desigSWE,    11_000m, new DateTime(2022, 3, 15, 0, 0, 0, DateTimeKind.Utc), "Chinese",   "NonSaudi", "Iqama", "2530000002");
-        var empCarlos = Emp(tenantId, company, branch, grade, "IFI-009", "Carlos Mendez",      "كارلوس مينديز",     deptEng, desigDevOps, 12_000m, new DateTime(2022, 7, 20, 0, 0, 0, DateTimeKind.Utc), "Mexican",   "NonSaudi", "Iqama", "2530000003");
-        var empAmiraE = Emp(tenantId, company, branch, grade, "IFI-010", "Amira Mansour",      "أميرة منصور",       deptEng, desigQA,     10_500m, new DateTime(2023, 2,  1, 0, 0, 0, DateTimeKind.Utc), "Egyptian",  "NonSaudi", "Iqama", "2530000004");
-        var empDaniel = Emp(tenantId, company, branch, grade, "IFI-011", "Daniel Osei",        "دانيال أوسي",       deptPrd, desigBA,      9_000m, new DateTime(2023, 4, 12, 0, 0, 0, DateTimeKind.Utc), "Ghanaian",  "NonSaudi", "Iqama", "2530000005");
-        var empSunita = Emp(tenantId, company, branch, grade, "IFI-012", "Sunita Patel",       "سونيتا باتيل",      deptPrd, desigUX,      9_000m, new DateTime(2023, 6,  5, 0, 0, 0, DateTimeKind.Utc), "Indian",    "NonSaudi", "Iqama", "2530000006");
+        // 6 expat employees.
+        // Iqama expiry is deliberately a SPREAD, anchored on seed day so the demo never goes stale:
+        // four comfortably valid, two inside the 60-day alert window (EmployeeReadinessEvaluator's
+        // DefaultAlertDays) so Compliance has real amber to show. None is back-dated: an expired
+        // Iqama IS handled — FieldPresence.Expired never blocks activation — but GccReadinessFloor
+        // makes it a fail-closed PAY blocker, which would hand the flagship pilot tenant a payroll
+        // run that cannot pay that employee. That is a defect to demo on request, not a default.
+        var iqamaFrom = DateOnly.FromDateTime(now.Date);
+        var empRaj    = Emp(tenantId, company, branch, grade, "IFI-007", "Raj Krishnamurthy",  "راج كريشنامورثي",   deptEng, desigSrSWE,  13_500m, new DateTime(2021, 9,  1, 0, 0, 0, DateTimeKind.Utc), "Indian",    "NonSaudi", "Iqama", "2530000001", iqamaFrom.AddDays(410));
+        var empLiu    = Emp(tenantId, company, branch, grade, "IFI-008", "Liu Wei",            "ليو وي",             deptEng, desigSWE,    11_000m, new DateTime(2022, 3, 15, 0, 0, 0, DateTimeKind.Utc), "Chinese",   "NonSaudi", "Iqama", "2530000002", iqamaFrom.AddDays(38));  // expiring soon (amber)
+        var empCarlos = Emp(tenantId, company, branch, grade, "IFI-009", "Carlos Mendez",      "كارلوس مينديز",     deptEng, desigDevOps, 12_000m, new DateTime(2022, 7, 20, 0, 0, 0, DateTimeKind.Utc), "Mexican",   "NonSaudi", "Iqama", "2530000003", iqamaFrom.AddDays(250));
+        var empAmiraE = Emp(tenantId, company, branch, grade, "IFI-010", "Amira Mansour",      "أميرة منصور",       deptEng, desigQA,     10_500m, new DateTime(2023, 2,  1, 0, 0, 0, DateTimeKind.Utc), "Egyptian",  "NonSaudi", "Iqama", "2530000004", iqamaFrom.AddDays(54));  // expiring soon (amber)
+        var empDaniel = Emp(tenantId, company, branch, grade, "IFI-011", "Daniel Osei",        "دانيال أوسي",       deptPrd, desigBA,      9_000m, new DateTime(2023, 4, 12, 0, 0, 0, DateTimeKind.Utc), "Ghanaian",  "NonSaudi", "Iqama", "2530000005", iqamaFrom.AddDays(620));
+        var empSunita = Emp(tenantId, company, branch, grade, "IFI-012", "Sunita Patel",       "سونيتا باتيل",      deptPrd, desigUX,      9_000m, new DateTime(2023, 6,  5, 0, 0, 0, DateTimeKind.Utc), "Indian",    "NonSaudi", "Iqama", "2530000006", iqamaFrom.AddDays(165));
 
         var saudiEmps = new[] { empYaser, empNadia, empAhmad, empSara, empWalid, empAmira };
         var expatEmps = new[] { empRaj,   empLiu,   empCarlos, empAmiraE, empDaniel, empSunita };
@@ -516,6 +528,71 @@ public static class IntelliFlowDemoSeeder
                     CarriedForward = lt.Code == "ANNUAL" && idx % 3 == 0 ? 3 : 0,
                 });
             }
+        }
+        await db.SaveChangesAsync(ct);
+
+        // ── 12b. Leave requests ───────────────────────────────────────────────
+        // The flagship pilot tenant previously seeded leave TYPES and BALANCES but not a single
+        // REQUEST, so /api/leave/requests returned total:0 and the Leave module opened empty for the
+        // customer. Every row is built through DemoLeaveSeed so it carries the employee's CompanyId
+        // (LeaveRequest is ICompanyScopedOperational — see that type's remarks).
+        var leaveWorkflow = new ApprovalWorkflow
+        {
+            TenantId   = tenantId,
+            Code       = "LEAVE-APPROVAL",
+            Name       = "Leave Approval",
+            EntityName = nameof(LeaveRequest),
+            IsActive   = true,
+        };
+        leaveWorkflow.Steps.Add(new ApprovalWorkflowStep
+        {
+            TenantId = tenantId, WorkflowId = leaveWorkflow.Id, StepOrder = 1,
+            StepName = "Line Manager Approval", ApproverRole = "Manager",
+        });
+        leaveWorkflow.Steps.Add(new ApprovalWorkflowStep
+        {
+            TenantId = tenantId, WorkflowId = leaveWorkflow.Id, StepOrder = 2,
+            StepName = "HR Approval", ApproverRole = "HR Manager", IsFinalStep = true,
+        });
+        db.ApprovalWorkflows.Add(leaveWorkflow);
+        await db.SaveChangesAsync(ct);
+
+        // A believable queue: work waiting on two different roles, settled history either way.
+        var leaveRows = new (LeaveRequest Request, string Role)[]
+        {
+            // ── Awaiting a decision — this is what makes Approvals non-empty ──
+            (DemoLeaveSeed.Request(tenantId, empRaj, ltAnnual, today.AddDays(21), today.AddDays(32),
+                DemoLeaveSeed.PendingManager, "Annual home-country visit", now.AddDays(-2)), "Manager"),
+            (DemoLeaveSeed.Request(tenantId, empSunita, ltCasual, today.AddDays(3), today.AddDays(4),
+                DemoLeaveSeed.PendingManager, "Family commitment", now.AddHours(-5)), "Manager"),
+            (DemoLeaveSeed.Request(tenantId, empAmiraE, ltAnnual, today.AddDays(10), today.AddDays(16),
+                DemoLeaveSeed.PendingHr, "Eid break extension", now.AddDays(-1)), "HR Manager"),
+
+            // ── Approved ──
+            (DemoLeaveSeed.Request(tenantId, empLiu, ltSick, today.AddDays(-6), today.AddDays(-5),
+                DemoLeaveSeed.Approved, "Medical appointment", now.AddDays(-7), now.AddDays(-6),
+                managerApprovalNotes: "Approved — medical note on file."), "Manager"),
+            (DemoLeaveSeed.Request(tenantId, empNadia, ltAnnual, today.AddDays(-20), today.AddDays(-14),
+                DemoLeaveSeed.Approved, "Annual vacation", now.AddDays(-28), now.AddDays(-25),
+                managerApprovalNotes: "Approved — cover arranged."), "Manager"),
+            (DemoLeaveSeed.Request(tenantId, empWalid, ltCasual, today.AddDays(-2), today.AddDays(-2),
+                DemoLeaveSeed.Approved, "Government paperwork", now.AddDays(-4), now.AddDays(-3)), "Manager"),
+
+            // ── Rejected ──
+            (DemoLeaveSeed.Request(tenantId, empCarlos, ltAnnual, today.AddDays(6), today.AddDays(20),
+                DemoLeaveSeed.Rejected, "Extended personal travel", now.AddDays(-9), now.AddDays(-8),
+                rejectionReason: "Clashes with the release freeze — please re-submit for after the 30th."), "Manager"),
+        };
+
+        // Role-routed steps (ApproverId null): these demo employees have no portal user account, and
+        // LeaveService routes to the role in exactly that case. Admin and the matching role holder can
+        // both decide, so the queue is genuinely actionable for hrmanager@ / manager@intelliflow.com.
+        foreach (var (request, role) in leaveRows)
+        {
+            db.LeaveRequests.Add(request);
+            DemoLeaveSeed.AddApprovalTrail(db, request, role,
+                approverUserId: null, approverName: string.Empty, approverEmployeeId: null,
+                workflowId: leaveWorkflow.Id);
         }
         await db.SaveChangesAsync(ct);
 
