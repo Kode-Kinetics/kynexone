@@ -46,7 +46,7 @@ public sealed class MigrationImportController : ControllerBase
     [HttpGet("template")]
     public IActionResult Template() => Ok(new Dictionary<string, string>
     {
-        ["roles"] = "Name,Description,AuthorityLevel,IsActive\nHR Manager,Imported HR role,50,true\n",
+        ["roles"] = "Name,Description,AuthorityLevel,IsActive\nHR Manager,Imported HR role,50\n",
         ["users"] = "Email,FullName,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\nhr@example.com,Imported HR,,en,UTC,Invited,HR Manager,false\n",
         ["leaveBalances"] = "EmployeeCode,LeaveTypeCode,Year,Entitled,Accrued,Used,Pending,CarriedForward,Encashed,Expired,ManualAdjustment,NegativeAllowed\nEMP-001,ANNUAL,2026,30,30,0,0,0,0,0,0,false\n",
         ["attendanceDaily"] = "EmployeeCode,WorkDate,FirstInUtc,LastOutUtc,TotalWorkedMinutes,BreakMinutes,LateMinutes,EarlyExitMinutes,OvertimeMinutes,UndertimeMinutes,MissingPunch,Status,WorkMode\nEMP-001,2026-01-01,2026-01-01T08:00:00Z,2026-01-01T17:00:00Z,480,60,0,0,0,0,false,Present,Work from site\n",

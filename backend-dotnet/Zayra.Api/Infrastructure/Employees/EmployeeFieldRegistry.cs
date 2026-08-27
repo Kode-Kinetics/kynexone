@@ -223,6 +223,27 @@ public static class EmployeeFieldRegistry
     public static IReadOnlyList<string> CsvHeaders =>
         CatalogList.Where(d => d.CsvHeader is not null).Select(d => d.CsvHeader!).ToList();
 
+    /// <summary>The example row for the downloadable CSV template — one neutral, obviously-a-placeholder
+    /// cell per column, DERIVED from the same ordered catalog <see cref="CsvHeaders"/> is derived from and
+    /// shaped by each field's declared <c>InputType</c>. Never a hand-written row: a literal example row is
+    /// positional, so adding one catalog column silently shifts every later value into the wrong column
+    /// (exactly the drift the hand-maintained header array was removed to prevent). Adding a field to the
+    /// catalog extends the header AND its placeholder in the same step, so the two cannot disagree.</summary>
+    public static IReadOnlyList<string> CsvExampleRow =>
+        CatalogList.Where(d => d.CsvHeader is not null).Select(CsvPlaceholder).ToList();
+
+    /// <summary>Neutral placeholder for one column: a format hint where the shape is unambiguous
+    /// (dates/numbers/emails/toggles), otherwise a literal that can never be mistaken for real data
+    /// or for another tenant's name.</summary>
+    private static string CsvPlaceholder(EmployeeFieldDescriptor d) => d.InputType switch
+    {
+        "date" => "YYYY-MM-DD",
+        "number" => "0",
+        "email" => "name@example.com",
+        "toggle" => "false",
+        _ => "EXAMPLE",   // text | select | lookup
+    };
+
     /// <summary>Descriptors filtered to a resolved jurisdiction for the modal (null country ⇒ universal
     /// rows only; a GCC country ⇒ universal + that country's conditional rows). COUNTRY axis only — the
     /// offline-fallback / country-only special case of <see cref="CatalogFor"/>.</summary>
