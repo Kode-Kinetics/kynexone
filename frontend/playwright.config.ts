@@ -8,6 +8,13 @@ export default defineConfig({
   // is precisely the retry-hides-a-flaky-authorization-bug behaviour that config exists to forbid.
   testIgnore: /security-gate\//,
   fullyParallel: false,
+  // A stray `test.only` would otherwise shrink this 130-test lane to ONE test in CI, silently.
+  // playwright.security.config.ts has had this; this config did not — the same "a guard exists in
+  // one config and not its sibling" class as the testIgnore bug.
+  forbidOnly: !!process.env.CI,
+  // retries:1 is deliberate here (slow first paint on some pages) but it IS a trade-off: a retry
+  // can hide an intermittent authorization bug. playwright.security.config.ts sets retries:0 for
+  // exactly that reason. Do not raise this.
   retries: 1,
   workers: 1,
   reporter: 'list',
