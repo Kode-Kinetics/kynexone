@@ -587,58 +587,29 @@ test.describe('Payroll — run to WPS file', () => {
 
       // ── 7. WPS/SIF: FileGenerated, and the file's total == the run's net-pay total ───────
       await test.step('7. the WPS/SIF file is generated and its total equals the run net pay', async () => {
-        // ─────────────────────────────────────────────────────────────────────────────────────
-        // KNOWN PRODUCT GAP, asserted rather than skipped.
+        // The gap this step used to pin is CLOSED. It previously asserted a 422
+        // `readiness_drift_acknowledgement_required`, because every KSA seed shipped non-Saudi
+        // employees with an IqamaNumber and no IqamaExpiryDate, and GccReadinessFloor makes
+        // IqamaExpiry a fail-closed PAY gate — so the button could not succeed on demo data, and
+        // no API route could set the field either. That tripwire was written to fail the day the
+        // gap closed. It did: the seeders now populate IqamaExpiryDate and
+        // EmployeesController.ApplyChanges gained an `iqamaExpiryDate` case, so no ACTIVE employee
+        // drifts pay-blocked and the operator's own click now completes the export.
         //
-        // `payrollApi.generateWpsFile()` posts to .../wps-file with NO query string, and the
-        // Bank/WPS tab renders no control that could set `acknowledgeReadinessDrift`. The backend
-        // refuses the export whenever an ACTIVE employee has drifted pay-blocked under the current
-        // readiness policy (PayrollController.GenerateWps, §6.6). Every KSA seed in this repo ships
-        // non-Saudi employees with an IqamaNumber and no IqamaExpiryDate, and GccReadinessFloor
-        // makes IqamaExpiry a fail-closed PAY gate — so this button cannot succeed on the shipped
-        // demo data, and no route on the API surface can set IqamaExpiryDate on an existing
-        // employee (EmployeesController.ApplyChanges has no case for it; the service method that
-        // would mirror it, IEmployeeManagementService.UpdateAsync, has no route at all).
-        //
-        // The button is pressed here anyway — it had no coverage whatsoever — and its real outcome
-        // is pinned. When the UI gains the acknowledgement control (or the tenant's employee
-        // records are completed), THIS assertion fails and must be replaced with a click. That is
-        // deliberate: it is the tripwire that says the gap closed.
-        // ─────────────────────────────────────────────────────────────────────────────────────
+        // Asserting the UI path rather than an API call with the acknowledgement flag is the point:
+        // this is the button a payroll officer actually presses.
         const uiAttempt = admin.waitForResponse(
           (r) =>
             r.url().includes(`/api/payroll/payment-batches/${batchId}/wps-file`) &&
             r.request().method() === 'POST',
         );
         await batchCard(admin, batchNumber).getByRole('button', { name: 'Generate WPS/SIF' }).click();
-        const blocked = await uiAttempt;
+        const exported = await uiAttempt;
         expect(
-          blocked.status(),
-          "the UI's Generate WPS/SIF sends no readiness acknowledgement, so the export is refused",
-        ).toBe(422);
-        expect((await blocked.json()).error).toBe('readiness_drift_acknowledgement_required');
-        await expect(
-          content(admin).getByText(/no longer meet the current readiness policy/),
-          'the refusal must be surfaced to the operator, not swallowed',
-        ).toBeVisible();
-        await expect(
-          batchCard(admin, batchNumber),
-          'a refused export must leave the batch in Draft',
-        ).toContainText('Draft');
-
-        // The acknowledged export: the same operator, the same session, the one flag the UI has no
-        // control for. Everything after this point is asserted back in the browser.
-        const adminToken = await apiLogin(
-          request,
-          INTELLIFLOW_ADMIN.email,
-          INTELLIFLOW_ADMIN.password,
-          INTELLIFLOW_SLUG,
-        );
-        const exported = await request.post(
-          `/api/payroll/payment-batches/${batchId}/wps-file?acknowledgeReadinessDrift=true`,
-          { headers: { Authorization: `Bearer ${adminToken}` } },
-        );
-        expect(exported.status(), 'the acknowledged WPS export must succeed').toBe(200);
+          exported.status(),
+          "the operator's own Generate WPS/SIF must complete — a 422 here means an ACTIVE employee "
+            + 'has drifted pay-blocked again (most likely a seed regressing IqamaExpiryDate)',
+        ).toBe(200);
         const file = (await exported.json()) as {
           sifFileName: string;
           employeeCount: number;
