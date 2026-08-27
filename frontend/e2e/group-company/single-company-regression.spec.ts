@@ -18,6 +18,7 @@ import {
   uiLogin,
   findCompanySwitcher,
   bodyText,
+  mainContentLength,
   crashIndicators,
   DEFAULT_TENANT_SLUG,
   DEFAULT_ADMIN_EMAIL,
@@ -60,12 +61,16 @@ test.describe('Group→Company: single-company regression', () => {
       // isGroupScope is deliberately true for grant-less users (the documented explicit
       // tenant default — docs/GROUP_COMPANY_ACCESS_MODEL.md); with one company that
       // still renders no switcher and no group UI.
-      if (me.json?.accountType !== undefined && me.json.accountType !== null) {
-        expect(String(me.json.accountType)).not.toMatch(/^group$/i);
-      }
-      if (me.json?.companies !== undefined && Array.isArray(me.json.companies)) {
-        expect(me.json.companies.length).toBeLessThanOrEqual(1);
-      }
+      //
+      // These were `if (field !== undefined) { expect(...) }`. Losing either field
+      // from /api/auth/me — the exact regression this test is named for — asserted
+      // nothing at all. Require the fields, THEN assert their values.
+      expect(me.json?.accountType, '/api/auth/me must report accountType').toBeDefined();
+      expect(me.json.accountType, '/api/auth/me must report accountType').not.toBeNull();
+      expect(String(me.json.accountType)).not.toMatch(/^group$/i);
+
+      expect(Array.isArray(me.json?.companies), '/api/auth/me must report a companies array').toBe(true);
+      expect(me.json.companies.length).toBeLessThanOrEqual(1);
     } finally {
       await api.dispose().catch(() => {});
     }
@@ -77,7 +82,10 @@ test.describe('Group→Company: single-company regression', () => {
 
     const text = await bodyText(page);
     expect(crashIndicators(text)).toEqual([]);
-    expect(text.trim().length).toBeGreaterThan(50);
+    // Count only the ROUTE's own output: the persistent sidebar alone clears
+    // 50 characters, so `bodyText().length > 50` passed on a blank dashboard.
+    expect(await mainContentLength(page), 'the dashboard route rendered no content of its own')
+      .toBeGreaterThan(50);
 
     // No "Group Overview" navigation for a single-company tenant.
     expect(text.toLowerCase()).not.toContain('group overview');
@@ -96,6 +104,7 @@ test.describe('Group→Company: single-company regression', () => {
     await expect(page).not.toHaveURL(/\/login/);
     const text = await bodyText(page);
     expect(crashIndicators(text)).toEqual([]);
-    expect(text.trim().length).toBeGreaterThan(50);
+    expect(await mainContentLength(page), 'the employees route rendered no content of its own')
+      .toBeGreaterThan(50);
   });
 });
