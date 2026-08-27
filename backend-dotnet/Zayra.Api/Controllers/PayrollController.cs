@@ -4798,10 +4798,16 @@ public class PayrollController : ControllerBase
         await PayrollAudit("payroll.payment_batch.created", "PayrollPaymentBatch", batch.Id.ToString(),
             new { totalAmount = batch.TotalAmount, method = batch.PaymentMethod, runType = run.RunType, excludedCount = batchExcludedCount }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+        // `Status` is NOT optional here. ListPaymentBatches returns it, the client's
+        // PayrollPaymentBatch type declares it non-nullable, and BankWpsTab renders the freshly
+        // created batch straight from THIS body — `<StatusBadge status={b.status} />` calls
+        // status.replace(...), so omitting the field threw a TypeError inside render and the Next
+        // error boundary replaced the whole payroll module with "Something went wrong" the moment
+        // an operator created a payment batch. Create and list must project the same shape.
         return Created($"/api/payroll/payment-batches/{batch.Id}", new
         {
             batch.Id, batch.TenantId, batch.PayrollRunId, batch.BatchNumber, batch.PaymentMethod,
-            batch.TotalAmount, batch.Currency, batch.WpsStatus,
+            batch.TotalAmount, batch.Currency, batch.Status, batch.WpsStatus,
             runType       = run.RunType,
             parentRunId   = run.ParentRunId,
             excludedCount = batchExcludedCount,

@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import {
   platformLogin, PLATFORM_STATE, TENANT_STATE, tenantSessionKey,
   INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1,
+  INTELLIFLOW_HR_MGR, INTELLIFLOW_FINANCE,
   RASALMANAR_SLUG, RASALMANAR_ADMIN, EVOSTEL_SLUG, EVOSTEL_ADMIN,
 } from './helpers';
 import { provisionLimitedTenantFixture } from './limited-tenant-fixture';
@@ -32,6 +33,11 @@ setup('authenticate platform admin and provision isolated limited tenant', async
   const personas = [
     { ...INTELLIFLOW_ADMIN, slug: INTELLIFLOW_SLUG },
     { ...INTELLIFLOW_EMP1, slug: INTELLIFLOW_SLUG },
+    // Payroll maker/checker personas. The two-step approval in payroll-run-to-wps.spec.ts needs
+    // THREE distinct users (the processor cannot approve, and the maker cannot finalise), so the
+    // sessions are minted once here rather than three logins per test run.
+    { ...INTELLIFLOW_HR_MGR, slug: INTELLIFLOW_SLUG },
+    { ...INTELLIFLOW_FINANCE, slug: INTELLIFLOW_SLUG },
     { ...RASALMANAR_ADMIN, slug: RASALMANAR_SLUG },
     { ...EVOSTEL_ADMIN, slug: EVOSTEL_SLUG },
     { email: 'owner@almarai-test.local', password: groupPassword, slug: 'almarai-test' },
