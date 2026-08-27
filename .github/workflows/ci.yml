@@ -6,10 +6,21 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel in-progress runs for the same branch when a new commit is pushed
+# A run parked on the `production` environment reviewer counts as IN PROGRESS for concurrency, so
+# the previous `cancel-in-progress: true` on a branch-wide group cancelled pending approvals. Four
+# of six consecutive merges to main died exactly that way — migrate-backend showed `cancelled`,
+# which reads like `skipped`, while Render's autoDeploy shipped the code anyway. Production ran new
+# code against an old schema until /health/ready returned 42P01 for a table a migration creates.
+#
+# PRs keep the cheap behaviour: one run per PR, superseded runs cancelled.
+# Pushes to main get a group unique per run, so no main run can cancel another and no pending
+# approval is ever destroyed by a later merge.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: >-
+    ci-${{ github.workflow }}-${{
+      github.event_name == 'push' && github.run_id || github.ref
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ── Backend: build + security regression gate ──────────────────────────────────
@@ -106,7 +117,17 @@ jobs:
       - name: dotnet vulnerable package audit (fail on any)
         run: |
           echo "Scanning NuGet packages (including transitive) for known vulnerabilities…"
+          # set -o pipefail: without it the pipeline exits with tee's status, so a restore or
+          # tooling failure writes an error into the file, grep matches nothing, and this step
+          # prints "No Moderate+ NuGet vulnerabilities" and passes. schema-gates guards against
+          # this exact shape; this step did not.
+          set -o pipefail
           dotnet list backend-dotnet/Zayra.Api/Zayra.Api.csproj package --vulnerable --include-transitive 2>&1 | tee dotnet-vuln.txt
+          if ! grep -q "The following sources were used" dotnet-vuln.txt && ! grep -qi "has no vulnerable packages\|Project .* has the following vulnerable" dotnet-vuln.txt; then
+            echo "::error::dotnet list produced no recognisable audit output — treating as a failed scan, not a clean one."
+            cat dotnet-vuln.txt
+            exit 1
+          fi
           if grep -Eiq "Critical|High|Moderate" dotnet-vuln.txt; then
             echo "::error::Vulnerable NuGet package(s) detected (Moderate+). See log above."
             exit 1
@@ -515,15 +536,36 @@ jobs:
   migrate-backend:
     name: Apply DB Migrations (deploy gate)
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan]
+    # chrome-security-gate added: it is the lane written to be un-fakeable (retries 0, forbidOnly,
+    # positive controls), while browser-pilot is CI-safe by design and can go green against a dead
+    # backend. Gating the deploy on the fakeable lane and not the strict one was backwards.
+    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     # WAVE 1 A4 — this job writes to the PRODUCTION DATABASE. It now runs only inside the protected
     # `production` GitHub environment, which requires a named reviewer's approval and is restricted to
     # protected branches. Before this, a merge to main migrated production with no human in the loop.
-    # The production connection string is scoped to this environment, so no other job can reach it.
+    # NOTE: environment approval gates the JOB, not the SECRET. PROD_DATABASE_URL and
+    # RENDER_DEPLOY_HOOK_URL are currently REPOSITORY secrets (verified: the Production environment
+    # holds zero secrets), so any job in any workflow on any branch can reference them without
+    # approval. Move them to this environment to make the boundary real; until then this comment
+    # describes an intent, not a control.
     environment: production
     steps:
       - uses: actions/checkout@v4
+
+      # Main runs no longer cancel each other (see the concurrency block), so two approvals can be
+      # outstanding at once and approved out of order. Render builds from BRANCH HEAD, so approving
+      # the older run would ship newer code than that run believes it is shipping. Refuse.
+      - name: Refuse to migrate a superseded commit
+        run: |
+          set -euo pipefail
+          git fetch --quiet --depth=1 origin main
+          head=$(git rev-parse origin/main)
+          if [ "$head" != "${{ github.sha }}" ]; then
+            echo "::error::main moved to $head since this run started (${{ github.sha }}). The later run carries these migrations plus newer ones — approve that run instead."
+            exit 1
+          fi
+          echo "This run is main HEAD ($head)."
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -551,7 +593,10 @@ jobs:
   build-image:
     name: Build & push backend image (GHCR)
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan]
+    # chrome-security-gate added: it is the lane written to be un-fakeable (retries 0, forbidOnly,
+    # positive controls), while browser-pilot is CI-safe by design and can go green against a dead
+    # backend. Gating the deploy on the fakeable lane and not the strict one was backwards.
+    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: read
@@ -663,3 +708,24 @@ jobs:
           done
           echo "::error::Timed out after 15m. Production is NOT running $EXPECTED (last seen: '${got:-unreachable}'). Previous commit was ${PREVIOUS_COMMIT:-unknown}. See docs/DEPLOY_ROLLBACK_RUNBOOK.md."
           exit 1
+
+  # The human half of the 2026-08-26 incident: migrate-backend showed `cancelled`, which reads like
+  # `skipped`, so four consecutive merges silently failed to ship and nobody noticed. A merge that
+  # does not reach production is now a red run, deliberately — a benign-looking terminal state is
+  # what hid this.
+  release-outcome:
+    name: Release outcome (main)
+    runs-on: ubuntu-latest
+    needs: [migrate-backend, deploy-backend]
+    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Fail if main merged but production did not ship
+        run: |
+          m='${{ needs.migrate-backend.result }}'
+          d='${{ needs.deploy-backend.result }}'
+          echo "migrate-backend=$m  deploy-backend=$d"
+          if [ "$m" != "success" ] || [ "$d" != "success" ]; then
+            echo "::error::main merged but production did NOT ship (migrate=$m, deploy=$d). Production is now BEHIND main. See docs/DEPLOY_ROLLBACK_RUNBOOK.md."
+            exit 1
+          fi
+          echo "Production is running this commit."
