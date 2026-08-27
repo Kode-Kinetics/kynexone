@@ -719,35 +719,8 @@ public static class DemoDataSeeder
         var casual = leaveTypes.First(x => x.Code == "CASUAL");
         var unpaid = leaveTypes.First(x => x.Code == "UNPAID");
 
-        // ── Attendance (last 90 days, working days only) ─────────────────────
-        var seededEmpIds = await db.AttendanceRecords
-            .Where(x => x.TenantId == tenantId)
-            .Select(x => x.EmployeeId).Distinct().ToListAsync(ct);
-        var attendTargets = employees.Where(e => !seededEmpIds.Contains(e.Id)).ToList();
-        if (attendTargets.Count > 0)
-        {
-            var rng = new Random(tenantId.GetHashCode() & 0x7fffffff);
-            var records = new List<AttendanceRecord>();
-            for (var d = today.AddDays(-90); d <= today; d = d.AddDays(1))
-            {
-                if (d.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday) continue;
-                foreach (var emp in attendTargets)
-                {
-                    var r = rng.Next(100);
-                    var status = r < 83 ? "Present" : r < 91 ? "Late" : r < 95 ? "Leave" : "Absent";
-                    records.Add(new AttendanceRecord
-                    {
-                        TenantId = tenantId, EmployeeId = emp.Id, WorkDate = d, Status = status,
-                        TimeIn  = status is "Present" ? new TimeOnly(8, 30) : status is "Late" ? new TimeOnly(9, 15) : null,
-                        TimeOut = status is "Present" or "Late" ? new TimeOnly(17, 30) : null,
-                        OvertimeHours = status == "Present" && rng.Next(100) < 18 ? rng.Next(1, 4) : 0,
-                        Notes = string.Empty,
-                    });
-                }
-            }
-            db.AttendanceRecords.AddRange(records);
-            await db.SaveChangesAsync(ct);
-        }
+        // Attendance now runs AFTER the leave requests below, so a day covered by an approved
+        // leave request cannot also be seeded as "Present" — see "── Attendance" further down.
 
         // ── Leave requests (sample data) ─────────────────────────────────────
         if (!await db.LeaveRequests.AnyAsync(x => x.TenantId == tenantId, ct) && employees.Count >= 2)
@@ -776,6 +749,61 @@ public static class DemoDataSeeder
                 });
             }
             db.LeaveRequests.AddRange(requests);
+            await db.SaveChangesAsync(ct);
+        }
+
+        // ── Attendance (last 90 days, working days only) ─────────────────────
+        // Writes AttendanceDailyRecord — the table GET /api/attendance and /monthly read — plus the
+        // punches behind it and the legacy projection, via AttendanceDemoSeed. Only the punch times
+        // are chosen here; status and every minute figure are derived through the pipeline's own
+        // formulas, so the seeded overtime is a consequence of a later clock-out rather than an
+        // independent random number attached to a day with no punches.
+        //
+        // The old ~4% "Leave" roll is seeded as a half day, not "On leave": ProcessEmployeeDay only
+        // produces "On leave" when an approved leave request covers the day, and these rolls have
+        // none. Days genuinely covered by the approved leave seeded above read "On leave".
+        //
+        // Per-employee guard: employees that already have attendance keep it; new ones get history.
+        var seededEmpIds = await db.AttendanceDailyRecords
+            .Where(x => x.TenantId == tenantId)
+            .Select(x => x.EmployeeId).Distinct().ToListAsync(ct);
+        var attendTargets = employees.Where(e => !seededEmpIds.Contains(e.Id)).ToList();
+        if (attendTargets.Count > 0)
+        {
+            var rng = new Random(tenantId.GetHashCode() & 0x7fffffff);
+            var attPolicy = await AttendanceDemoSeed.ResolvePolicyAsync(db, tenantId, ct);
+            var attTz     = await AttendanceDemoSeed.ResolveTimeZoneAsync(db, tenantId, ct);
+            var approvedLeave = await db.LeaveRequests.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Status == "Approved")
+                .Select(x => new { x.EmployeeId, x.StartDate, x.EndDate })
+                .ToListAsync(ct);
+            for (var d = today.AddDays(-90); d <= today; d = d.AddDays(1))
+            {
+                if (d.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday) continue;
+                foreach (var emp in attendTargets)
+                {
+                    var r = rng.Next(100);
+                    var worksLate = rng.Next(100) < 18;   // drawn every day so the RNG walk is stable
+                    TimeOnly? inLocal, outLocal;
+                    var context = AttendanceDemoSeed.DayContext.WorkingDay;
+                    if (approvedLeave.Any(l => l.EmployeeId == emp.Id && l.StartDate <= d && l.EndDate >= d))
+                    {
+                        (inLocal, outLocal) = (null, null);
+                        context = AttendanceDemoSeed.DayContext.ApprovedLeave;
+                    }
+                    else if (r < 83)                                 // on time; sometimes stays late
+                        (inLocal, outLocal) = (new TimeOnly(8, 30), new TimeOnly(worksLate ? 19 : 17, 30));
+                    else if (r < 91)                                 // late arrival → derives "Late"
+                        (inLocal, outLocal) = (new TimeOnly(9, 25), new TimeOnly(17, 30));
+                    else if (r < 95)                                 // short day → derives "Half day"
+                        (inLocal, outLocal) = (new TimeOnly(8, 30), new TimeOnly(12, 0));
+                    else                                             // no punches → derives "Absent"
+                        (inLocal, outLocal) = (null, null);
+
+                    AttendanceDemoSeed.AddDay(db, tenantId, AttendanceDemoSeed.EmployeeFacts.From(emp),
+                        d, inLocal, outLocal, attPolicy, attTz, context);
+                }
+            }
             await db.SaveChangesAsync(ct);
         }
 

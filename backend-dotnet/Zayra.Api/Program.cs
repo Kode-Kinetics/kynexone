@@ -955,6 +955,7 @@ using (var scope = app.Services.CreateScope())
             dbContext,
             scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
             authSeeder,
+            scope.ServiceProvider.GetRequiredService<Zayra.Api.Application.WorkWeek.IWorkWeekService>(),
             scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder>()).SeedAsync(), logger);
 
     await TrySeedAsync("GosiRuleSeeder",      () => GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger), logger);

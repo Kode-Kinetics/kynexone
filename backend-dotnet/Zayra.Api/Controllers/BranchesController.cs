@@ -26,6 +26,18 @@ public class BranchesController : ControllerBase
             "IsHeadOffice", "IsActive"
         };
 
+    /// <summary>The template's example row, kept adjacent to the header it is positionally paired with
+    /// so a new column cannot be added to one without the other. Every value is a neutral placeholder —
+    /// never a real-looking company and never another tenant's name. CompanyLegalName must match a
+    /// company the tenant has already imported, so it uses the same "Example Company Ltd" placeholder
+    /// the companies template hands out and the two line up when filled in order.</summary>
+    private static readonly string[] CsvExampleRow =
+        {
+            "Example Company Ltd", "HQ", "Head Office", "", "SA", "Main City",
+            "", "", "Asia/Riyadh", "",
+            "true", "true"
+        };
+
     public BranchesController(IOrganizationSetupService organization, ZayraDbContext db)
     {
         _organization = organization;
@@ -113,14 +125,8 @@ public class BranchesController : ControllerBase
 
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public IActionResult ImportTemplate()
-    {
-        var sb = new StringBuilder();
-        sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("IntelliFlow Systems LLC,HQ,Head Office,المقر الرئيسي,AE,Dubai,Sheikh Zayed Road,Floor 21,Asia/Dubai,DXB-LAB-001,true,true\n");
-        sb.Append("IntelliFlow Systems LLC,RYD,Riyadh Office,,SA,Riyadh,King Fahd Road,,Asia/Riyadh,RYD-LAB-001,false,true\n");
-        return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "branches_import_template.csv");
-    }
+    public IActionResult ImportTemplate() =>
+        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "branches_import_template.csv");
 
     // ── Import Preview ────────────────────────────────────────────────────────
 

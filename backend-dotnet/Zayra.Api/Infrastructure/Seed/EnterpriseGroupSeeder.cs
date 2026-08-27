@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
@@ -24,13 +25,15 @@ public sealed class EnterpriseGroupSeeder
     private readonly ZayraDbContext _db;
     private readonly IPasswordHasher _hasher;
     private readonly IAuthSeeder _authSeeder;
+    private readonly IWorkWeekService _workWeek;
     private readonly ILogger<EnterpriseGroupSeeder> _log;
 
-    public EnterpriseGroupSeeder(ZayraDbContext db, IPasswordHasher hasher, IAuthSeeder authSeeder, ILogger<EnterpriseGroupSeeder> log)
+    public EnterpriseGroupSeeder(ZayraDbContext db, IPasswordHasher hasher, IAuthSeeder authSeeder, IWorkWeekService workWeek, ILogger<EnterpriseGroupSeeder> log)
     {
         _db = db;
         _hasher = hasher;
         _authSeeder = authSeeder;
+        _workWeek = workWeek;
         _log = log;
     }
 
@@ -185,15 +188,26 @@ public sealed class EnterpriseGroupSeeder
             _db.Employees.AddRange(employees);
             await _db.SaveChangesAsync(ct); // int identity ids needed below
 
+            // Attendance: AttendanceDailyRecord — the table GET /api/attendance and /monthly read —
+            // plus the punches behind it and the legacy projection. Rest days come from the same
+            // IWorkWeekService the pipeline uses, so a weekend inside this 5-day window reads
+            // "Rest day" rather than a "Present" day nobody worked.
+            var attPolicy = await AttendanceDemoSeed.ResolvePolicyAsync(_db, tenant.Id, ct);
+            var attTz     = await AttendanceDemoSeed.ResolveTimeZoneAsync(_db, tenant.Id, ct);
+            var workWeek  = await _workWeek.ResolveAsync(tenant.Id, company.Id, spec.CountryCode, ct);
             foreach (var employee in employees)
             {
                 for (var d = 1; d <= 5; d++)
                 {
-                    _db.AttendanceRecords.Add(new AttendanceRecord
-                    {
-                        TenantId = tenant.Id, CompanyId = company.Id, EmployeeId = employee.Id,
-                        WorkDate = today.AddDays(-d), Status = d == 3 ? "Absent" : "Present",
-                    });
+                    var date    = today.AddDays(-d);
+                    var restDay = workWeek.IsWeekend(date.DayOfWeek);
+                    var worked  = !restDay && d != 3;   // d == 3 is the deliberate absence
+                    AttendanceDemoSeed.AddDay(_db, tenant.Id, AttendanceDemoSeed.EmployeeFacts.From(employee),
+                        date,
+                        worked ? new TimeOnly(8, 30) : null,
+                        worked ? new TimeOnly(17, 30) : null,
+                        attPolicy, attTz,
+                        restDay ? AttendanceDemoSeed.DayContext.RestDay : AttendanceDemoSeed.DayContext.WorkingDay);
                 }
             }
             _db.LeaveRequests.Add(new LeaveRequest

@@ -178,6 +178,10 @@ public class OpeningsController : ControllerBase
     private static readonly string[] JobOpeningCsvHeaders =
         { "Title", "DepartmentName", "DesignationTitle", "EmploymentType", "HeadCount", "Location", "SalaryFrom", "SalaryTo", "Description", "Requirements", "Responsibilities", "AssignedHrName", "Status" };
 
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.</summary>
+    private static readonly string[] JobOpeningCsvExampleRow =
+        { "Example Job Title", "Operations", "Operations Officer", "Full-Time", "1", "Main City", "8000", "12000", "Example description", "Example requirements", "Example responsibilities", "", "Open" };
+
     [HttpGet("export")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
@@ -200,7 +204,7 @@ public class OpeningsController : ControllerBase
     public IActionResult ImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=job_openings_import_template.csv";
-        return Content(Csv.Template(JobOpeningCsvHeaders), "text/csv");
+        return Content(Csv.Template(JobOpeningCsvHeaders, JobOpeningCsvExampleRow), "text/csv");
     }
 
     [HttpPost("import")]

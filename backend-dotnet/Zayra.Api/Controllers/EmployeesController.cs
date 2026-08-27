@@ -212,6 +212,13 @@ public class EmployeesController : ControllerBase
     private static IReadOnlyList<string> EmployeeCsvHeaders =>
         Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.CsvHeaders;
 
+    // The template's example row comes from the SAME registry, derived from the same ordered catalog in
+    // the same pass — never a hardcoded row. A literal example row is positional, so it would silently
+    // shift one column per field added to the catalog: precisely the drift the hand-maintained header
+    // array was deleted to prevent, reintroduced one line lower down.
+    private static IReadOnlyList<string> EmployeeCsvExampleRow =>
+        Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.CsvExampleRow;
+
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
     public async Task<IActionResult> Export(CancellationToken ct)
@@ -375,11 +382,12 @@ public class EmployeesController : ControllerBase
         return Csv.Build(headers, rows);
     }
 
-    /// <summary>Downloadable blank template — the shareable "data format" to fill and import.</summary>
+    /// <summary>Downloadable template — the shareable "data format" to fill and import, with one
+    /// registry-derived placeholder row showing the expected shape of every column.</summary>
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders)), "text/csv", "employees_import_template.csv");
+        File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders, EmployeeCsvExampleRow)), "text/csv", "employees_import_template.csv");
 
     /// <summary>
     /// The Employee Field RESOLVER (§3.1/§3.3) — the ONE backend source of truth for the create/edit modal
@@ -3880,6 +3888,12 @@ public class EmployeesController : ControllerBase
                 case "visaIssueDate": employee.VisaIssueDate = ReadDateOnly(value); break;
                 case "visaExpiryDate": employee.VisaExpiryDate = ReadDateOnly(value); break;
                 case "iqamaNumber": employee.IqamaNumber = value.GetString() ?? employee.IqamaNumber; break;
+                // IqamaExpiry was readable and CSV-importable but had no edit path: it is exported at
+                // the employee-detail projection and read by both CSV importers, yet ApplyChanges had
+                // no case for it. GccReadinessFloor treats it as a fail-closed PAY gate for non-GCC
+                // expats, so an employee whose iqama expiry was wrong could be blocked from payroll
+                // with no supported way to correct it. Mirrors passportExpiryDate directly above.
+                case "iqamaExpiryDate": employee.IqamaExpiryDate = ReadDateOnly(value); break;
                 case "muqeemNumber": employee.MuqeemNumber = value.GetString() ?? employee.MuqeemNumber; break;
                 case "gosiReference": employee.GosiReference = value.GetString() ?? employee.GosiReference; break;
                 case "emiratesId": employee.EmiratesId = value.GetString() ?? employee.EmiratesId; break;
