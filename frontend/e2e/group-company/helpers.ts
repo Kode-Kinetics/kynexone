@@ -320,8 +320,46 @@ export async function pickCompanyInSwitcher(page: Page, code: string): Promise<b
 }
 
 /** Full visible page text (lowercased comparisons are up to the caller). */
+/**
+ * Reads the page body. Deliberately does NOT swallow errors.
+ *
+ * This used to be `.catch(() => '')`. Its output feeds ~14 leak assertions of the form
+ * `expect(text).not.toContain('<sibling company code>')` — and an empty string contains no
+ * sibling codes. So a detached frame, a redirect to /login, an unrendered page, or any thrown
+ * locator error all produced PASS. Proved: the verbatim leak assertion from scoped-user.spec.ts
+ * passed against a completely logged-out browser.
+ *
+ * A negative assertion is only meaningful if the thing it reads actually loaded, so this now
+ * throws on failure and asserts the page is authenticated and has rendered real content — not
+ * just the navigation shell, which is 479-685 characters on its own.
+ */
 export async function bodyText(page: Page): Promise<string> {
-  return (await page.locator('body').innerText().catch(() => '')) ?? '';
+  if (/\/login/.test(page.url())) {
+    throw new Error(
+      `bodyText() called on ${page.url()} — the page is the login screen, not authenticated `
+      + 'content. Any "does not contain sibling data" assertion here would pass vacuously.',
+    );
+  }
+  const text = await page.locator('body').innerText();
+  if (!text || text.trim().length === 0) {
+    throw new Error(`bodyText() read an empty body at ${page.url()} — nothing rendered.`);
+  }
+  return text;
+}
+
+/**
+ * Content length excluding the static navigation shell.
+ *
+ * `innerText().length > 50` was the suite's standard "the page loaded" proxy, and the shell alone
+ * satisfies it: nav 382 + aside 479 + header 90 characters. Proved by fulfilling every /api/**
+ * request with a 500 — /payroll, /leave, /attendance, /people, /offboarding and
+ * /saudi-compliance all still cleared the threshold. Measure the main region instead.
+ */
+export async function mainContentLength(page: Page): Promise<number> {
+  const main = page.locator('main, [role="main"]').first();
+  if (await main.count() === 0) return 0;
+  const text = await main.innerText().catch(() => '');
+  return (text ?? '').trim().length;
 }
 
 /** True when the current page looks like a Next.js 404 / not-found. */
