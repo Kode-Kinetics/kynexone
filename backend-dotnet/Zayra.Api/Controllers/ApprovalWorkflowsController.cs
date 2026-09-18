@@ -38,6 +38,7 @@ public class ApprovalWorkflowsController : ControllerBase
             var workflow = await _approvals.CreateWorkflowAsync(RequireTenant(), request, Context(), cancellationToken);
             return Created($"/api/approval-workflows/{workflow.Id}", workflow);
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -49,6 +50,7 @@ public class ApprovalWorkflowsController : ControllerBase
         {
             return await _approvals.UpdateWorkflowAsync(RequireTenant(), id, request, Context(), cancellationToken) is { } workflow ? Ok(workflow) : NotFound();
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -74,6 +76,7 @@ public class ApprovalWorkflowsController : ControllerBase
             var approval = await _approvals.CreateRequestAsync(RequireTenant(), request, Context(), cancellationToken);
             return Created($"/api/approval-workflows/requests/{approval.Id}", approval);
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -85,6 +88,7 @@ public class ApprovalWorkflowsController : ControllerBase
         {
             return await _approvals.DecideAsync(RequireTenant(), requestId, request, Context(), cancellationToken) is { } approval ? Ok(approval) : NotFound();
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

@@ -806,8 +806,10 @@ public class AuthSeeder : IAuthSeeder
         // ICompanyScopedOperational: the nine rows this block used to write with CompanyId null were
         // readable only by the group-scope admin, so any ordinary company-scoped login opened Leave on
         // an empty list. See DemoLeaveSeed's remarks for why no backfill rescued them.
-        var leaveWorkflowId = (await _db.ApprovalWorkflows
-            .Where(x => x.TenantId == tenantId).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct)) ?? Guid.Empty;
+        // F1: the demo projections must reference the tenant's real LEAVE workflow — previously this
+        // took the tenant's first workflow of ANY entity (unordered), or Guid.Empty.
+        var leaveWorkflowId = (await new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(_db)
+            .TryResolveAsync(tenantId, null, nameof(LeaveRequest), ct))?.WorkflowId ?? Guid.Empty;
         var nowUtc = DateTime.UtcNow;
         if (!await _db.LeaveRequests.AnyAsync(x => x.TenantId == tenantId, ct))
         {

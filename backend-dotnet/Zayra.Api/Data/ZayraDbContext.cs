@@ -1654,6 +1654,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("approval_workflows");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // F1 — the router's lookup: a tenant's active workflows for one entity, by org scope.
+            entity.HasIndex(x => new { x.TenantId, x.EntityName, x.IsActive, x.DepartmentId, x.GradeId })
+                .HasDatabaseName("IX_approval_workflows_routing");
             entity.HasMany(x => x.Steps).WithOne().HasForeignKey(x => x.WorkflowId).OnDelete(DeleteBehavior.Cascade);
         });
 
@@ -1703,6 +1706,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.ManagerEmployeeId, x.IsActive });
         });
 
+        // DEPRECATED (F1): approval_policies / approval_policy_steps are frozen — migrated into
+        // approval_workflows by ConvergeApprovalPolicyIntoWorkflow and read/written by nothing. They
+        // stay mapped for one release so an app rollback still finds its configuration; a follow-up
+        // migration drops them.
         modelBuilder.Entity<ApprovalPolicy>(entity =>
         {
             entity.ToTable("approval_policies");

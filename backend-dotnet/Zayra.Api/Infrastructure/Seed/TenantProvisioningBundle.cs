@@ -32,7 +32,7 @@ public static class TenantProvisioningBundle
 {
     public readonly record struct ProvisionResult(
         int CountryRules, int MasterDataTypes, int MasterDataValues, int HrCategories,
-        int AttendancePolicies, int LeaveTypes, int LeavePolicies, int ApprovalPolicies, int NotificationTemplates,
+        int AttendancePolicies, int LeaveTypes, int LeavePolicies, int ApprovalWorkflows, int NotificationTemplates,
         int ComplianceProfiles = 0);
 
     public static async Task<ProvisionResult> ProvisionAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
@@ -44,7 +44,7 @@ public static class TenantProvisioningBundle
         var hrCategories  = await InstallHrRequestCategoriesAsync(db, tenantId, ct);
         var attnPolicies  = await InstallDefaultAttendancePolicyAsync(db, tenantId, ct);
         var (leaveTypes, leavePolicies) = await InstallDefaultLeaveAsync(db, tenantId, ct);
-        var apPolicies    = await InstallDefaultApprovalPoliciesAsync(db, tenantId, ct);
+        var apPolicies    = await InstallDefaultApprovalWorkflowsAsync(db, tenantId, ct);
         var notifs        = await InstallNotificationTemplatesAsync(db, tenantId, ct);
         var compliance    = await InstallComplianceProfilesAsync(db, tenantId, ct);
 
@@ -337,39 +337,47 @@ public static class TenantProvisioningBundle
         return (typesAdded, policiesAdded);
     }
 
-    // ── 6. Default approval policies per core workflow type (Program A4 — seeded defaults) ──
+    // ── 6. Default approval workflows per core entity (Program A4 — seeded defaults) ──
+    // F1: installed as ApprovalWorkflow, the single approval-configuration model the router reads.
+    // (Previously ApprovalPolicy rows — which only leave read, and which tenants never saw in the
+    // Approvals UI.) Same content as before: one HR-approver step, editable by the tenant.
 
-    private static readonly (string WorkflowType, string Name)[] ApprovalDefaults =
+    private static readonly (string EntityName, string Code, string Name)[] ApprovalDefaults =
     {
-        ("Leave", "Default Leave Approval"),
-        ("Overtime", "Default Overtime Approval"),
-        ("Payroll", "Default Payroll Approval"),
+        (nameof(LeaveRequest), "LEAVE-DEFAULT", "Default Leave Approval"),
+        (nameof(OvertimeRequest), "OVERTIME-DEFAULT", "Default Overtime Approval"),
+        ("PayrollRun", "PAYROLL-DEFAULT", "Default Payroll Approval"),
     };
 
-    private static async Task<int> InstallDefaultApprovalPoliciesAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    private static async Task<int> InstallDefaultApprovalWorkflowsAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
         // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent, never touches another tenant.
-        var existing = (await db.ApprovalPolicies.IgnoreQueryFilters().AsNoTracking()
-            .Where(p => p.TenantId == tenantId && p.IsDefault)
-            .Select(p => p.WorkflowType).ToListAsync(ct))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var existing = await db.ApprovalWorkflows.IgnoreQueryFilters().AsNoTracking()
+            .Where(w => w.TenantId == tenantId)
+            .Select(w => new { w.Code, w.EntityName, w.IsActive, w.DepartmentId, w.GradeId })
+            .ToListAsync(ct);
+        // Natural key: an active tenant-wide workflow for the entity already exists (the tenant's own
+        // or a previous install), or the code is taken. Either way this install is a no-op.
+        var coveredEntities = existing.Where(w => w.IsActive && w.DepartmentId == null && w.GradeId == null)
+            .Select(w => w.EntityName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var codes = existing.Select(w => w.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var added = 0;
-        foreach (var (workflowType, name) in ApprovalDefaults)
+        foreach (var (entityName, code, name) in ApprovalDefaults)
         {
-            if (!existing.Add(workflowType)) continue;
-            var policy = new ApprovalPolicy
+            if (coveredEntities.Contains(entityName) || codes.Contains(code)) continue;
+            var workflow = new ApprovalWorkflow
             {
-                TenantId = tenantId, WorkflowType = workflowType, Name = name,
+                TenantId = tenantId, Code = code, Name = name, EntityName = entityName,
                 IsDefault = true, IsActive = true,
             };
-            // Single HR-approver step by default (resolves to any HR Manager/Officer — configurable).
-            policy.Steps.Add(new ApprovalPolicyStep
+            // Single HR-approver step by default (the HR Manager role queue — configurable).
+            workflow.Steps.Add(new ApprovalWorkflowStep
             {
-                TenantId = tenantId, PolicyId = policy.Id, StepOrder = 1,
-                StepName = "HR Approval", ApproverType = "HR", IsFinalStep = true,
+                TenantId = tenantId, WorkflowId = workflow.Id, StepOrder = 1,
+                StepName = "HR Approval", ApproverType = "HR", ApproverRole = "HR Manager", IsFinalStep = true,
             });
-            db.ApprovalPolicies.Add(policy);
+            db.ApprovalWorkflows.Add(workflow);
             added++;
         }
         return added;

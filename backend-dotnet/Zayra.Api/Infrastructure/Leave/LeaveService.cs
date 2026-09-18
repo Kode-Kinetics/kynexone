@@ -3,6 +3,7 @@ using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
@@ -11,13 +12,13 @@ namespace Zayra.Api.Infrastructure.Leave;
 public class LeaveService : ILeaveService
 {
     private readonly ZayraDbContext _db;
-    private readonly IApprovalPolicyService _policyService;
+    private readonly IApprovalRouter _router;
     private readonly IWorkWeekService _workWeek;
 
-    public LeaveService(ZayraDbContext db, IApprovalPolicyService policyService, IWorkWeekService? workWeek = null)
+    public LeaveService(ZayraDbContext db, IApprovalRouter router, IWorkWeekService? workWeek = null)
     {
         _db = db;
-        _policyService = policyService;
+        _router = router;
         // Optional so existing callers/tests keep working; DI always supplies the real one.
         _workWeek = workWeek ?? new WorkWeekService(db);
     }
@@ -484,54 +485,18 @@ public class LeaveService : ILeaveService
         request.LeaveTypeName = leaveType.NameEn;
         request.SubmittedAtUtc = DateTime.UtcNow;
 
-        // Resolve approver from hierarchy policy. A missing tenant policy must still produce an
-        // actionable queue item: leaving the request in bare "Submitted" created no LeaveApproval,
-        // while the UI promised manager approval and both operational queues showed zero work.
-        // Fall back to the employee's direct manager; if no usable manager account exists, route
-        // visibly to the HR Manager role instead of silently orphaning the request.
-        var resolvedPolicy = await _policyService.ResolveAsync(tenantId, request.EmployeeId, "Leave", ct);
-        LeaveApproval firstApproval;
-        int? firstApproverEmployeeId;
-        if (resolvedPolicy is not null && resolvedPolicy.Steps.Count > 0)
-        {
-            var firstStep = resolvedPolicy.Steps[0];
-            request.Status = "PendingManagerApproval";
-            firstApproverEmployeeId = firstStep.ApproverEmployeeId;
-            firstApproval = new LeaveApproval
-            {
-                TenantId = tenantId,
-                LeaveRequestId = request.Id,
-                StepNumber = firstStep.StepOrder,
-                ApproverRole = ResolvedApproverRole(firstStep),
-                ApproverId = firstStep.ApproverEmployeeId.HasValue
-                    ? await ResolveUserIdAsync(tenantId, firstStep.ApproverEmployeeId.Value, ct)
-                    : null,
-                ApproverName = firstStep.ApproverEmployeeName ?? string.Empty,
-                Decision = "Pending",
-            };
-        }
-        else
-        {
-            var fallbackManager = employee.ManagerEmployeeId.HasValue
-                ? await _db.Employees.AsNoTracking()
-                    .Where(e => e.TenantId == tenantId && e.Id == employee.ManagerEmployeeId.Value && !e.IsDeleted)
-                    .Select(e => new { e.UserAccountId, e.FullName })
-                    .FirstOrDefaultAsync(ct)
-                : null;
-
-            request.Status = "PendingManagerApproval";
-            firstApproverEmployeeId = employee.ManagerEmployeeId;
-            firstApproval = new LeaveApproval
-            {
-                TenantId = tenantId,
-                LeaveRequestId = request.Id,
-                StepNumber = 1,
-                ApproverRole = fallbackManager?.UserAccountId is not null ? "Manager" : "HR Manager",
-                ApproverId = fallbackManager?.UserAccountId,
-                ApproverName = fallbackManager?.FullName ?? string.Empty,
-                Decision = "Pending",
-            };
-        }
+        // F1 — route through the ONE approval router. The tenant's ApprovalWorkflow for LeaveRequest
+        // decides the chain; there is no hard-coded fallback any more. Before F1 this read the separate
+        // ApprovalPolicy table, found nothing for tenants that configure ApprovalWorkflow, and invented
+        // a single "manager, else HR Manager" step — so a configured two-step chain executed as one
+        // click. A tenant with no applicable workflow now gets ApprovalRouteNotConfiguredException: the
+        // submission is refused, this transaction rolls back, and no balance is reserved.
+        var route = await _router.ResolveAsync(tenantId, request.EmployeeId, nameof(LeaveRequest), ct);
+        var firstStep = route.FirstStep;
+        var firstApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, firstStep, ct);
+        request.Status = StatusForPendingStep(firstStep);
+        var firstApproverEmployeeId = firstApprover.EmployeeId;
+        var firstApproval = BuildPendingApproval(tenantId, request.Id, firstStep, firstApprover);
 
         _db.LeaveApprovals.Add(firstApproval);
         _db.LeaveRequests.Add(request);
@@ -555,8 +520,9 @@ public class LeaveService : ILeaveService
             request,
             firstApproval,
             firstApproverEmployeeId,
-            resolvedPolicy?.PolicyId ?? Guid.Empty,
-            requestedByUserId ?? employee.UserAccountId));
+            route.WorkflowId,
+            requestedByUserId ?? employee.UserAccountId,
+            firstStep.EscalationAfterHours));
 
         foreach (var segment in yearSegments)
             await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year,
@@ -590,39 +556,35 @@ public class LeaveService : ILeaveService
         await EnsureMakerCheckerAsync(request, approverId, ct);
 
         var previousStatus = request.Status;
-        var resolvedPolicy = await _policyService.ResolveAsync(tenantId, request.EmployeeId, "Leave", ct);
         var pendingApproval = await _db.LeaveApprovals
             .Where(a => a.TenantId == tenantId && a.LeaveRequestId == requestId && a.Decision == "Pending")
             .OrderBy(a => a.StepNumber)
             .FirstOrDefaultAsync(ct);
 
         var currentApproval = await EnsureCanonicalApprovalAsync(request, pendingApproval, ct);
+        // F1 — the chain executes against the workflow this request was ROUTED by (pinned in
+        // ApprovalRequest.WorkflowId at submission), not a fresh lookup. A fresh lookup is how the
+        // pre-F1 code lost the chain: it re-resolved from a table tenants never configured, got null,
+        // found no next step, and approved at step 1.
+        var route = await ResolvePinnedRouteAsync(request, ct);
         await ConsumePendingApprovalAsync(currentApproval, "Approved", approverId, approverName, notes ?? string.Empty, ct);
 
         var currentStepNumber = currentApproval.StepNumber;
-        var nextStep = resolvedPolicy?.Steps
-            .Where(s => s.StepOrder > currentStepNumber)
-            .OrderBy(s => s.StepOrder)
-            .FirstOrDefault();
-
-        if (nextStep is not null)
+        var currentStep = route.FindStep(currentStepNumber);
+        // Only the step marked IsFinalStep completes the request and moves the balance. A step that
+        // is not final hands to the next step; if there is none the workflow is broken and the
+        // decision is refused (the transaction rolls back) rather than approved by default.
+        if (currentStep is null || !currentStep.IsFinalStep)
         {
+            var nextStep = route.NextStepAfter(currentStepNumber)
+                ?? throw new ApprovalRouteInvalidException(tenantId, nameof(LeaveRequest), route.WorkflowId, route.Code,
+                    $"step {currentStepNumber} is not final and no step follows it.");
+            var nextApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, nextStep, ct);
             request.Status = StatusForPendingStep(nextStep);
-            var nextApproval = new LeaveApproval
-            {
-                TenantId = tenantId,
-                LeaveRequestId = requestId,
-                StepNumber = nextStep.StepOrder,
-                ApproverRole = ResolvedApproverRole(nextStep),
-                ApproverId = nextStep.ApproverEmployeeId.HasValue
-                    ? await ResolveUserIdAsync(tenantId, nextStep.ApproverEmployeeId.Value, ct)
-                    : null,
-                ApproverName = nextStep.ApproverEmployeeName ?? string.Empty,
-                Decision = "Pending",
-            };
+            var nextApproval = BuildPendingApproval(tenantId, requestId, nextStep, nextApprover);
             _db.LeaveApprovals.Add(nextApproval);
             await SyncApprovalProjectionAsync(request, currentApproval, "Approved", approverId,
-                notes ?? string.Empty, nextApproval, nextStep.ApproverEmployeeId, ct);
+                notes ?? string.Empty, nextApproval, nextApprover.EmployeeId, ct, nextStep.EscalationAfterHours);
 
             await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "ApprovalStepApproved",
                 previousStatus, request.Status, notes ?? string.Empty, approverName, ct);
@@ -998,14 +960,6 @@ public class LeaveService : ILeaveService
 
     private sealed record LeaveYearSegment(int Year, decimal Days);
 
-    // Resolves the UserAccountId for an employee (used to route the LeaveApproval record to the right user inbox)
-    private async Task<Guid?> ResolveUserIdAsync(Guid tenantId, int employeeId, CancellationToken ct)
-        => await _db.Employees
-            .AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.Id == employeeId)
-            .Select(e => e.UserAccountId)
-            .FirstOrDefaultAsync(ct);
-
     private async Task EnsureMakerCheckerAsync(LeaveRequest request, Guid approverId, CancellationToken ct)
     {
         var employeeUserId = await _db.Employees.AsNoTracking()
@@ -1066,8 +1020,12 @@ public class LeaveService : ILeaveService
                 .Where(e => e.TenantId == request.TenantId && e.Id == request.EmployeeId && !e.IsDeleted)
                 .Select(e => e.UserAccountId)
                 .FirstOrDefaultAsync(ct);
+            // Legacy bridge for rows that pre-date routing projections: route now so the projection
+            // carries a real ApprovalWorkflow.Id (never Guid.Empty). No applicable workflow is a
+            // configuration error surfaced to the decider, not a reason to invent one.
+            var legacyRoute = await _router.ResolveAsync(request.TenantId, request.EmployeeId, nameof(LeaveRequest), ct);
             _db.ApprovalRequests.Add(BuildApprovalProjection(
-                request, pendingApproval, approverEmployeeId, Guid.Empty, requestedBy));
+                request, pendingApproval, approverEmployeeId, legacyRoute.WorkflowId, requestedBy, null));
             changed = true;
         }
 
@@ -1125,7 +1083,8 @@ public class LeaveService : ILeaveService
         string comments,
         LeaveApproval? nextApproval,
         int? nextApproverEmployeeId,
-        CancellationToken ct)
+        CancellationToken ct,
+        int? nextStepSlaHours = null)
     {
         var projection = _db.ApprovalRequests.Local.FirstOrDefault(x => x.Id == request.Id)
             ?? await _db.ApprovalRequests.FirstAsync(
@@ -1155,6 +1114,7 @@ public class LeaveService : ILeaveService
             projection.CurrentQueue = nextApproval.ApproverId.HasValue
                 ? $"{nextApproval.ApproverRole}:{nextApproval.ApproverName}"
                 : $"Role:{role}";
+            projection.SlaHours = Math.Clamp(nextStepSlaHours ?? 24, 1, 720);
             projection.DueAtUtc = now.AddHours(projection.SlaHours);
             projection.LastRoutedAtUtc = now;
             projection.CompletedAtUtc = null;
@@ -1170,25 +1130,71 @@ public class LeaveService : ILeaveService
         projection.DueAtUtc = null;
     }
 
-    private static string StatusForPendingStep(ResolvedApprovalStep step)
+    private static string StatusForPendingStep(ApprovalRouteStep step)
         => string.Equals(step.ApproverType, "HR", StringComparison.OrdinalIgnoreCase)
             || string.Equals(step.ApproverType, "HRBusinessPartner", StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(step.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
+                && step.ApproverRole.Trim().StartsWith("HR", StringComparison.OrdinalIgnoreCase))
             ? "PendingHRApproval"
             : "PendingManagerApproval";
 
-    private static string ResolvedApproverRole(ResolvedApprovalStep step)
-        => string.Equals(step.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(step.ApproverRole)
-                ? step.ApproverRole.Trim()
-                : step.ApproverType;
+    /// <summary>
+    /// The LeaveApproval role label for a routed step. A role step records its role; a person step
+    /// records its approver type (the label LeaveRequestsController authorises against). An escalated
+    /// person step records the HR Manager queue it was escalated to.
+    /// </summary>
+    private static string ResolvedApproverRole(ApprovalRouteStep step, ResolvedApprover approver)
+    {
+        if (approver.Escalated) return ApprovalRouter.HrManagerRole;
+        return string.Equals(step.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
+               && !string.IsNullOrWhiteSpace(step.ApproverRole)
+            ? step.ApproverRole.Trim()
+            : step.ApproverType;
+    }
+
+    private static LeaveApproval BuildPendingApproval(Guid tenantId, Guid leaveRequestId, ApprovalRouteStep step, ResolvedApprover approver)
+        => new()
+        {
+            TenantId = tenantId,
+            LeaveRequestId = leaveRequestId,
+            StepNumber = step.StepOrder,
+            ApproverRole = ResolvedApproverRole(step, approver),
+            ApproverId = approver.UserId,
+            ApproverName = approver.Name,
+            Decision = "Pending",
+        };
+
+    /// <summary>
+    /// The workflow a leave request is pinned to. Requests routed since F1 carry it in their
+    /// projection's WorkflowId. Requests in flight from before F1 carry Guid.Empty (the old fallback)
+    /// or an ApprovalPolicy id — which the F1 migration re-keyed as an ApprovalWorkflow with the SAME
+    /// id, so those load directly. Anything else is routed now and pinned, so the rest of its chain
+    /// executes against a real, recorded workflow.
+    /// </summary>
+    private async Task<ApprovalRoute> ResolvePinnedRouteAsync(LeaveRequest request, CancellationToken ct)
+    {
+        var projection = _db.ApprovalRequests.Local.FirstOrDefault(x => x.Id == request.Id)
+            ?? await _db.ApprovalRequests.FirstOrDefaultAsync(x => x.TenantId == request.TenantId && x.Id == request.Id, ct)
+            ?? throw new InvalidOperationException("The leave request has no approval routing record.");
+
+        var pinned = await _router.LoadAsync(request.TenantId, projection.WorkflowId, ct);
+        if (pinned is not null) return pinned;
+
+        var routed = await _router.ResolveAsync(request.TenantId, request.EmployeeId, nameof(LeaveRequest), ct);
+        projection.WorkflowId = routed.WorkflowId;
+        return routed;
+    }
 
     private static ApprovalRequest BuildApprovalProjection(
         LeaveRequest request,
         LeaveApproval currentApproval,
         int? currentApproverEmployeeId,
         Guid workflowId,
-        Guid? requestedByUserId)
+        Guid? requestedByUserId,
+        int? slaHours)
     {
+        if (workflowId == Guid.Empty)
+            throw new InvalidOperationException("An approval routing projection must reference a real approval workflow.");
         var approverRole = NormalizeApproverRole(currentApproval.ApproverRole);
         var now = DateTime.UtcNow;
         return new ApprovalRequest
@@ -1214,8 +1220,8 @@ public class LeaveService : ILeaveService
             CurrentQueue = currentApproval.ApproverId.HasValue
                 ? $"{currentApproval.ApproverRole}:{currentApproval.ApproverName}"
                 : $"Role:{approverRole}",
-            SlaHours = 24,
-            DueAtUtc = now.AddHours(24),
+            SlaHours = Math.Clamp(slaHours ?? 24, 1, 720),
+            DueAtUtc = now.AddHours(Math.Clamp(slaHours ?? 24, 1, 720)),
             LastRoutedAtUtc = now,
             CreatedAtUtc = request.SubmittedAtUtc ?? now,
             Priority = request.IsEmergency ? "High" : "Normal"

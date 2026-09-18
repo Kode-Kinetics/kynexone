@@ -33,7 +33,7 @@ public class LeaveCrossYearWithdrawalTests
         });
         await db.SaveChangesAsync();
 
-        var submitted = await new LeaveService(db, new ApprovalPolicyService(db)).SubmitRequestAsync(tenantId, new LeaveRequest
+        var submitted = await (await TestApprovalConfig.LeaveServiceAsync(db, tenantId)).SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,
             StartDate = date, EndDate = date, DayType = "Full",
@@ -68,7 +68,7 @@ public class LeaveCrossYearWithdrawalTests
             new EmployeeLeaveBalance { TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id, Year = 2027, Entitled = 5 });
         await db.SaveChangesAsync();
 
-        var service = new LeaveService(db, new ApprovalPolicyService(db));
+        var service = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var submitted = await service.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,

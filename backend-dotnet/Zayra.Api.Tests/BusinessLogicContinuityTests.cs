@@ -57,7 +57,7 @@ public class BusinessLogicContinuityTests
         await db.SaveChangesAsync();
 
         // Submit 3-day leave
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var request = new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
@@ -113,7 +113,7 @@ public class BusinessLogicContinuityTests
         });
         await db.SaveChangesAsync();
 
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var request = new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
@@ -167,7 +167,7 @@ public class BusinessLogicContinuityTests
         });
         await db.SaveChangesAsync();
 
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         await svc.AccrueMonthlyAsync(tenantId, CancellationToken.None);
 
         var activeBal = await db.EmployeeLeaveBalances
@@ -210,7 +210,7 @@ public class BusinessLogicContinuityTests
         });
         await db.SaveChangesAsync();
 
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var start = DateOnly.FromDateTime(DateTime.Today.AddDays(3));
         var request = new LeaveRequest
         {
@@ -249,7 +249,7 @@ public class BusinessLogicContinuityTests
         });
         await db.SaveChangesAsync();
 
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var start = DateOnly.FromDateTime(DateTime.Today.AddDays(5));
         var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
@@ -288,7 +288,7 @@ public class BusinessLogicContinuityTests
         });
         await db.SaveChangesAsync();
 
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var start = DateOnly.FromDateTime(DateTime.Today.AddDays(4));
         var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
@@ -790,8 +790,3 @@ file sealed class NullLetterService : ILetterService
     public Task<byte[]> GenerateOfferLetterAsync(OfferLetterData d, CancellationToken ct) => Task.FromResult(Array.Empty<byte>());
 }
 
-file sealed class NullApprovalPolicyService : IApprovalPolicyService
-{
-    public Task<ResolvedApprovalPolicy?> ResolveAsync(Guid tenantId, int employeeId, string workflowType, CancellationToken ct)
-        => Task.FromResult<ResolvedApprovalPolicy?>(null);
-}

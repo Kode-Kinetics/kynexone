@@ -170,6 +170,9 @@ public class LeaveRequestsController : ControllerBase
                 "LeaveRequest", submitted.Id.ToString(), ct);
             return Created($"/api/leave/requests/{submitted.Id}", submitted);
         }
+        // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
+        // stable code, distinct from ordinary validation failures.
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -208,6 +211,9 @@ public class LeaveRequestsController : ControllerBase
                 "LeaveRequest", result.Id.ToString(), ct);
             return Ok(result);
         }
+        // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
+        // stable code, distinct from ordinary validation failures.
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -248,6 +254,9 @@ public class LeaveRequestsController : ControllerBase
                 "LeaveRequest", result.Id.ToString(), ct);
             return Ok(result);
         }
+        // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
+        // stable code, distinct from ordinary validation failures.
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -302,6 +311,9 @@ public class LeaveRequestsController : ControllerBase
                 "LeaveRequest", result.Id.ToString(), ct);
             return Ok(result);
         }
+        // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
+        // stable code, distinct from ordinary validation failures.
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });

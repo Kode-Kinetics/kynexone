@@ -535,21 +535,20 @@ public static class DemoDataSeeder
         });
         await db.SaveChangesAsync(ct);
 
-        // ── Approval policies (Leave: Manager → HR Director) ─────────────────
-        var leavePolicy = new ApprovalPolicy
+        // ── Approval workflow (Leave: Manager → HR Director) ─────────────────
+        // F1: ApprovalWorkflow is the single approval-configuration model (ApprovalPolicy is retired).
+        var leaveWorkflow = new ApprovalWorkflow
         {
             TenantId = tenantId,
-            WorkflowType = "Leave",
+            Code = "LEAVE-STANDARD",
             Name = "Standard Leave Approval",
+            EntityName = nameof(LeaveRequest),
             IsDefault = true,
             IsActive = true,
         };
-        db.ApprovalPolicies.Add(leavePolicy);
-        await db.SaveChangesAsync(ct);
-        db.ApprovalPolicySteps.AddRange(
-            new ApprovalPolicyStep { TenantId = tenantId, PolicyId = leavePolicy.Id, StepOrder = 1, StepName = "Manager Approval", ApproverType = "Manager", IsFinalStep = false },
-            new ApprovalPolicyStep { TenantId = tenantId, PolicyId = leavePolicy.Id, StepOrder = 2, StepName = "HR Director Sign-Off", ApproverType = "HR", IsFinalStep = true }
-        );
+        leaveWorkflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = leaveWorkflow.Id, StepOrder = 1, StepName = "Manager Approval", ApproverType = "Manager", ApproverRole = "Manager", IsFinalStep = false });
+        leaveWorkflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = leaveWorkflow.Id, StepOrder = 2, StepName = "HR Director Sign-Off", ApproverType = "HR", ApproverRole = "HR Manager", IsFinalStep = true });
+        db.ApprovalWorkflows.Add(leaveWorkflow);
         await db.SaveChangesAsync(ct);
 
         // ── QA scenario employees: probation, contract, Saudi, terminated ────────
@@ -621,20 +620,18 @@ public static class DemoDataSeeder
 
         await db.SaveChangesAsync(ct);
 
-        // Overtime approval policy (all departments, all grades — default)
-        var overtimePolicy = new ApprovalPolicy
+        // Overtime approval workflow (all departments, all grades — default)
+        var overtimeWorkflow = new ApprovalWorkflow
         {
             TenantId = tenantId,
-            WorkflowType = "Overtime",
+            Code = "OVERTIME-STANDARD",
             Name = "Standard Overtime Approval",
+            EntityName = nameof(OvertimeRequest),
             IsDefault = true,
             IsActive = true,
         };
-        db.ApprovalPolicies.Add(overtimePolicy);
-        await db.SaveChangesAsync(ct);
-        db.ApprovalPolicySteps.AddRange(
-            new ApprovalPolicyStep { TenantId = tenantId, PolicyId = overtimePolicy.Id, StepOrder = 1, StepName = "Manager Approval", ApproverType = "Manager", IsFinalStep = true }
-        );
+        overtimeWorkflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = overtimeWorkflow.Id, StepOrder = 1, StepName = "Manager Approval", ApproverType = "Manager", ApproverRole = "Manager", IsFinalStep = true });
+        db.ApprovalWorkflows.Add(overtimeWorkflow);
         await db.SaveChangesAsync(ct);
 
         await SeedOperationalDataAsync(db, tenantId, logger, ct);

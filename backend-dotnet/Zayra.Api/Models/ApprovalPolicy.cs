@@ -2,9 +2,12 @@ using Zayra.Api.Domain.Entities;
 namespace Zayra.Api.Models;
 
 /// <summary>
-/// Tenant-configurable approval routing policy for a specific workflow type.
-/// Matches on WorkflowType + optional DepartmentId + optional GradeId.
-/// When IsDefault = true, this policy applies to all employees not matched by a more specific policy.
+/// DEPRECATED (F1 — approval engine convergence). Nothing reads or writes this table any more.
+/// Its rows were copied into <see cref="ApprovalWorkflow"/> (same primary key, DepartmentId /
+/// GradeId / IsDefault carried over) by migration <c>ConvergeApprovalPolicyIntoWorkflow</c>.
+/// The table is retained, frozen, for exactly one release so that an application rollback to the
+/// previous build still finds the configuration it reads; a follow-up migration drops it.
+/// Configure approvals with <see cref="ApprovalWorkflow"/> via /api/approval-workflows.
 /// </summary>
 public class ApprovalPolicy : ITenantOwned
 {

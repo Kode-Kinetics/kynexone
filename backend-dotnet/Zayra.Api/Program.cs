@@ -360,7 +360,7 @@ builder.Services.AddScoped<Zayra.Api.Application.WorkWeek.IWorkWeekService, Zayr
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IProrationPolicyResolver, Zayra.Api.Infrastructure.Payroll.ProrationPolicyResolver>();
 builder.Services.AddScoped<IHrmHierarchyService, HrmHierarchyService>();
 builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
-builder.Services.AddScoped<IApprovalPolicyService, ApprovalPolicyService>();
+builder.Services.AddScoped<IApprovalRouter, ApprovalRouter>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
 builder.Services.AddScoped<IEmployeeModuleSchemaBootstrapper, EmployeeModuleSchemaBootstrapper>();
 // P0-5: config-selected durable storage with a Production fail-fast (Render dyno disk is
