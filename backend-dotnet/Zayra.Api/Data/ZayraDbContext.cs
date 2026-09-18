@@ -1599,6 +1599,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // key because "ADJ" is legitimately both an earning family and a deduction family.
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code, x.ComponentType });
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive, x.IsDeleted });
+            // F2 — effective dating. The raw-SQL UNIQUE is re-keyed to (tenant, company, code, type,
+            // effective_from) NULLS NOT DISTINCT in AddPayComponentEffectiveDating, so a component may carry
+            // several dated versions but never two versions starting on the same day in the same scope.
             entity.Property(x => x.Code).HasMaxLength(64);
             entity.Property(x => x.NameEn).HasMaxLength(200);
             entity.Property(x => x.NameAr).HasMaxLength(200);
@@ -1994,8 +1997,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<PayrollGroup>(entity => { entity.ToTable("payroll_groups"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique(); });
         modelBuilder.Entity<PayrollCycle>(entity => { entity.ToTable("payroll_cycles"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }); });
         modelBuilder.Entity<PayrollRunEmployee>(entity => { entity.ToTable("payroll_run_employees"); entity.HasKey(x => x.Id); entity.Property(x => x.GrossEarnings).HasPrecision(14,2); entity.Property(x => x.TotalDeductions).HasPrecision(14,2); entity.Property(x => x.NetPay).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
-        modelBuilder.Entity<PayrollEarning>(entity => { entity.ToTable("payroll_earnings"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
-        modelBuilder.Entity<PayrollDeduction>(entity => { entity.ToTable("payroll_deductions"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.IsEmployerContribution).HasDefaultValue(false); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
+        modelBuilder.Entity<PayrollEarning>(entity => { entity.ToTable("payroll_earnings"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.GlDriverKey).HasMaxLength(80); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
+        modelBuilder.Entity<PayrollDeduction>(entity => { entity.ToTable("payroll_deductions"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.GlDriverKey).HasMaxLength(80); entity.Property(x => x.IsEmployerContribution).HasDefaultValue(false); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
         modelBuilder.Entity<BenefitPlan>(entity => { entity.ToTable("benefit_plans"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive }); });
         modelBuilder.Entity<BenefitEligibilityRule>(entity => { entity.ToTable("benefit_eligibility_rules"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.CompanyId, x.GradeId, x.IsActive }); });
         modelBuilder.Entity<BenefitEnrollment>(entity => { entity.ToTable("benefit_enrollments"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });

@@ -33,7 +33,7 @@ public static class TenantProvisioningBundle
     public readonly record struct ProvisionResult(
         int CountryRules, int MasterDataTypes, int MasterDataValues, int HrCategories,
         int AttendancePolicies, int LeaveTypes, int LeavePolicies, int ApprovalPolicies, int NotificationTemplates,
-        int ComplianceProfiles = 0);
+        int ComplianceProfiles = 0, int PayComponents = 0);
 
     public static async Task<ProvisionResult> ProvisionAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
@@ -47,10 +47,15 @@ public static class TenantProvisioningBundle
         var apPolicies    = await InstallDefaultApprovalPoliciesAsync(db, tenantId, ct);
         var notifs        = await InstallNotificationTemplatesAsync(db, tenantId, ct);
         var compliance    = await InstallComplianceProfilesAsync(db, tenantId, ct);
+        // F2 — the system pay-component catalog as REAL rows, on every provisioning path (the bootstrap tenant
+        // included, which never reached PayComponentSeeder before), so the compiled fallback in
+        // PayComponentEngine.ResolveInEffect is a genuine last resort rather than the normal path. Same
+        // insert-if-absent contract as everything else in this bundle.
+        var payComponents = (await PayComponentSeeder.SeedTenantDefaultsAsync(db, tenantId, ct)).Components;
 
         await db.SaveChangesAsync(ct);
         return new ProvisionResult(countryRules, mdTypes, mdValues, hrCategories,
-            attnPolicies, leaveTypes, leavePolicies, apPolicies, notifs, compliance);
+            attnPolicies, leaveTypes, leavePolicies, apPolicies, notifs, compliance, payComponents);
     }
 
     // ── 8. Tenant-default compliance profiles per GCC state (§3.5) ──

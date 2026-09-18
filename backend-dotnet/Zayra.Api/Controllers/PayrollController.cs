@@ -1621,8 +1621,12 @@ public class PayrollController : ControllerBase
         }
         else
         {
+            // F2 — EXPLICITLY tenant-scoped, like ResolveUseComponentEngineAsync. This read relied on the
+            // ambient global query filter alone; wherever that filter is not bound to the request tenant (the
+            // integration fixture, any non-HTTP caller) FirstOrDefault returned ANOTHER tenant's rate and
+            // taxed this tenant's payroll with it.
             var taxRateSetting = await _db.SystemSettings.AsNoTracking()
-                .Where(x => x.Category == "Payroll" && x.SettingKey == "IncomeTaxRate")
+                .Where(x => x.TenantId == tenantId && x.Category == "Payroll" && x.SettingKey == "IncomeTaxRate")
                 .Select(x => x.SettingValue)
                 .FirstOrDefaultAsync(cancellationToken);
             decimal.TryParse(taxRateSetting, out incomeTaxRate); // 0 if unset
@@ -1861,7 +1865,7 @@ public class PayrollController : ControllerBase
         // changes any output, so "false" only exists for instant per-tenant rollback to the legacy path.
         var useComponentEngine = await ResolveUseComponentEngineAsync(tenantId, cancellationToken);
         var payComponents = useComponentEngine
-            ? await LoadPayComponentsAsync(tenantId, company.Id, cancellationToken)
+            ? await LoadPayComponentsAsync(tenantId, company.Id, periodStart, cancellationToken)
             : (IReadOnlyList<PayComponent>)Array.Empty<PayComponent>();
 
         // ════ POD-C3 ══════════════════════════════════════════════════════════════════════════════
@@ -2200,6 +2204,33 @@ public class PayrollController : ControllerBase
                 ? Math.Round(empOtImpacts.Sum(x =>
                     x.Hours * hourlyRate * (x.ApprovedMultiplier > 0m ? x.ApprovedMultiplier : otMultiplier)), 2)
                 : 0m;
+            // ── F2: CONFIGURED-VALUE PAY COMPONENTS — THE ENGINE IS THE SOLE SOURCE OF THEIR AMOUNTS ─────
+            // Every other payslip line re-emits an amount computed HERE (structure columns, tax, attendance,
+            // leave, loans, bonus, adjustments, the country pack), so it is already in the aggregates below.
+            // A tenant-configured Fixed / PercentOfBasic / PercentOfGross component exists ONLY in the
+            // engine's output. Pre-F2 those lines were emitted onto the payslip but never reached gross,
+            // deductions or net — net pay ignored them and the Lock journal failed gl_unbalanced by exactly
+            // their amount. They are now resolved by the SAME engine call the emission below makes (same
+            // components, same Basic/Gross inputs ⇒ same amounts), folded into every aggregate, and the
+            // post-loop PAYSLIP_LINES_MISMATCH check proves Σ emitted lines == the slip aggregates.
+            //   • Supplemental runs carry none (they pay no recurring component), mirroring the effective
+            //     set filter at emission.
+            //   • They are NEVER in the statutory covered wage: the SalaryBreakdown fed to the pack below is
+            //     unchanged, so GOSI/GPSSA/GRSIA and the 45,000 ceiling are untouched by construction.
+            //   • Fixed amounts are monthly and NOT prorated; PercentOf* follow the prorated basic/gross.
+            //   • Empty for every tenant without such a component, and for the legacy kill-switch path, so
+            //     every existing run's aggregates are the pre-F2 expressions + 0.
+            var configuredComponents = includesRecurringPay
+                ? payComponents.Where(PayComponentEngine.IsConfiguredValue).ToList()
+                : new List<PayComponent>();
+            var configuredCtx = new PayComponentContext { Basic = basic, Gross = gross };
+            var configured = PayComponentEngine.Compute(configuredComponents, configuredCtx);
+            var configuredEarnings = configured.Earnings.Sum(l => l.Amount);
+            var configuredDeductions = configured.Deductions.Where(l => !l.IsEmployerContribution).Sum(l => l.Amount);
+            var configuredTaxableEarnings = configuredComponents.Count == 0 ? 0m : PayComponentEngine.Compute(
+                    configuredComponents.Where(c => c.IsTaxable && c.ComponentType == PayComponentTypes.Earning).ToList(),
+                    configuredCtx).Earnings.Sum(l => l.Amount);
+
             // Tax deduction: apply income tax rate to taxable components only
             decimal taxDeduction = 0m;
             if (incomeTaxRate > 0 && salary is not null)
@@ -2214,6 +2245,8 @@ public class PayrollController : ControllerBase
                         structureComponents.Sum(c => c.CalculationType == "Percentage" ? fullBasic * c.Percentage / 100m : c.Amount),
                         factor)
                     : basic;
+                // F2 — a configured earning flagged IsTaxable is taxable income. 0 for every tenant without one.
+                taxableBase += configuredTaxableEarnings;
                 taxDeduction = Math.Round(taxableBase * incomeTaxRate / 100m, 2);
             }
 
@@ -2367,9 +2400,9 @@ public class PayrollController : ControllerBase
             // underpays nor unbalances). An EMI is a DEBT INSTALMENT, not a wage — it is never prorated.
             var deductionsBeforeDebt = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction
                                      + taxDeduction + gosiEmployeeTotal + adjustmentDeductions + totalBonusTax
-                                     + settlementDeductionTotal;
+                                     + settlementDeductionTotal + configuredDeductions;
             var earningsForPeriod = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal
-                                  + settlementEarningTotal;
+                                  + settlementEarningTotal + configuredEarnings;
             var affordable = Math.Round(earningsForPeriod - deductionsBeforeDebt, 2);
 
             var loanTakenById = new Dictionary<Guid, decimal>();
@@ -2516,14 +2549,14 @@ public class PayrollController : ControllerBase
                 // POD-C1 — the settlement's earnings ride the SAME aggregate as bonus/adjustment/arrears do,
                 // so NetSalary, the WPS/SIF amount and the payment batch total all pick them up with no new
                 // machinery. (The statutory base is untouched — see the GOSI decision on FinalSettlement.)
-                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal,
-                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal,
+                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
+                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
                 Deductions = deductions,
                 NetSalary = netSalary,
                 EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
                 EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
-                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal,
+                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
                 YtdDeductions = ytdDeduct + deductions,
                 YtdNet = ytdNet + netSalary,
                 Status = "Draft",
@@ -2648,12 +2681,13 @@ public class PayrollController : ControllerBase
                 foreach (var line in computation.Earnings)
                     AddEarning(tenantId, id, e.Id, line.Code,
                         line.Code == "BASIC" ? WithProrationNote(line.Name, prorationNote) : line.Name,
-                        line.Amount, line.Source);
+                        line.Amount, line.Source, glDriverKey: line.GlDriverKey);
                 foreach (var line in computation.Deductions)
                     AddDeduction(tenantId, company.Id, id, e.Id, line.Code,
                         line.Code == "FIXED_DEDUCTION" && policy.Prorates(ProratedComponentCodes.FixedDeduction)
                             ? WithProrationNote(line.Name, prorationNote) : line.Name,
-                        line.Amount, line.Source, isEmployerContribution: line.IsEmployerContribution);
+                        line.Amount, line.Source, isEmployerContribution: line.IsEmployerContribution,
+                        glDriverKey: line.GlDriverKey);
             }
 
             // ── POD-C3: ARREARS LINES — ITEMISED PER COVERED PERIOD ─────────────────────────────────
@@ -2732,6 +2766,25 @@ public class PayrollController : ControllerBase
                 AddDeduction(tenantId, company.Id, id, e.Id,
                     BonusGlDescriptions.PayrollTaxComponentCode, BonusGlDescriptions.PayrollTaxComponentName,
                     totalBonusTax, "Tax");
+        }
+
+        // ── F2: PAYSLIP LINES == SLIP AGGREGATES, PER EMPLOYEE, ON EVERY RUN ─────────────────────────
+        // See PayslipLineInvariant: Σ lines ≠ the slip aggregates means the Lock journal cannot balance —
+        // the pre-F2 defect. Checked HERE, at Process, against the lines actually emitted (both emission
+        // paths), so a divergence is NAMED per employee as a non-overridable Error that blocks Approve and
+        // Lock, instead of surfacing later as an anonymous gl_unbalanced 422. The check itself is a pure
+        // per-employee function; this block only groups the staged lines by employee (one pass, O(lines)).
+        var lineMismatches = new List<(int EmpId, string Code, string Name, PayslipLineInvariant.Mismatch M)>();
+        {
+            var earnByEmp = _db.ChangeTracker.Entries<PayrollEarning>()
+                .Where(x => x.State == EntityState.Added && x.Entity.PayrollRunId == id)
+                .Select(x => x.Entity).ToLookup(x => x.EmployeeId);
+            var dedByEmp = _db.ChangeTracker.Entries<PayrollDeduction>()
+                .Where(x => x.State == EntityState.Added && x.Entity.PayrollRunId == id)
+                .Select(x => x.Entity).ToLookup(x => x.EmployeeId);
+            foreach (var slip in slips)
+                if (PayslipLineInvariant.Check(slip, earnByEmp[slip.EmployeeId], dedByEmp[slip.EmployeeId]) is { } m)
+                    lineMismatches.Add((slip.EmployeeId, slip.EmployeeCode, slip.EmployeeName, m));
         }
 
         // POD-B2 (M4) — refuse the whole run BEFORE anything is written, rather than shipping an
@@ -2939,6 +2992,20 @@ public class PayrollController : ControllerBase
                                 "policy to 'Prorated', or add a positive adjustment covering the shortfall."
                               : " Reduce the absence/LOP or adjustment deductions, or add a positive adjustment.") +
                           " This Error blocks Approve and Lock, so no unbalanced journal can be posted.",
+            });
+        // F2 — see lineMismatches. Error severity, and NON-overridable (PayrollValidationOverridePolicy):
+        // it states that the journal this run would post cannot balance, which is not a judgement.
+        foreach (var (empId, code, name, (earnLines, grossAgg, dedLines, dedAgg)) in lineMismatches)
+            _db.PayrollValidationResults.Add(new PayrollValidationResult
+            {
+                TenantId = tenantId, PayrollRunId = id, EmployeeId = empId,
+                Severity = "Error", Code = "PAYSLIP_LINES_MISMATCH",
+                Message = $"{name} ({code}): the payslip lines do not add up to the payslip totals — earning lines " +
+                          $"{earnLines:N2} vs gross {grossAgg:N2}, deduction lines {dedLines:N2} vs deductions {dedAgg:N2}. " +
+                          "Net pay and the GL journal are derived from the totals, so this run cannot post a balanced " +
+                          "journal. The usual cause is a pay component whose amount duplicates or bypasses the " +
+                          "salary structure (check the pay-component catalog for this company). This Error blocks " +
+                          "Approve and Lock and cannot be overridden.",
             });
         foreach (var (empId, code, name, amount) in deferredEmiEmployees)
             C3Warn("WARN_EMI_DEFERRED_PRORATED_PERIOD", empId,
@@ -4338,7 +4405,8 @@ public class PayrollController : ControllerBase
         "NEGATIVE_NET" or "ZERO_NET_WITH_GROSS" =>
             $"{code} states an arithmetic fact about a payslip, not a business judgement. Correct the deductions and " +
             "re-process (POST runs/{id}/reopen, then process).",
-        "GL_WILL_NOT_BALANCE" or "TOTALS_GROSS_MISMATCH" or "TOTALS_DEDUCTIONS_MISMATCH" or "TOTALS_NET_MISMATCH" =>
+        "GL_WILL_NOT_BALANCE" or "TOTALS_GROSS_MISMATCH" or "TOTALS_DEDUCTIONS_MISMATCH" or "TOTALS_NET_MISMATCH"
+            or "PAYSLIP_LINES_MISMATCH" =>
             $"{code} means the journal this run would post does not balance. Overriding it does not accept a risk, it " +
             "produces a corrupt ledger. Reopen and re-process the run so the totals are recomputed.",
         "DUPLICATE_EMPLOYEE" =>
@@ -4502,7 +4570,7 @@ public class PayrollController : ControllerBase
             foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
             {
                 var first = grp.First();
-                var driver = EarningDriverKeyFor(glCtx.Drivers, grp.Key, first.Source);
+                var driver = PinnedGlDriver(grp.Select(e => e.GlDriverKey)) ?? EarningDriverKeyFor(glCtx.Drivers, grp.Key, first.Source);
                 if (previewClearsBonus && first.Source == "Bonus")
                 {
                     var bonusAmount = grp.Sum(e => e.Amount);
@@ -4562,9 +4630,15 @@ public class PayrollController : ControllerBase
             foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
             {
                 var first = grp.First();
-                var driverRow = ResolveDeductionDriverRow(glCtx.Drivers, grp.Key.ComponentCode, grp.Key.Source);
+                var pinned = PinnedGlDriver(grp.Select(d => d.GlDriverKey));
+                var driverRow = pinned is null ? ResolveDeductionDriverRow(glCtx.Drivers, grp.Key.ComponentCode, grp.Key.Source) : null;
                 string driver;
-                if (driverRow is not null)
+                if (pinned is not null)
+                {
+                    // F2 — a configured component posts to its validated, pinned driver; never an employer pair.
+                    driver = pinned;
+                }
+                else if (driverRow is not null)
                 {
                     driver = driverRow.Key;
                     if (driverRow.EmitsEmployerExpensePair)
@@ -6546,7 +6620,9 @@ public class PayrollController : ControllerBase
         var transport = salary?.TransportAllowance ?? 0m;
         var other = (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
         var gross = basic + housing + transport + other;
-        var components = await LoadPayComponentsAsync(tenantId, companyId, ct);
+        // F2 — the catalog version in effect for the CURRENT payroll month (the EOSB wage is the last wage).
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var components = await LoadPayComponentsAsync(tenantId, companyId, new DateOnly(today.Year, today.Month, 1), ct);
         var included = components
             .Where(c => c.ComponentType == PayComponentTypes.Earning && c.EosbIncluded && c.IsActive && !c.IsDeleted)
             .ToList();
@@ -6760,11 +6836,11 @@ public class PayrollController : ControllerBase
     private static string WithProrationNote(string name, string note)
         => string.IsNullOrEmpty(note) ? name : $"{name} ({note})";
 
-    private void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source) =>
-        _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source });
+    private void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source, string? glDriverKey = null) =>
+        _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, GlDriverKey = glDriverKey });
 
-    private void AddDeduction(Guid tenantId, Guid companyId, Guid runId, int employeeId, string code, string name, decimal amount, string source, bool isEmployerContribution = false) =>
-        _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, CompanyId = companyId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, IsEmployerContribution = isEmployerContribution });
+    private void AddDeduction(Guid tenantId, Guid companyId, Guid runId, int employeeId, string code, string name, decimal amount, string source, bool isEmployerContribution = false, string? glDriverKey = null) =>
+        _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, CompanyId = companyId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, IsEmployerContribution = isEmployerContribution, GlDriverKey = glDriverKey });
 
     // ── Shared GL routing (single source of truth for BOTH the on-screen GL Journal
     //    preview and the locked-run posting, so a preview equals what will post) ──────────
@@ -6850,6 +6926,11 @@ public class PayrollController : ControllerBase
 
         return direct?.Key ?? EarningDriverKey(componentCode, source);
     }
+
+    /// <summary>F2 — the GL driver pinned on a line group by a tenant-configured pay component, or null for
+    /// every system/subsystem line (which then routes exactly as before F2).</summary>
+    private static string? PinnedGlDriver(IEnumerable<string?> lineDriverKeys)
+        => lineDriverKeys.FirstOrDefault(k => !string.IsNullOrWhiteSpace(k));
 
     /// <summary>
     /// Deduction component group → GL driver key. Also reports the employer side
@@ -7057,7 +7138,7 @@ public class PayrollController : ControllerBase
         foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
         {
             var src = grp.First().Source;
-            var driverKey = EarningDriverKeyFor(gl.Drivers, grp.Key, src);
+            var driverKey = PinnedGlDriver(grp.Select(e => e.GlDriverKey)) ?? EarningDriverKeyFor(gl.Drivers, grp.Key, src);
             if (clearsSettlement && src == FinalSettlementComponents.SettlementSource)
             {
                 var settlementAmount = grp.Sum(e => e.Amount);
@@ -7237,11 +7318,21 @@ public class PayrollController : ControllerBase
         var employerExpenseByPairKey = new Dictionary<string, decimal>(StringComparer.Ordinal);
         foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
         {
-            var driverRow = ResolveDeductionDriverRow(gl.Drivers, grp.Key.ComponentCode, grp.Key.Source);
+            var pinned = PinnedGlDriver(grp.Select(d => d.GlDriverKey));
+            var driverRow = pinned is null ? ResolveDeductionDriverRow(gl.Drivers, grp.Key.ComponentCode, grp.Key.Source) : null;
             string driver;
             bool isEmployerSide;
             string pairKey;
-            if (driverRow is not null)
+            if (pinned is not null)
+            {
+                // F2 — a tenant-configured component posts to the driver validated when it was written and
+                // pinned on the line at Process. The write API refuses statutory / employer-pair / control
+                // drivers, so this is never an employer-side pair.
+                driver = pinned;
+                isEmployerSide = false;
+                pairKey = "EMPLOYER_STATUTORY_EXPENSE";
+            }
+            else if (driverRow is not null)
             {
                 driver = driverRow.Key;
                 isEmployerSide = driverRow.EmitsEmployerExpensePair;
@@ -7328,26 +7419,22 @@ public class PayrollController : ControllerBase
         return val.Trim().ToLowerInvariant() is not ("false" or "0" or "off" or "no" or "disabled");
     }
 
-    /// <summary>Loads the active pay-component definitions for a run (company-first). Mirrors
-    /// LoadGlResolutionContextAsync / CompanyTaxPolicyResolver: IgnoreQueryFilters is intentional — payroll
-    /// processing is a SYSTEM read that must see BOTH the run's company rows AND the tenant-default
-    /// (CompanyId == null) rows regardless of the caller's own company claims; the WHERE re-applies exact
-    /// tenant + company/default scope and never reads another tenant. The company row wins over the
-    /// tenant-default per (Code, ComponentType). When the store is empty the compiled PayComponentCatalog
-    /// system seeds are returned so an un-seeded tenant is byte-identical to the legacy path (the same
-    /// empty-store fallback the gl_drivers store uses).</summary>
-    private async Task<IReadOnlyList<PayComponent>> LoadPayComponentsAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    /// <summary>Loads the pay-component definitions IN EFFECT for the payroll period starting
+    /// <paramref name="periodStart"/> (company-first). Mirrors LoadGlResolutionContextAsync /
+    /// CompanyTaxPolicyResolver: IgnoreQueryFilters is intentional — payroll processing is a SYSTEM read
+    /// that must see BOTH the run's company rows AND the tenant-default (CompanyId == null) rows regardless
+    /// of the caller's own company claims; the WHERE re-applies exact tenant + company/default scope and
+    /// never reads another tenant. Version selection, company-first precedence and the compiled-catalog
+    /// fallback live in <see cref="PayComponentEngine.ResolveInEffect"/> — the ONE resolver the run and the
+    /// catalog API share, so what the API reports as "in effect" is exactly what a run pays.</summary>
+    private async Task<IReadOnlyList<PayComponent>> LoadPayComponentsAsync(
+        Guid tenantId, Guid? companyId, DateOnly periodStart, CancellationToken ct)
     {
         var rows = await _db.PayComponents.IgnoreQueryFilters().AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted
                      && (c.CompanyId == companyId || c.CompanyId == null))
             .ToListAsync(ct);
-        if (rows.Count == 0)
-            return PayComponentCatalog.SystemComponentSeeds(tenantId); // compiled fallback (empty store)
-        return rows
-            .GroupBy(c => (c.Code, c.ComponentType))
-            .Select(g => g.OrderByDescending(c => c.CompanyId != null).First())
-            .ToList();
+        return PayComponentEngine.ResolveInEffect(rows, tenantId, periodStart);
     }
 
     // M1: audit log now captures caller IP and structured metadata

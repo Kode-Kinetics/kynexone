@@ -7,7 +7,13 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// One emitted payslip line (an as-persisted PayrollEarning or PayrollDeduction shape).
 /// </summary>
 public readonly record struct PayComponentLine(
-    string Code, string Name, decimal Amount, string Source, bool IsEmployerContribution);
+    string Code, string Name, decimal Amount, string Source, bool IsEmployerContribution)
+{
+    /// <summary>F2 — the GL driver a CONFIGURED-VALUE component (Fixed / PercentOfBasic / PercentOfGross)
+    /// posts to, pinned onto the persisted line. NULL for every system/provider/statutory line, whose
+    /// routing is the pre-F2 Source+Code routing, unchanged.</summary>
+    public string? GlDriverKey { get; init; }
+}
 
 /// <summary>
 /// Everything the engine needs to value one employee's components, already computed by the caller.
@@ -129,12 +135,71 @@ public static class PayComponentEngine
         return c.CalcMethod switch
         {
             PayComponentCalcMethods.StructureField => Single(c, c.Code, c.NameEn, StructureFieldValue(c, ctx), "Salary"),
-            PayComponentCalcMethods.Fixed          => Single(c, c.Code, c.NameEn, c.Value ?? 0m, "Salary"),
-            PayComponentCalcMethods.PercentOfBasic => Single(c, c.Code, c.NameEn, Math.Round(ctx.Basic * (c.Value ?? 0m) / 100m, 2), "Salary"),
-            PayComponentCalcMethods.PercentOfGross => Single(c, c.Code, c.NameEn, Math.Round(ctx.Gross * (c.Value ?? 0m) / 100m, 2), "Salary"),
+            PayComponentCalcMethods.Fixed          => Pinned(c, Single(c, c.Code, c.NameEn, c.Value ?? 0m, "Salary")),
+            PayComponentCalcMethods.PercentOfBasic => Pinned(c, Single(c, c.Code, c.NameEn, Math.Round(ctx.Basic * (c.Value ?? 0m) / 100m, 2), "Salary")),
+            PayComponentCalcMethods.PercentOfGross => Pinned(c, Single(c, c.Code, c.NameEn, Math.Round(ctx.Gross * (c.Value ?? 0m) / 100m, 2), "Salary")),
             // Formula is a later client opt-in surface; never on the equivalence path (no seed uses it).
             _ => Array.Empty<PayComponentLine>(),
         };
+    }
+
+    private static IReadOnlyList<PayComponentLine> Pinned(PayComponent c, IReadOnlyList<PayComponentLine> lines)
+        => string.IsNullOrWhiteSpace(c.GlDriverKey) || lines.Count == 0
+            ? lines
+            : lines.Select(l => l with { GlDriverKey = c.GlDriverKey }).ToList();
+
+    /// <summary>
+    /// F2 — TRUE when the component's amount is produced by the ENGINE ALONE from configuration
+    /// (Fixed / PercentOfBasic / PercentOfGross, no provider, not statutory).
+    ///
+    /// <para>This is the line between the two value sources of a payslip. Every other component re-emits
+    /// an amount the caller ALREADY computed (a salary-structure column, the tax resolver, the attendance /
+    /// leave / loan / bonus / adjustment ledgers, the country pack) and which is therefore already in the
+    /// caller's gross/deduction aggregates. A configured-value component's amount exists nowhere except in
+    /// the engine's output — so the caller MUST fold exactly these lines into gross/deductions/net, or the
+    /// payslip prints a line that net pay and the journal never saw (the pre-F2 defect).</para>
+    /// </summary>
+    public static bool IsConfiguredValue(PayComponent c) =>
+        !c.IsStatutory
+        && c.CalcMethod != PayComponentCalcMethods.Statutory
+        && string.IsNullOrEmpty(c.ProviderKey)
+        && c.CalcMethod is PayComponentCalcMethods.Fixed
+            or PayComponentCalcMethods.PercentOfBasic
+            or PayComponentCalcMethods.PercentOfGross;
+
+    /// <summary>
+    /// F2 — resolves the component set in effect for a payroll period from the persisted rows of ONE
+    /// (tenant, company) scope, company-first, exactly as a run sees it.
+    ///
+    /// <list type="number">
+    /// <item>Only active, non-deleted versions IN EFFECT for <paramref name="periodStart"/> are considered.</item>
+    /// <item>A company row wins over the tenant default per (Code, ComponentType) — the pre-F2 rule.</item>
+    /// <item>If the scope carries NO system row at all (a tenant that was never seeded, or that only ever
+    /// wrote an override), the compiled <see cref="PayComponentCatalog"/> supplies the system set and the
+    /// persisted rows are layered over it. Pre-F2 the loader returned the persisted rows ALONE whenever any
+    /// existed — so a single override row on an unseeded tenant silently dropped BASIC, HOUSING, statutory
+    /// and every other line from every payslip. With no rows at all this is the pre-F2 compiled fallback,
+    /// byte-for-byte.</item>
+    /// </list>
+    /// </summary>
+    public static IReadOnlyList<PayComponent> ResolveInEffect(
+        IEnumerable<PayComponent> scopeRows, Guid tenantId, DateOnly periodStart)
+    {
+        var rows = scopeRows
+            .Where(c => c.IsActive && !c.IsDeleted && c.IsInEffect(periodStart))
+            .ToList();
+        // (component, rank): persisted company row 2 > persisted tenant default 1 > compiled seed 0.
+        var candidates = rows.Select(c => (C: c, Rank: c.CompanyId != null ? 2 : 1));
+        if (!rows.Any(r => r.IsSystem))
+            candidates = PayComponentCatalog.SystemComponentSeeds(tenantId).Select(c => (C: c, Rank: 0)).Concat(candidates);
+        return candidates
+            .GroupBy(x => (x.C.Code, x.C.ComponentType))
+            .Select(g => g
+                .OrderByDescending(x => x.Rank)
+                // Defensive only — the write API never lets two versions of one scope overlap.
+                .ThenByDescending(x => x.C.EffectiveFrom ?? DateOnly.MinValue)
+                .First().C)
+            .ToList();
     }
 
     private static decimal StructureFieldValue(PayComponent c, PayComponentContext ctx) => c.StructureField switch
