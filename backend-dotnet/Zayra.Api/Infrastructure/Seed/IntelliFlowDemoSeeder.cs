@@ -615,6 +615,7 @@ public static class IntelliFlowDemoSeeder
             Code       = "LEAVE-APPROVAL",
             Name       = "Leave Approval",
             EntityName = nameof(LeaveRequest),
+            IsDefault  = true,
             IsActive   = true,
         };
         leaveWorkflow.Steps.Add(new ApprovalWorkflowStep

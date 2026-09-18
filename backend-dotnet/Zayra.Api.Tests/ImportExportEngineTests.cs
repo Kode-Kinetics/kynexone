@@ -88,17 +88,6 @@ public class ImportExportEngineTests
         return string.Join('\n', new[] { header }.Concat(dataRows)) + '\n';
     }
 
-    private static string BuildApprovalPolicyCsv(string[] policyRows, string[] stepRows)
-    {
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("Code,Name,WorkflowType,IsDefault,IsActive");
-        foreach (var r in policyRows) sb.AppendLine(r);
-        sb.AppendLine();
-        sb.AppendLine("PolicyCode,StepOrder,StepName,ApproverType,SpecificEmployeeCode,IsFinalStep");
-        foreach (var r in stepRows) sb.AppendLine(r);
-        return sb.ToString();
-    }
-
     // ── Test 1: Department import preview — valid rows ─────────────────────────
 
     [Fact]
@@ -416,32 +405,26 @@ public class ImportExportEngineTests
         Assert.Contains(row.Warnings, w => w.Contains("DepartmentCode") && w.Contains("not found"));
     }
 
-    // ── Test 9: ApprovalPolicy import — creates policy + steps ───────────────
+    // ── Test 9: ApprovalPolicy import is RETIRED (F1) — 410 Gone, and nothing is written ───────
+    // The approval-policy import used to write ApprovalPolicy rows that only leave read and that no
+    // Approvals UI showed. Approval routing is configured solely as ApprovalWorkflow now; accepting
+    // an import here would store configuration that is never applied.
 
     [Fact]
-    public async Task ApprovalPolicyImport_CreatesPolicyAndSteps()
+    public async Task ApprovalPolicyImport_IsRetired_Returns410_AndWritesNothing()
     {
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
-        var ctrl = new ApprovalPoliciesController(db);
+        var ctrl = new ApprovalPoliciesController();
         ctrl.ControllerContext = MakeContext(tenantId);
 
-        var csv = BuildApprovalPolicyCsv(
-            new[] { "POL-001,Leave Default Policy,Leave,true,true" },
-            new[] { "POL-001,1,Manager Approval,Manager,,false", "POL-001,2,HR Final,HR,,true" });
+        var result = ctrl.Retired();
 
-        var result = await ctrl.Import(new ApprovalPolicyImportRequest(csv), CancellationToken.None);
-
-        var ok = Assert.IsType<OkObjectResult>(result);
-        var commitResult = Assert.IsType<ImportCommitResult>(ok.Value);
-        Assert.Equal(1, commitResult.Created);
-
-        var policy = await db.ApprovalPolicies.Include(p => p.Steps).FirstAsync(p => p.TenantId == tenantId);
-        Assert.Equal("Leave Default Policy", policy.Name);
-        Assert.Equal("Leave", policy.WorkflowType);
-        Assert.True(policy.IsDefault);
-        Assert.Equal(2, policy.Steps.Count);
-        Assert.Contains(policy.Steps, s => s.IsFinalStep && s.ApproverType == "HR");
+        var gone = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status410Gone, gone.StatusCode);
+        Assert.Contains("/api/approval-workflows", System.Text.Json.JsonSerializer.Serialize(gone.Value));
+        Assert.Equal(0, await db.ApprovalPolicies.CountAsync());
+        Assert.Equal(0, await db.ApprovalWorkflows.CountAsync());
     }
 
     // ── Test 10: TenantHrConfig GET — returns safe defaults when not configured
@@ -587,34 +570,5 @@ public class ImportExportEngineTests
         Assert.Contains("A-DEPT", csv);
         Assert.DoesNotContain("B-DEPT", csv);
         Assert.DoesNotContain("Tenant B Only", csv);
-    }
-
-    // ── Test 15: Approval policy — tenant isolation prevents cross-tenant access ─
-
-    [Fact]
-    public async Task ApprovalPolicyImport_TenantIsolation_CannotAccessOtherTenantPolicies()
-    {
-        var db = CreateDb();
-        var tenantA = Guid.NewGuid();
-        var tenantB = Guid.NewGuid();
-
-        // Seed an approval policy for tenant A
-        db.ApprovalPolicies.Add(new ApprovalPolicy
-        {
-            TenantId = tenantA, Name = "Tenant A Policy", WorkflowType = "Leave",
-            IsDefault = true, IsActive = true
-        });
-        await db.SaveChangesAsync();
-
-        // Tenant B creates a controller and exports — should see zero policies
-        var ctrlB = new ApprovalPoliciesController(db);
-        ctrlB.ControllerContext = MakeContext(tenantB);
-        var result = await ctrlB.Export(CancellationToken.None);
-
-        var file = Assert.IsType<FileContentResult>(result);
-        var csv = Encoding.UTF8.GetString(file.FileContents);
-
-        // No data rows from Tenant A — only headers/template rows allowed
-        Assert.DoesNotContain("Tenant A Policy", csv);
     }
 }

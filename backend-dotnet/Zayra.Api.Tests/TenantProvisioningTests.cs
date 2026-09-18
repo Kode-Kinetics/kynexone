@@ -463,7 +463,10 @@ public class TenantProvisioningTests
         (await db.AttendancePolicies.AnyAsync(p => p.TenantId == tenant.Id && p.Code == "DEFAULT")).Should().BeTrue();
         (await db.LeaveTypes.AnyAsync(t => t.TenantId == tenant.Id && t.Code == "ANNUAL")).Should().BeTrue();
         (await db.LeavePolicies.AnyAsync(p => p.TenantId == tenant.Id && p.CompanyId == null)).Should().BeTrue();
-        (await db.ApprovalPolicies.CountAsync(p => p.TenantId == tenant.Id && p.IsDefault)).Should().BeGreaterThan(0);
+        // F1: defaults are ApprovalWorkflows (the single model the router reads), one per core entity.
+        (await db.ApprovalWorkflows.CountAsync(w => w.TenantId == tenant.Id && w.IsDefault && w.IsActive)).Should().Be(3);
+        (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "LeaveRequest" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();
+        (await db.ApprovalPolicies.CountAsync(p => p.TenantId == tenant.Id)).Should().Be(0, "the retired model is never written");
 
         var countryRuleCount = countryRules.Count;
         var mdValueCount = await db.MasterDataValues.CountAsync(v => v.TenantId == tenant.Id);
@@ -477,7 +480,7 @@ public class TenantProvisioningTests
         second.AttendancePolicies.Should().Be(0);
         second.LeaveTypes.Should().Be(0);
         second.LeavePolicies.Should().Be(0);
-        second.ApprovalPolicies.Should().Be(0);
+        second.ApprovalWorkflows.Should().Be(0);
         second.NotificationTemplates.Should().Be(0);
 
         (await db.CountryPayrollRules.CountAsync(r => r.TenantId == tenant.Id)).Should().Be(countryRuleCount);

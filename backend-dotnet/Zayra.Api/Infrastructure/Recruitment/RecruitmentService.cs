@@ -58,14 +58,18 @@ public class RecruitmentService : IRecruitmentService
         Guid tenantId, string entityName, Guid entityId, string title,
         Guid? requestedByUserId, CancellationToken ct = default)
     {
-        var workflow = await _db.ApprovalWorkflows
-            .FirstOrDefaultAsync(w => w.TenantId == tenantId && w.EntityName == entityName && w.IsActive, ct);
-        if (workflow is null) return null;
+        // F1 — the ONE approval router chooses the workflow (deterministically; this used to be an
+        // unordered FirstOrDefault over every active workflow for the entity). A requisition has no
+        // employee subject, so only tenant-wide workflows apply. No workflow keeps the existing
+        // product rule for requisitions: they are submitted without an approval step.
+        var route = await new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(_db)
+            .TryResolveAsync(tenantId, null, entityName, ct);
+        if (route is null) return null;
 
         var req = new ApprovalRequest
         {
             TenantId = tenantId,
-            WorkflowId = workflow.Id,
+            WorkflowId = route.WorkflowId,
             EntityName = entityName,
             EntityId = entityId.ToString(),
             Title = title,

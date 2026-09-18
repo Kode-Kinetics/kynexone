@@ -72,7 +72,7 @@ public class CrossTenantControllerTests
             db,
             new StubLetterService(),
             new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8),
-            new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalPolicyService(db)),
+            new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(db)),
             new AttendanceService(db, new StubNotificationService(), new StubHttpClientFactory()));
         controller.ControllerContext = new ControllerContext { HttpContext = BuildEssHttpContext(tenantId, employeeId) };
         return controller;

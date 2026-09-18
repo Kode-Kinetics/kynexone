@@ -471,6 +471,7 @@ public class EmployeeSelfServiceController : ControllerBase
         {
             leave = await _leaveService.SubmitRequestAsync(tenantId, leave, cancellationToken);
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });

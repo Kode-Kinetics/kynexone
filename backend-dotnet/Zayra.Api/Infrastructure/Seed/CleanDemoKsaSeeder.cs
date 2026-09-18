@@ -548,6 +548,7 @@ public static class CleanDemoKsaSeeder
             Code       = "LEAVE-APPROVAL",
             Name       = "Leave Approval",
             EntityName = nameof(LeaveRequest),
+            IsDefault  = true,
             IsActive   = true,
         };
         ramLeaveWorkflow.Steps.Add(new ApprovalWorkflowStep
