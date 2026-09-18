@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
@@ -174,10 +175,7 @@ public class AuthService : IAuthService
     public async Task<AuthResponse> RefreshAsync(RefreshTokenRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var tokenHash = _tokenService.HashToken(request.RefreshToken);
-        var storedToken = await _db.RefreshTokens
-            .Include(x => x.User).ThenInclude(x => x!.Tenant)
-            .Include(x => x.User).ThenInclude(x => x!.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
-            .Include(x => x.User).ThenInclude(x => x!.EntityAccesses)
+        var storedToken = await RefreshTokensWithUserGraph()
             .FirstOrDefaultAsync(x => x.TokenHash == tokenHash, cancellationToken);
 
         // A revoked token with a replacement is not merely stale: it is a consumed credential
@@ -219,17 +217,19 @@ public class AuthService : IAuthService
         var rotatedAtUtc = DateTime.UtcNow;
         var newRefreshToken = _tokenService.CreateSecureToken();
         var replacementHash = _tokenService.HashToken(newRefreshToken);
-        var transaction = _db.Database.IsRelational()
-            ? await _db.Database.BeginTransactionAsync(cancellationToken)
-            : null;
+        var storedTokenId = storedToken.Id;
         var reuseDetected = false;
         AuthResponse? response = null;
-        try
+
+        // The rotation itself, unchanged. It runs either directly (non-relational providers have
+        // no transactions) or inside the execution-strategy delegate below, and must therefore be
+        // safe to run more than once against freshly loaded state.
+        async Task RotateAsync(RefreshToken token, IDbContextTransaction? transaction)
         {
             if (_db.Database.IsRelational())
             {
                 var rotated = await _db.RefreshTokens
-                    .Where(x => x.Id == storedToken.Id
+                    .Where(x => x.Id == token.Id
                         && x.RevokedAtUtc == null
                         && x.ExpiresAtUtc > rotatedAtUtc)
                     .ExecuteUpdateAsync(setters => setters
@@ -243,66 +243,119 @@ public class AuthService : IAuthService
                     // this transaction; if the winner installed a replacement, this attempt is a
                     // replay and must revoke the family atomically with its security audit.
                     reuseDetected = await _db.RefreshTokens.AsNoTracking().AnyAsync(x =>
-                        x.Id == storedToken.Id
+                        x.Id == token.Id
                         && x.RevokedAtUtc != null
                         && x.ReplacedByTokenHash != null
                         && x.ReplacedByTokenHash != string.Empty, cancellationToken);
                     if (!reuseDetected)
                         throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
 
-                    await RevokeRefreshTokenFamilyAndAuditAsync(storedToken, context, cancellationToken);
+                    await RevokeRefreshTokenFamilyAndAuditAsync(token, context, cancellationToken);
                     if (transaction is not null) await transaction.CommitAsync(cancellationToken);
                 }
             }
 
             if (!reuseDetected)
             {
-                storedToken.RevokedAtUtc = rotatedAtUtc;
-                storedToken.RevokedByIp = context.IpAddress;
-                storedToken.ReplacedByTokenHash = replacementHash;
+                token.RevokedAtUtc = rotatedAtUtc;
+                token.RevokedByIp = context.IpAddress;
+                token.ReplacedByTokenHash = replacementHash;
 
                 if (policy?.AllowMultipleSessions == false)
                 {
                     var otherActiveTokens = await _db.RefreshTokens
-                        .Where(x => x.UserId == storedToken.UserId && x.Id != storedToken.Id && x.RevokedAtUtc == null)
+                        .Where(x => x.UserId == token.UserId && x.Id != token.Id && x.RevokedAtUtc == null)
                         .ToListAsync(cancellationToken);
-                    foreach (var token in otherActiveTokens)
+                    foreach (var other in otherActiveTokens)
                     {
-                        token.RevokedAtUtc = rotatedAtUtc;
-                        token.RevokedByIp = context.IpAddress;
+                        other.RevokedAtUtc = rotatedAtUtc;
+                        other.RevokedByIp = context.IpAddress;
                     }
                 }
 
                 _db.RefreshTokens.Add(new RefreshToken
                 {
-                    FamilyId = storedToken.FamilyId,
-                    UserId = storedToken.UserId,
+                    FamilyId = token.FamilyId,
+                    UserId = token.UserId,
                     TokenHash = replacementHash,
                     // Every descendant inherits the family's original absolute expiry.
                     // Rotation changes the bearer secret, never the maximum session lifetime.
-                    ExpiresAtUtc = storedToken.ExpiresAtUtc,
+                    ExpiresAtUtc = token.ExpiresAtUtc,
                     CreatedByIp = context.IpAddress
                 });
                 await _db.SaveChangesAsync(cancellationToken);
-                await _auditService.WriteAsync("auth.refresh", "RefreshToken", storedToken.Id.ToString(), context with { UserId = storedToken.UserId, TenantId = storedToken.User.TenantId }, null, cancellationToken);
-                response = BuildAuthResponse(storedToken.User, newRefreshToken);
+                await _auditService.WriteAsync("auth.refresh", "RefreshToken", token.Id.ToString(), context with { UserId = token.UserId, TenantId = token.User!.TenantId }, null, cancellationToken);
+                response = BuildAuthResponse(token.User!, newRefreshToken);
                 if (transaction is not null) await transaction.CommitAsync(cancellationToken);
             }
         }
-        catch
+
+        if (!_db.Database.IsRelational())
         {
-            if (transaction is not null) await transaction.RollbackAsync(cancellationToken);
-            throw;
+            // In-memory providers have neither transactions nor an execution strategy to satisfy.
+            await RotateAsync(storedToken, null);
         }
-        finally
+        else
         {
-            if (transaction is not null) await transaction.DisposeAsync();
+            // Program.cs registers Npgsql with EnableRetryOnFailure, and
+            // NpgsqlRetryingExecutionStrategy refuses a user-initiated BeginTransaction unless the
+            // whole unit is a retriable one. A bare BeginTransaction here made every
+            // POST /api/auth/refresh fail with HTTP 400, logging out every web and mobile session
+            // the moment its access token expired.
+            var strategy = _db.Database.CreateExecutionStrategy();
+            var attempt = 0;
+            await strategy.ExecuteAsync(async () =>
+            {
+                // ExecuteAsync may run this delegate more than once. A retry must not inherit the
+                // change tracker a failed attempt left behind: the replacement RefreshToken it
+                // added is still pending (it would be inserted twice), and entities a SaveChanges
+                // marked Unchanged before its COMMIT was lost would never be written again. The
+                // first attempt uses the graph already loaded above, so the success path is
+                // unchanged; any retry restarts from persisted state.
+                var token = storedToken;
+                if (attempt++ > 0)
+                {
+                    _db.ChangeTracker.Clear();
+                    token = await RefreshTokensWithUserGraph()
+                        .FirstOrDefaultAsync(x => x.Id == storedTokenId, cancellationToken);
+                    if (token?.User is null || token.User.Tenant is null)
+                        throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+                }
+                reuseDetected = false;
+                response = null;
+
+                var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+                try
+                {
+                    await RotateAsync(token, transaction);
+                }
+                catch
+                {
+                    // Never let a failing rollback mask the original error: the strategy has to see
+                    // the real exception to decide whether it is transient. Dispose still releases.
+                    try { await transaction.RollbackAsync(cancellationToken); } catch { /* connection already gone */ }
+                    throw;
+                }
+                finally
+                {
+                    await transaction.DisposeAsync();
+                }
+            });
         }
 
         if (reuseDetected)
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
         return response!;
     }
+
+    /// <summary>The exact refresh-token + user graph token issuance needs. Shared by the initial
+    /// lookup and by the execution-strategy retry reload so the two can never drift (a narrower
+    /// reload would silently issue an access token with fewer permissions).</summary>
+    private IQueryable<RefreshToken> RefreshTokensWithUserGraph() =>
+        _db.RefreshTokens
+            .Include(x => x.User).ThenInclude(x => x!.Tenant)
+            .Include(x => x.User).ThenInclude(x => x!.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+            .Include(x => x.User).ThenInclude(x => x!.EntityAccesses);
 
     public async Task LogoutAsync(LogoutRequest request, RequestContext context, CancellationToken cancellationToken)
     {
@@ -402,32 +455,39 @@ public class AuthService : IAuthService
 
     public async Task<AuthResponse> AcceptInvitationAsync(AcceptInvitationRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await LoadUserGraph(request.Email, request.TenantSlug, cancellationToken) ?? throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
         var tokenHash = _tokenService.HashToken(request.InvitationToken);
-        var link = user.EmployeeUserAccounts.FirstOrDefault(x => x.InvitationTokenHash == tokenHash && !x.IsDeleted);
         var acceptedAtUtc = DateTime.UtcNow;
-        if (link is null
-            || link.InvitationExpiresAtUtc is null
-            || link.InvitationExpiresAtUtc < acceptedAtUtc
-            || link.AccessMode == AccessModes.NoLogin
-            || !link.RequiresPasswordSetup
-            || link.InvitationAcceptedAtUtc is not null
-            || !string.Equals(link.Status, "Invited", StringComparison.Ordinal))
-            throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
+
+        // Loading and validating are one step so an execution-strategy retry can redo them from
+        // persisted state rather than reuse a failed attempt's entities.
+        async Task<(User User, EmployeeUserAccount Link)> LoadAndValidateAsync()
+        {
+            var loaded = await LoadUserGraph(request.Email, request.TenantSlug, cancellationToken) ?? throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
+            var invitation = loaded.EmployeeUserAccounts.FirstOrDefault(x => x.InvitationTokenHash == tokenHash && !x.IsDeleted);
+            if (invitation is null
+                || invitation.InvitationExpiresAtUtc is null
+                || invitation.InvitationExpiresAtUtc < acceptedAtUtc
+                || invitation.AccessMode == AccessModes.NoLogin
+                || !invitation.RequiresPasswordSetup
+                || invitation.InvitationAcceptedAtUtc is not null
+                || !string.Equals(invitation.Status, "Invited", StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
+            return (loaded, invitation);
+        }
+
+        var (user, link) = await LoadAndValidateAsync();
+        AuthResponse? response = null;
 
         // Consume the invitation, activate the user, revoke any pre-existing sessions, create the
         // first session, and append the audit record atomically on relational databases. Clearing
         // the hash makes the credential one-time; the conditional update ensures two concurrent
         // accept requests cannot both win after reading the same still-valid token.
-        var transaction = _db.Database.IsRelational()
-            ? await _db.Database.BeginTransactionAsync(cancellationToken)
-            : null;
-        try
+        async Task AcceptAsync(User acceptingUser, EmployeeUserAccount invitation, IDbContextTransaction? transaction)
         {
             if (_db.Database.IsRelational())
             {
                 var consumed = await _db.EmployeeUserAccounts
-                    .Where(x => x.Id == link.Id
+                    .Where(x => x.Id == invitation.Id
                         && x.InvitationTokenHash == tokenHash
                         && x.RequiresPasswordSetup
                         && x.InvitationAcceptedAtUtc == null
@@ -446,32 +506,66 @@ public class AuthService : IAuthService
                     throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
             }
 
-            user.PasswordHash = _passwordHasher.Hash(request.NewPassword);
-            user.IsActive = true;
-            user.IsEmailConfirmed = true;
-            user.UpdatedAtUtc = acceptedAtUtc;
-            link.InvitationTokenHash = string.Empty;
-            link.InvitationExpiresAtUtc = null;
-            link.RequiresPasswordSetup = false;
-            link.Status = "Active";
-            link.InvitationAcceptedAtUtc = acceptedAtUtc;
-            link.UpdatedAtUtc = acceptedAtUtc;
-            await RevokeActiveRefreshTokensAsync(user.Id, context.IpAddress, cancellationToken);
-            var refreshToken = await AddRefreshTokenAsync(user, context, null, cancellationToken);
+            acceptingUser.PasswordHash = _passwordHasher.Hash(request.NewPassword);
+            acceptingUser.IsActive = true;
+            acceptingUser.IsEmailConfirmed = true;
+            acceptingUser.UpdatedAtUtc = acceptedAtUtc;
+            invitation.InvitationTokenHash = string.Empty;
+            invitation.InvitationExpiresAtUtc = null;
+            invitation.RequiresPasswordSetup = false;
+            invitation.Status = "Active";
+            invitation.InvitationAcceptedAtUtc = acceptedAtUtc;
+            invitation.UpdatedAtUtc = acceptedAtUtc;
+            await RevokeActiveRefreshTokensAsync(acceptingUser.Id, context.IpAddress, cancellationToken);
+            var refreshToken = await AddRefreshTokenAsync(acceptingUser, context, null, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
-            await _auditService.WriteAsync("auth.invitation_accepted", "User", user.Id.ToString(), context with { UserId = user.Id, TenantId = user.TenantId }, $"{{\"employeeId\":{link.EmployeeId}}}", cancellationToken);
+            await _auditService.WriteAsync("auth.invitation_accepted", "User", acceptingUser.Id.ToString(), context with { UserId = acceptingUser.Id, TenantId = acceptingUser.TenantId }, $"{{\"employeeId\":{invitation.EmployeeId}}}", cancellationToken);
             if (transaction is not null) await transaction.CommitAsync(cancellationToken);
-            return BuildAuthResponse(user, refreshToken);
+            response = BuildAuthResponse(acceptingUser, refreshToken);
         }
-        catch
+
+        if (!_db.Database.IsRelational())
         {
-            if (transaction is not null) await transaction.RollbackAsync(cancellationToken);
-            throw;
+            await AcceptAsync(user, link, null);
         }
-        finally
+        else
         {
-            if (transaction is not null) await transaction.DisposeAsync();
+            // EnableRetryOnFailure forbids a bare BeginTransaction; without this every
+            // POST /api/auth/accept-invitation returned HTTP 400 and no invited employee could
+            // ever set their password.
+            var strategy = _db.Database.CreateExecutionStrategy();
+            var attempt = 0;
+            await strategy.ExecuteAsync(async () =>
+            {
+                var acceptingUser = user;
+                var invitation = link;
+                if (attempt++ > 0)
+                {
+                    // Discard the failed attempt's pending inserts (a second refresh token) and
+                    // its already-"saved" but rolled-back rows, then revalidate persisted state.
+                    _db.ChangeTracker.Clear();
+                    (acceptingUser, invitation) = await LoadAndValidateAsync();
+                }
+                response = null;
+
+                var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+                try
+                {
+                    await AcceptAsync(acceptingUser, invitation, transaction);
+                }
+                catch
+                {
+                    try { await transaction.RollbackAsync(cancellationToken); } catch { /* connection already gone */ }
+                    throw;
+                }
+                finally
+                {
+                    await transaction.DisposeAsync();
+                }
+            });
         }
+
+        return response!;
     }
 
     public async Task<AuthUserDto?> GetCurrentUserAsync(Guid userId, CancellationToken cancellationToken)
@@ -558,23 +652,39 @@ public class AuthService : IAuthService
         RequestContext context,
         CancellationToken cancellationToken)
     {
-        var transaction = _db.Database.IsRelational()
-            ? await _db.Database.BeginTransactionAsync(cancellationToken)
-            : null;
-        try
+        if (!_db.Database.IsRelational())
         {
             await RevokeRefreshTokenFamilyAndAuditAsync(presentedToken, context, cancellationToken);
-            if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+            return;
         }
-        catch
+
+        // Same EnableRetryOnFailure constraint as RefreshAsync: a bare BeginTransaction here made
+        // the replay path throw the execution-strategy error instead of revoking the stolen
+        // lineage, so a presented-again token was neither killed nor audited.
+        var strategy = _db.Database.CreateExecutionStrategy();
+        var attempt = 0;
+        await strategy.ExecuteAsync(async () =>
         {
-            if (transaction is not null) await transaction.RollbackAsync(cancellationToken);
-            throw;
-        }
-        finally
-        {
-            if (transaction is not null) await transaction.DisposeAsync();
-        }
+            // A retry must start from persisted state: the audit row the previous attempt wrote is
+            // tracked as saved but was rolled back, so it would never be re-inserted.
+            if (attempt++ > 0) _db.ChangeTracker.Clear();
+
+            var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                await RevokeRefreshTokenFamilyAndAuditAsync(presentedToken, context, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                try { await transaction.RollbackAsync(cancellationToken); } catch { /* connection already gone */ }
+                throw;
+            }
+            finally
+            {
+                await transaction.DisposeAsync();
+            }
+        });
     }
 
     private async Task RevokeRefreshTokenFamilyAndAuditAsync(
