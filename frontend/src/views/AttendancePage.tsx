@@ -161,7 +161,10 @@ export function AttendancePage() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
-  const [filterDate, setFilterDate] = useState(today());
+  // Empty until resolved from the DATA on mount — see the effect below. Defaulting this to
+  // today() opened the whole screen empty on every tenant, because attendance only exists for
+  // days that have already happened.
+  const [filterDate, setFilterDate] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [punchEmployeeId, setPunchEmployeeId] = useState('');
   const [punchDirection, setPunchDirection] = useState('In');
@@ -186,7 +189,36 @@ export function AttendancePage() {
     [employees, punchEmployeeId, regularizationForm.employeeId, processForm.employeeId],
   );
 
+  // Open on the most recent day that actually HAS attendance, resolved from the data itself.
+  //
+  // Why not today(): attendance is only ever written for days that have happened. The demo
+  // seeders stop at yesterday, so the screen opened empty on every tenant. Re-seeding cannot fix
+  // that and neither can seeding further ahead — a Tuesday reseed still leaves a Wednesday demo
+  // looking at an empty day, and seeding attendance into the future would be fabricating
+  // punches for days nobody worked. Asking the data "what is the latest day you have?" is the
+  // only default that is correct on any day, with no reseed and nothing to re-run.
+  //
+  // The request deliberately sends no from/to: GetDailyAsync now defaults to a trailing window
+  // ordered by WorkDate descending, so item[0] is the latest record. today() is used only when
+  // the tenant has no attendance at all, which keeps a brand-new tenant on a sensible date.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let resolved = today();
+      try {
+        const latest = await attendanceApi.daily({ pageSize: 1 });
+        const workDate = latest.items[0]?.workDate;
+        if (workDate) resolved = String(workDate).slice(0, 10);
+      } catch {
+        /* fall back to today() — the main load below surfaces any real error */
+      }
+      if (!cancelled) setFilterDate(resolved);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const load = useCallback(async () => {
+    if (!filterDate) return;   // wait for the initial date to resolve from the data
     setLoading(true);
     setError('');
     try {

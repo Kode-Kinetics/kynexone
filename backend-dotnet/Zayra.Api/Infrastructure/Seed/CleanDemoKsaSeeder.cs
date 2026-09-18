@@ -750,13 +750,13 @@ public static class CleanDemoKsaSeeder
 
             payrollSlips.Add(new PayrollSlip
             {
-                TenantId = tenantId, RunId = payrollRun.Id, EmployeeId = emp.Id,
+                TenantId = tenantId, CompanyId = company.Id, RunId = payrollRun.Id, EmployeeId = emp.Id,
                 EmployeeCode = emp.EmployeeCode, EmployeeName = emp.FullName,
                 Department = emp.Department ?? string.Empty,
                 BasicSalary = basic, HousingAllowance = housing,
                 TransportAllowance = transport, OtherAllowances = bonus,
                 GrossSalary = gross, Deductions = empGosiTotal, NetSalary = netPay,
-                Status = "Processed",
+                Status = "Final",   // run is Locked above; PayrollController.Lock (:3472) stamps Final. ESS filters on Final.
             });
 
             // GL: salary posting DR 5100 / CR 2100 (base gross, bonus GL posted separately)

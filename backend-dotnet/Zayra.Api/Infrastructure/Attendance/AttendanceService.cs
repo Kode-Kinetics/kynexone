@@ -558,7 +558,15 @@ public class AttendanceService : IAttendanceService
     public async Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-        from ??= today;
+        // A PARAMETERLESS call defaults to a trailing window, not to today alone. Attendance only
+        // exists for days that have HAPPENED — the demo seeders stop at yesterday, and a live
+        // tenant's row appears only once that day's punches are processed — so a from==to==today
+        // default made the unfiltered endpoint return an empty page on every tenant every morning.
+        // A trailing window always contains the most recent real data, and because the projection
+        // below is ordered by WorkDate descending, daily() with no arguments now yields the latest
+        // records first, which is what "show me recent attendance" callers actually need.
+        // An explicit from/to is untouched — both are still honoured exactly as before.
+        from ??= today.AddDays(-60);
         to ??= today;
         var query = _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && !x.IsDeleted && x.WorkDate >= from && x.WorkDate <= to);
         if (scopeIds is not null) query = query.Where(x => scopeIds.Contains(x.EmployeeId));

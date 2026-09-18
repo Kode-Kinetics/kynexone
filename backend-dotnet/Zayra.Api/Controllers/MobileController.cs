@@ -276,8 +276,17 @@ public class MobileController : ControllerBase
         // CONFIDENTIALITY: the per-employee gross/net MUST come from THIS payslip's own
         // components, never the PayrollRun totals — projecting r.TotalGrossSalary/
         // r.TotalNetSalary leaked the whole company's monthly payroll to every employee.
-        // Gross = sum of "Earning" lines; Net = the stored "Net" line (PayrollController
-        // writes these component types when generating the slip).
+        // Gross = sum of "Earning" lines; Net = the stored "Net" line when there is one, else
+        // derived as Earning - Deduction from the SAME slip's lines.
+        //
+        // Why the fallback: only ONE writer ever emits a "Net" component —
+        // PayrollController.cs:4720, on slip generation, with Amount = slip.NetSalary. No seeder
+        // writes one, so every seeded and every pre-4720 legacy slip had no "Net" line at all and
+        // Sum() over the empty set returned 0.00, which is what the mobile list displayed.
+        // Deriving from this slip's own Earning/Deduction lines keeps the confidentiality rule
+        // above intact: it still reads nothing but THIS payslip's components, and never
+        // PayrollRun.TotalNetSalary/TotalGrossSalary. The stored line stays authoritative when
+        // present, so generated slips return exactly the value they return today.
         var slipIds = heads.Select(h => h.Id).ToList();
         var comps = await _db.PayslipComponents
             .Where(c => c.TenantId == tenantId && slipIds.Contains(c.PayslipId))
@@ -287,11 +296,14 @@ public class MobileController : ControllerBase
         var payslips = heads.Select(h =>
         {
             var own = comps.Where(c => c.PayslipId == h.Id).ToList();
+            var earnings = own.Where(c => c.ComponentType == "Earning").Sum(c => c.Amount);
+            var deductions = own.Where(c => c.ComponentType == "Deduction").Sum(c => c.Amount);
+            var storedNet = own.Where(c => c.ComponentType == "Net").ToList();
             return new
             {
                 h.Id, h.Year, h.Month,
-                TotalGrossSalary = own.Where(c => c.ComponentType == "Earning").Sum(c => c.Amount),
-                TotalNetSalary = own.Where(c => c.ComponentType == "Net").Sum(c => c.Amount),
+                TotalGrossSalary = earnings,
+                TotalNetSalary = storedNet.Count > 0 ? storedNet.Sum(c => c.Amount) : earnings - deductions,
                 h.IsPublishedToEss, h.CreatedAtUtc
             };
         }).ToList();
