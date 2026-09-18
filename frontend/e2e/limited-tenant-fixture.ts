@@ -17,6 +17,22 @@ import { assertDisposableHost } from './disposable-host.guard';
 // import.meta forces ESM semantics, which breaks the whole setup project at load time.
 const OWNERSHIP_FILE = join(__dirname, '.auth', 'fixture-tenant.json');
 
+/**
+ * The URL the suite is ACTUALLY pointed at — resolved exactly as playwright.config.ts resolves
+ * `use.baseURL`, including the localhost default.
+ *
+ * Both call sites below previously read `PLAYWRIGHT_BASE_URL ?? E2E_BASE_URL` with NO default. Run
+ * the documented way (`npx playwright test`, no env exported) that is `undefined`, so
+ * `assertDisposableHost` fail-closed on the very first setup step and the ENTIRE chromium lane —
+ * every browser test in the suite — never ran. A guard that blocks the run it is meant to protect
+ * is not protection; and "0 tests ran" is one CI config away from being read as "nothing broke".
+ *
+ * The safety property is unchanged: the resolved host is still handed to assertDisposableHost,
+ * which still refuses anything that is not loopback or explicitly allowlisted.
+ */
+const RESOLVED_BASE_URL =
+  process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173';
+
 function recordOwnership(tenantId: string, baseUrl: string): void {
   mkdirSync(dirname(OWNERSHIP_FILE), { recursive: true });
   writeFileSync(OWNERSHIP_FILE, JSON.stringify({ tenantId, baseUrl, createdAt: new Date().toISOString() }));
@@ -54,8 +70,7 @@ async function findActiveFixture(request: APIRequestContext, headers: Record<str
 }
 
 export async function purgeLimitedTenantFixture(request: APIRequestContext, token: string): Promise<void> {
-  const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL;
-  assertDisposableHost(baseUrl, 'purge the E2E tenant fixture');
+  assertDisposableHost(RESOLVED_BASE_URL, 'purge the E2E tenant fixture');
 
   const headers = platformHeaders(token);
   const tenant = await findActiveFixture(request, headers);
@@ -81,10 +96,9 @@ export async function purgeLimitedTenantFixture(request: APIRequestContext, toke
 }
 
 export async function provisionLimitedTenantFixture(request: APIRequestContext, token: string): Promise<void> {
-  const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL;
   // Provision deletes-and-purges any pre-existing evostel tenant before creating its own, so the
   // FIRST action of every browser run is a hard-erase. It needs the same guard as teardown.
-  assertDisposableHost(baseUrl, 'provision the E2E tenant fixture');
+  assertDisposableHost(RESOLVED_BASE_URL, 'provision the E2E tenant fixture');
 
   const headers = platformHeaders(token);
   const existing = await findActiveFixture(request, headers);
@@ -114,7 +128,7 @@ export async function provisionLimitedTenantFixture(request: APIRequestContext, 
   });
   expect(created.status(), await created.text()).toBe(201);
   const { tenantId } = await created.json() as { tenantId: string };
-  recordOwnership(tenantId, baseUrl!);
+  recordOwnership(tenantId, RESOLVED_BASE_URL);
 
   const subscription = await request.put(`/api/platform/tenants/${tenantId}/subscription`, {
     headers,

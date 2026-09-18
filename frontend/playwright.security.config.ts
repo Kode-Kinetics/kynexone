@@ -13,6 +13,11 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './e2e/security-gate',
+  // A required check must be able to fail for the right reason. The pre-flight makes "the stack was
+  // never up" a loud, early, zero-tests-run FAILURE rather than something the setup project
+  // discovers halfway through. See e2e/global-setup.ts for why this is a pre-flight and not a
+  // `webServer` entry.
+  globalSetup: './e2e/global-setup.ts',
 
   // No retries. A security boundary that only holds on the second attempt is a flaky boundary, and
   // retrying it hides exactly the intermittent authorization bug this suite exists to catch.

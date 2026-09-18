@@ -2,6 +2,10 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
+  // Hard pre-flight instead of `webServer`. See e2e/global-setup.ts for the full reasoning: this
+  // stack is four docker-compose services plus seeded data, and `webServer` proves only that a port
+  // is open — which is green for every blank-module bug this repo has actually shipped.
+  globalSetup: './e2e/global-setup.ts',
   // The Wave 1 security gate has its OWN config (playwright.security.config.ts) with retries:0 and a
   // fail-never-skip setup. Left in scope here it would run nine extra logins on top of this suite's
   // own — tripping the API's 10-per-60s limiter — and would run the gate specs with retries:1, which
@@ -47,6 +51,24 @@ export default defineConfig({
       // which depend on fixtures only the dedicated chrome-security-gate job provisions, and they
       // fail in milliseconds. Keep these two lists in sync.
       testIgnore: [/auth\.setup\.ts/, /fixture\.teardown\.ts/, /pilot-critical\.spec\.ts/, /security-gate\//],
+    },
+    // ── Mobile web ────────────────────────────────────────────────────────────────────────────
+    // COST/VALUE (assessed 2026-09-17): all three projects were Desktop Chrome, so the responsive
+    // web app had ZERO viewport coverage. The real Expo/React Native app lives in a separate repo
+    // and is not what this covers — this is the responsive web app at phone width, where the demo
+    // risk is a collapsed sidebar hiding navigation or a data table overflowing off-screen.
+    //
+    // Scoped to `pilot-critical.spec.ts` only, deliberately. Running all ~130 tests at a second
+    // viewport would roughly double a lane that already takes minutes, for mostly duplicate
+    // API-level assertions — and the freeze is Tuesday. One viewport × the critical-route walk
+    // catches the layout regressions that matter at ~90s of extra runtime.
+    //
+    // Opt out with `--project=...` selection; it is NOT in the default critical path for CI gating
+    // until it has a clean baseline.
+    {
+      name: 'mobile-pilot',
+      testMatch: /pilot-critical\.spec\.ts/,
+      use: { ...devices['Pixel 7'] },
     },
     {
       name: 'cleanup',
