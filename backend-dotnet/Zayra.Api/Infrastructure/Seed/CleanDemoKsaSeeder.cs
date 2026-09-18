@@ -155,12 +155,17 @@ public static class CleanDemoKsaSeeder
         // ── 5. Portal users ───────────────────────────────────────────────────
         var userSpecs = new (string Role, string Name, string Email)[]
         {
-            ("Admin",             "Ras Al-Manar Administrator", AdminEmail),
+            // FullName mirrors the linked employee record (see "Employee ↔ login linkage" below).
+            // AccessManagementService.InviteEmployeeLoginAsync keeps user.FullName == employee.FullName;
+            // a demo tenant that arrives pre-linked has to honour the same invariant.
+            ("Admin",             "Abdulrahman Al-Qahtani",     AdminEmail),
             ("HR Director",       "Noura Al-Ghamdi",            "hr@rasalmanar.com.sa"),
-            ("HR Manager",        "Mohammed Al-Shammari",       "hrm@rasalmanar.com.sa"),
+            ("HR Manager",        "Fatimah Al-Shammari",        "hrm@rasalmanar.com.sa"),
             ("Finance Approver",  "Khalid Al-Dosari",           "finance@rasalmanar.com.sa"),
             ("Manager",           "Mohammed Al-Zahrani",        "ops.mgr@rasalmanar.com.sa"),
             ("Supervisor",        "Hessa Al-Mutairi",           "supervisor@rasalmanar.com.sa"),
+            // Deliberately NOT linked to an employee: an external read-only reviewer, and the
+            // Auditor role grants no ess.* permission, so a link would not enable ESS anyway.
             ("Auditor",           "Tariq Al-Zahrani",           "audit@rasalmanar.com.sa"),
         };
 
@@ -407,13 +412,75 @@ public static class CleanDemoKsaSeeder
             });
         await db.SaveChangesAsync(ct);
 
-        // ── 11. Payroll profiles ──────────────────────────────────────────────
         var allEmps = new[]
         {
             empAbdulrahman, empNoura, empKhalid, empFatimah, empMohammed,
             empHessa, empFaisal, empReem, empTurki, empLina,
             empAhmed, empPriya, empOmar, empDavid, empMaria,
         };
+
+        // ── 10b. Employee ↔ login linkage (ESS / mobile enablement) ───────────
+        // JwtTokenService only emits the employee_id claim when a non-deleted employee_user_accounts
+        // row exists for the user (Infrastructure/Auth/JwtTokenService.cs:37). With no row and no
+        // matching work_email, EmployeeSelfServiceController.GetEssContextAsync and
+        // MobileController.ResolveCallerEmployeeIdAsync both resolve null, so every /api/ess/* call
+        // returns 400 and the mobile surface 403s. A demo tenant therefore has to arrive in the state
+        // the production invite flow (AccessManagementService.InviteEmployeeLoginAsync + invitation
+        // acceptance) leaves behind: Status "Active", RequiresPasswordSetup=false (a true value makes
+        // AuthService reject the login outright — AuthService.cs:46), employee.UserAccountId set, and
+        // employees.work_email equal to the login e-mail so the fallback resolves too.
+        // One link per user: employee_user_accounts has a UNIQUE index on (tenant_id, user_id).
+        //
+        // AccessMode is additive only (AuthService.GetPermissions unions role permissions with
+        // AccessModePermissions). The Admin, Manager and Supervisor roles already carry ess.*; HR
+        // Director / HR Manager do not, and AccessModePermissions has no HRPortal case, so they take
+        // ManagerPortal — which adds nothing those roles lack except ess.*. Finance Approver takes
+        // ESSOnly, the minimum additive grant, rather than gaining manager.read.
+        var usersByEmail = seededUsers.ToDictionary(x => x.User.Email, x => x.User, StringComparer.OrdinalIgnoreCase);
+        var loginLinks = new (string Email, Employee Employee, string AccessMode)[]
+        {
+            (AdminEmail,                          empAbdulrahman, AccessModes.FullPortal),       // GM, 7 direct reports
+            ("hr@rasalmanar.com.sa",              empNoura,       AccessModes.ManagerPortal),    // HR Director, 2 direct reports
+            ("hrm@rasalmanar.com.sa",             empFatimah,     AccessModes.ManagerPortal),    // Senior Consultant
+            ("finance@rasalmanar.com.sa",         empKhalid,      AccessModes.EssOnly),          // Finance Manager, 2 direct reports
+            ("ops.mgr@rasalmanar.com.sa",         empMohammed,    AccessModes.ManagerPortal),    // 2 direct reports — Team screen
+            ("supervisor@rasalmanar.com.sa",      empHessa,       AccessModes.SupervisorPortal), // HR Specialist
+        };
+        foreach (var (email, emp, accessMode) in loginLinks)
+        {
+            if (!usersByEmail.TryGetValue(email, out var linkUser))
+            {
+                logger.LogWarning(
+                    "CleanDemoKsaSeeder: user '{Email}' was not seeded — skipping employee link.", email);
+                continue;
+            }
+            db.EmployeeUserAccounts.Add(new EmployeeUserAccount
+            {
+                TenantId                = tenantId,
+                EmployeeId              = emp.Id,
+                UserId                  = linkUser.Id,
+                AccessMode              = accessMode,
+                IsPrimary               = true,
+                Status                  = "Active",
+                RequiresPasswordSetup   = false,
+                InvitationTokenHash     = string.Empty,
+                InvitedAtUtc            = now,
+                InvitationAcceptedAtUtc = now,
+                CreatedAtUtc            = now,
+            });
+            emp.WorkEmail     = linkUser.Email;
+            emp.UserAccountId = linkUser.Id;
+        }
+
+        // Every remaining employee still needs a work e-mail: it is the manager-linking key for the
+        // bulk importer, the "invite this employee" default in User Management, and the only address
+        // the notification pipeline can reach them on.
+        foreach (var emp in allEmps.Where(e => string.IsNullOrWhiteSpace(e.WorkEmail)))
+            emp.WorkEmail = WorkEmail(emp.EnglishName, "rasalmanar.com.sa");
+
+        await db.SaveChangesAsync(ct);
+
+        // ── 11. Payroll profiles ──────────────────────────────────────────────
 
         // SA + 22 digits (24 chars total). Al Rajhi (80) for Saudi; Riyad Bank (05) for expat.
         var ibans = new[]
@@ -758,5 +825,19 @@ public static class CleanDemoKsaSeeder
             "CleanDemoKsaSeeder: seeded Ras Al-Manar — {Emp} employees ({Saudi} Saudi, {Expat} expat), " +
             "payroll {Period} gross={Gross:N2} ded={Ded:N2} net={Net:N2} SAR, GL DR=CR={GL:N2} SAR.",
             allEmps.Length, 10, 5, period, totalGross, totalDed, totalNet, glTotal);
+    }
+
+    /// <summary>first.last@domain, punctuation stripped — mirrors WorkEmailPatterns.FirstLast.</summary>
+    private static string WorkEmail(string fullName, string domain)
+    {
+        var parts = fullName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var local = parts.Length switch
+        {
+            0 => "employee",
+            1 => parts[0],
+            _ => $"{parts[0]}.{parts[^1]}",
+        };
+        local = new string(local.Where(c => char.IsLetterOrDigit(c) || c == '.').ToArray()).ToLowerInvariant();
+        return $"{local}@{domain}";
     }
 }
