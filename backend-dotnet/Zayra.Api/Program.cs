@@ -380,7 +380,14 @@ builder.Services.AddScoped<INotificationRecipientResolver, NotificationRecipient
 builder.Services.AddScoped<INotificationProviderConfigReader, NotificationProviderConfigReader>();
 builder.Services.AddScoped<ISmsProvider, NullSmsProvider>();
 builder.Services.AddScoped<IWhatsAppProvider, NullWhatsAppProvider>();
-builder.Services.AddScoped<IPushProvider, NullPushProvider>();
+// POD-D5 / mobile enablement — REAL push. The Expo adapter replaces NullPushProvider because the
+// mobile client registers Expo tokens (ExponentPushToken[...]) via getExpoPushTokenAsync(); it stays
+// dormant (visible "not_configured" delivery rows) until a tenant sets Notifications/Push.Provider=expo.
+builder.Services.AddScoped<IPushProvider, ExpoPushProvider>();
+// Timeout MUST stay above ProviderBackedDispatcher.SendTimeout (10 s) so the dispatcher's linked CTS
+// is what fires first and the outcome is classified Ambiguous rather than a bare transport failure.
+builder.Services.AddHttpClient(ExpoPushProvider.HttpClientName,
+    c => c.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddScoped<INotificationChannelDispatcher, EmailChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, SmsChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, WhatsAppChannelDispatcher>();

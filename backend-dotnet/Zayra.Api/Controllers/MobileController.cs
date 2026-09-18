@@ -334,8 +334,22 @@ public class MobileController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
+        // BROKEN OBJECT-LEVEL AUTHORIZATION (CWE-639) — FIXED.
+        // This was the ONLY endpoint on this controller that skipped ResolveCallerEmployeeIdAsync.
+        // Filtering on (id + tenant) alone let ANY authenticated user in the tenant mark ANY
+        // colleague's notification read: a silent integrity write against another employee's record,
+        // and an oracle for notification ids (204 = exists in my tenant, 404 = does not). Every
+        // sibling endpoint (dashboard, leave, payslips, notifications list) resolves the caller
+        // first; this one now matches them.
+        //
+        // 404 rather than 403 for a notification belonging to someone else is deliberate — it keeps
+        // the existing not-found shape and does not confirm the id exists.
+        var callerId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (callerId is null) return Forbid();
+
         var notification = await _db.EmployeeNotifications
-            .FirstOrDefaultAsync(n => n.Id == notificationId && n.TenantId == tenantId, ct);
+            .FirstOrDefaultAsync(n => n.Id == notificationId && n.TenantId == tenantId
+                && n.EmployeeId == callerId.Value, ct);
 
         if (notification is null) return NotFound();
 
