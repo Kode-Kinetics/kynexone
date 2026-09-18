@@ -244,72 +244,112 @@ public class RecruitmentService : IRecruitmentService
         // null OnboardingDraftId. A losing concurrent request rolls back every side effect.
         if (_db.Database.IsRelational())
         {
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
-            try
+            // Program.cs registers the DbContext with EnableRetryOnFailure, so the ambient
+            // execution strategy is NpgsqlRetryingExecutionStrategy, and it refuses a
+            // user-initiated BeginTransactionAsync unless the whole unit runs inside
+            // Database.CreateExecutionStrategy().ExecuteAsync(...). The bare transaction that
+            // stood here threw InvalidOperationException before doing any work and the generic
+            // exception handler turned it into HTTP 400, so offer acceptance -> employee-draft
+            // conversion failed 100% of the time and no candidate could be onboarded at all.
+            OfferAcceptanceResult? outcome = null;
+            var strategy = _db.Database.CreateExecutionStrategy();
+            var attempt = 0;
+            await strategy.ExecuteAsync(async () =>
             {
-                if (!recoveringLegacyAcceptance)
+                if (attempt++ > 0)
                 {
-                    var offerWon = await _db.OfferLetters
-                        .Where(o => o.Id == offerId && o.TenantId == tenantId && o.Status == "Sent")
-                        .ExecuteUpdateAsync(setters => setters
-                            .SetProperty(o => o.Status, "Accepted")
-                            .SetProperty(o => o.AcceptedAtUtc, DateTime.UtcNow), ct);
+                    // ExecuteAsync may re-run this delegate. A retry must not inherit the change
+                    // tracker a failed attempt left behind: the EmployeeDraft, ApplicationEvent
+                    // and RecruitmentAuditLog it added are still pending and would be inserted
+                    // twice, and — worse — rows whose SaveChanges succeeded before a transient
+                    // failure swallowed the COMMIT are tracked as Unchanged, so a naive retry
+                    // would silently write nothing. Everything the unit reads is either
+                    // AsNoTracking or re-read by the compare-and-swap updates themselves, so a
+                    // cleared tracker restarts the attempt from persisted state. The draft keeps
+                    // its client-generated Id, which makes the re-insert idempotent; and if the
+                    // lost COMMIT had in fact landed, the CAS below no longer matches and the
+                    // attempt resolves as the replay it is.
+                    _db.ChangeTracker.Clear();
+                }
+                outcome = null;
 
-                    if (offerWon != 1)
+                var tx = await _db.Database.BeginTransactionAsync(ct);
+                try
+                {
+                    if (!recoveringLegacyAcceptance)
+                    {
+                        var offerWon = await _db.OfferLetters
+                            .Where(o => o.Id == offerId && o.TenantId == tenantId && o.Status == "Sent")
+                            .ExecuteUpdateAsync(setters => setters
+                                .SetProperty(o => o.Status, "Accepted")
+                                .SetProperty(o => o.AcceptedAtUtc, DateTime.UtcNow), ct);
+
+                        if (offerWon != 1)
+                        {
+                            await tx.RollbackAsync(ct);
+                            outcome = await ResolveReplayAsync(tenantId, offerId, ct);
+                            return;
+                        }
+                    }
+
+                    var now = DateTime.UtcNow;
+                    var appWon = await _db.JobApplications
+                        .Where(a => a.Id == app.Id && a.TenantId == tenantId
+                            && a.OnboardingDraftId == null
+                            && a.Status == (recoveringLegacyAcceptance ? "Hired" : "Active"))
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(a => a.OnboardingDraftId, draft.Id)
+                            .SetProperty(a => a.Stage, "Hired")
+                            .SetProperty(a => a.StageOrder, 6)
+                            .SetProperty(a => a.Status, "Hired")
+                            .SetProperty(a => a.HiredAtUtc, a => a.HiredAtUtc ?? now)
+                            .SetProperty(a => a.StageChangedAtUtc, a => a.StageChangedAtUtc ?? now), ct);
+
+                    if (appWon != 1)
                     {
                         await tx.RollbackAsync(ct);
-                        return await ResolveReplayAsync(tenantId, offerId, ct);
+                        outcome = await ResolveReplayAsync(tenantId, offerId, ct);
+                        return;
                     }
+
+                    if (!recoveringLegacyAcceptance)
+                    {
+                        var openingWon = await _db.JobOpenings
+                            .Where(j => j.Id == opening.Id && j.TenantId == tenantId)
+                            .ExecuteUpdateAsync(setters => setters
+                                .SetProperty(j => j.Status,
+                                    j => j.FilledCount + 1 >= j.HeadCount ? "Closed" : j.Status)
+                                .SetProperty(j => j.FilledCount, j => j.FilledCount + 1), ct);
+                        if (openingWon != 1)
+                            throw new InvalidOperationException("The job opening disappeared during offer acceptance.");
+                    }
+
+                    AddAcceptanceRecords(tenantId, offerId, app.Id, requestedByUserId, performedByName,
+                        draft, recoveringLegacyAcceptance);
+                    await _db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+
+                    outcome = Result(
+                        recoveringLegacyAcceptance ? OfferAcceptanceOutcome.AlreadyAccepted : OfferAcceptanceOutcome.Accepted,
+                        offerId, app.Id, draft.Id,
+                        recoveringLegacyAcceptance
+                            ? "Recovered the existing accepted offer's missing onboarding draft."
+                            : "Offer accepted and onboarding started.");
                 }
-
-                var now = DateTime.UtcNow;
-                var appWon = await _db.JobApplications
-                    .Where(a => a.Id == app.Id && a.TenantId == tenantId
-                        && a.OnboardingDraftId == null
-                        && a.Status == (recoveringLegacyAcceptance ? "Hired" : "Active"))
-                    .ExecuteUpdateAsync(setters => setters
-                        .SetProperty(a => a.OnboardingDraftId, draft.Id)
-                        .SetProperty(a => a.Stage, "Hired")
-                        .SetProperty(a => a.StageOrder, 6)
-                        .SetProperty(a => a.Status, "Hired")
-                        .SetProperty(a => a.HiredAtUtc, a => a.HiredAtUtc ?? now)
-                        .SetProperty(a => a.StageChangedAtUtc, a => a.StageChangedAtUtc ?? now), ct);
-
-                if (appWon != 1)
+                catch
                 {
-                    await tx.RollbackAsync(ct);
-                    return await ResolveReplayAsync(tenantId, offerId, ct);
+                    // Never let a failing rollback mask the original error: the strategy has to
+                    // see the real exception to classify it as transient. Dispose still releases.
+                    try { await tx.RollbackAsync(CancellationToken.None); } catch { /* connection already gone */ }
+                    throw;
                 }
-
-                if (!recoveringLegacyAcceptance)
+                finally
                 {
-                    var openingWon = await _db.JobOpenings
-                        .Where(j => j.Id == opening.Id && j.TenantId == tenantId)
-                        .ExecuteUpdateAsync(setters => setters
-                            .SetProperty(j => j.Status,
-                                j => j.FilledCount + 1 >= j.HeadCount ? "Closed" : j.Status)
-                            .SetProperty(j => j.FilledCount, j => j.FilledCount + 1), ct);
-                    if (openingWon != 1)
-                        throw new InvalidOperationException("The job opening disappeared during offer acceptance.");
+                    await tx.DisposeAsync();
                 }
+            });
 
-                AddAcceptanceRecords(tenantId, offerId, app.Id, requestedByUserId, performedByName,
-                    draft, recoveringLegacyAcceptance);
-                await _db.SaveChangesAsync(ct);
-                await tx.CommitAsync(ct);
-
-                return Result(
-                    recoveringLegacyAcceptance ? OfferAcceptanceOutcome.AlreadyAccepted : OfferAcceptanceOutcome.Accepted,
-                    offerId, app.Id, draft.Id,
-                    recoveringLegacyAcceptance
-                        ? "Recovered the existing accepted offer's missing onboarding draft."
-                        : "Offer accepted and onboarding started.");
-            }
-            catch
-            {
-                await tx.RollbackAsync(CancellationToken.None);
-                throw;
-            }
+            return outcome!;
         }
 
         // EF's in-memory provider is used by fast unit tests and cannot execute set-based CAS.

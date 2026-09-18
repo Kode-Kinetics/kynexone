@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Testcontainers.PostgreSql;
@@ -81,14 +82,42 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public Task DisposeAsync() => _container.DisposeAsync().AsTask();
 
+    /// <summary>
+    /// Npgsql configured EXACTLY as Program.cs configures production:
+    /// <c>EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: 5s)</c>.
+    ///
+    /// <para>This used to build a context with NO retry, and that single difference from
+    /// production blinded the entire suite to a whole class of defect. With no retrying execution
+    /// strategy a bare user-initiated <c>BeginTransaction</c> is perfectly legal; under
+    /// <c>NpgsqlRetryingExecutionStrategy</c> the first query or SaveChanges inside that
+    /// transaction throws <c>InvalidOperationException</c> ("does not support user-initiated
+    /// transactions"), which every controller surfaces as HTTP 400. So four endpoints that were
+    /// dead 100% of the time in production — /api/auth/refresh, the org-structure import commit,
+    /// the calibration adjustment and offer acceptance — were exercised in detail here and passed.
+    /// Tests that do not run production's provider configuration cannot see production's
+    /// failures.</para>
+    ///
+    /// <para>Enabling retry here costs nothing: the whole suite (1,865 tests) passes with it on.
+    /// It is not a complete control on its own, because it only covers the transactional paths a
+    /// test happens to reach — the lexical ratchet in
+    /// <c>Security/ExecutionStrategyLintTests</c> covers every site, including the ones no test
+    /// exercises.</para>
+    /// </summary>
     public ZayraDbContext CreateDb() => new(
         new DbContextOptionsBuilder<ZayraDbContext>()
-            .UseNpgsql(ConnectionString)
+            .UseNpgsql(ConnectionString, ProductionProviderOptions)
             .Options);
+
+    /// <summary>
+    /// Identical to <see cref="CreateDb"/>. It exists so that a test whose whole point is the
+    /// retrying execution strategy can say so at the call site, and so that it keeps working if
+    /// <see cref="CreateDb"/> is ever narrowed again.
+    /// </summary>
+    public ZayraDbContext CreateRetryingDb() => CreateDb();
 
     public ZayraDbContext CreateDbWithAccessor(IHttpContextAccessor accessor) => new(
         new DbContextOptionsBuilder<ZayraDbContext>()
-            .UseNpgsql(ConnectionString)
+            .UseNpgsql(ConnectionString, ProductionProviderOptions)
             .Options,
         accessor);
 
@@ -99,12 +128,18 @@ public sealed class PostgresFixture : IAsyncLifetime
     /// </summary>
     public ZayraDbContext CreateDbWithAccessor(IHttpContextAccessor accessor, IOptions<JwtOptions> jwtOptions) => new(
         new DbContextOptionsBuilder<ZayraDbContext>()
-            .UseNpgsql(ConnectionString)
+            .UseNpgsql(ConnectionString, ProductionProviderOptions)
             .Options,
         accessor,
         logger: null,
         scopeOptions: null,
         jwtOptions: jwtOptions);
+
+    /// <summary>One definition of "production's provider configuration", so the fixture's factories
+    /// cannot drift apart from each other or from Program.cs.</summary>
+    private static void ProductionProviderOptions(NpgsqlDbContextOptionsBuilder options) =>
+        options.EnableRetryOnFailure(
+            maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
 
     // Minimal tenant seed required for import tests (role resolver looks up "Employee" role)
     public static async Task<Guid> SeedMinimalTenant(ZayraDbContext db)
