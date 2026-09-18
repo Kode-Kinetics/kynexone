@@ -10,7 +10,7 @@
  */
 import { test, expect, Page } from '@playwright/test';
 import {
-  stackDownReason,
+  assertStackReachable,
   groupSeedMissingReason,
   uiLogin,
   bodyText,
@@ -84,7 +84,8 @@ async function openComplianceProfiles(page: Page): Promise<void> {
 
 test.describe('Group→Company: compliance profiles', () => {
   test.beforeAll(async () => {
-    skipReason = (await stackDownReason()) ?? (await groupSeedMissingReason(ALM_COMPLIANCE));
+    await assertStackReachable();   // hard-fails when the stack is down; never skips
+    skipReason = (await groupSeedMissingReason(ALM_COMPLIANCE));
   });
 
   test.beforeEach(() => {

@@ -183,3 +183,115 @@ export async function apiPlatformFreshLogin(
   const data = await resp.json();
   return data.token ?? data.accessToken;
 }
+
+// ── Honest render assertions ──────────────────────────────────────────────────
+//
+// WHY THESE EXIST — `(await page.locator('body').innerText()).length > 50` was this suite's
+// standard "the page loaded" proxy. It is not one. The persistent application shell (sidebar +
+// nav + header) renders before any data arrives and is ~950 characters on its own, so the
+// threshold is cleared by:
+//   • a page whose every /api/** call returned 500,
+//   • a page showing an empty-state or a spinner,
+//   • in some layouts, a redirect that still paints chrome.
+// Proven in e2e/group-company/helpers.ts (nav 382 + aside 479 + header 90). Commit 199cfd5 put it
+// plainly: "130 tests passing in 90 seconds against an HR/payroll product was the tell."
+//
+// Replace the proxy with two things that can actually fail: measure only the ROUTE's own output,
+// and assert on specific, semantically meaningful content.
+
+/**
+ * Length of the main region's text, excluding the static navigation shell.
+ * Deliberately does NOT swallow locator errors — a thrown read must fail the test, not return 0
+ * and let a `> 50` check decide the outcome on a page that never rendered.
+ */
+export async function mainContentLength(page: Page): Promise<number> {
+  const main = page.locator('main, [role="main"]').first();
+  if ((await main.count()) === 0) return 0;
+  return (await main.innerText()).trim().length;
+}
+
+/** Visible text of the route's own main region (never the shell). Throws if there is no main. */
+export async function mainText(page: Page): Promise<string> {
+  const main = page.locator('main, [role="main"]').first();
+  if ((await main.count()) === 0)
+    throw new Error(`No <main> region at ${page.url()} — the route rendered only the shell.`);
+  return await main.innerText();
+}
+
+/** Fatal-crash strings. Kept in one place so every suite sniffs for the same set. */
+export function crashIndicators(text: string): string[] {
+  const lower = text.toLowerCase();
+  return ['something went wrong', 'unexpected error', 'cannot read properties of undefined', 'typeerror']
+    .filter((s) => lower.includes(s));
+}
+
+/**
+ * Count the data rows a list screen actually rendered.
+ *
+ * Tries real table rows first, then the common card/list-item shapes. Returns 0 when nothing
+ * matched — callers assert `> 0`, so "I could not find the rows" and "there are no rows" both go
+ * red, which is the correct bias for a demo-readiness check.
+ */
+export async function renderedRowCount(page: Page): Promise<number> {
+  const candidates = [
+    page.locator('main tbody tr, [role="main"] tbody tr'),
+    page.locator('main [role="row"], [role="main"] [role="row"]'),
+    page.locator('main [data-testid$="-row"], [role="main"] [data-testid$="-row"]'),
+    page.locator('main li[data-id], [role="main"] li[data-id]'),
+  ];
+  let best = 0;
+  for (const c of candidates) best = Math.max(best, await c.count());
+  return best;
+}
+
+/** Text that a genuinely empty list screen shows. Used to distinguish "empty" from "not loaded". */
+const EMPTY_STATE = /no (records|results|data|requests|approvals|entries)|nothing to show|0 results/i;
+
+/**
+ * Assert a list route rendered REAL rows — the check the demo actually depends on.
+ *
+ * Fails loudly on an empty state rather than treating it as "the page loaded fine", because an
+ * empty Attendance / Leave / Approvals screen IS the demo failure mode this suite exists to catch.
+ */
+export async function expectNonEmptyList(page: Page, route: string, minRows = 1): Promise<number> {
+  const rows = await renderedRowCount(page);
+  const text = await mainText(page);
+  if (rows < minRows) {
+    const emptyState = EMPTY_STATE.test(text) ? ' The screen is showing its EMPTY STATE.' : '';
+    throw new Error(
+      `${route} rendered ${rows} data row(s); at least ${minRows} was required.${emptyState}\n` +
+      `This is the blank-module failure the pilot feared. Main-region text (first 400 chars):\n` +
+      text.slice(0, 400),
+    );
+  }
+  return rows;
+}
+
+/**
+ * Hard pre-flight: the stack must be up. Throws — never skips.
+ *
+ * A 401 from /api/auth/me through the frontend proxy proves frontend AND backend are alive and
+ * talking. Accepting any sub-500 response would let an unrelated dev server on the same port
+ * masquerade as a healthy HRM API.
+ */
+export async function assertStackReachable(baseUrl: string = BASE_URL): Promise<void> {
+  const { request: pwRequest } = await import('@playwright/test');
+  const api = await pwRequest.newContext({ baseURL: baseUrl, timeout: 15_000 });
+  try {
+    const resp = await api.get('/api/auth/me');
+    if (resp.status() === 401) return;
+    const preview = (await resp.text()).replace(/\s+/g, ' ').slice(0, 160);
+    throw new Error(
+      `STACK UNHEALTHY: GET ${baseUrl}/api/auth/me must return 401, got ${resp.status()}. ${preview}`,
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('STACK UNHEALTHY')) throw error;
+    throw new Error(
+      `STACK UNREACHABLE at ${baseUrl}: ${error instanceof Error ? error.message : String(error)}\n` +
+      `Start the backend + frontend before running e2e. This is a FAILURE, not a skip: a dead ` +
+      `backend must never produce a green run.`,
+    );
+  } finally {
+    await api.dispose();
+  }
+}

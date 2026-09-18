@@ -21,8 +21,25 @@ import { provisionLimitedTenantFixture } from './limited-tenant-fixture';
  * real login) while staying inside the production rate limit, which is what makes it viable
  * as a CI gate.
  */
+/**
+ * Pace persona logins under the API's 10-per-60s login window, exactly as
+ * e2e/security-gate/auth.setup.ts does.
+ *
+ * This file authenticates TWELVE personas in a tight `for` loop with no pacing, so the eleventh
+ * login onwards got a 429 and the setup project threw. The setup project is a `dependencies` of the
+ * `chromium` project, so that single throw meant "8 did not run" — the ENTIRE browser lane, ~112
+ * tests, produced no result at all. Its sibling config had the pacing; this one did not. That is
+ * the same "a guard exists in one config and not its sibling" class that playwright.config.ts's own
+ * comments call out for testIgnore and forbidOnly.
+ *
+ * The limiter is respected, not raised: raising RateLimit:LoginPermitLimit to make the suite pass
+ * would weaken a production brute-force control for the convenience of the tests.
+ */
+const LOGIN_PACING_MS = Number(process.env.E2E_LOGIN_PACING_MS ?? 7_000);
+
 setup('authenticate platform admin and provision isolated limited tenant', async ({ page, request }) => {
-  setup.setTimeout(120_000);
+  // 12 personas × 7s pacing ≈ 84s, plus the platform login and fixture provisioning.
+  setup.setTimeout(240_000);
   await platformLogin(page);
   await page.context().storageState({ path: PLATFORM_STATE });
   const token = await page.evaluate(() => localStorage.getItem('platform_access_token'));
@@ -48,12 +65,18 @@ setup('authenticate platform admin and provision isolated limited tenant', async
     { email: 'compliance@tata-test.local', password: groupPassword, slug: 'tata-test' },
   ];
   const sessions: Record<string, { accessToken: string; refreshToken: string }> = {};
-  for (const persona of personas) {
+  for (const [index, persona] of personas.entries()) {
+    if (index > 0) await new Promise((r) => setTimeout(r, LOGIN_PACING_MS));
     const response = await request.post('/api/auth/login', {
       data: { email: persona.email, password: persona.password, tenantSlug: persona.slug },
     });
     if (!response.ok())
-      throw new Error(`Persona setup login failed for ${persona.email}/${persona.slug}: ${response.status()}`);
+      throw new Error(
+        `Persona setup login failed for ${persona.email}/${persona.slug}: ${response.status()}` +
+        (response.status() === 429
+          ? ' — rate limited. Raise E2E_LOGIN_PACING_MS; do NOT raise the API\'s login limit.'
+          : ''),
+      );
     const body = await response.json() as { accessToken?: string; token?: string; refreshToken?: string };
     const accessToken = body.accessToken ?? body.token;
     if (!accessToken || !body.refreshToken)

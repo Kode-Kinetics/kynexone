@@ -7,7 +7,7 @@
  */
 import { test, expect } from '@playwright/test';
 import {
-  stackDownReason,
+  assertStackReachable,
   groupSeedMissingReason,
   newApi,
   apiLogin,
@@ -32,7 +32,8 @@ let skipReason: string | null = null;
 
 test.describe('Group→Company: selected-companies user (scoped.admin, almarai-test)', () => {
   test.beforeAll(async () => {
-    skipReason = (await stackDownReason()) ?? (await groupSeedMissingReason(SCOPED));
+    await assertStackReachable();   // hard-fails when the stack is down; never skips
+    skipReason = (await groupSeedMissingReason(SCOPED));
   });
 
   test.beforeEach(() => {
