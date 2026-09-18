@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260918042125_AddPayComponentEffectiveDating")]
+    partial class AddPayComponentEffectiveDating
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2613,26 +2616,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
-                    b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("department_id");
-
                     b.Property<string>("EntityName")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("entity_name");
 
-                    b.Property<Guid?>("GradeId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("grade_id");
-
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
-
-                    b.Property<bool>("IsDefault")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_default");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -2647,9 +2638,6 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "Code")
                         .IsUnique();
-
-                    b.HasIndex("TenantId", "EntityName", "IsActive", "DepartmentId", "GradeId")
-                        .HasDatabaseName("IX_approval_workflows_routing");
 
                     b.ToTable("approval_workflows", (string)null);
                 });
@@ -4074,188 +4062,6 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "AttendancePolicyId", "RuleType");
 
                     b.ToTable("attendance_rules", (string)null);
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.BackgroundJob", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<int>("AttemptCount")
-                        .HasColumnType("integer")
-                        .HasColumnName("attempt_count");
-
-                    b.Property<DateTime?>("CancelRequestedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("cancel_requested_at_utc");
-
-                    b.Property<DateTime?>("CompletedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("completed_at_utc");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("created_by_user_id");
-
-                    b.Property<DateTime?>("HeartbeatAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("heartbeat_at_utc");
-
-                    b.Property<string>("IdempotencyKey")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("idempotency_key");
-
-                    b.Property<string>("JobType")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("job_type");
-
-                    b.Property<string>("KeyRetention")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("key_retention");
-
-                    b.Property<string>("LastError")
-                        .HasMaxLength(4000)
-                        .HasColumnType("character varying(4000)")
-                        .HasColumnName("last_error");
-
-                    b.Property<DateTime?>("LeaseExpiresAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("lease_expires_at_utc");
-
-                    b.Property<string>("LeaseOwner")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)")
-                        .HasColumnName("lease_owner");
-
-                    b.Property<Guid?>("LeaseToken")
-                        .HasColumnType("uuid")
-                        .HasColumnName("lease_token");
-
-                    b.Property<int>("MaxAttempts")
-                        .HasColumnType("integer")
-                        .HasColumnName("max_attempts");
-
-                    b.Property<string>("PayloadJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb")
-                        .HasColumnName("payload_json");
-
-                    b.Property<int>("ProgressCompleted")
-                        .HasColumnType("integer")
-                        .HasColumnName("progress_completed");
-
-                    b.Property<string>("ProgressMessage")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("progress_message");
-
-                    b.Property<int?>("ProgressTotal")
-                        .HasColumnType("integer")
-                        .HasColumnName("progress_total");
-
-                    b.Property<string>("ResultJson")
-                        .HasColumnType("jsonb")
-                        .HasColumnName("result_json");
-
-                    b.Property<DateTime>("RunAfterUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("run_after_utc");
-
-                    b.Property<DateTime?>("StartedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("started_at_utc");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("status");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at_utc");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Status", "LeaseExpiresAtUtc")
-                        .HasDatabaseName("ix_background_jobs_status_lease");
-
-                    b.HasIndex("Status", "RunAfterUtc")
-                        .HasDatabaseName("ix_background_jobs_status_run_after");
-
-                    b.HasIndex("TenantId", "CreatedAtUtc")
-                        .HasDatabaseName("ix_background_jobs_tenant_created");
-
-                    b.HasIndex(new[] { "TenantId", "JobType", "IdempotencyKey" }, "ux_background_jobs_active_key")
-                        .IsUnique()
-                        .HasFilter("status IN ('Queued','Running')");
-
-                    b.HasIndex(new[] { "TenantId", "JobType", "IdempotencyKey" }, "ux_background_jobs_retained_key")
-                        .IsUnique()
-                        .HasFilter("key_retention = 'Forever' AND status IN ('Queued','Running','Succeeded')");
-
-                    b.ToTable("background_jobs", (string)null);
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.BackgroundJobItem", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<int>("Attempt")
-                        .HasColumnType("integer")
-                        .HasColumnName("attempt");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<string>("ItemKey")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("item_key");
-
-                    b.Property<Guid>("JobId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("job_id");
-
-                    b.Property<string>("ResultJson")
-                        .HasColumnType("jsonb")
-                        .HasColumnName("result_json");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("JobId", "ItemKey")
-                        .IsUnique()
-                        .HasDatabaseName("ux_background_job_items_job_item");
-
-                    b.HasIndex("TenantId", "JobId")
-                        .HasDatabaseName("ix_background_job_items_tenant_job");
-
-                    b.ToTable("background_job_items", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.BankPaymentConfirmation", b =>
@@ -23452,15 +23258,6 @@ namespace Zayra.Api.Migrations
                     b.HasOne("Zayra.Api.Models.ApprovalWorkflow", null)
                         .WithMany("Steps")
                         .HasForeignKey("WorkflowId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.BackgroundJobItem", b =>
-                {
-                    b.HasOne("Zayra.Api.Models.BackgroundJob", null)
-                        .WithMany()
-                        .HasForeignKey("JobId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

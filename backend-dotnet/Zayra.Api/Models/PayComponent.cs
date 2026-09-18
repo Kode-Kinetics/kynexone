@@ -101,6 +101,27 @@ public class PayComponent : ITenantOwned, ICompanyScoped
     public bool IsActive { get; set; } = true;
     public bool IsDeleted { get; set; }
 
+    // ── F2: effective dating ───────────────────────────────────────────────────
+    // A component definition is a sequence of VERSIONS sharing (TenantId, CompanyId, Code, ComponentType).
+    // Each version is in effect for the payroll periods whose first day falls in
+    // [EffectiveFrom, EffectiveTo]; NULL on either side is open-ended. Both bounds are always the first /
+    // last day of a month (enforced by the write API), so a version covers WHOLE payroll periods — a
+    // mid-period change is never half-applied. A change is written as a NEW version from a date forward;
+    // the prior version is closed (EffectiveTo), never rewritten, and the write API refuses any date that
+    // reaches into a period that already holds an approved/locked run. The system seeds carry NULL/NULL
+    // ("always"), which is exactly the pre-F2 behaviour.
+
+    /// <summary>First day of the first payroll period this version applies to. NULL = since the beginning.</summary>
+    public DateOnly? EffectiveFrom { get; set; }
+
+    /// <summary>Last day of the last payroll period this version applies to. NULL = open-ended.</summary>
+    public DateOnly? EffectiveTo { get; set; }
+
+    /// <summary>True when this version is in effect for the payroll period starting <paramref name="periodStart"/>.</summary>
+    public bool IsInEffect(DateOnly periodStart) =>
+        (EffectiveFrom is null || EffectiveFrom.Value <= periodStart)
+        && (EffectiveTo is null || EffectiveTo.Value >= periodStart);
+
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }

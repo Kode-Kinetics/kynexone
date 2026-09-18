@@ -338,6 +338,14 @@ public class PayrollEarning : ITenantOwned
     public string ComponentName { get; set; } = string.Empty;
     public decimal Amount { get; set; }
     public string Source { get; set; } = "Salary";
+    /// <summary>
+    /// F2 — the GL posting driver PINNED at Process time for a tenant-configured pay component
+    /// (<see cref="PayComponent.GlDriverKey"/>, validated on write). NULL for every system/subsystem line,
+    /// which keep the existing Source+Code routing byte-for-byte. Pinning on the line (rather than
+    /// re-reading the catalog at Lock) means a later, effective-dated catalog edit can never re-route a
+    /// run that has already been processed.
+    /// </summary>
+    public string? GlDriverKey { get; set; }
 }
 
 public class PayrollDeduction : ITenantOwned, ICompanyScopedOperational
@@ -358,6 +366,14 @@ public class PayrollDeduction : ITenantOwned, ICompanyScopedOperational
     /// for GL routing and compliance reporting.
     /// </summary>
     public bool IsEmployerContribution { get; set; }
+    /// <summary>
+    /// F2 — the GL posting driver PINNED at Process time for a tenant-configured pay component
+    /// (<see cref="PayComponent.GlDriverKey"/>, validated on write). NULL for every system/subsystem line,
+    /// which keep the existing Source+Code routing byte-for-byte. Pinning on the line (rather than
+    /// re-reading the catalog at Lock) means a later, effective-dated catalog edit can never re-route a
+    /// run that has already been processed.
+    /// </summary>
+    public string? GlDriverKey { get; set; }
 }
 
 public class BenefitPlan : ITenantOwned, ICompanyScoped
