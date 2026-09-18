@@ -521,25 +521,10 @@ public class AttendanceService : IAttendanceService
 
     public async Task<int> ProcessAsync(Guid tenantId, ProcessAttendanceRequest request, RequestContext context, CancellationToken ct)
     {
-        if (request.FromDate > request.ToDate)
-            throw new InvalidOperationException("From date must be on or before To date.");
-        if (request.ToDate.DayNumber - request.FromDate.DayNumber > 366)
-            throw new InvalidOperationException("Attendance processing is limited to 367 days per request.");
-        if (await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId
-                && x.Status == "Locked" && x.PeriodStart <= request.ToDate && x.PeriodEnd >= request.FromDate, ct))
-            throw new InvalidOperationException("Attendance cannot be processed for a payroll-locked period.");
+        await ValidateProcessRangeAsync(tenantId, request.FromDate, request.ToDate, ct);
 
         var employees = await _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted && (request.EmployeeId == null || x.Id == request.EmployeeId)).ToListAsync(ct);
-        var policies = await _db.AttendancePolicies
-            .Where(x => x.TenantId == tenantId && x.IsActive)
-            .ToListAsync(ct);
-        if (policies.Count == 0)
-        {
-            var policy = DefaultPolicy(tenantId);
-            _db.AttendancePolicies.Add(policy);
-            await _db.SaveChangesAsync(ct);
-            policies.Add(policy);
-        }
+        var policies = await EnsureActivePoliciesAsync(tenantId, ct);
         var processed = 0;
         for (var date = request.FromDate; date <= request.ToDate; date = date.AddDays(1))
         {
@@ -553,6 +538,47 @@ public class AttendanceService : IAttendanceService
         await Audit(tenantId, context, "attendance.processed", "AttendanceDailyRecord", $"{request.FromDate}:{request.ToDate}", ct);
         await _db.SaveChangesAsync(ct);
         return processed;
+    }
+
+    public async Task ValidateProcessRangeAsync(Guid tenantId, DateOnly fromDate, DateOnly toDate, CancellationToken ct)
+    {
+        if (fromDate > toDate)
+            throw new InvalidOperationException("From date must be on or before To date.");
+        if (toDate.DayNumber - fromDate.DayNumber > 366)
+            throw new InvalidOperationException("Attendance processing is limited to 367 days per request.");
+        if (await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId
+                && x.Status == "Locked" && x.PeriodStart <= toDate && x.PeriodEnd >= fromDate, ct))
+            throw new InvalidOperationException("Attendance cannot be processed for a payroll-locked period.");
+    }
+
+    public async Task<IReadOnlyList<AttendancePolicy>> EnsureActivePoliciesAsync(Guid tenantId, CancellationToken ct)
+    {
+        var policies = await _db.AttendancePolicies
+            .Where(x => x.TenantId == tenantId && x.IsActive)
+            .ToListAsync(ct);
+        if (policies.Count == 0)
+        {
+            var policy = DefaultPolicy(tenantId);
+            _db.AttendancePolicies.Add(policy);
+            await _db.SaveChangesAsync(ct);
+            policies.Add(policy);
+        }
+        return policies;
+    }
+
+    public async Task<int> ProcessEmployeeRangeAsync(Guid tenantId, Employee employee, IReadOnlyCollection<AttendancePolicy> policies,
+        DateOnly fromDate, DateOnly toDate, RequestContext context, CancellationToken ct)
+    {
+        if (employee.TenantId != tenantId)
+            throw new InvalidOperationException("Employee does not belong to the tenant being processed.");
+        var policy = ResolveAttendancePolicy(employee, policies);
+        var days = 0;
+        for (var date = fromDate; date <= toDate; date = date.AddDays(1))
+        {
+            await ProcessEmployeeDay(tenantId, employee, date, policy, context, ct);
+            days++;
+        }
+        return days;
     }
 
     public async Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)

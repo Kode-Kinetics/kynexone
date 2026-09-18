@@ -196,6 +196,56 @@ public class AttendanceController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    /// <summary>
+    /// F3 — the durable form of <see cref="Process"/>. Same authorization (identical role gate AND the
+    /// same data-scope check, so the queue is never a wider door than the synchronous endpoint), same
+    /// validation, same per-day logic; but the work runs on the background job queue, one checkpointed
+    /// item per employee, and survives timeouts, restarts and deploys. Returns 202 with the job; poll
+    /// <c>GET /api/jobs/{id}</c>.
+    ///
+    /// <para>Idempotent: the same <c>Idempotency-Key</c> header — or, without one, the same range /
+    /// employee / caller scope — while a job for it is still Queued or Running returns THAT job
+    /// (<c>X-Job-Deduplicated: true</c>) instead of starting a second one. A double-click is safe.</para>
+    ///
+    /// <para>The synchronous endpoint is kept for backward compatibility (the current UI and small
+    /// single-employee reprocessing, e.g. regularization approval, which calls ProcessAsync inline).</para>
+    /// </summary>
+    [HttpPost("process/async")]
+    [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
+    public async Task<ActionResult<Infrastructure.Jobs.BackgroundJobEnqueueResponse>> ProcessInBackground(
+        ProcessAttendanceRequest request,
+        [FromServices] Infrastructure.Jobs.BackgroundJobStore jobs,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+        CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if ((!request.EmployeeId.HasValue && !scope.IsUnrestricted)
+            || (request.EmployeeId.HasValue && !scope.CanAccessEmployee(request.EmployeeId.Value)))
+            return Forbid();
+        try { await _attendance.ValidateProcessRangeAsync(tenantId, request.FromDate, request.ToDate, ct); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        if (idempotencyKey is { Length: > 200 }) return BadRequest(new { message = "Idempotency-Key is limited to 200 characters." });
+
+        var entityScope = this.GetEntityScope();
+        var payload = new Infrastructure.Attendance.AttendanceProcessingJobPayload(
+            request.FromDate, request.ToDate, request.EmployeeId,
+            GroupScope: entityScope.IsGroupLevel,
+            CompanyIds: entityScope.IsGroupLevel ? Array.Empty<Guid>() : entityScope.AccessibleCompanyIds.ToArray(),
+            RequestedByUserId: GetUserId(),
+            IpAddress: HttpContext.Connection.RemoteIpAddress?.ToString(),
+            UserAgent: Request.Headers.UserAgent.ToString());
+        var key = string.IsNullOrWhiteSpace(idempotencyKey)
+            ? Infrastructure.Attendance.AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload)
+            : "client:" + idempotencyKey.Trim();
+
+        var result = await jobs.EnqueueAsync(tenantId, Infrastructure.Attendance.AttendanceProcessingJobHandler.JobType,
+            key, payload, GetUserId(), ct);
+        if (!result.Created) Response.Headers["X-Job-Deduplicated"] = "true";
+        return Accepted($"/api/jobs/{result.Job.Id}",
+            new Infrastructure.Jobs.BackgroundJobEnqueueResponse(result.Job.Id, result.Job.Status, !result.Created, $"/api/jobs/{result.Job.Id}"));
+    }
+
     [HttpPost("reprocess")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
     public Task<ActionResult<int>> Reprocess(ProcessAttendanceRequest request, CancellationToken ct) =>

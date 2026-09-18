@@ -250,6 +250,9 @@ if (string.IsNullOrWhiteSpace(connectionString))
 builder.Services.AddDbContextPool<ZayraDbContext>(options => options
     .UseNpgsql(connectionString,
         npgsqlOptions => npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null))
+    // F3: turns a query tagged ForUpdateSkipLockedTag into SELECT … FOR UPDATE SKIP LOCKED (job claiming).
+    // Inert for every other command.
+    .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
     .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)));
 
 builder.Services.AddMemoryCache();
@@ -463,6 +466,20 @@ builder.Services.AddHostedService<AiInsightEngine>();
 // thread is what makes "a notification can never fail OR HANG a payroll operation" true.
 builder.Services.AddHostedService<NotificationDeliveryWorker>();
 builder.Services.AddHostedService<ComplianceReminderWorker>();
+
+// F3 — durable background jobs (job store + per-item checkpoints + leased, fenced worker). Runs on
+// every instance: claims are FOR UPDATE SKIP LOCKED with a lease token, so old and new instances share
+// the queue during a deploy cutover without running any job twice. BackgroundJobs__WorkerEnabled=false
+// turns the worker off on an instance that should only serve HTTP.
+var backgroundJobOptions = builder.Configuration.GetSection(Zayra.Api.Infrastructure.Jobs.BackgroundJobOptions.SectionName)
+    .Get<Zayra.Api.Infrastructure.Jobs.BackgroundJobOptions>() ?? new Zayra.Api.Infrastructure.Jobs.BackgroundJobOptions();
+builder.Services.AddSingleton(backgroundJobOptions);
+builder.Services.AddSingleton(Zayra.Api.Infrastructure.Attendance.AttendanceProcessingJobHandler.Descriptor);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.AttendanceProcessingJobHandler>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobTypeRegistry>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Jobs.BackgroundJobStore>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobRunner>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Jobs.BackgroundJobWorker>();
 
 builder.Services.AddHttpClient<ILlmClient, LlmClient>();
 builder.Services.AddHttpContextAccessor();
