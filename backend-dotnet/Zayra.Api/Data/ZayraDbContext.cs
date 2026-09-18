@@ -1000,6 +1000,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<NotificationTemplate> NotificationTemplates => Set<NotificationTemplate>();
     public DbSet<AdminAuditLog> AdminAuditLogs => Set<AdminAuditLog>();
     public DbSet<WorkerHeartbeat> WorkerHeartbeats => Set<WorkerHeartbeat>();
+    // ── F3: durable background jobs + per-item checkpoints ────────────────────
+    public DbSet<BackgroundJob> BackgroundJobs => Set<BackgroundJob>();
+    public DbSet<BackgroundJobItem> BackgroundJobItems => Set<BackgroundJobItem>();
     // ── GOSI ───────────────────────────────────────────────────────────────────
     public DbSet<GosiContributionRule> GosiContributionRules => Set<GosiContributionRule>();
     // ── Qiwa Integration ───────────────────────────────────────────────────────
@@ -3478,6 +3481,53 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.LastErrorCode).HasMaxLength(120);
             entity.HasIndex(x => new { x.WorkerName, x.InstanceId }).IsUnique();
             entity.HasIndex(x => new { x.WorkerName, x.UpdatedAtUtc });
+        });
+
+        // ── F3: durable job store ─────────────────────────────────────────────────
+        // Tenant isolation comes from ITenantOwned (ApplyTenantQueryFilters) — nothing to add here.
+        modelBuilder.Entity<BackgroundJob>(entity =>
+        {
+            entity.ToTable("background_jobs");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.JobType).HasMaxLength(100).IsRequired();
+            entity.Property(x => x.PayloadJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.IdempotencyKey).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.KeyRetention).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.ProgressMessage).HasMaxLength(500);
+            entity.Property(x => x.LeaseOwner).HasMaxLength(300);
+            entity.Property(x => x.LastError).HasMaxLength(4000);
+            entity.Property(x => x.ResultJson).HasColumnType("jsonb");
+            // Idempotent enqueue, enforced by the database rather than by a check-then-insert race:
+            //  (1) a key is held by at most ONE live job — double-click / concurrent enqueue safety;
+            //  (2) a Forever-retention key is additionally held by a SUCCEEDED job — at-most-once
+            //      operations (payroll Lock in Wave 2). Failed/Cancelled jobs release the key so the
+            //      operation can be retried deliberately.
+            // NAMED indexes: EF treats two unnamed HasIndex calls on the same columns as ONE index and the
+            // second silently overwrites the first — the active-key guarantee would vanish.
+            entity.HasIndex(x => new { x.TenantId, x.JobType, x.IdempotencyKey }, "ux_background_jobs_active_key")
+                  .IsUnique()
+                  .HasFilter("status IN ('Queued','Running')");
+            entity.HasIndex(x => new { x.TenantId, x.JobType, x.IdempotencyKey }, "ux_background_jobs_retained_key")
+                  .IsUnique()
+                  .HasFilter("key_retention = 'Forever' AND status IN ('Queued','Running','Succeeded')");
+            // Claim scan: Queued-and-due, or Running-with-expired-lease.
+            entity.HasIndex(x => new { x.Status, x.RunAfterUtc }).HasDatabaseName("ix_background_jobs_status_run_after");
+            entity.HasIndex(x => new { x.Status, x.LeaseExpiresAtUtc }).HasDatabaseName("ix_background_jobs_status_lease");
+            // Tenant listing.
+            entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc }).HasDatabaseName("ix_background_jobs_tenant_created");
+        });
+
+        modelBuilder.Entity<BackgroundJobItem>(entity =>
+        {
+            entity.ToTable("background_job_items");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ItemKey).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.ResultJson).HasColumnType("jsonb");
+            // The database-level "never applied twice" guarantee (the checkpoint set is the other).
+            entity.HasIndex(x => new { x.JobId, x.ItemKey }).IsUnique().HasDatabaseName("ux_background_job_items_job_item");
+            entity.HasIndex(x => new { x.TenantId, x.JobId }).HasDatabaseName("ix_background_job_items_tenant_job");
+            entity.HasOne<BackgroundJob>().WithMany().HasForeignKey(x => x.JobId).OnDelete(DeleteBehavior.Cascade);
         });
 
         // ── Company governance (Phase 1B: per-legal-entity policy foundation) ─────

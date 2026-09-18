@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260918041601_AddBackgroundJobQueue")]
+    partial class AddBackgroundJobQueue
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2613,26 +2616,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
-                    b.Property<Guid?>("DepartmentId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("department_id");
-
                     b.Property<string>("EntityName")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("entity_name");
 
-                    b.Property<Guid?>("GradeId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("grade_id");
-
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
-
-                    b.Property<bool>("IsDefault")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_default");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -2647,9 +2638,6 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "Code")
                         .IsUnique();
-
-                    b.HasIndex("TenantId", "EntityName", "IsActive", "DepartmentId", "GradeId")
-                        .HasDatabaseName("IX_approval_workflows_routing");
 
                     b.ToTable("approval_workflows", (string)null);
                 });

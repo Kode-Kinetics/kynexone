@@ -22,6 +22,19 @@ public interface IAttendanceService
     Task<PagedResult<AttendanceRawEvent>> GetRawEventsAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, bool? processed, int page, int pageSize, CancellationToken ct);
 
     Task<int> ProcessAsync(Guid tenantId, ProcessAttendanceRequest request, RequestContext context, CancellationToken ct);
+
+    // ── F3: the per-employee unit the durable attendance job checkpoints on ──────────────────────
+    /// <summary>The same guards <see cref="ProcessAsync"/> applies (range, payroll-locked period). Throws InvalidOperationException.</summary>
+    Task ValidateProcessRangeAsync(Guid tenantId, DateOnly fromDate, DateOnly toDate, CancellationToken ct);
+    /// <summary>Active policies for the tenant, creating the default policy exactly as <see cref="ProcessAsync"/> does. Saves.</summary>
+    Task<IReadOnlyList<AttendancePolicy>> EnsureActivePoliciesAsync(Guid tenantId, CancellationToken ct);
+    /// <summary>
+    /// Processes every day in the range for ONE employee using the identical per-day logic as
+    /// <see cref="ProcessAsync"/>. Stages changes only — does NOT save — so the caller can commit it
+    /// atomically with a job checkpoint. Returns the number of employee-days processed.
+    /// </summary>
+    Task<int> ProcessEmployeeRangeAsync(Guid tenantId, Employee employee, IReadOnlyCollection<AttendancePolicy> policies,
+        DateOnly fromDate, DateOnly toDate, RequestContext context, CancellationToken ct);
     Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
     Task<IReadOnlyCollection<AttendanceMonthlyDto>> GetMonthlyAsync(Guid tenantId, int year, int month, int? employeeId, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
     Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct);
