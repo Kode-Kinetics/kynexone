@@ -1,68 +1,59 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity,
-  ActivityIndicator, Alert, RefreshControl, TextInput, Modal,
+  ActivityIndicator,
+  Alert,
+  Modal,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { documentsApi, hrRequestsApi } from '@/api/adapters';
 import { normalizePickedFile, type PickedFile } from '@/api/services';
-import { HRRequest } from '@/types';
 import { formatDate } from '@/utils/date';
-import { COLORS } from '@/config';
 import { FEATURES } from '@/config/features';
+import { useTheme } from '@/theme/ThemeProvider';
+import {
+  GlassIconButton,
+  GlassSurface,
+  LiquidBackdrop,
+  LiquidButton,
+  MotionPressable,
+  ScreenHero,
+  SectionHeader,
+} from '@/components/ui';
+import type { HRRequest } from '@/types';
 
-const REQUEST_TYPES = [
-  { key: 'SalaryCertificate', label: 'Salary Certificate', emoji: '📄' },
-  { key: 'ExperienceLetter', label: 'Experience Letter', emoji: '📋' },
-  { key: 'NOC', label: 'NOC / No Objection', emoji: '✅' },
-  { key: 'Complaint', label: 'Complaint / Grievance', emoji: '⚠️' },
-  { key: 'General', label: 'General HR Ticket', emoji: '📝' },
-  { key: 'BankLetter', label: 'Bank Letter', emoji: '🏦' },
-  { key: 'LeaveEncashment', label: 'Leave Encashment', emoji: '💰' },
-  { key: 'DocumentRequest', label: 'Document Request', emoji: '📁' },
+const requestTypes: {
+  key: string;
+  label: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+}[] = [
+  { key: 'SalaryCertificate', label: 'Salary certificate', icon: 'document-text-outline' },
+  { key: 'ExperienceLetter', label: 'Experience letter', icon: 'briefcase-outline' },
+  { key: 'NOC', label: 'No objection certificate', icon: 'shield-checkmark-outline' },
+  { key: 'Complaint', label: 'Complaint or grievance', icon: 'warning-outline' },
+  { key: 'General', label: 'General HR ticket', icon: 'chatbubble-ellipses-outline' },
+  { key: 'BankLetter', label: 'Bank letter', icon: 'card-outline' },
+  { key: 'LeaveEncashment', label: 'Leave encashment', icon: 'cash-outline' },
+  { key: 'DocumentRequest', label: 'Document request', icon: 'folder-open-outline' },
 ];
-
-function SLABadge({ slaStatus }: { slaStatus?: string }) {
-  if (!slaStatus) return null;
-  const colors: Record<string, { bg: string; text: string }> = {
-    OnTime:    { bg: '#F0FDF4', text: '#15803D' },
-    AtRisk:    { bg: '#FFF7ED', text: '#C2410C' },
-    Breached:  { bg: '#FEF2F2', text: '#DC2626' },
-  };
-  const s = colors[slaStatus] ?? colors['OnTime'];
-  return (
-    <View style={{ backgroundColor: s.bg, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 }}>
-      <Text style={{ color: s.text, fontSize: 10, fontWeight: '700' }}>{slaStatus}</Text>
-    </View>
-  );
-}
-
-function StatusChip({ status }: { status: string }) {
-  const map: Record<string, { bg: string; text: string }> = {
-    Open:        { bg: '#EFF6FF', text: '#2563EB' },
-    InProgress:  { bg: '#FFF7ED', text: '#C2410C' },
-    Resolved:    { bg: '#F0FDF4', text: '#15803D' },
-    Closed:      { bg: '#F3F4F6', text: '#6B7280' },
-    Cancelled:   { bg: '#F3F4F6', text: '#9CA3AF' },
-  };
-  const s = map[status] ?? map['Open'];
-  return (
-    <View style={{ backgroundColor: s.bg, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 }}>
-      <Text style={{ color: s.text, fontSize: 11, fontWeight: '600' }}>{status}</Text>
-    </View>
-  );
-}
 
 export default function HRRequestsScreen() {
   const navigation = useNavigation<any>();
+  const { theme } = useTheme();
   const [requests, setRequests] = useState<HRRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [createModal, setCreateModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({
-    requestType: REQUEST_TYPES[0].key,
+    requestType: requestTypes[0].key,
     subject: '',
     description: '',
   });
@@ -73,19 +64,30 @@ export default function HRRequestsScreen() {
     try {
       const data = await hrRequestsApi.getMy({ page: 1, limit: 50 });
       setRequests(data.items || []);
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to load requests');
+    } catch (error: any) {
+      Alert.alert('HR requests unavailable', error.message || 'Failed to load requests.');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => { fetchRequests(); }, [fetchRequests]);
+  useEffect(() => {
+    void fetchRequests();
+  }, [fetchRequests]);
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await fetchRequests();
-    setRefreshing(false);
+  const stats = useMemo(() => ({
+    total: requests.length,
+    active: requests.filter((request) => ['Open', 'InProgress'].includes(request.status)).length,
+    resolved: requests.filter((request) => ['Resolved', 'Closed'].includes(request.status)).length,
+    atRisk: requests.filter((request) => ['AtRisk', 'Breached'].includes(request.slaStatus ?? '')).length,
+  }), [requests]);
+
+  const selectedType = requestTypes.find((type) => type.key === form.requestType) ?? requestTypes[0];
+
+  const beginRequest = (requestType?: string) => {
+    if (requestType) setForm((current) => ({ ...current, requestType }));
+    setCreateModal(true);
   };
 
   const pickFile = async () => {
@@ -101,13 +103,20 @@ export default function HRRequestsScreen() {
         }));
       }
     } catch {
-      Alert.alert('Error', 'Failed to pick file');
+      Alert.alert('File unavailable', 'Could not select this attachment.');
     }
   };
 
   const submitRequest = async () => {
-    if (!form.subject.trim()) return Alert.alert('Missing subject', 'Please enter a subject');
-    if (!form.description.trim()) return Alert.alert('Missing description', 'Please describe your request');
+    if (!form.subject.trim()) {
+      Alert.alert('Subject required', 'Add a concise subject for HR.');
+      return;
+    }
+    if (!form.description.trim()) {
+      Alert.alert('Description required', 'Explain what you need so HR can respond efficiently.');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const uploaded = attachment
@@ -117,242 +126,493 @@ export default function HRRequestsScreen() {
           })
         : null;
       await hrRequestsApi.create({
-        // Stored as the ticket's categoryName, which HR reads on the web — send the label.
-        requestType: REQUEST_TYPES.find((t) => t.key === form.requestType)?.label ?? form.requestType,
-        subject: form.subject,
-        description: form.description,
+        requestType: selectedType.label,
+        subject: form.subject.trim(),
+        description: form.description.trim(),
         attachmentDocumentId: uploaded?.id,
       });
       setCreateModal(false);
-      setForm({ requestType: REQUEST_TYPES[0].key, subject: '', description: '' });
+      setForm({ requestType: requestTypes[0].key, subject: '', description: '' });
       setAttachment(null);
-      Alert.alert('Submitted', 'Your HR request has been submitted');
-      fetchRequests();
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to submit request');
+      Alert.alert('Request submitted', 'HR has received your request and its SLA clock has started.');
+      await fetchRequests();
+    } catch (error: any) {
+      Alert.alert('Submission failed', error.message || 'Could not submit this request.');
     } finally {
       setSubmitting(false);
     }
   };
 
-  const selectedType = REQUEST_TYPES.find((t) => t.key === form.requestType) ?? REQUEST_TYPES[0];
-
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-      {/* Header */}
-      <View style={{ backgroundColor: COLORS.navy, paddingTop: 56, paddingBottom: 16, paddingHorizontal: 20 }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-          <View>
-            <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700' }}>HR Requests</Text>
-            <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, marginTop: 2 }}>
-              Certificates, letters & support
-            </Text>
-          </View>
-          <TouchableOpacity
-            onPress={() => setCreateModal(true)}
-            style={{ backgroundColor: COLORS.blue, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8 }}
-          >
-            <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>+ New</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+    <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
+      <LiquidBackdrop subtle />
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              setRefreshing(true);
+              void fetchRequests();
+            }}
+            tintColor={theme.colors.primary}
+            colors={[theme.colors.primary]}
+          />
+        }
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHero
+          eyebrow="Employee helpdesk"
+          title="HR requests"
+          subtitle={`${stats.active} active · ${stats.resolved} resolved`}
+          actions={
+            <GlassIconButton
+              icon="add"
+              label="Create HR request"
+              accent
+              onPress={() => beginRequest()}
+            />
+          }
+        />
 
-      {loading ? (
-        <ActivityIndicator color={COLORS.blue} style={{ marginTop: 60 }} />
-      ) : (
-        <ScrollView
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-          contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
-        >
-          {/* Quick type buttons */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
-            {REQUEST_TYPES.slice(0, 5).map((rt) => (
-              <TouchableOpacity
-                key={rt.key}
-                onPress={() => { setForm((prev) => ({ ...prev, requestType: rt.key })); setCreateModal(true); }}
-                style={{
-                  backgroundColor: '#fff', borderRadius: 12, padding: 12, marginRight: 10,
-                  alignItems: 'center', minWidth: 80,
-                  shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
-                }}
+        {!loading ? (
+          <View style={styles.section}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.metricRail}>
+              <RequestMetric label="Total" value={stats.total} icon="albums-outline" accent={theme.colors.primary} />
+              <RequestMetric label="Active" value={stats.active} icon="hourglass-outline" accent={theme.colors.warning} />
+              <RequestMetric label="Resolved" value={stats.resolved} icon="checkmark-done-outline" accent={theme.colors.success} />
+              <RequestMetric label="SLA risk" value={stats.atRisk} icon="warning-outline" accent={theme.colors.danger} />
+            </ScrollView>
+          </View>
+        ) : null}
+
+        <View style={styles.section}>
+          <SectionHeader title="Quick request" subtitle="Start with a common HR service" />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickRail}>
+            {requestTypes.slice(0, 6).map((requestType) => (
+              <MotionPressable
+                key={requestType.key}
+                onPress={() => beginRequest(requestType.key)}
+                haptic="selection"
+                style={styles.quickShell}
+                contentStyle={styles.rounded}
               >
-                <Text style={{ fontSize: 24 }}>{rt.emoji}</Text>
-                <Text style={{ fontSize: 11, color: '#374151', marginTop: 4, textAlign: 'center', fontWeight: '500' }}>
-                  {rt.label}
-                </Text>
-              </TouchableOpacity>
+                <GlassSurface elevated={false} radius={theme.radius.xl} style={styles.quickSurface} contentStyle={styles.quickCard}>
+                  <View style={[styles.quickIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
+                    <Ionicons name={requestType.icon} size={22} color={theme.colors.primary} />
+                  </View>
+                  <Text numberOfLines={2} style={[theme.typography.bodyStrong, styles.quickLabel, { color: theme.colors.text }]}>
+                    {requestType.label}
+                  </Text>
+                  <Ionicons name="arrow-up-outline" size={15} color={theme.colors.textMuted} style={styles.quickArrow} />
+                </GlassSurface>
+              </MotionPressable>
             ))}
           </ScrollView>
-
-          {requests.length === 0 ? (
-            <View style={{ alignItems: 'center', marginTop: 40 }}>
-              <Text style={{ fontSize: 40 }}>🎫</Text>
-              <Text style={{ color: '#374151', fontSize: 16, fontWeight: '600', marginTop: 12 }}>No requests yet</Text>
-              <Text style={{ color: '#9CA3AF', fontSize: 13, marginTop: 4, textAlign: 'center' }}>
-                Submit a salary certificate, NOC or any HR support request
-              </Text>
-              <TouchableOpacity
-                onPress={() => setCreateModal(true)}
-                style={{ backgroundColor: COLORS.blue, borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10, marginTop: 16 }}
-              >
-                <Text style={{ color: '#fff', fontWeight: '700' }}>Create Request</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <>
-              <Text style={{ fontSize: 13, fontWeight: '600', color: '#6B7280', marginBottom: 12 }}>
-                MY REQUESTS ({requests.length})
-              </Text>
-              {requests.map((req) => (
-                <TouchableOpacity
-                  key={req.id}
-                  onPress={() => navigation.navigate('HRRequestDetail', { id: req.id })}
-                  style={{
-                    backgroundColor: '#fff', borderRadius: 14, padding: 16, marginBottom: 12,
-                    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
-                  }}
-                >
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <View style={{ flex: 1, marginRight: 12 }}>
-                      <Text style={{ fontSize: 15, fontWeight: '700', color: '#111827' }} numberOfLines={1}>
-                        {req.subject}
-                      </Text>
-                      <Text style={{ fontSize: 12, color: '#9CA3AF', marginTop: 2 }}>
-                        {REQUEST_TYPES.find((t) => t.key === req.requestType)?.label ?? req.requestType}
-                        {req.ticketNumber ? ` · #${req.ticketNumber}` : ''}
-                      </Text>
-                    </View>
-                    <View style={{ gap: 4, alignItems: 'flex-end' }}>
-                      <StatusChip status={req.status} />
-                      <SLABadge slaStatus={req.slaStatus} />
-                    </View>
-                  </View>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
-                    <Text style={{ fontSize: 12, color: '#9CA3AF' }}>
-                      {formatDate(req.createdAt, 'display')}
-                    </Text>
-                    {req.commentsCount !== undefined && req.commentsCount > 0 && (
-                      <Text style={{ fontSize: 12, color: '#6B7280' }}>💬 {req.commentsCount}</Text>
-                    )}
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </>
-          )}
-        </ScrollView>
-      )}
-
-      {/* Create modal */}
-      <Modal visible={createModal} animationType="slide" transparent>
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}>
-          <ScrollView
-            style={{ backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '90%' }}
-            contentContainerStyle={{ padding: 24, paddingBottom: 40 }}
-            keyboardShouldPersistTaps="handled"
-          >
-            <Text style={{ fontSize: 18, fontWeight: '700', color: '#111827', marginBottom: 20 }}>New HR Request</Text>
-
-            {/* Type */}
-            <Text style={{ fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6 }}>Request Type *</Text>
-            <TouchableOpacity
-              onPress={() => setTypePickerOpen(!typePickerOpen)}
-              style={{
-                borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 10,
-                paddingHorizontal: 14, paddingVertical: 12, marginBottom: 4,
-                flexDirection: 'row', alignItems: 'center', gap: 8,
-              }}
-            >
-              <Text style={{ fontSize: 16 }}>{selectedType.emoji}</Text>
-              <Text style={{ flex: 1, fontSize: 15, color: '#111827' }}>{selectedType.label}</Text>
-              <Text style={{ color: '#9CA3AF' }}>▼</Text>
-            </TouchableOpacity>
-            {typePickerOpen && (
-              <View style={{
-                borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 10, marginBottom: 12,
-              }}>
-                {REQUEST_TYPES.map((rt) => (
-                  <TouchableOpacity
-                    key={rt.key}
-                    onPress={() => { setForm((p) => ({ ...p, requestType: rt.key })); setTypePickerOpen(false); }}
-                    style={{
-                      flexDirection: 'row', alignItems: 'center', gap: 10,
-                      paddingHorizontal: 14, paddingVertical: 12,
-                      backgroundColor: form.requestType === rt.key ? '#EFF6FF' : '#fff',
-                      borderBottomWidth: 1, borderBottomColor: '#F3F4F6',
-                    }}
-                  >
-                    <Text style={{ fontSize: 16 }}>{rt.emoji}</Text>
-                    <Text style={{ color: form.requestType === rt.key ? COLORS.blue : '#374151' }}>{rt.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-
-            {/* Subject */}
-            <Text style={{ fontSize: 13, fontWeight: '600', color: '#374151', marginTop: 10, marginBottom: 6 }}>Subject *</Text>
-            <TextInput
-              value={form.subject}
-              onChangeText={(v) => setForm((p) => ({ ...p, subject: v }))}
-              placeholder="Brief summary of your request"
-              style={{
-                borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 10,
-                paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, marginBottom: 14,
-              }}
-            />
-
-            {/* Description */}
-            <Text style={{ fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6 }}>Description *</Text>
-            <TextInput
-              value={form.description}
-              onChangeText={(v) => setForm((p) => ({ ...p, description: v }))}
-              placeholder="Provide details about your request..."
-              multiline
-              numberOfLines={5}
-              textAlignVertical="top"
-              style={{
-                borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 10,
-                paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, minHeight: 120, marginBottom: 14,
-              }}
-            />
-
-            {/* Attachment — hidden until the storage upload flow exists (FEATURES.FILE_UPLOAD);
-                ESSHRRequestCreateDto has no attachment field today. */}
-            {FEATURES.FILE_UPLOAD && (
-            <TouchableOpacity
-              onPress={pickFile}
-              style={{
-                borderWidth: 1, borderColor: attachment ? COLORS.blue : '#D1D5DB',
-                borderStyle: 'dashed', borderRadius: 10, padding: 12,
-                alignItems: 'center', marginBottom: 20,
-              }}
-            >
-              <Text style={{ color: attachment ? COLORS.blue : '#9CA3AF', fontSize: 13 }}>
-                {attachment ? `📎 ${attachment.name}` : '📎 Attach document (optional)'}
-              </Text>
-            </TouchableOpacity>
-            )}
-
-            {/* Actions */}
-            <View style={{ flexDirection: 'row', gap: 12 }}>
-              <TouchableOpacity
-                onPress={() => setCreateModal(false)}
-                style={{ flex: 1, borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 12, padding: 14, alignItems: 'center' }}
-              >
-                <Text style={{ color: '#374151', fontWeight: '600' }}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={submitRequest}
-                disabled={submitting}
-                style={{ flex: 1, backgroundColor: submitting ? '#93C5FD' : COLORS.blue, borderRadius: 12, padding: 14, alignItems: 'center' }}
-              >
-                {submitting ? <ActivityIndicator color="#fff" /> : (
-                  <Text style={{ color: '#fff', fontWeight: '700' }}>Submit</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
         </View>
-      </Modal>
+
+        <View style={styles.section}>
+          <SectionHeader title="My requests" subtitle={`${requests.length} ticket${requests.length === 1 ? '' : 's'}`} />
+          {loading ? (
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <ActivityIndicator color={theme.colors.primary} />
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading HR tickets…</Text>
+            </GlassSurface>
+          ) : requests.length === 0 ? (
+            <EmptyRequests onCreate={() => beginRequest()} />
+          ) : (
+            <View style={styles.list}>
+              {requests.map((request) => (
+                <RequestCard
+                  key={request.id}
+                  request={request}
+                  onPress={() => navigation.navigate('HRRequestDetail', { id: request.id })}
+                />
+              ))}
+            </View>
+          )}
+        </View>
+        <View style={styles.bottomSpacer} />
+      </ScrollView>
+
+      <CreateRequestModal
+        visible={createModal}
+        form={form}
+        selectedType={selectedType}
+        attachment={attachment}
+        typePickerOpen={typePickerOpen}
+        submitting={submitting}
+        onFormChange={setForm}
+        onTypePickerToggle={() => setTypePickerOpen((current) => !current)}
+        onTypeSelect={(requestType) => {
+          setForm((current) => ({ ...current, requestType }));
+          setTypePickerOpen(false);
+        }}
+        onPickFile={() => void pickFile()}
+        onRemoveFile={() => setAttachment(null)}
+        onClose={() => {
+          setCreateModal(false);
+          setTypePickerOpen(false);
+        }}
+        onSubmit={() => void submitRequest()}
+      />
     </View>
   );
 }
+
+function RequestMetric({
+  label,
+  value,
+  icon,
+  accent,
+}: {
+  label: string;
+  value: number;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  accent: string;
+}) {
+  const { theme } = useTheme();
+  return (
+    <GlassSurface elevated={false} radius={theme.radius.xl} style={styles.metricCard} contentStyle={styles.metricContent}>
+      <View style={[styles.metricIcon, { backgroundColor: `${accent}18` }]}>
+        <Ionicons name={icon} size={19} color={accent} />
+      </View>
+      <Text style={[styles.metricValue, { color: theme.colors.text }]}>{value}</Text>
+      <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>{label}</Text>
+    </GlassSurface>
+  );
+}
+
+function RequestCard({ request, onPress }: { request: HRRequest; onPress: () => void }) {
+  const { theme } = useTheme();
+  const type = requestTypes.find((item) => item.key === request.requestType)
+    ?? requestTypes.find((item) => item.label.toLowerCase() === request.requestType.toLowerCase())
+    ?? { key: request.requestType, label: request.requestType, icon: 'chatbubble-ellipses-outline' as const };
+  const status = getRequestStatus(request.status, theme);
+  const sla = getSlaStatus(request.slaStatus, theme);
+
+  return (
+    <MotionPressable
+      onPress={onPress}
+      haptic="selection"
+      contentStyle={styles.rounded}
+      accessibilityRole="button"
+      accessibilityLabel={`${request.subject}. ${request.status}`}
+    >
+      <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.requestCard}>
+        <View style={[styles.requestIcon, { backgroundColor: `${theme.colors.primary}17` }]}>
+          <Ionicons name={type.icon} size={22} color={theme.colors.primary} />
+        </View>
+        <View style={styles.requestCopy}>
+          <Text numberOfLines={2} style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
+            {request.subject}
+          </Text>
+          <Text numberOfLines={1} style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 3 }]}>
+            {type.label}{request.ticketNumber ? ` · #${request.ticketNumber}` : ''}
+          </Text>
+          <View style={styles.requestMetaRow}>
+            <StatusPill label={status.label} color={status.color} />
+            {sla ? <StatusPill label={sla.label} color={sla.color} /> : null}
+            {(request.commentsCount ?? 0) > 0 ? (
+              <View style={styles.commentCount}>
+                <Ionicons name="chatbubble-outline" size={12} color={theme.colors.textMuted} />
+                <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>{request.commentsCount}</Text>
+              </View>
+            ) : null}
+          </View>
+          <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 7 }]}>
+            Created {formatDate(request.createdAt, 'display')}
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
+      </GlassSurface>
+    </MotionPressable>
+  );
+}
+
+function StatusPill({ label, color }: { label: string; color: string }) {
+  const { theme } = useTheme();
+  return (
+    <View style={[styles.statusPill, { backgroundColor: `${color}16` }]}>
+      <View style={[styles.statusDot, { backgroundColor: color }]} />
+      <Text style={[theme.typography.micro, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+function EmptyRequests({ onCreate }: { onCreate: () => void }) {
+  const { theme } = useTheme();
+  return (
+    <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
+      <View style={[styles.emptyIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
+        <Ionicons name="chatbubble-ellipses-outline" size={31} color={theme.colors.primary} />
+      </View>
+      <Text style={[theme.typography.h3, { color: theme.colors.text }]}>No requests yet</Text>
+      <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
+        Create certificates, letters, grievances or general support tickets and track every response here.
+      </Text>
+      <MotionPressable
+        onPress={onCreate}
+        haptic="selection"
+        contentStyle={[styles.emptyAction, { backgroundColor: `${theme.colors.primary}18` }]}
+      >
+        <Ionicons name="add-circle-outline" size={18} color={theme.colors.primary} />
+        <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>Create request</Text>
+      </MotionPressable>
+    </GlassSurface>
+  );
+}
+
+function CreateRequestModal({
+  visible,
+  form,
+  selectedType,
+  attachment,
+  typePickerOpen,
+  submitting,
+  onFormChange,
+  onTypePickerToggle,
+  onTypeSelect,
+  onPickFile,
+  onRemoveFile,
+  onClose,
+  onSubmit,
+}: {
+  visible: boolean;
+  form: { requestType: string; subject: string; description: string };
+  selectedType: (typeof requestTypes)[number];
+  attachment: PickedFile | null;
+  typePickerOpen: boolean;
+  submitting: boolean;
+  onFormChange: React.Dispatch<React.SetStateAction<{ requestType: string; subject: string; description: string }>>;
+  onTypePickerToggle: () => void;
+  onTypeSelect: (value: string) => void;
+  onPickFile: () => void;
+  onRemoveFile: () => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  const { theme } = useTheme();
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={[styles.modalBackdrop, { backgroundColor: theme.colors.overlay }]}>
+        <GlassSurface
+          radius={theme.radius.xxl}
+          style={styles.modalSheet}
+          contentStyle={styles.modalContent}
+          tintColor={theme.isDark ? 'rgba(10,26,52,0.95)' : 'rgba(255,255,255,0.95)'}
+        >
+          <View style={[styles.modalHandle, { backgroundColor: theme.colors.border }]} />
+          <Text style={[theme.typography.h2, { color: theme.colors.text }]}>New HR request</Text>
+          <Text style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 5 }]}>
+            Give HR enough context to resolve the request without unnecessary follow-up.
+          </Text>
+
+          <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>Request type</Text>
+            <MotionPressable
+              onPress={onTypePickerToggle}
+              haptic="selection"
+              contentStyle={[styles.selectButton, { backgroundColor: theme.colors.surfaceSoft, borderColor: theme.colors.border }]}
+            >
+              <View style={[styles.selectIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
+                <Ionicons name={selectedType.icon} size={19} color={theme.colors.primary} />
+              </View>
+              <Text style={[theme.typography.bodyStrong, { color: theme.colors.text, flex: 1 }]}>{selectedType.label}</Text>
+              <Ionicons name={typePickerOpen ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.textMuted} />
+            </MotionPressable>
+
+            {typePickerOpen ? (
+              <GlassSurface elevated={false} radius={theme.radius.lg} style={styles.typePicker} contentStyle={styles.typePickerContent}>
+                {requestTypes.map((requestType, index) => (
+                  <MotionPressable
+                    key={requestType.key}
+                    onPress={() => onTypeSelect(requestType.key)}
+                    haptic="selection"
+                    contentStyle={[
+                      styles.typeOption,
+                      index < requestTypes.length - 1 && {
+                        borderBottomColor: theme.colors.divider,
+                        borderBottomWidth: StyleSheet.hairlineWidth,
+                      },
+                    ]}
+                  >
+                    <Ionicons name={requestType.icon} size={18} color={theme.colors.primary} />
+                    <Text
+                      style={[
+                        theme.typography.caption,
+                        { color: form.requestType === requestType.key ? theme.colors.primary : theme.colors.text, flex: 1 },
+                      ]}
+                    >
+                      {requestType.label}
+                    </Text>
+                    {form.requestType === requestType.key ? (
+                      <Ionicons name="checkmark" size={17} color={theme.colors.primary} />
+                    ) : null}
+                  </MotionPressable>
+                ))}
+              </GlassSurface>
+            ) : null}
+
+            <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>Subject</Text>
+            <TextInput
+              value={form.subject}
+              onChangeText={(subject) => onFormChange((current) => ({ ...current, subject }))}
+              placeholder="Brief summary of what you need"
+              placeholderTextColor={theme.colors.textMuted}
+              selectionColor={theme.colors.primary}
+              style={[
+                theme.typography.body,
+                styles.input,
+                { color: theme.colors.text, backgroundColor: theme.colors.surfaceSoft, borderColor: theme.colors.border },
+              ]}
+            />
+
+            <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>Description</Text>
+            <TextInput
+              value={form.description}
+              onChangeText={(description) => onFormChange((current) => ({ ...current, description }))}
+              placeholder="Describe the request, relevant dates and expected outcome"
+              placeholderTextColor={theme.colors.textMuted}
+              selectionColor={theme.colors.primary}
+              multiline
+              numberOfLines={5}
+              textAlignVertical="top"
+              style={[
+                theme.typography.body,
+                styles.textarea,
+                { color: theme.colors.text, backgroundColor: theme.colors.surfaceSoft, borderColor: theme.colors.border },
+              ]}
+            />
+
+            {FEATURES.FILE_UPLOAD ? (
+              <>
+                <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>Attachment</Text>
+                {attachment ? (
+                  <View style={[styles.fileSelected, { backgroundColor: theme.colors.surfaceSoft }]}>
+                    <View style={[styles.fileIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
+                      <Ionicons name="document-attach-outline" size={21} color={theme.colors.primary} />
+                    </View>
+                    <View style={styles.fileCopy}>
+                      <Text numberOfLines={1} style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{attachment.name}</Text>
+                      <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>Ready to upload</Text>
+                    </View>
+                    <MotionPressable onPress={onRemoveFile} haptic="selection" contentStyle={styles.removeFile}>
+                      <Ionicons name="close" size={19} color={theme.colors.danger} />
+                    </MotionPressable>
+                  </View>
+                ) : (
+                  <MotionPressable
+                    onPress={onPickFile}
+                    haptic="selection"
+                    contentStyle={[styles.filePicker, { backgroundColor: theme.colors.surfaceSoft, borderColor: theme.colors.border }]}
+                  >
+                    <Ionicons name="cloud-upload-outline" size={24} color={theme.colors.primary} />
+                    <View style={styles.fileCopy}>
+                      <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>Attach supporting file</Text>
+                      <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>Optional</Text>
+                    </View>
+                    <Ionicons name="add-circle-outline" size={20} color={theme.colors.primary} />
+                  </MotionPressable>
+                )}
+              </>
+            ) : null}
+          </ScrollView>
+
+          <View style={styles.modalActions}>
+            <MotionPressable
+              onPress={onClose}
+              haptic="selection"
+              style={styles.modalSecondaryShell}
+              contentStyle={[styles.modalSecondary, { borderColor: theme.colors.border }]}
+            >
+              <Text style={[theme.typography.bodyStrong, { color: theme.colors.textSecondary }]}>Cancel</Text>
+            </MotionPressable>
+            <LiquidButton
+              label="Submit request"
+              icon="paper-plane-outline"
+              onPress={onSubmit}
+              loading={submitting}
+              disabled={submitting}
+              style={styles.modalPrimary}
+            />
+          </View>
+        </GlassSurface>
+      </View>
+    </Modal>
+  );
+}
+
+function getRequestStatus(status: string, theme: ReturnType<typeof useTheme>['theme']) {
+  const map: Record<string, { label: string; color: string }> = {
+    Open: { label: 'Open', color: theme.colors.primary },
+    InProgress: { label: 'In progress', color: theme.colors.warning },
+    Resolved: { label: 'Resolved', color: theme.colors.success },
+    Closed: { label: 'Closed', color: theme.colors.textMuted },
+    Cancelled: { label: 'Cancelled', color: theme.colors.textMuted },
+  };
+  return map[status] ?? { label: status, color: theme.colors.primary };
+}
+
+function getSlaStatus(status: string | undefined, theme: ReturnType<typeof useTheme>['theme']) {
+  if (!status) return null;
+  if (status === 'Breached') return { label: 'SLA breached', color: theme.colors.danger };
+  if (status === 'AtRisk') return { label: 'SLA at risk', color: theme.colors.warning };
+  return { label: 'SLA on time', color: theme.colors.success };
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  content: { paddingBottom: 36 },
+  section: { paddingHorizontal: 16, marginTop: 16 },
+  metricRail: { gap: 9, paddingRight: 4 },
+  metricCard: { width: 116, minHeight: 124 },
+  metricContent: { padding: 14, justifyContent: 'space-between' },
+  metricIcon: { width: 39, height: 39, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  metricValue: { fontSize: 25, lineHeight: 29, fontWeight: '800', marginTop: 8 },
+  quickRail: { gap: 9, paddingRight: 4 },
+  quickShell: { width: 148, minHeight: 138 },
+  rounded: { flex: 1, borderRadius: 24 },
+  quickSurface: { flex: 1 },
+  quickCard: { flex: 1, padding: 14 },
+  quickIcon: { width: 42, height: 42, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
+  quickLabel: { marginTop: 12, paddingRight: 12 },
+  quickArrow: { position: 'absolute', top: 14, right: 14, transform: [{ rotate: '45deg' }] },
+  stateCard: { minHeight: 180, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
+  list: { gap: 9 },
+  requestCard: { minHeight: 112, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
+  requestIcon: { width: 50, height: 50, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  requestCopy: { flex: 1, minWidth: 0 },
+  requestMetaRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 8 },
+  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  commentCount: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  emptyCard: { minHeight: 240, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 24 },
+  emptyIcon: { width: 64, height: 64, borderRadius: 22, alignItems: 'center', justifyContent: 'center', marginBottom: 3 },
+  emptyText: { textAlign: 'center', maxWidth: 300 },
+  emptyAction: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 13, paddingVertical: 9, borderRadius: 14, marginTop: 5 },
+  modalBackdrop: { flex: 1, justifyContent: 'flex-end' },
+  modalSheet: { maxHeight: '92%', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
+  modalContent: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 30 },
+  modalHandle: { width: 44, height: 5, borderRadius: 999, alignSelf: 'center', marginBottom: 17 },
+  modalScroll: { marginTop: 17 },
+  fieldLabel: { marginTop: 14, marginBottom: 7, fontWeight: '700' },
+  selectButton: { minHeight: 56, borderWidth: StyleSheet.hairlineWidth, borderRadius: 17, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 11 },
+  selectIcon: { width: 37, height: 37, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  typePicker: { maxHeight: 300, marginTop: 7 },
+  typePickerContent: { paddingHorizontal: 12 },
+  typeOption: { minHeight: 49, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  input: { minHeight: 54, borderWidth: StyleSheet.hairlineWidth, borderRadius: 17, paddingHorizontal: 13 },
+  textarea: { minHeight: 118, borderWidth: StyleSheet.hairlineWidth, borderRadius: 17, paddingHorizontal: 13, paddingVertical: 12 },
+  filePicker: { minHeight: 72, borderWidth: StyleSheet.hairlineWidth, borderStyle: 'dashed', borderRadius: 17, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 13 },
+  fileSelected: { minHeight: 72, borderRadius: 17, flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 12 },
+  fileIcon: { width: 43, height: 43, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
+  fileCopy: { flex: 1, minWidth: 0 },
+  removeFile: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  modalActions: { flexDirection: 'row', gap: 10, marginTop: 18 },
+  modalSecondaryShell: { flex: 1 },
+  modalSecondary: { minHeight: 56, borderRadius: 18, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
+  modalPrimary: { flex: 1 },
+  bottomSpacer: { height: 12 },
+});

@@ -1,181 +1,238 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity,
-  ActivityIndicator, Alert, RefreshControl,
+  ActivityIndicator,
+  Alert,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { payslipApi } from '@/api/adapters';
-import { Payslip } from '@/types';
 import { formatDate } from '@/utils/date';
-import { COLORS } from '@/config';
-
-function PayslipCard({ payslip, onPress }: { payslip: Payslip; onPress: () => void }) {
-  const statusColors: Record<string, { bg: string; text: string }> = {
-    Published: { bg: '#F0FDF4', text: '#15803D' },
-    Draft:     { bg: '#FFF7ED', text: '#C2410C' },
-    Pending:   { bg: '#FEF9C3', text: '#A16207' },
-  };
-  const s = (payslip.status ? statusColors[payslip.status] : undefined) ?? statusColors['Published'];
-
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      style={{
-        backgroundColor: '#fff', borderRadius: 14, padding: 16, marginBottom: 12,
-        shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.07, shadowRadius: 4, elevation: 2,
-        flexDirection: 'row', alignItems: 'center',
-      }}
-    >
-      {/* Month badge */}
-      <View style={{
-        width: 52, height: 52, borderRadius: 12, backgroundColor: '#EFF6FF',
-        alignItems: 'center', justifyContent: 'center', marginRight: 14,
-      }}>
-        {/* /ess/payslips carries no period yet (Wave-2 spec) — never render "Invalid Date". */}
-        <Text style={{ fontSize: 11, color: COLORS.blue, fontWeight: '700', textTransform: 'uppercase' }}>
-          {payslip.month ? new Date(payslip.year, payslip.month - 1, 1).toLocaleString('en-US', { month: 'short' }) : 'PAY'}
-        </Text>
-        <Text style={{ fontSize: 14, color: COLORS.blue, fontWeight: '700' }}>
-          {payslip.year || '💰'}
-        </Text>
-      </View>
-
-      {/* Details */}
-      <View style={{ flex: 1 }}>
-        <Text style={{ fontSize: 15, fontWeight: '700', color: '#111827' }}>
-          {payslip.periodLabel || formatDate(payslip.periodStart, 'monthYear')}
-        </Text>
-        <Text style={{ fontSize: 13, color: '#6B7280', marginTop: 2 }}>
-          Net Pay: <Text style={{ color: COLORS.blue, fontWeight: '700' }}>
-            {payslip.currency} {(payslip.netPay ?? payslip.netSalary).toLocaleString()}
-          </Text>
-        </Text>
-        <Text style={{ fontSize: 12, color: '#9CA3AF', marginTop: 2 }}>
-          Paid: {payslip.paymentDate ? formatDate(payslip.paymentDate, 'display') : '—'}
-        </Text>
-      </View>
-
-      {/* Status + Arrow */}
-      <View style={{ alignItems: 'flex-end', gap: 6 }}>
-        <View style={{ backgroundColor: s.bg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2 }}>
-          <Text style={{ color: s.text, fontSize: 11, fontWeight: '600' }}>{payslip.status}</Text>
-        </View>
-        <Text style={{ color: '#D1D5DB', fontSize: 18 }}>›</Text>
-      </View>
-    </TouchableOpacity>
-  );
-}
+import { useTheme } from '@/theme/ThemeProvider';
+import {
+  GlassSurface,
+  LiquidBackdrop,
+  MotionPressable,
+  ScreenHero,
+  SectionHeader,
+} from '@/components/ui';
+import type { Payslip } from '@/types';
 
 export default function PayslipsScreen() {
   const navigation = useNavigation<any>();
+  const { theme } = useTheme();
   const [payslips, setPayslips] = useState<Payslip[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetchPayslips = useCallback(async () => {
+  const fetchPayslips = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
     try {
       const data = await payslipApi.getList({ page: 1, limit: 24 });
-      setPayslips(data.items || []);
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to load payslips');
+      setPayslips(data.items ?? []);
+    } catch (error: any) {
+      Alert.alert('Payslips unavailable', error.message ?? 'Failed to load payslips.');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => { fetchPayslips(); }, [fetchPayslips]);
+  useEffect(() => {
+    void fetchPayslips();
+  }, [fetchPayslips]);
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await fetchPayslips();
-    setRefreshing(false);
-  };
-
-  // Latest payslip for summary banner
   const latest = payslips[0];
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-      {/* Header */}
-      <View style={{ backgroundColor: COLORS.navy, paddingTop: 56, paddingBottom: 20, paddingHorizontal: 20 }}>
-        <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700' }}>Payslips</Text>
-        <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, marginTop: 2 }}>
-          Your salary history
-        </Text>
-      </View>
+    <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
+      <LiquidBackdrop subtle />
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void fetchPayslips(true)}
+            tintColor={theme.colors.primary}
+            colors={[theme.colors.primary]}
+          />
+        }
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHero
+          eyebrow="Payroll"
+          title="Payslips"
+          subtitle="Private salary statements and payment history"
+        />
+        {loading ? (
+          <View style={styles.section}>
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <ActivityIndicator color={theme.colors.primary} />
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading payslips…</Text>
+            </GlassSurface>
+          </View>
+        ) : latest ? (
+          <View style={styles.section}>
+            <MotionPressable
+              onPress={() => navigation.navigate('PayslipDetail', { id: latest.id })}
+              haptic="selection"
+              contentStyle={styles.rounded}
+            >
+              <LinearGradient
+                colors={theme.gradients.primary}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.latestCard}
+              >
+                <View style={styles.latestHeader}>
+                  <View>
+                    <Text style={styles.latestEyebrow}>LATEST PAYSLIP</Text>
+                    <Text style={styles.latestPeriod}>
+                      {latest.periodLabel || formatDate(latest.periodStart, 'monthYear')}
+                    </Text>
+                  </View>
+                  <View style={styles.latestArrow}>
+                    <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+                  </View>
+                </View>
+                <Text style={styles.latestAmountLabel}>Net pay</Text>
+                <Text style={styles.latestAmount}>
+                  {latest.currency} {(latest.netPay ?? latest.netSalary).toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                  })}
+                </Text>
+                <View style={styles.latestMetrics}>
+                  <SalaryMetric label="Gross" value={`${latest.currency} ${(latest.grossPay ?? latest.grossSalary).toLocaleString()}`} />
+                  <View style={styles.latestDivider} />
+                  <SalaryMetric label="Deductions" value={`${latest.currency} ${latest.totalDeductions.toLocaleString()}`} />
+                </View>
+              </LinearGradient>
+            </MotionPressable>
+          </View>
+        ) : null}
 
-      {/* Latest payslip summary banner */}
-      {latest && !loading && (
-        <View style={{ marginHorizontal: 16, marginTop: -1 }}>
-          <TouchableOpacity
-            onPress={() => navigation.navigate('PayslipDetail', { id: latest.id })}
-            style={{
-              backgroundColor: COLORS.blue, borderRadius: 14, padding: 18,
-              flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-              shadowColor: COLORS.blue, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
-            }}
-          >
-            <View>
-              <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>Latest Payslip</Text>
-              <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700', marginTop: 2 }}>
-                {latest.periodLabel || formatDate(latest.periodStart, 'monthYear')}
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 16, marginTop: 10 }}>
-                <View>
-                  <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 11 }}>Gross</Text>
-                  <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>
-                    {latest.currency} {(latest.grossPay ?? latest.grossSalary).toLocaleString()}
-                  </Text>
-                </View>
-                <View>
-                  <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 11 }}>Deductions</Text>
-                  <Text style={{ color: '#fff', fontSize: 14, fontWeight: '600' }}>
-                    {latest.currency} {latest.totalDeductions.toLocaleString()}
-                  </Text>
-                </View>
-                <View>
-                  <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 11 }}>Net</Text>
-                  <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>
-                    {latest.currency} {(latest.netPay ?? latest.netSalary).toLocaleString()}
-                  </Text>
-                </View>
+        <View style={styles.section}>
+          <SectionHeader
+            title="Salary history"
+            subtitle={payslips.length ? `${payslips.length} published statement${payslips.length === 1 ? '' : 's'}` : 'Published statements appear here'}
+          />
+          {!loading && payslips.length === 0 ? (
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
+              <View style={[styles.emptyIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
+                <Ionicons name="wallet-outline" size={29} color={theme.colors.primary} />
               </View>
-            </View>
-            <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 32 }}>›</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* List */}
-      {loading ? (
-        <ActivityIndicator color={COLORS.blue} style={{ marginTop: 60 }} />
-      ) : (
-        <ScrollView
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-          contentContainerStyle={{ padding: 16, paddingTop: latest ? 16 : 16 }}
-        >
-          {payslips.length === 0 ? (
-            <View style={{ alignItems: 'center', marginTop: 60 }}>
-              <Text style={{ fontSize: 40 }}>💰</Text>
-              <Text style={{ color: '#374151', fontSize: 16, fontWeight: '600', marginTop: 12 }}>No payslips yet</Text>
-              <Text style={{ color: '#9CA3AF', fontSize: 13, marginTop: 4 }}>Your payslips will appear here once processed</Text>
-            </View>
-          ) : (
-            <>
-              <Text style={{ fontSize: 13, fontWeight: '600', color: '#6B7280', marginBottom: 12 }}>
-                ALL PAYSLIPS ({payslips.length})
+              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>No payslips yet</Text>
+              <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
+                Your salary statements will appear after payroll is finalized and published.
               </Text>
-              {payslips.map((p) => (
+            </GlassSurface>
+          ) : (
+            <View style={styles.list}>
+              {payslips.map((payslip) => (
                 <PayslipCard
-                  key={p.id}
-                  payslip={p}
-                  onPress={() => navigation.navigate('PayslipDetail', { id: p.id })}
+                  key={payslip.id}
+                  payslip={payslip}
+                  onPress={() => navigation.navigate('PayslipDetail', { id: payslip.id })}
                 />
               ))}
-            </>
+            </View>
           )}
-        </ScrollView>
-      )}
+        </View>
+        <View style={styles.bottomSpacer} />
+      </ScrollView>
     </View>
   );
 }
+function SalaryMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.salaryMetric}>
+      <Text style={styles.salaryMetricLabel}>{label}</Text>
+      <Text style={styles.salaryMetricValue}>{value}</Text>
+    </View>
+  );
+}
+
+function PayslipCard({ payslip, onPress }: { payslip: Payslip; onPress: () => void }) {
+  const { theme } = useTheme();
+  const period = payslip.periodLabel || formatDate(payslip.periodStart, 'monthYear');
+  const month = payslip.month
+    ? new Date(payslip.year, payslip.month - 1, 1).toLocaleString('en-US', { month: 'short' })
+    : 'PAY';
+  const status = payslip.status || 'Published';
+  const statusColor = status.toLowerCase() === 'published'
+    ? theme.colors.success
+    : status.toLowerCase() === 'pending'
+      ? theme.colors.warning
+      : theme.colors.textSecondary;
+
+  return (
+    <MotionPressable
+      onPress={onPress}
+      haptic="selection"
+      contentStyle={styles.rounded}
+      accessibilityRole="button"
+      accessibilityLabel={`${period} payslip`}
+    >
+      <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.payslipCard}>
+        <View style={[styles.monthBadge, { backgroundColor: `${theme.colors.primary}18` }]}>
+          <Text style={[theme.typography.micro, { color: theme.colors.primary }]}>{month.toUpperCase()}</Text>
+          <Text style={[styles.monthYear, { color: theme.colors.primary }]}>{payslip.year || '—'}</Text>
+        </View>
+        <View style={styles.payslipCopy}>
+          <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{period}</Text>
+          <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, marginTop: 4 }]}>
+            Net pay · {payslip.currency} {(payslip.netPay ?? payslip.netSalary).toLocaleString('en-US', {
+              minimumFractionDigits: 2,
+            })}
+          </Text>
+          <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 4 }]}>
+            Paid {payslip.paymentDate ? formatDate(payslip.paymentDate, 'display') : '—'}
+          </Text>
+        </View>
+        <View style={styles.payslipEnd}>
+          <View style={[styles.statusPill, { backgroundColor: `${statusColor}18` }]}>
+            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+            <Text style={[theme.typography.micro, { color: statusColor }]}>{status}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
+        </View>
+      </GlassSurface>
+    </MotionPressable>
+  );
+}
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  content: { paddingBottom: 34 },
+  section: { paddingHorizontal: 16, marginTop: 16 },
+  rounded: { borderRadius: 24 },
+  stateCard: { minHeight: 170, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 22 },
+  latestCard: { borderRadius: 26, padding: 19, minHeight: 230 },
+  latestHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  latestEyebrow: { color: 'rgba(255,255,255,0.72)', fontSize: 10, lineHeight: 14, fontWeight: '800', letterSpacing: 1.2 },
+  latestPeriod: { color: '#FFFFFF', fontSize: 19, lineHeight: 24, fontWeight: '800', marginTop: 4 },
+  latestArrow: { width: 43, height: 43, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.16)', alignItems: 'center', justifyContent: 'center' },
+  latestAmountLabel: { color: 'rgba(255,255,255,0.72)', fontSize: 12, marginTop: 24 },
+  latestAmount: { color: '#FFFFFF', fontSize: 31, lineHeight: 37, fontWeight: '800', letterSpacing: -0.7, marginTop: 3 },
+  latestMetrics: { flexDirection: 'row', alignItems: 'stretch', marginTop: 22, backgroundColor: 'rgba(255,255,255,0.11)', borderRadius: 17, paddingVertical: 12 },
+  salaryMetric: { flex: 1, paddingHorizontal: 14 },
+  salaryMetricLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 10, fontWeight: '600' },
+  salaryMetricValue: { color: '#FFFFFF', fontSize: 13, fontWeight: '700', marginTop: 4 },
+  latestDivider: { width: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.24)' },
+  list: { gap: 9 },
+  payslipCard: { minHeight: 92, flexDirection: 'row', alignItems: 'center', gap: 13, padding: 13 },
+  monthBadge: { width: 54, height: 58, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  monthYear: { fontSize: 15, lineHeight: 18, fontWeight: '800', marginTop: 2 },
+  payslipCopy: { flex: 1, minWidth: 0 },
+  payslipEnd: { alignItems: 'flex-end', gap: 10 },
+  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 999 },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  emptyCard: { minHeight: 210, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 24 },
+  emptyIcon: { width: 58, height: 58, borderRadius: 21, alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
+  emptyText: { textAlign: 'center', maxWidth: 280 },
+  bottomSpacer: { height: 14 },
+});

@@ -1,13 +1,20 @@
 import React from 'react';
-import { View, Text, TouchableOpacity } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useNavigation } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '@/auth/authStore';
-import { COLORS } from '@/config';
 import { isManagerUser } from './routes';
+import { LiquidTabBar } from './LiquidTabBar';
+import {
+  GlassSurface,
+  LiquidBackdrop,
+  MotionPressable,
+  ScreenHero,
+} from '@/components/ui';
+import { useTheme } from '@/theme/ThemeProvider';
 
-// Screens
 import EmployeeDashboard from '@/features/dashboard/EmployeeDashboard';
 import ManagerDashboard from '@/features/dashboard/ManagerDashboard';
 import TeamScreen from '@/features/dashboard/TeamScreen';
@@ -29,24 +36,6 @@ import ChangePasswordScreen from '@/features/auth/ChangePasswordScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
-
-// ─── Tab bar icon ────────────────────────────────────────────────────────────
-function TabIcon({ emoji, label, focused }: { emoji: string; label: string; focused: boolean }) {
-  return (
-    <View style={{ alignItems: 'center', paddingTop: 4 }}>
-      <Text style={{ fontSize: 20 }}>{emoji}</Text>
-      <Text style={{
-        fontSize: 10, marginTop: 1,
-        color: focused ? COLORS.blue : '#9CA3AF',
-        fontWeight: focused ? '700' : '400',
-      }}>
-        {label}
-      </Text>
-    </View>
-  );
-}
-
-// ─── More stack (shared) ─────────────────────────────────────────────────────
 function MoreStack() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
@@ -68,158 +57,185 @@ function MoreStack() {
   );
 }
 
-// ─── More home screen ─────────────────────────────────────────────────────────
+interface MoreItem {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  subtitle: string;
+  screen: string;
+  accent: string;
+}
 function MoreHomeScreen() {
   const { user } = useAuthStore();
-  const navigation = useMoreNavigation();
+  const navigation = useNavigation<any>();
+  const { theme } = useTheme();
   const manager = isManagerUser(user);
 
-  // Managers' tab bar has Team/Approvals instead of Leave/Payslips, so their
-  // own leave and payslips are reachable from here.
-  const items = [
+  const items: MoreItem[] = [
     ...(manager
       ? [
-          { icon: '🌴', label: 'Apply Leave', screen: 'ApplyLeave' },
-          { icon: '💰', label: 'Payslips', screen: 'PayslipsList' },
+          {
+            icon: 'calendar-outline' as const,
+            label: 'Apply Leave',
+            subtitle: 'Request time away',
+            screen: 'ApplyLeave',
+            accent: theme.colors.primary,
+          },
+          {
+            icon: 'wallet-outline' as const,
+            label: 'Payslips',
+            subtitle: 'Salary & statements',
+            screen: 'PayslipsList',
+            accent: theme.colors.success,
+          },
         ]
       : []),
-    { icon: '👤', label: 'Profile', screen: 'Profile' },
-    { icon: '📄', label: 'Documents', screen: 'Documents' },
-    { icon: '🎫', label: 'HR Requests', screen: 'HRRequests' },
-    { icon: '🔔', label: 'Notifications', screen: 'Notifications' },
-    { icon: '🤖', label: 'AI Assistant', screen: 'AIAssistant' },
-    { icon: '⏰', label: 'Overtime', screen: 'Overtime' },
-    { icon: '⚙️', label: 'Settings', screen: 'Settings' },
+    {
+      icon: 'person-circle-outline',
+      label: 'Profile',
+      subtitle: 'Personal details',
+      screen: 'Profile',
+      accent: theme.colors.primary,
+    },
+    {
+      icon: 'folder-open-outline',
+      label: 'Documents',
+      subtitle: 'Letters & records',
+      screen: 'Documents',
+      accent: theme.colors.violet,
+    },
+    {
+      icon: 'chatbox-ellipses-outline',
+      label: 'HR Requests',
+      subtitle: 'Helpdesk & status',
+      screen: 'HRRequests',
+      accent: theme.colors.warning,
+    },
+    {
+      icon: 'notifications-outline',
+      label: 'Notifications',
+      subtitle: 'Alerts & updates',
+      screen: 'Notifications',
+      accent: theme.colors.danger,
+    },
+    {
+      icon: 'sparkles-outline',
+      label: 'AI Assistant',
+      subtitle: 'Ask workforce questions',
+      screen: 'AIAssistant',
+      accent: theme.colors.cyan,
+    },
+    {
+      icon: 'time-outline',
+      label: 'Overtime',
+      subtitle: 'Submit & track',
+      screen: 'Overtime',
+      accent: theme.colors.violet,
+    },
+    {
+      icon: 'settings-outline',
+      label: 'Settings',
+      subtitle: 'Security & preferences',
+      screen: 'Settings',
+      accent: theme.colors.textSecondary,
+    },
   ];
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
-      <View style={{ backgroundColor: COLORS.navy, paddingTop: 56, paddingBottom: 20, paddingHorizontal: 20 }}>
-        <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700' }}>More</Text>
-        <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, marginTop: 2 }}>
-          {user?.name} · {user?.role}
-        </Text>
-      </View>
-      <View style={{ padding: 16 }}>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+    <View style={[styles.moreRoot, { backgroundColor: theme.colors.canvas }]}>
+      <LiquidBackdrop subtle />
+      <ScrollView
+        contentContainerStyle={styles.moreContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHero
+          eyebrow="Workspace"
+          title="More"
+          subtitle={`${user?.name ?? 'Employee'} · ${user?.role ?? 'Workforce'}`}
+        />
+
+        <View style={styles.moreGrid}>
           {items.map((item) => (
-            <TouchableOpacity
+            <MotionPressable
               key={item.screen}
+              accessibilityRole="button"
+              accessibilityLabel={`${item.label}. ${item.subtitle}`}
               onPress={() => navigation.navigate(item.screen)}
-              style={{
-                width: '30%', backgroundColor: '#fff', borderRadius: 14, padding: 16,
-                alignItems: 'center',
-                shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
-              }}
+              haptic="selection"
+              style={styles.moreTileShell}
+              contentStyle={styles.moreTilePressable}
             >
-              <Text style={{ fontSize: 28 }}>{item.icon}</Text>
-              <Text style={{ fontSize: 12, color: '#374151', fontWeight: '500', marginTop: 6, textAlign: 'center' }}>
-                {item.label}
-              </Text>
-            </TouchableOpacity>
+              <GlassSurface
+                elevated={false}
+                radius={theme.radius.xl}
+                contentStyle={styles.moreTile}
+                style={styles.moreTileSurface}
+              >
+                <View
+                  style={[
+                    styles.moreIcon,
+                    { backgroundColor: `${item.accent}18` },
+                  ]}
+                >
+                  <Ionicons name={item.icon} size={24} color={item.accent} />
+                </View>
+                <View style={styles.moreTileCopy}>
+                  <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
+                    {item.label}
+                  </Text>
+                  <Text
+                    numberOfLines={2}
+                    style={[
+                      theme.typography.caption,
+                      { color: theme.colors.textMuted, marginTop: 3 },
+                    ]}
+                  >
+                    {item.subtitle}
+                  </Text>
+                </View>
+                <Ionicons name="arrow-forward-circle-outline" size={20} color={theme.colors.textMuted} />
+              </GlassSurface>
+            </MotionPressable>
           ))}
         </View>
-      </View>
+      </ScrollView>
     </View>
   );
 }
-
-// Hook to get navigation from More screens
-function useMoreNavigation() {
-  return useNavigation<any>();
-}
-
-// ─── Employee tabs ────────────────────────────────────────────────────────────
 function EmployeeTabs() {
   return (
     <Tab.Navigator
+      tabBar={(props) => <LiquidTabBar {...props} />}
       screenOptions={{
         headerShown: false,
-        tabBarStyle: {
-          backgroundColor: '#fff',
-          borderTopWidth: 1,
-          borderTopColor: '#F3F4F6',
-          height: 72,
-          paddingBottom: 8,
-        },
-        tabBarShowLabel: false,
+        tabBarHideOnKeyboard: true,
       }}
     >
-      <Tab.Screen
-        name="Home"
-        component={EmployeeHomeStack}
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="🏠" label="Home" focused={focused} /> }}
-      />
-      <Tab.Screen
-        name="Attendance"
-        component={AttendanceHistoryScreen}
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="📍" label="Attendance" focused={focused} /> }}
-      />
-      <Tab.Screen
-        name="Leave"
-        component={ApplyLeaveScreen}
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="🌴" label="Leave" focused={focused} /> }}
-      />
-      <Tab.Screen
-        name="Payslips"
-        component={PayslipsStack}
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="💰" label="Payslips" focused={focused} /> }}
-      />
-      <Tab.Screen
-        name="More"
-        component={MoreStack}
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="⋯" label="More" focused={focused} /> }}
-      />
+      <Tab.Screen name="Home" component={EmployeeHomeStack} />
+      <Tab.Screen name="Attendance" component={AttendanceHistoryScreen} />
+      <Tab.Screen name="Leave" component={ApplyLeaveScreen} />
+      <Tab.Screen name="Payslips" component={PayslipsStack} />
+      <Tab.Screen name="More" component={MoreStack} />
     </Tab.Navigator>
   );
 }
 
-// ─── Manager/Supervisor tabs ──────────────────────────────────────────────────
 function ManagerTabs() {
   return (
     <Tab.Navigator
+      tabBar={(props) => <LiquidTabBar {...props} />}
       screenOptions={{
         headerShown: false,
-        tabBarStyle: {
-          backgroundColor: '#fff',
-          borderTopWidth: 1,
-          borderTopColor: '#F3F4F6',
-          height: 72,
-          paddingBottom: 8,
-        },
-        tabBarShowLabel: false,
+        tabBarHideOnKeyboard: true,
       }}
     >
-      <Tab.Screen
-        name="Home"
-        component={ManagerHomeStack}
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="🏠" label="Home" focused={focused} /> }}
-      />
-      <Tab.Screen
-        name="Team"
-        component={TeamScreen}
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="👥" label="Team" focused={focused} /> }}
-      />
-      <Tab.Screen
-        name="Approvals"
-        component={ApprovalsScreen}
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="✅" label="Approvals" focused={focused} /> }}
-      />
-      <Tab.Screen
-        name="Attendance"
-        component={AttendanceHistoryScreen}
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="📍" label="Attendance" focused={focused} /> }}
-      />
-      <Tab.Screen
-        name="More"
-        component={MoreStack}
-        options={{ tabBarIcon: ({ focused }) => <TabIcon emoji="⋯" label="More" focused={focused} /> }}
-      />
+      <Tab.Screen name="Home" component={ManagerHomeStack} />
+      <Tab.Screen name="Team" component={TeamScreen} />
+      <Tab.Screen name="Approvals" component={ApprovalsScreen} />
+      <Tab.Screen name="Attendance" component={AttendanceHistoryScreen} />
+      <Tab.Screen name="More" component={MoreStack} />
     </Tab.Navigator>
   );
 }
-
-// Sub-stacks for Home screens (needed to navigate to PayslipDetail etc.)
 function EmployeeHomeStack() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
@@ -247,10 +263,45 @@ function PayslipsStack() {
   );
 }
 
-// ─── Main export ──────────────────────────────────────────────────────────────
 export function MainTabs() {
   const { user } = useAuthStore();
-  // user.role is the normalised upper-case role ('MANAGER', 'HR', …) from mapRole();
-  // the old check compared it to 'Manager' and so never showed the manager tabs.
   return isManagerUser(user) ? <ManagerTabs /> : <EmployeeTabs />;
 }
+const styles = StyleSheet.create({
+  moreRoot: { flex: 1 },
+  moreContent: { paddingBottom: 30 },
+  moreGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    gap: 12,
+  },
+  moreTileShell: {
+    width: '48%',
+    minHeight: 156,
+  },
+  moreTilePressable: {
+    flex: 1,
+    borderRadius: 24,
+  },
+  moreTileSurface: {
+    flex: 1,
+  },
+  moreTile: {
+    flex: 1,
+    padding: 16,
+    justifyContent: 'space-between',
+  },
+  moreIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  moreTileCopy: {
+    marginTop: 15,
+    marginBottom: 10,
+  },
+});

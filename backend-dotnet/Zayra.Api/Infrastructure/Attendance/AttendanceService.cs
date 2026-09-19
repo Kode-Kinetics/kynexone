@@ -584,8 +584,34 @@ public class AttendanceService : IAttendanceService
             .OrderBy(x => x.EmployeeName).ToList();
     }
 
-    public Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct) =>
-        PushEventAsync(tenantId, new AttendanceRawEventRequest(request.EmployeeId, null, null, source, DateTime.UtcNow, request.PunchDirection, request.LocationName, request.Latitude, request.Longitude, context.IpAddress, null, null, "", source.Contains("mobile", StringComparison.OrdinalIgnoreCase) ? "Mobile" : "Web", null), context, ct);
+    public Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct)
+    {
+        var isMobile = source.Contains("mobile", StringComparison.OrdinalIgnoreCase);
+        var verificationMethod = string.IsNullOrWhiteSpace(request.VerificationMethod)
+            ? (isMobile && !string.IsNullOrWhiteSpace(request.PhotoReference) ? "Mobile GPS + Selfie" : isMobile ? "Mobile GPS" : "Web")
+            : request.VerificationMethod;
+
+        return PushEventAsync(
+            tenantId,
+            new AttendanceRawEventRequest(
+                request.EmployeeId,
+                null,
+                null,
+                source,
+                DateTime.UtcNow,
+                request.PunchDirection,
+                request.LocationName,
+                request.Latitude,
+                request.Longitude,
+                context.IpAddress,
+                request.PhotoReference,
+                null,
+                "",
+                verificationMethod,
+                request.ConfidenceScore),
+            context,
+            ct);
+    }
 
     public async Task<AttendanceRegularizationRequest> CreateRegularizationAsync(Guid tenantId, RegularizationRequestDto request, RequestContext context, CancellationToken ct)
     {

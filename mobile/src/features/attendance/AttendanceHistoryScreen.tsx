@@ -1,19 +1,27 @@
-// ============================================================
-// ZAYRA MOBILE — Attendance History Screen
-// ============================================================
-
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Platform,
+  ActivityIndicator,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { parseISO } from 'date-fns';
 import { attendanceApi } from '@/api/services';
 import { formatTime, formatWorkHours } from '@/utils/date';
-import { parseISO } from 'date-fns';
-import { COLORS } from '@/config';
 import { navigateTo, isManagerUser } from '@/navigation/routes';
 import { useAuthStore } from '@/auth/authStore';
+import { useTheme } from '@/theme/ThemeProvider';
+import {
+  GlassIconButton,
+  GlassSurface,
+  LiquidBackdrop,
+  MotionPressable,
+  ScreenHero,
+  SectionHeader,
+} from '@/components/ui';
 import type { AttendanceDay } from '@/types';
 
 interface Props {
@@ -22,27 +30,27 @@ interface Props {
 
 export default function AttendanceHistoryScreen({ navigation }: Props) {
   const { user } = useAuthStore();
-
+  const { theme } = useTheme();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [records, setRecords] = useState<AttendanceDay[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
-      const data = await attendanceApi.getMonthlyAttendance(year, month);
-      setRecords(data);
-    } catch (err: any) {
-      // Fail loudly: an empty list here reads as "no attendance", which is wrong.
-      console.error('[AttendanceHistory]', err);
+      setRecords(await attendanceApi.getMonthlyAttendance(year, month));
+    } catch (requestError: any) {
+      console.error('[AttendanceHistory]', requestError);
       setRecords([]);
-      setError(err?.message ?? 'Could not load attendance.');
+      setError(requestError?.message ?? 'Could not load attendance.');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [month, year]);
 
@@ -50,264 +58,358 @@ export default function AttendanceHistoryScreen({ navigation }: Props) {
     void load();
   }, [load]);
 
-  function prevMonth() {
-    if (month === 1) { setYear(y => y - 1); setMonth(12); }
-    else setMonth(m => m - 1);
-  }
+  const previousMonth = () => {
+    if (month === 1) {
+      setYear((current) => current - 1);
+      setMonth(12);
+    } else {
+      setMonth((current) => current - 1);
+    }
+  };
 
-  function nextMonth() {
-    const nowMonth = new Date().getMonth() + 1;
-    const nowYear = new Date().getFullYear();
-    if (year === nowYear && month === nowMonth) return;
-    if (month === 12) { setYear(y => y + 1); setMonth(1); }
-    else setMonth(m => m + 1);
-  }
+  const nextMonth = () => {
+    const current = new Date();
+    if (year === current.getFullYear() && month === current.getMonth() + 1) return;
+    if (month === 12) {
+      setYear((value) => value + 1);
+      setMonth(1);
+    } else {
+      setMonth((value) => value + 1);
+    }
+  };
 
   const monthLabel = new Date(year, month - 1, 1).toLocaleDateString('en-US', {
-    month: 'long', year: 'numeric',
+    month: 'long',
+    year: 'numeric',
   });
-
-  // Summary stats
-  const summary = records.reduce(
-    (acc, r) => {
-      if (r.status === 'PRESENT') acc.present++;
-      else if (r.status === 'ABSENT') acc.absent++;
-      else if (r.status === 'LATE') { acc.present++; acc.late++; }
-      else if (r.status === 'ON_LEAVE') acc.onLeave++;
-      acc.totalHours += r.workHours ?? 0;
-      return acc;
+  const summary = useMemo(() => records.reduce(
+    (accumulator, record) => {
+      if (record.status === 'PRESENT') accumulator.present += 1;
+      else if (record.status === 'ABSENT') accumulator.absent += 1;
+      else if (record.status === 'LATE') {
+        accumulator.present += 1;
+        accumulator.late += 1;
+      } else if (record.status === 'ON_LEAVE') accumulator.onLeave += 1;
+      accumulator.totalHours += record.workHours ?? 0;
+      return accumulator;
     },
-    { present: 0, absent: 0, late: 0, onLeave: 0, totalHours: 0 }
-  );
+    { present: 0, absent: 0, late: 0, onLeave: 0, totalHours: 0 },
+  ), [records]);
 
-  const STATUS_CONFIG: Record<string, { color: string; bg: string; label: string }> = {
-    PRESENT: { color: COLORS.success, bg: `${COLORS.success}15`, label: 'Present' },
-    ABSENT: { color: COLORS.error, bg: `${COLORS.error}15`, label: 'Absent' },
-    LATE: { color: COLORS.warning, bg: `${COLORS.warning}15`, label: 'Late' },
-    HALF_DAY: { color: COLORS.warning, bg: `${COLORS.warning}15`, label: 'Half Day' },
-    ON_LEAVE: { color: COLORS.blue, bg: `${COLORS.blue}15`, label: 'On Leave' },
-    HOLIDAY: { color: '#7C3AED', bg: '#7C3AED15', label: 'Holiday' },
-    WEEKEND: { color: COLORS.muted, bg: `${COLORS.muted}15`, label: 'Weekend' },
-    MISSING_PUNCH: { color: COLORS.error, bg: `${COLORS.error}15`, label: 'Missing Punch' },
+  const openCorrection = (date?: string) => {
+    navigateTo(
+      navigation,
+      'AttendanceCorrection',
+      isManagerUser(user),
+      date ? { date } : undefined,
+    );
   };
 
   return (
-    <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={24} color={COLORS.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Attendance History</Text>
-        <TouchableOpacity onPress={() => navigateTo(navigation, 'AttendanceCorrection', isManagerUser(user))}>
-          <Ionicons name="create-outline" size={22} color={COLORS.blue} />
-        </TouchableOpacity>
-      </View>
-
-      {/* Month picker */}
-      <View style={styles.monthPicker}>
-        <TouchableOpacity onPress={prevMonth} style={styles.monthArrow}>
-          <Ionicons name="chevron-back" size={20} color={COLORS.text} />
-        </TouchableOpacity>
-        <Text style={styles.monthLabel}>{monthLabel}</Text>
-        <TouchableOpacity onPress={nextMonth} style={styles.monthArrow}>
-          <Ionicons name="chevron-forward" size={20} color={COLORS.text} />
-        </TouchableOpacity>
-      </View>
-
-      {/* Summary row */}
-      <View style={styles.summaryRow}>
-        <SummaryChip label="Present" value={summary.present} color={COLORS.success} />
-        <SummaryChip label="Absent" value={summary.absent} color={COLORS.error} />
-        <SummaryChip label="Late" value={summary.late} color={COLORS.warning} />
-        <SummaryChip label="Leave" value={summary.onLeave} color={COLORS.blue} />
-        <SummaryChip
-          label="Hours"
-          value={formatWorkHours(summary.totalHours)}
-          color={COLORS.text}
-          isString
+    <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
+      <LiquidBackdrop subtle />
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void load(true)}
+            tintColor={theme.colors.primary}
+            colors={[theme.colors.primary]}
+          />
+        }
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHero
+          eyebrow="Time & attendance"
+          title="Attendance history"
+          subtitle="Monthly punches, status and exceptions"
+          actions={
+            <View style={styles.heroActions}>
+              {navigation.canGoBack() ? (
+                <GlassIconButton icon="arrow-back" label="Go back" onPress={() => navigation.goBack()} />
+              ) : null}
+              <GlassIconButton
+                icon="create-outline"
+                label="Request attendance correction"
+                accent
+                onPress={() => openCorrection()}
+              />
+            </View>
+          }
         />
+        <View style={styles.section}>
+          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.monthPicker}>
+            <MotionPressable
+              onPress={previousMonth}
+              haptic="selection"
+              contentStyle={styles.monthArrow}
+              accessibilityLabel="Previous month"
+            >
+              <Ionicons name="chevron-back" size={20} color={theme.colors.text} />
+            </MotionPressable>
+            <View style={styles.monthCopy}>
+              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>{monthLabel}</Text>
+              <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>
+                {records.length} recorded day{records.length === 1 ? '' : 's'}
+              </Text>
+            </View>
+            <MotionPressable
+              onPress={nextMonth}
+              haptic="selection"
+              contentStyle={styles.monthArrow}
+              accessibilityLabel="Next month"
+            >
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.text} />
+            </MotionPressable>
+          </GlassSurface>
+        </View>
+
+        <View style={styles.section}>
+          <SectionHeader title="Month summary" subtitle="Your attendance at a glance" />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.summaryRail}>
+            <SummaryChip label="Present" value={summary.present} accent={theme.colors.success} icon="checkmark-circle-outline" />
+            <SummaryChip label="Absent" value={summary.absent} accent={theme.colors.danger} icon="close-circle-outline" />
+            <SummaryChip label="Late" value={summary.late} accent={theme.colors.warning} icon="time-outline" />
+            <SummaryChip label="Leave" value={summary.onLeave} accent={theme.colors.primary} icon="airplane-outline" />
+            <SummaryChip label="Hours" value={formatWorkHours(summary.totalHours)} accent={theme.colors.violet} icon="hourglass-outline" />
+          </ScrollView>
+        </View>
+
+        <View style={styles.section}>
+          <SectionHeader title="Daily record" subtitle="Punches and exceptions" />
+          {loading ? (
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <ActivityIndicator color={theme.colors.primary} />
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading attendance…</Text>
+            </GlassSurface>
+          ) : error ? (
+            <StateCard
+              icon="alert-circle-outline"
+              title="Attendance unavailable"
+              subtitle={error}
+              accent={theme.colors.danger}
+              actionLabel="Try again"
+              onAction={() => void load()}
+            />
+          ) : records.length === 0 ? (
+            <StateCard
+              icon="calendar-outline"
+              title="No attendance recorded"
+              subtitle="There are no attendance records for this month."
+              accent={theme.colors.textMuted}
+            />
+          ) : (
+            <View style={styles.recordsList}>
+              {records.map((record) => (
+                <AttendanceRecordCard
+                  key={record.date}
+                  record={record}
+                  onCorrection={() => openCorrection(record.date)}
+                />
+              ))}
+            </View>
+          )}
+        </View>
+        <View style={styles.bottomSpacer} />
+      </ScrollView>
+    </View>
+  );
+}
+function SummaryChip({
+  label,
+  value,
+  accent,
+  icon,
+}: {
+  label: string;
+  value: string | number;
+  accent: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+}) {
+  const { theme } = useTheme();
+  return (
+    <GlassSurface elevated={false} radius={theme.radius.xl} style={styles.summaryCard} contentStyle={styles.summaryContent}>
+      <View style={[styles.summaryIcon, { backgroundColor: `${accent}19` }]}>
+        <Ionicons name={icon} size={18} color={accent} />
+      </View>
+      <Text style={[styles.summaryValue, { color: theme.colors.text }]}>{value}</Text>
+      <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>{label}</Text>
+    </GlassSurface>
+  );
+}
+
+function AttendanceRecordCard({
+  record,
+  onCorrection,
+}: {
+  record: AttendanceDay;
+  onCorrection: () => void;
+}) {
+  const { theme } = useTheme();
+  const config = getStatusConfig(record.status, theme);
+  const date = parseISO(record.date);
+
+  return (
+    <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.recordCard}>
+      <View style={[styles.dateTile, { backgroundColor: `${config.color}12` }]}>
+        <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>
+          {date.toLocaleDateString('en-US', { weekday: 'short' })}
+        </Text>
+        <Text style={[styles.recordDate, { color: theme.colors.text }]}>{date.getDate()}</Text>
       </View>
 
-      {/* List */}
-      {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator color={COLORS.blue} size="large" />
+      <View style={styles.recordMain}>
+        <View style={styles.recordTop}>
+          <View style={[styles.statusPill, { backgroundColor: config.background }]}>
+            <View style={[styles.statusDot, { backgroundColor: config.color }]} />
+            <Text style={[theme.typography.micro, { color: config.color }]}>{config.label}</Text>
+          </View>
+          {record.shiftName ? (
+            <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>{record.shiftName}</Text>
+          ) : null}
+          {(record.lateMinutes ?? 0) > 0 ? (
+            <View style={[styles.latePill, { backgroundColor: `${theme.colors.warning}16` }]}>
+              <Ionicons name="warning-outline" size={12} color={theme.colors.warning} />
+              <Text style={[theme.typography.micro, { color: theme.colors.warning }]}>
+                {record.lateMinutes}m late
+              </Text>
+            </View>
+          ) : null}
         </View>
-      ) : (
-        <ScrollView
-          style={styles.list}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
+        <View style={styles.timeRow}>
+          <TimeEntry icon="log-in-outline" time={record.clockIn} accent={theme.colors.success} />
+          <Ionicons name="remove-outline" size={14} color={theme.colors.textMuted} />
+          <TimeEntry icon="log-out-outline" time={record.clockOut} accent={theme.colors.danger} />
+          {(record.workHours ?? 0) > 0 ? (
+            <>
+              <View style={[styles.timeDot, { backgroundColor: theme.colors.textMuted }]} />
+              <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>
+                {formatWorkHours(record.workHours!)}
+              </Text>
+            </>
+          ) : null}
+        </View>
+      </View>
+
+      {record.status === 'MISSING_PUNCH' ? (
+        <MotionPressable
+          onPress={onCorrection}
+          haptic="selection"
+          contentStyle={[styles.correctionButton, { backgroundColor: `${theme.colors.primary}18` }]}
+          accessibilityLabel={`Request correction for ${record.date}`}
         >
-          {error ? (
-            <View style={styles.centered}>
-              <Ionicons name="alert-circle-outline" size={48} color={COLORS.error} />
-              <Text style={styles.emptyText}>{error}</Text>
-              <TouchableOpacity onPress={load} style={{ marginTop: 12 }}>
-                <Text style={{ color: COLORS.blue, fontWeight: '600' }}>Try again</Text>
-              </TouchableOpacity>
-            </View>
-          ) : records.length === 0 ? (
-            <View style={styles.centered}>
-              <Ionicons name="calendar-outline" size={48} color={COLORS.muted} />
-              <Text style={styles.emptyText}>No attendance recorded this month</Text>
-            </View>
-          ) : (
-            records.map((record) => {
-              const cfg = STATUS_CONFIG[record.status] ?? STATUS_CONFIG.ABSENT;
-              return (
-                <View key={record.date} style={styles.recordCard}>
-                  {/* Date column */}
-                  <View style={styles.dateCol}>
-                    <Text style={styles.recordDay}>
-                      {parseISO(record.date).toLocaleDateString('en-US', { weekday: 'short' })}
-                    </Text>
-                    <Text style={styles.recordDate}>
-                      {parseISO(record.date).getDate()}
-                    </Text>
-                  </View>
-
-                  {/* Status & times */}
-                  <View style={styles.recordMain}>
-                    <View style={styles.recordRow}>
-                      <View style={[styles.statusChip, { backgroundColor: cfg.bg }]}>
-                        <Text style={[styles.statusChipText, { color: cfg.color }]}>
-                          {cfg.label}
-                        </Text>
-                      </View>
-                      {record.shiftName && (
-                        <Text style={styles.shiftName}>{record.shiftName}</Text>
-                      )}
-                      {/* `0 && …` would render a bare "0" outside <Text> and crash the list */}
-                      {(record.lateMinutes ?? 0) > 0 && (
-                        <View style={styles.lateBadge}>
-                          <Ionicons name="warning-outline" size={11} color={COLORS.warning} />
-                          <Text style={styles.lateBadgeText}>
-                            {record.lateMinutes}m late
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                    <View style={styles.timeRow}>
-                      <TimeEntry icon="log-in-outline" time={record.clockIn} />
-                      {record.clockIn && record.clockOut && (
-                        <Ionicons name="remove-outline" size={14} color={COLORS.muted} />
-                      )}
-                      <TimeEntry icon="log-out-outline" time={record.clockOut} />
-                      {(record.workHours ?? 0) > 0 && (
-                        <>
-                          <View style={styles.timeDot} />
-                          <Text style={styles.workHours}>
-                            {formatWorkHours(record.workHours!)}
-                          </Text>
-                        </>
-                      )}
-                    </View>
-                  </View>
-
-                  {/* Actions */}
-                  <View style={styles.recordActions}>
-                    {record.status === 'MISSING_PUNCH' && (
-                      <TouchableOpacity
-                        style={styles.correctionBtn}
-                        onPress={() =>
-                          navigateTo(navigation, 'AttendanceCorrection', isManagerUser(user), { date: record.date })
-                        }
-                      >
-                        <Ionicons name="create-outline" size={14} color={COLORS.blue} />
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                </View>
-              );
-            })
-          )}
-          <View style={{ height: 40 }} />
-        </ScrollView>
-      )}
-    </View>
+          <Ionicons name="create-outline" size={17} color={theme.colors.primary} />
+        </MotionPressable>
+      ) : null}
+    </GlassSurface>
   );
 }
 
-function SummaryChip({
-  label, value, color, isString,
-}: { label: string; value: number | string; color: string; isString?: boolean }) {
-  return (
-    <View style={styles.summaryChip}>
-      <Text style={[styles.summaryValue, { color }]}>
-        {isString ? value : value}
-      </Text>
-      <Text style={styles.summaryLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function TimeEntry({ icon, time }: { icon: string; time?: string }) {
+function TimeEntry({
+  icon,
+  time,
+  accent,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  time?: string;
+  accent: string;
+}) {
+  const { theme } = useTheme();
   return (
     <View style={styles.timeEntry}>
-      <Ionicons name={icon as any} size={12} color={COLORS.muted} />
-      <Text style={styles.timeText}>{time ? formatTime(time) : '—'}</Text>
+      <Ionicons name={icon} size={13} color={accent} />
+      <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>
+        {time ? formatTime(time) : '—'}
+      </Text>
     </View>
   );
+}
+
+function StateCard({
+  icon,
+  title,
+  subtitle,
+  accent,
+  actionLabel,
+  onAction,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  title: string;
+  subtitle: string;
+  accent: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  const { theme } = useTheme();
+  return (
+    <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+      <View style={[styles.stateIcon, { backgroundColor: `${accent}18` }]}>
+        <Ionicons name={icon} size={27} color={accent} />
+      </View>
+      <Text style={[theme.typography.h3, { color: theme.colors.text }]}>{title}</Text>
+      <Text style={[theme.typography.caption, styles.stateSubtitle, { color: theme.colors.textMuted }]}>
+        {subtitle}
+      </Text>
+      {actionLabel && onAction ? (
+        <MotionPressable onPress={onAction} haptic="selection" contentStyle={styles.stateAction}>
+          <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>
+            {actionLabel}
+          </Text>
+        </MotionPressable>
+      ) : null}
+    </GlassSurface>
+  );
+}
+function getStatusConfig(status: string, theme: ReturnType<typeof useTheme>['theme']) {
+  const map: Record<string, { color: string; background: string; label: string }> = {
+    PRESENT: { color: theme.colors.success, background: `${theme.colors.success}18`, label: 'Present' },
+    ABSENT: { color: theme.colors.danger, background: `${theme.colors.danger}18`, label: 'Absent' },
+    LATE: { color: theme.colors.warning, background: `${theme.colors.warning}18`, label: 'Late' },
+    HALF_DAY: { color: theme.colors.warning, background: `${theme.colors.warning}18`, label: 'Half day' },
+    ON_LEAVE: { color: theme.colors.primary, background: `${theme.colors.primary}18`, label: 'On leave' },
+    HOLIDAY: { color: theme.colors.violet, background: `${theme.colors.violet}18`, label: 'Holiday' },
+    WEEKEND: { color: theme.colors.textMuted, background: theme.colors.surfaceSoft, label: 'Weekend' },
+    MISSING_PUNCH: { color: theme.colors.danger, background: `${theme.colors.danger}18`, label: 'Missing punch' },
+  };
+  return map[status] ?? map.ABSENT;
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingTop: Platform.OS === 'ios' ? 56 : 40, paddingBottom: 16,
-    backgroundColor: COLORS.card,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 2,
-  },
-  headerTitle: { fontSize: 17, fontWeight: '700', color: COLORS.text },
+  root: { flex: 1 },
+  content: { paddingBottom: 36 },
+  heroActions: { flexDirection: 'row', gap: 8 },
+  section: { paddingHorizontal: 16, marginTop: 16 },
   monthPicker: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingVertical: 14,
-    backgroundColor: COLORS.card, borderBottomWidth: 1, borderBottomColor: COLORS.border,
+    minHeight: 74,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
   },
-  monthArrow: { padding: 4 },
-  monthLabel: { fontSize: 16, fontWeight: '700', color: COLORS.text },
-  summaryRow: {
-    flexDirection: 'row', backgroundColor: COLORS.card,
-    paddingHorizontal: 16, paddingVertical: 12,
-    borderBottomWidth: 1, borderBottomColor: COLORS.border,
-    gap: 4,
-  },
-  summaryChip: { flex: 1, alignItems: 'center' },
-  summaryValue: { fontSize: 16, fontWeight: '800' },
-  summaryLabel: { fontSize: 10, color: COLORS.muted, marginTop: 2 },
-  list: { flex: 1 },
-  listContent: { padding: 16 },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 60 },
-  emptyText: { fontSize: 14, color: COLORS.muted, marginTop: 12 },
-  recordCard: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: COLORS.card, borderRadius: 12, padding: 14, marginBottom: 8, gap: 14,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1,
-  },
-  dateCol: { width: 40, alignItems: 'center' },
-  recordDay: { fontSize: 11, color: COLORS.muted, fontWeight: '600', marginBottom: 2 },
-  recordDate: { fontSize: 20, fontWeight: '800', color: COLORS.text },
-  recordMain: { flex: 1 },
-  recordRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' },
-  statusChip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 20 },
-  statusChipText: { fontSize: 12, fontWeight: '600' },
-  shiftName: { fontSize: 11, color: COLORS.muted },
-  lateBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: `${COLORS.warning}15`, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 20,
-  },
-  lateBadgeText: { fontSize: 10, color: COLORS.warning, fontWeight: '600' },
-  timeRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  timeEntry: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  timeText: { fontSize: 12, color: COLORS.textSecondary, fontWeight: '500' },
-  timeDot: { width: 3, height: 3, borderRadius: 1.5, backgroundColor: COLORS.muted },
-  workHours: { fontSize: 12, color: COLORS.blue, fontWeight: '600' },
-  recordActions: {},
-  correctionBtn: {
-    width: 30, height: 30, borderRadius: 8,
-    backgroundColor: `${COLORS.blue}15`,
-    alignItems: 'center', justifyContent: 'center',
-  },
+  monthArrow: { width: 46, height: 46, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  monthCopy: { alignItems: 'center', flex: 1 },
+  summaryRail: { gap: 10, paddingRight: 4 },
+  summaryCard: { width: 112, minHeight: 128 },
+  summaryContent: { padding: 14, justifyContent: 'space-between' },
+  summaryIcon: { width: 38, height: 38, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  summaryValue: { fontSize: 24, lineHeight: 29, fontWeight: '800', letterSpacing: -0.45, marginTop: 8 },
+  recordsList: { gap: 9 },
+  recordCard: { minHeight: 92, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 13 },
+  dateTile: { width: 50, height: 59, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  recordDate: { fontSize: 21, lineHeight: 25, fontWeight: '800', marginTop: 2 },
+  recordMain: { flex: 1, minWidth: 0 },
+  recordTop: { flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginBottom: 8 },
+  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  latePill: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 999 },
+  timeRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  timeEntry: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  timeDot: { width: 3, height: 3, borderRadius: 2 },
+  correctionButton: { width: 38, height: 38, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  stateCard: { minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 24 },
+  stateIcon: { width: 54, height: 54, borderRadius: 19, alignItems: 'center', justifyContent: 'center', marginBottom: 3 },
+  stateSubtitle: { textAlign: 'center', maxWidth: 280 },
+  stateAction: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 12, marginTop: 4 },
+  bottomSpacer: { height: 12 },
 });

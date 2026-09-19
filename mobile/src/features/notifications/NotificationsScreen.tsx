@@ -1,87 +1,46 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity,
-  ActivityIndicator, RefreshControl, Alert,
+  ActivityIndicator,
+  Alert,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { notificationsApi } from '@/api/adapters';
-import { AppNotification } from '@/types';
 import { formatDate } from '@/utils/date';
-import { COLORS } from '@/config';
+import { useTheme } from '@/theme/ThemeProvider';
+import {
+  GlassSurface,
+  LiquidBackdrop,
+  MotionPressable,
+  ScreenHero,
+  SectionHeader,
+} from '@/components/ui';
+import type { AppNotification } from '@/types';
 
-const NOTIF_ICONS: Record<string, string> = {
-  LeaveApproved:    '✅',
-  LeaveRejected:    '❌',
-  OvertimeApproved: '✅',
-  OvertimeRejected: '❌',
-  PayslipPublished: '💰',
-  DocumentExpiry:   '⚠️',
-  MissingPunch:     '🕐',
-  HRRequestUpdate:  '📋',
-  PolicyAck:        '📄',
-  ApprovalPending:  '🔔',
-  AttendanceAlert:  '📍',
-  General:          '📢',
+const notificationMeta: Record<
+  string,
+  { icon: React.ComponentProps<typeof Ionicons>['name']; tone: 'success' | 'danger' | 'warning' | 'primary' | 'violet' }
+> = {
+  LeaveApproved: { icon: 'checkmark-circle-outline', tone: 'success' },
+  LeaveRejected: { icon: 'close-circle-outline', tone: 'danger' },
+  OvertimeApproved: { icon: 'checkmark-circle-outline', tone: 'success' },
+  OvertimeRejected: { icon: 'close-circle-outline', tone: 'danger' },
+  PayslipPublished: { icon: 'wallet-outline', tone: 'success' },
+  DocumentExpiry: { icon: 'warning-outline', tone: 'warning' },
+  MissingPunch: { icon: 'time-outline', tone: 'danger' },
+  HRRequestUpdate: { icon: 'chatbubble-ellipses-outline', tone: 'primary' },
+  PolicyAck: { icon: 'document-text-outline', tone: 'violet' },
+  ApprovalPending: { icon: 'checkmark-done-outline', tone: 'warning' },
+  AttendanceAlert: { icon: 'location-outline', tone: 'warning' },
+  General: { icon: 'notifications-outline', tone: 'primary' },
 };
 
-function NotifCard({
-  notif, onPress, onMarkRead,
-}: { notif: AppNotification; onPress: () => void; onMarkRead: () => void }) {
-  const icon = NOTIF_ICONS[notif.type] ?? NOTIF_ICONS['General'];
-  const timeAgo = formatDate(notif.createdAt, 'relative');
-
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      style={{
-        backgroundColor: notif.isRead ? '#fff' : '#EFF6FF',
-        borderRadius: 14, padding: 14, marginBottom: 10,
-        flexDirection: 'row', alignItems: 'flex-start', gap: 12,
-        shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: notif.isRead ? 0.04 : 0.08, shadowRadius: 4, elevation: 2,
-        borderLeftWidth: notif.isRead ? 0 : 3, borderLeftColor: COLORS.blue,
-      }}
-    >
-      {/* Icon */}
-      <View style={{
-        width: 40, height: 40, borderRadius: 20,
-        backgroundColor: notif.isRead ? '#F3F4F6' : '#DBEAFE',
-        alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-      }}>
-        <Text style={{ fontSize: 18 }}>{icon}</Text>
-      </View>
-
-      {/* Content */}
-      <View style={{ flex: 1 }}>
-        <Text style={{
-          fontSize: 14, fontWeight: notif.isRead ? '500' : '700',
-          color: '#111827', lineHeight: 20,
-        }}>
-          {notif.title}
-        </Text>
-        {notif.body ? (
-          <Text style={{ fontSize: 13, color: '#6B7280', marginTop: 3, lineHeight: 18 }} numberOfLines={2}>
-            {notif.body}
-          </Text>
-        ) : null}
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
-          <Text style={{ fontSize: 11, color: '#9CA3AF' }}>{timeAgo}</Text>
-          {!notif.isRead && (
-            <TouchableOpacity onPress={onMarkRead}>
-              <Text style={{ fontSize: 11, color: COLORS.blue, fontWeight: '600' }}>Mark read</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-
-      {/* Unread dot */}
-      {!notif.isRead && (
-        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.blue, marginTop: 4, flexShrink: 0 }} />
-      )}
-    </TouchableOpacity>
-  );
-}
-
 export default function NotificationsScreen() {
+  const { theme } = useTheme();
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -91,124 +50,235 @@ export default function NotificationsScreen() {
     try {
       const data = await notificationsApi.getAll({ page: 1, limit: 50 });
       setNotifications(data.items || []);
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to load notifications');
+    } catch (error: any) {
+      Alert.alert('Notifications unavailable', error.message || 'Failed to load notifications.');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => { fetchNotifications(); }, [fetchNotifications]);
+  useEffect(() => {
+    void fetchNotifications();
+  }, [fetchNotifications]);
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await fetchNotifications();
-    setRefreshing(false);
-  };
+  const unread = useMemo(
+    () => notifications.filter((notification) => !notification.isRead),
+    [notifications],
+  );
+  const earlier = useMemo(
+    () => notifications.filter((notification) => notification.isRead),
+    [notifications],
+  );
 
   const markRead = async (id: string) => {
+    const current = notifications;
+    setNotifications((items) => items.map((item) => (item.id === id ? { ...item, isRead: true } : item)));
     try {
       await notificationsApi.markRead(id);
-      setNotifications((prev) =>
-        prev.map((n) => n.id === id ? { ...n, isRead: true } : n)
-      );
     } catch {
-      // Silent fail
+      setNotifications(current);
     }
   };
 
   const markAllRead = async () => {
     setMarkingAll(true);
     try {
-      // Mark all unread individually
-      const unread = notifications.filter((n) => !n.isRead);
-      await Promise.all(unread.map((n) => notificationsApi.markRead(n.id)));
-      setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to mark all as read');
+      await Promise.all(unread.map((notification) => notificationsApi.markRead(notification.id)));
+      setNotifications((items) => items.map((item) => ({ ...item, isRead: true })));
+    } catch (error: any) {
+      Alert.alert('Could not update notifications', error.message || 'Please try again.');
     } finally {
       setMarkingAll(false);
     }
   };
 
-  const unreadCount = notifications.filter((n) => !n.isRead).length;
-
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-      {/* Header */}
-      <View style={{ backgroundColor: COLORS.navy, paddingTop: 56, paddingBottom: 16, paddingHorizontal: 20 }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-          <View>
-            <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700' }}>
-              Notifications
-              {unreadCount > 0 && (
-                <Text style={{ color: COLORS.cyan }}> ({unreadCount})</Text>
-              )}
-            </Text>
-            <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, marginTop: 2 }}>
-              Stay up to date
-            </Text>
+    <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
+      <LiquidBackdrop subtle />
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              setRefreshing(true);
+              void fetchNotifications();
+            }}
+            tintColor={theme.colors.primary}
+            colors={[theme.colors.primary]}
+          />
+        }
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHero
+          eyebrow="Inbox"
+          title="Notifications"
+          subtitle={unread.length ? `${unread.length} update${unread.length === 1 ? '' : 's'} need your attention` : 'You are fully caught up'}
+          actions={
+            unread.length ? (
+              <MotionPressable
+                onPress={() => void markAllRead()}
+                disabled={markingAll}
+                haptic="selection"
+                contentStyle={styles.markAllButton}
+              >
+                {markingAll ? (
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-done" size={18} color={theme.colors.primary} />
+                    <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>Read all</Text>
+                  </>
+                )}
+              </MotionPressable>
+            ) : undefined
+          }
+        />
+
+        {loading ? (
+          <View style={styles.section}>
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <ActivityIndicator color={theme.colors.primary} />
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading updates…</Text>
+            </GlassSurface>
           </View>
-          {unreadCount > 0 && (
-            <TouchableOpacity onPress={markAllRead} disabled={markingAll}>
-              {markingAll ? (
-                <ActivityIndicator color="rgba(255,255,255,0.7)" size="small" />
-              ) : (
-                <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}>Mark all read</Text>
-              )}
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-
-      {loading ? (
-        <ActivityIndicator color={COLORS.blue} style={{ marginTop: 60 }} />
-      ) : (
-        <ScrollView
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-          contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
-        >
-          {notifications.length === 0 ? (
-            <View style={{ alignItems: 'center', marginTop: 60 }}>
-              <Text style={{ fontSize: 48 }}>🔔</Text>
-              <Text style={{ color: '#374151', fontSize: 16, fontWeight: '600', marginTop: 12 }}>No notifications</Text>
-              <Text style={{ color: '#9CA3AF', fontSize: 13, marginTop: 4 }}>You're all caught up!</Text>
-            </View>
-          ) : (
-            <>
-              {unreadCount > 0 && (
-                <Text style={{ fontSize: 12, fontWeight: '700', color: '#374151', marginBottom: 10, textTransform: 'uppercase' }}>
-                  Unread · {unreadCount}
-                </Text>
-              )}
-              {notifications.filter((n) => !n.isRead).map((n) => (
-                <NotifCard
-                  key={n.id}
-                  notif={n}
-                  onPress={() => markRead(n.id)}
-                  onMarkRead={() => markRead(n.id)}
-                />
-              ))}
-
-              {notifications.filter((n) => n.isRead).length > 0 && (
-                <>
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#9CA3AF', marginTop: 8, marginBottom: 10, textTransform: 'uppercase' }}>
-                    Earlier
-                  </Text>
-                  {notifications.filter((n) => n.isRead).map((n) => (
-                    <NotifCard
-                      key={n.id}
-                      notif={n}
-                      onPress={() => {}}
-                      onMarkRead={() => {}}
-                    />
-                  ))}
-                </>
-              )}
-            </>
-          )}
-        </ScrollView>
-      )}
+        ) : notifications.length === 0 ? (
+          <View style={styles.section}>
+            <EmptyNotifications />
+          </View>
+        ) : (
+          <>
+            {unread.length ? (
+              <NotificationGroup title="Needs attention" subtitle={`${unread.length} unread`}>
+                {unread.map((notification) => (
+                  <NotificationCard key={notification.id} notification={notification} onPress={() => void markRead(notification.id)} />
+                ))}
+              </NotificationGroup>
+            ) : null}
+            {earlier.length ? (
+              <NotificationGroup title="Earlier" subtitle="Previously viewed">
+                {earlier.map((notification) => (
+                  <NotificationCard key={notification.id} notification={notification} onPress={() => undefined} />
+                ))}
+              </NotificationGroup>
+            ) : null}
+          </>
+        )}
+        <View style={styles.bottomSpacer} />
+      </ScrollView>
     </View>
   );
 }
+
+function NotificationGroup({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={styles.section}>
+      <SectionHeader title={title} subtitle={subtitle} />
+      <View style={styles.list}>{children}</View>
+    </View>
+  );
+}
+
+function NotificationCard({
+  notification,
+  onPress,
+}: {
+  notification: AppNotification;
+  onPress: () => void;
+}) {
+  const { theme } = useTheme();
+  const meta = notificationMeta[notification.type] ?? notificationMeta.General;
+  const tone = theme.colors[meta.tone];
+
+  return (
+    <MotionPressable
+      onPress={onPress}
+      haptic="selection"
+      contentStyle={styles.rounded}
+      accessibilityRole="button"
+      accessibilityLabel={`${notification.title}. ${notification.body ?? ''}`}
+    >
+      <GlassSurface
+        elevated={!notification.isRead}
+        radius={theme.radius.xl}
+        tintColor={!notification.isRead ? `${tone}16` : undefined}
+        contentStyle={styles.notificationCard}
+      >
+        <View style={[styles.notificationIcon, { backgroundColor: `${tone}18` }]}>
+          <Ionicons name={meta.icon} size={22} color={tone} />
+        </View>
+        <View style={styles.notificationCopy}>
+          <View style={styles.notificationTitleRow}>
+            <Text
+              numberOfLines={2}
+              style={[
+                theme.typography.bodyStrong,
+                { color: theme.colors.text, flex: 1, fontWeight: notification.isRead ? '600' : '700' },
+              ]}
+            >
+              {notification.title}
+            </Text>
+            {!notification.isRead ? <View style={[styles.unreadDot, { backgroundColor: tone }]} /> : null}
+          </View>
+          {notification.body ? (
+            <Text numberOfLines={3} style={[theme.typography.caption, { color: theme.colors.textSecondary, marginTop: 4 }]}>
+              {notification.body}
+            </Text>
+          ) : null}
+          <View style={styles.notificationMeta}>
+            <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>
+              {formatDate(notification.createdAt, 'relative')}
+            </Text>
+            {!notification.isRead ? (
+              <Text style={[theme.typography.micro, { color: theme.colors.primary, fontWeight: '700' }]}>Tap to mark read</Text>
+            ) : null}
+          </View>
+        </View>
+      </GlassSurface>
+    </MotionPressable>
+  );
+}
+
+function EmptyNotifications() {
+  const { theme } = useTheme();
+  return (
+    <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
+      <View style={[styles.emptyIcon, { backgroundColor: `${theme.colors.success}18` }]}>
+        <Ionicons name="checkmark-done-circle-outline" size={32} color={theme.colors.success} />
+      </View>
+      <Text style={[theme.typography.h3, { color: theme.colors.text }]}>All caught up</Text>
+      <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
+        Workflow alerts, payslip notices and HR updates will appear here.
+      </Text>
+    </GlassSurface>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  content: { paddingBottom: 34 },
+  markAllButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, borderRadius: 14 },
+  section: { paddingHorizontal: 16, marginTop: 16 },
+  list: { gap: 9 },
+  rounded: { borderRadius: 24 },
+  stateCard: { minHeight: 170, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 22 },
+  notificationCard: { minHeight: 94, flexDirection: 'row', alignItems: 'flex-start', gap: 13, padding: 14 },
+  notificationIcon: { width: 46, height: 46, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  notificationCopy: { flex: 1, minWidth: 0 },
+  notificationTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  unreadDot: { width: 8, height: 8, borderRadius: 4, marginTop: 6 },
+  notificationMeta: { flexDirection: 'row', justifyContent: 'space-between', gap: 10, marginTop: 9 },
+  emptyCard: { minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 24 },
+  emptyIcon: { width: 64, height: 64, borderRadius: 22, alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
+  emptyText: { textAlign: 'center', maxWidth: 290 },
+  bottomSpacer: { height: 12 },
+});

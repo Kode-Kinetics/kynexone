@@ -81,7 +81,7 @@ export interface MobilePunchPayload {
   location?: GeoLocation;
   workLocationId?: string;
   deviceInfo: DeviceInfo;
-  selfieBase64?: string; // optional, if policy requires
+  selfiePhotoReference?: string; // opaque tenant-scoped storage reference returned by the API
   notes?: string;
 }
 

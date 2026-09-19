@@ -1,61 +1,275 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, TextInput,
-  ActivityIndicator, KeyboardAvoidingView, Platform,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { aiApi } from '@/api/services';
-import { AIMessage } from '@/types';
 import { useAuthStore } from '@/auth/authStore';
-import { COLORS } from '@/config';
+import { isManagerUser } from '@/navigation/routes';
+import { useTheme } from '@/theme/ThemeProvider';
+import {
+  GlassSurface,
+  LiquidBackdrop,
+  MotionPressable,
+  ScreenHero,
+  SectionHeader,
+} from '@/components/ui';
+import type { AIMessage } from '@/types';
 
-const EMPLOYEE_SUGGESTIONS = [
-  'How many leave days do I have?',
-  'What is my attendance this month?',
-  'When was my last payslip?',
-  'Which documents are expiring soon?',
-  'Where is my HR request?',
-  'What is the leave policy?',
+const employeeSuggestions = [
+  { icon: 'calendar-outline' as const, question: 'How many leave days do I have?' },
+  { icon: 'stats-chart-outline' as const, question: 'What is my attendance this month?' },
+  { icon: 'wallet-outline' as const, question: 'When was my last payslip?' },
+  { icon: 'document-text-outline' as const, question: 'Which documents are expiring soon?' },
+  { icon: 'chatbubble-ellipses-outline' as const, question: 'Where is my HR request?' },
+  { icon: 'book-outline' as const, question: 'What is the leave policy?' },
 ];
 
-const MANAGER_SUGGESTIONS = [
-  'Who is absent today in my team?',
-  'Which approvals are pending?',
-  'Show overtime trend for my team',
-  'Which employees have frequent late attendance?',
-  'Summarize this month\'s team attendance',
+const managerSuggestions = [
+  { icon: 'people-outline' as const, question: 'Who is absent today in my team?' },
+  { icon: 'checkmark-done-outline' as const, question: 'Which approvals are pending?' },
+  { icon: 'time-outline' as const, question: 'Show overtime trend for my team' },
+  { icon: 'warning-outline' as const, question: 'Which employees have frequent late attendance?' },
+  { icon: 'analytics-outline' as const, question: "Summarize this month's team attendance" },
 ];
+
+export default function AIAssistantScreen() {
+  const { user } = useAuthStore();
+  const { theme } = useTheme();
+  const [messages, setMessages] = useState<AIMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  const manager = isManagerUser(user);
+  const suggestions = manager ? managerSuggestions : employeeSuggestions;
+
+  const send = useCallback(async (text: string) => {
+    const question = text.trim();
+    if (!question || loading) return;
+
+    const userMessage: AIMessage = {
+      id: `${Date.now()}-user`,
+      role: 'user',
+      content: question,
+      timestamp: new Date().toISOString(),
+    };
+    setMessages((current) => [...current, userMessage]);
+    setInput('');
+    setLoading(true);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+
+    try {
+      const response = await aiApi.ask({ question });
+      setMessages((current) => [
+        ...current,
+        {
+          id: `${Date.now()}-assistant`,
+          role: 'assistant',
+          content: response.answer,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } catch (error: any) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: `${Date.now()}-error`,
+          role: 'assistant',
+          content: error?.response?.data?.message
+            || "I couldn't complete that request. Please try again or contact HR for time-sensitive guidance.",
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setLoading(false);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
+    }
+  }, [loading]);
+
+  const firstName = (user?.fullName ?? user?.name ?? 'there').split(' ')[0];
+
+  return (
+    <KeyboardAvoidingView
+      style={[styles.root, { backgroundColor: theme.colors.canvas }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+    >
+      <LiquidBackdrop subtle />
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHero
+          eyebrow="Private workforce assistant"
+          title="KynexOne AI"
+          subtitle="Grounded in your own authorized HR data"
+          actions={
+            <GlassSurface elevated={false} radius={999} contentStyle={styles.onlineBadge}>
+              <View style={[styles.onlineDot, { backgroundColor: theme.colors.success }]} />
+              <Text style={[theme.typography.micro, { color: theme.colors.success }]}>Available</Text>
+            </GlassSurface>
+          }
+        />
+
+        {messages.length === 0 ? (
+          <>
+            <View style={styles.section}>
+              <GlassSurface
+                radius={theme.radius.xxl}
+                tintColor={theme.isDark ? 'rgba(35,78,167,0.30)' : 'rgba(255,255,255,0.52)'}
+                contentStyle={styles.welcomeCard}
+              >
+                <View style={[styles.aiMark, { backgroundColor: `${theme.colors.primary}1F` }]}>
+                  <Ionicons name="sparkles" size={28} color={theme.colors.primary} />
+                </View>
+                <Text style={[theme.typography.h2, styles.welcomeTitle, { color: theme.colors.text }]}>
+                  Hi {firstName}, what can I help with?
+                </Text>
+                <Text style={[theme.typography.body, styles.welcomeBody, { color: theme.colors.textSecondary }]}>
+                  Ask about leave, attendance, payslips, documents, approvals and the workforce information your account is permitted to view.
+                </Text>
+                <View style={[styles.safetyNote, { backgroundColor: `${theme.colors.warning}12` }]}>
+                  <Ionicons name="shield-checkmark-outline" size={18} color={theme.colors.warning} />
+                  <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, flex: 1 }]}>
+                    Responses are advisory. Confirm contractual, payroll or legal decisions with your authorized HR team.
+                  </Text>
+                </View>
+              </GlassSurface>
+            </View>
+
+            <View style={styles.section}>
+              <SectionHeader
+                title={manager ? 'Manager prompts' : 'Suggested questions'}
+                subtitle="Start with a common workforce question"
+              />
+              <View style={styles.suggestionGrid}>
+                {suggestions.map((suggestion) => (
+                  <MotionPressable
+                    key={suggestion.question}
+                    onPress={() => void send(suggestion.question)}
+                    haptic="selection"
+                    style={styles.suggestionShell}
+                    contentStyle={styles.rounded}
+                    accessibilityRole="button"
+                    accessibilityLabel={suggestion.question}
+                  >
+                    <GlassSurface
+                      elevated={false}
+                      radius={theme.radius.xl}
+                      style={styles.suggestionSurface}
+                      contentStyle={styles.suggestionCard}
+                    >
+                      <View style={[styles.suggestionIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
+                        <Ionicons name={suggestion.icon} size={21} color={theme.colors.primary} />
+                      </View>
+                      <Text style={[theme.typography.bodyStrong, styles.suggestionText, { color: theme.colors.text }]}>
+                        {suggestion.question}
+                      </Text>
+                      <Ionicons name="arrow-up-outline" size={15} color={theme.colors.textMuted} style={styles.suggestionArrow} />
+                    </GlassSurface>
+                  </MotionPressable>
+                ))}
+              </View>
+            </View>
+          </>
+        ) : (
+          <View style={styles.section}>
+            <View style={styles.chatList}>
+              {messages.map((message) => <ChatBubble key={message.id} message={message} />)}
+              {loading ? <TypingIndicator /> : null}
+            </View>
+          </View>
+        )}
+        <View style={styles.chatBottomSpacer} />
+      </ScrollView>
+
+      <View style={[styles.composerSafeArea, { backgroundColor: theme.colors.canvas }]}> 
+        <GlassSurface
+          radius={theme.radius.xxl}
+          style={styles.composerSurface}
+          contentStyle={styles.composer}
+          tintColor={theme.isDark ? 'rgba(12,28,57,0.92)' : 'rgba(255,255,255,0.88)'}
+        >
+          <TextInput
+            value={input}
+            onChangeText={setInput}
+            placeholder="Ask about HR, payroll or attendance…"
+            placeholderTextColor={theme.colors.textMuted}
+            selectionColor={theme.colors.primary}
+            multiline
+            maxLength={800}
+            style={[theme.typography.body, styles.input, { color: theme.colors.text }]}
+            returnKeyType="send"
+            onSubmitEditing={() => void send(input)}
+          />
+          <MotionPressable
+            onPress={() => void send(input)}
+            disabled={loading || !input.trim()}
+            haptic="medium"
+            contentStyle={[
+              styles.sendButton,
+              {
+                backgroundColor: input.trim() && !loading
+                  ? theme.colors.primary
+                  : theme.colors.surfaceMuted,
+              },
+            ]}
+            accessibilityLabel="Send message"
+          >
+            {loading ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Ionicons
+                name="arrow-up"
+                size={21}
+                color={input.trim() ? '#FFFFFF' : theme.colors.textMuted}
+              />
+            )}
+          </MotionPressable>
+        </GlassSurface>
+      </View>
+    </KeyboardAvoidingView>
+  );
+}
 
 function ChatBubble({ message }: { message: AIMessage }) {
-  const isUser = message.role === 'user';
+  const { theme } = useTheme();
+  const userMessage = message.role === 'user';
+
   return (
-    <View style={{
-      alignSelf: isUser ? 'flex-end' : 'flex-start',
-      maxWidth: '85%', marginBottom: 12,
-    }}>
-      {!isUser && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-          <View style={{
-            width: 22, height: 22, borderRadius: 11,
-            backgroundColor: COLORS.blue, alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Text style={{ fontSize: 10, color: '#fff', fontWeight: '700' }}>Z</Text>
+    <View style={[styles.messageWrap, { alignItems: userMessage ? 'flex-end' : 'flex-start' }]}>
+      {!userMessage ? (
+        <View style={styles.assistantLabel}>
+          <View style={[styles.assistantMark, { backgroundColor: `${theme.colors.primary}1F` }]}>
+            <Ionicons name="sparkles" size={14} color={theme.colors.primary} />
           </View>
-          <Text style={{ fontSize: 11, color: '#6B7280', fontWeight: '600' }}>KynexOne AI</Text>
+          <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>KynexOne AI</Text>
         </View>
+      ) : null}
+      {userMessage ? (
+        <View style={[styles.userBubble, { backgroundColor: theme.colors.primary }]}> 
+          <Text style={[theme.typography.body, { color: '#FFFFFF' }]}>{message.content}</Text>
+        </View>
+      ) : (
+        <GlassSurface
+          elevated={false}
+          radius={20}
+          style={styles.assistantBubble}
+          contentStyle={styles.assistantBubbleContent}
+        >
+          <Text style={[theme.typography.body, { color: theme.colors.text }]}>{message.content}</Text>
+        </GlassSurface>
       )}
-      <View style={{
-        padding: 12,
-        backgroundColor: isUser ? COLORS.blue : '#fff',
-        borderRadius: 16,
-        borderBottomRightRadius: isUser ? 4 : 16,
-        borderBottomLeftRadius: isUser ? 16 : 4,
-        shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
-      }}>
-        <Text style={{ fontSize: 14, color: isUser ? '#fff' : '#111827', lineHeight: 20 }}>
-          {message.content}
-        </Text>
-      </View>
-      <Text style={{ fontSize: 10, color: '#9CA3AF', marginTop: 2, alignSelf: isUser ? 'flex-end' : 'flex-start' }}>
+      <Text style={[theme.typography.micro, styles.timestamp, { color: theme.colors.textMuted }]}>
         {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
       </Text>
     </View>
@@ -63,196 +277,65 @@ function ChatBubble({ message }: { message: AIMessage }) {
 }
 
 function TypingIndicator() {
+  const { theme } = useTheme();
   return (
-    <View style={{ alignSelf: 'flex-start', marginBottom: 12 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-        <View style={{
-          width: 22, height: 22, borderRadius: 11,
-          backgroundColor: COLORS.blue, alignItems: 'center', justifyContent: 'center',
-        }}>
-          <Text style={{ fontSize: 10, color: '#fff', fontWeight: '700' }}>Z</Text>
+    <View style={styles.typingWrap}>
+      <View style={styles.assistantLabel}>
+        <View style={[styles.assistantMark, { backgroundColor: `${theme.colors.primary}1F` }]}>
+          <Ionicons name="sparkles" size={14} color={theme.colors.primary} />
         </View>
-        <Text style={{ fontSize: 11, color: '#6B7280', fontWeight: '600' }}>KynexOne AI</Text>
+        <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>Thinking securely…</Text>
       </View>
-      <View style={{
-        backgroundColor: '#fff', borderRadius: 16, borderBottomLeftRadius: 4,
-        padding: 14, flexDirection: 'row', gap: 4, alignItems: 'center',
-        shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
-      }}>
-        {[0, 1, 2].map((i) => (
-          <View key={i} style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: COLORS.blue, opacity: 0.5 + i * 0.25 }} />
+      <GlassSurface elevated={false} radius={20} style={styles.typingBubble} contentStyle={styles.typingContent}>
+        {[0, 1, 2].map((index) => (
+          <View
+            key={index}
+            style={[
+              styles.typingDot,
+              { backgroundColor: theme.colors.primary, opacity: 0.45 + index * 0.2 },
+            ]}
+          />
         ))}
-      </View>
+      </GlassSurface>
     </View>
   );
 }
 
-export default function AIAssistantScreen() {
-  const { user } = useAuthStore();
-  const [messages, setMessages] = useState<AIMessage[]>([]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const scrollRef = useRef<ScrollView>(null);
-
-  const isManager = ['Manager', 'Supervisor', 'HR'].includes(user?.role ?? '');
-  const suggestions = isManager ? MANAGER_SUGGESTIONS : EMPLOYEE_SUGGESTIONS;
-
-  const send = useCallback(async (text: string) => {
-    if (!text.trim() || loading) return;
-    const userMsg: AIMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: text.trim(),
-      timestamp: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
-    setInput('');
-    setLoading(true);
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-
-    try {
-      // Backend DTO is ESSAIQuestionDto(string Question) — single-turn, no history.
-      const data = await aiApi.ask({ question: text.trim() });
-      const aiMsg: AIMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: data.answer,
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, aiMsg]);
-    } catch (e: any) {
-      const errMsg: AIMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: e?.response?.data?.message || "I'm sorry, I couldn't process your request. Please try again.",
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, errMsg]);
-    } finally {
-      setLoading(false);
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-    }
-  }, [loading]);
-
-  const isEmpty = messages.length === 0;
-
-  return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: COLORS.background }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
-    >
-      {/* Header */}
-      <View style={{ backgroundColor: COLORS.navy, paddingTop: 56, paddingBottom: 16, paddingHorizontal: 20 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <View style={{
-            width: 42, height: 42, borderRadius: 21,
-            backgroundColor: COLORS.blue, alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Text style={{ fontSize: 20 }}>🤖</Text>
-          </View>
-          <View>
-            <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>KynexOne AI Assistant</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 }}>
-              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: COLORS.emerald }} />
-              <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11 }}>Always available</Text>
-            </View>
-          </View>
-        </View>
-      </View>
-
-      {/* Chat area */}
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={{ padding: 16, paddingBottom: 16, flexGrow: 1 }}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Welcome / suggestions */}
-        {isEmpty && (
-          <View style={{ flex: 1 }}>
-            <View style={{
-              backgroundColor: '#fff', borderRadius: 16, padding: 20, marginBottom: 20,
-              shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
-            }}>
-              <Text style={{ fontSize: 16, fontWeight: '700', color: '#111827', marginBottom: 6 }}>
-                Hi {user?.fullName?.split(' ')[0] ?? 'there'}! 👋
-              </Text>
-              <Text style={{ fontSize: 14, color: '#6B7280', lineHeight: 20 }}>
-                I'm your AI HR assistant. I can answer questions about your attendance, leave, payslips, documents and more.
-              </Text>
-              <View style={{
-                backgroundColor: '#FFF7ED', borderRadius: 10, padding: 10, marginTop: 12,
-                flexDirection: 'row', gap: 6,
-              }}>
-                <Text style={{ fontSize: 13 }}>⚠️</Text>
-                <Text style={{ fontSize: 12, color: '#92400E', flex: 1 }}>
-                  AI responses are advisory only. Please verify important information through official HR channels.
-                </Text>
-              </View>
-            </View>
-
-            <Text style={{ fontSize: 12, fontWeight: '700', color: '#6B7280', marginBottom: 10, textTransform: 'uppercase' }}>
-              Suggested Questions
-            </Text>
-            {suggestions.map((s) => (
-              <TouchableOpacity
-                key={s}
-                onPress={() => send(s)}
-                style={{
-                  backgroundColor: '#fff', borderRadius: 12, padding: 14, marginBottom: 8,
-                  flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                  shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1,
-                  borderWidth: 1, borderColor: '#E5E7EB',
-                }}
-              >
-                <Text style={{ fontSize: 14, color: '#374151', flex: 1 }}>{s}</Text>
-                <Text style={{ color: COLORS.blue, fontSize: 16 }}>›</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-
-        {/* Messages */}
-        {messages.map((msg) => (
-          <ChatBubble key={msg.id} message={msg} />
-        ))}
-        {loading && <TypingIndicator />}
-      </ScrollView>
-
-      {/* Input area */}
-      <View style={{
-        flexDirection: 'row', alignItems: 'flex-end', padding: 12, gap: 10,
-        backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#E5E7EB',
-      }}>
-        <TextInput
-          value={input}
-          onChangeText={setInput}
-          placeholder="Ask anything about HR, payroll, attendance..."
-          multiline
-          returnKeyType="send"
-          onSubmitEditing={() => send(input)}
-          style={{
-            flex: 1, borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 22,
-            paddingHorizontal: 16, paddingVertical: 10, fontSize: 14, maxHeight: 100,
-            backgroundColor: '#FAFAFA',
-          }}
-        />
-        <TouchableOpacity
-          onPress={() => send(input)}
-          disabled={loading || !input.trim()}
-          style={{
-            width: 44, height: 44, borderRadius: 22,
-            backgroundColor: input.trim() && !loading ? COLORS.blue : '#E5E7EB',
-            alignItems: 'center', justifyContent: 'center',
-          }}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <Text style={{ fontSize: 18, color: '#fff' }}>➤</Text>
-          )}
-        </TouchableOpacity>
-      </View>
-    </KeyboardAvoidingView>
-  );
-}
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  content: { flexGrow: 1, paddingBottom: 12 },
+  onlineBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingVertical: 7 },
+  onlineDot: { width: 7, height: 7, borderRadius: 4 },
+  section: { paddingHorizontal: 16, marginTop: 16 },
+  welcomeCard: { alignItems: 'center', padding: 22 },
+  aiMark: { width: 64, height: 64, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  welcomeTitle: { textAlign: 'center', marginTop: 16 },
+  welcomeBody: { textAlign: 'center', maxWidth: 330, marginTop: 8 },
+  safetyNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderRadius: 16, padding: 12, marginTop: 18 },
+  suggestionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  suggestionShell: { width: '48%', minHeight: 150 },
+  rounded: { flex: 1, borderRadius: 24 },
+  suggestionSurface: { flex: 1 },
+  suggestionCard: { flex: 1, padding: 15 },
+  suggestionIcon: { width: 42, height: 42, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
+  suggestionText: { marginTop: 13, paddingRight: 14 },
+  suggestionArrow: { position: 'absolute', top: 14, right: 14, transform: [{ rotate: '45deg' }] },
+  chatList: { gap: 11 },
+  messageWrap: { width: '100%' },
+  assistantLabel: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 5 },
+  assistantMark: { width: 25, height: 25, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  userBubble: { maxWidth: '84%', borderRadius: 20, borderBottomRightRadius: 6, paddingHorizontal: 14, paddingVertical: 11 },
+  assistantBubble: { maxWidth: '88%' },
+  assistantBubbleContent: { paddingHorizontal: 14, paddingVertical: 12 },
+  timestamp: { marginTop: 4, marginHorizontal: 4 },
+  typingWrap: { alignItems: 'flex-start' },
+  typingBubble: { width: 72, height: 46 },
+  typingContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  typingDot: { width: 7, height: 7, borderRadius: 4 },
+  chatBottomSpacer: { height: 8 },
+  composerSafeArea: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: Platform.OS === 'ios' ? 12 : 8 },
+  composerSurface: { minHeight: 62 },
+  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingLeft: 15, paddingRight: 8, paddingVertical: 8 },
+  input: { flex: 1, minHeight: 44, maxHeight: 118, paddingTop: 11, paddingBottom: 10 },
+  sendButton: { width: 46, height: 46, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+});

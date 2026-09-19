@@ -51,6 +51,35 @@ public class AttendanceBusinessInvariantTests
     }
 
     [Fact]
+    public async Task MobilePunch_PersistsSelfieEvidenceAndVerificationMethod()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = AddEmployee(db, tenantId);
+        await db.SaveChangesAsync();
+
+        var reference = $"{tenantId:N}/documents/selfie.jpg";
+        var raw = await Service(db).PunchAsync(
+            tenantId,
+            new WebPunchRequest(
+                employee.Id,
+                "In",
+                "Mobile GPS",
+                38.75m,
+                -77.60m,
+                reference,
+                "Mobile GPS + Selfie"),
+            "Mobile app punch",
+            new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenantId),
+            CancellationToken.None);
+
+        Assert.Equal(reference, raw.PhotoReference);
+        Assert.Equal("Mobile GPS + Selfie", raw.VerificationMethod);
+        Assert.Equal(employee.Id, raw.EmployeeId);
+        Assert.Equal("In", raw.PunchDirection);
+    }
+
+    [Fact]
     public async Task Process_RejectsAnyRangeOverlappingPayrollLock()
     {
         await using var db = CreateDb();

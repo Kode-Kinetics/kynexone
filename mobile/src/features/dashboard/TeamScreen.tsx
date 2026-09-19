@@ -1,215 +1,302 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity,
-  ActivityIndicator, Alert, RefreshControl, TextInput,
+  ActivityIndicator,
+  Alert,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { teamApi } from '@/api/adapters';
-import { TeamMember } from '@/types';
 import { formatDate, toISODate } from '@/utils/date';
-import { COLORS } from '@/config';
+import { useTheme } from '@/theme/ThemeProvider';
+import {
+  GlassSurface,
+  LiquidBackdrop,
+  MotionPressable,
+  ScreenHero,
+  SectionHeader,
+} from '@/components/ui';
+import type { TeamMember } from '@/types';
 
-// Keys are the normalised AttendanceStatus values the API layer returns
-// (the old PascalCase keys never matched, so every chip rendered as Unknown).
-const STATUS_FILTERS: { key: string; label: string; stat?: 'present' | 'absent' | 'late' | 'onLeave' }[] = [
-  { key: 'All', label: 'All' },
+const statusFilters: { key: string; label: string; stat?: 'present' | 'absent' | 'late' | 'onLeave' }[] = [
+  { key: 'ALL', label: 'All' },
   { key: 'PRESENT', label: 'Present', stat: 'present' },
   { key: 'ABSENT', label: 'Absent', stat: 'absent' },
   { key: 'LATE', label: 'Late', stat: 'late' },
-  { key: 'ON_LEAVE', label: 'On Leave', stat: 'onLeave' },
+  { key: 'ON_LEAVE', label: 'On leave', stat: 'onLeave' },
 ];
-const STATUS_COLORS: Record<string, { bg: string; text: string; dot: string; label: string }> = {
-  PRESENT:       { bg: '#F0FDF4', text: '#15803D', dot: '#34D399', label: 'Present' },
-  ABSENT:        { bg: '#FEF2F2', text: '#DC2626', dot: '#F87171', label: 'No record' },
-  LATE:          { bg: '#FFF7ED', text: '#C2410C', dot: '#FB923C', label: 'Late' },
-  ON_LEAVE:      { bg: '#EFF6FF', text: '#2563EB', dot: '#60A5FA', label: 'On Leave' },
-  HALF_DAY:      { bg: '#FFF7ED', text: '#C2410C', dot: '#FB923C', label: 'Half Day' },
-  MISSING_PUNCH: { bg: '#FEF2F2', text: '#DC2626', dot: '#F87171', label: 'Missing Punch' },
-  HOLIDAY:       { bg: '#F3F4F6', text: '#6B7280', dot: '#D1D5DB', label: 'Holiday' },
-  WEEKEND:       { bg: '#F3F4F6', text: '#6B7280', dot: '#D1D5DB', label: 'Rest Day' },
-  Unknown:       { bg: '#F3F4F6', text: '#6B7280', dot: '#D1D5DB', label: 'Unknown' },
-};
-
-function MemberCard({ member }: { member: TeamMember }) {
-  const statusStyle = STATUS_COLORS[member.todayStatus ?? 'Unknown'] ?? STATUS_COLORS['Unknown'];
-  const initials = member.fullName.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase();
-
-  return (
-    <View style={{
-      backgroundColor: '#fff', borderRadius: 14, padding: 14, marginBottom: 10,
-      flexDirection: 'row', alignItems: 'center', gap: 12,
-      shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
-    }}>
-      {/* Avatar */}
-      <View style={{
-        width: 44, height: 44, borderRadius: 22,
-        backgroundColor: COLORS.blue, alignItems: 'center', justifyContent: 'center',
-      }}>
-        <Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>{initials}</Text>
-      </View>
-
-      {/* Info */}
-      <View style={{ flex: 1 }}>
-        <Text style={{ fontSize: 15, fontWeight: '700', color: '#111827' }}>{member.fullName}</Text>
-        <Text style={{ fontSize: 12, color: '#6B7280', marginTop: 1 }}>{member.jobTitle ?? member.department}</Text>
-        {member.clockIn && (
-          <Text style={{ fontSize: 11, color: '#9CA3AF', marginTop: 2 }}>
-            In: {formatDate(member.clockIn, 'time')}{member.clockOut ? ` · Out: ${formatDate(member.clockOut, 'time')}` : ''}
-          </Text>
-        )}
-      </View>
-
-      {/* Status */}
-      <View style={{ alignItems: 'flex-end' }}>
-        <View style={{
-          backgroundColor: statusStyle.bg, borderRadius: 8,
-          paddingHorizontal: 8, paddingVertical: 4,
-          flexDirection: 'row', alignItems: 'center', gap: 4,
-        }}>
-          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: statusStyle.dot }} />
-          <Text style={{ fontSize: 11, color: statusStyle.text, fontWeight: '600' }}>
-            {statusStyle.label}
-          </Text>
-        </View>
-      </View>
-    </View>
-  );
-}
 
 export default function TeamScreen() {
+  const { theme } = useTheme();
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState('All');
+  const [filter, setFilter] = useState('ALL');
   const [search, setSearch] = useState('');
 
   const fetchTeam = useCallback(async () => {
     try {
       const data = await teamApi.getTeam({ date: toISODate(new Date()) });
       setMembers(data.items || []);
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to load team');
+    } catch (error: any) {
+      Alert.alert('Team unavailable', error.message || 'Failed to load your team.');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => { fetchTeam(); }, [fetchTeam]);
+  useEffect(() => {
+    void fetchTeam();
+  }, [fetchTeam]);
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await fetchTeam();
-    setRefreshing(false);
-  };
-
-  const filtered = members.filter((m) => {
-    const matchStatus = filter === 'All' || m.todayStatus === filter;
-    const matchSearch = !search || m.fullName.toLowerCase().includes(search.toLowerCase());
-    return matchStatus && matchSearch;
-  });
-
-  // Stats
-  const stats = {
+  const stats = useMemo(() => ({
     total: members.length,
-    present: members.filter((m) => m.todayStatus === 'PRESENT').length,
-    absent: members.filter((m) => m.todayStatus === 'ABSENT').length,
-    late: members.filter((m) => m.todayStatus === 'LATE').length,
-    onLeave: members.filter((m) => m.todayStatus === 'ON_LEAVE').length,
-  };
+    present: members.filter((member) => member.todayStatus === 'PRESENT').length,
+    absent: members.filter((member) => member.todayStatus === 'ABSENT').length,
+    late: members.filter((member) => member.todayStatus === 'LATE').length,
+    onLeave: members.filter((member) => member.todayStatus === 'ON_LEAVE').length,
+  }), [members]);
+
+  const filtered = useMemo(() => members.filter((member) => {
+    const matchesStatus = filter === 'ALL' || member.todayStatus === filter;
+    const normalized = search.trim().toLowerCase();
+    const matchesSearch = !normalized
+      || member.fullName.toLowerCase().includes(normalized)
+      || member.department?.toLowerCase().includes(normalized)
+      || member.jobTitle?.toLowerCase().includes(normalized);
+    return matchesStatus && matchesSearch;
+  }), [filter, members, search]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-      {/* Header */}
-      <View style={{ backgroundColor: COLORS.navy, paddingTop: 56, paddingBottom: 20, paddingHorizontal: 20 }}>
-        <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700' }}>My Team</Text>
-        <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, marginTop: 2 }}>
-          {formatDate(new Date().toISOString(), 'display')}
-        </Text>
-
-        {/* Stats row */}
-        {!loading && (
-          <View style={{ flexDirection: 'row', marginTop: 14, gap: 8 }}>
-            {[
-              { label: 'Total', value: stats.total, color: '#fff' },
-              { label: 'Present', value: stats.present, color: '#34D399' },
-              { label: 'Absent', value: stats.absent, color: '#F87171' },
-              { label: 'Late', value: stats.late, color: '#FB923C' },
-              { label: 'Leave', value: stats.onLeave, color: '#60A5FA' },
-            ].map((s) => (
-              <View key={s.label} style={{
-                flex: 1, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 10,
-                padding: 8, alignItems: 'center',
-              }}>
-                <Text style={{ color: s.color, fontSize: 18, fontWeight: '800' }}>{s.value}</Text>
-                <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 10, marginTop: 1 }}>{s.label}</Text>
-              </View>
-            ))}
-          </View>
-        )}
-      </View>
-
-      {/* Search */}
-      <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 }}>
-        <TextInput
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Search team members..."
-          style={{
-            backgroundColor: '#fff', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10,
-            fontSize: 14, borderWidth: 1, borderColor: '#E5E7EB',
-          }}
-        />
-      </View>
-
-      {/* Filters */}
+    <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
+      <LiquidBackdrop subtle />
       <ScrollView
-        horizontal
-        // Without flexGrow: 0 the row stretches to fill the column and each chip
-        // renders as a tall empty box.
-        style={{ flexGrow: 0 }}
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 10, gap: 8 }}
-      >
-        {STATUS_FILTERS.map((f) => (
-          <TouchableOpacity
-            key={f.key}
-            onPress={() => setFilter(f.key)}
-            style={{
-              paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20,
-              backgroundColor: filter === f.key ? COLORS.blue : '#fff',
-              borderWidth: 1, borderColor: filter === f.key ? COLORS.blue : '#E5E7EB',
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              setRefreshing(true);
+              void fetchTeam();
             }}
-          >
-            <Text style={{
-              fontSize: 13, fontWeight: filter === f.key ? '700' : '400',
-              color: filter === f.key ? '#fff' : '#374151',
-            }}>
-              {f.label}
-              {f.stat ? ` (${stats[f.stat]})` : ''}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+            tintColor={theme.colors.primary}
+            colors={[theme.colors.primary]}
+          />
+        }
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <ScreenHero
+          eyebrow="Manager workspace"
+          title="My team"
+          subtitle={`${formatDate(new Date().toISOString(), 'display')} · ${stats.total} direct report${stats.total === 1 ? '' : 's'}`}
+        />
 
-      {/* List */}
-      {loading ? (
-        <ActivityIndicator color={COLORS.blue} style={{ marginTop: 40 }} />
-      ) : (
-        <ScrollView
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40 }}
-        >
-          {filtered.length === 0 ? (
-            <View style={{ alignItems: 'center', marginTop: 40 }}>
-              <Text style={{ fontSize: 32 }}>👥</Text>
-              <Text style={{ color: '#374151', fontSize: 15, fontWeight: '600', marginTop: 10 }}>
-                {search ? 'No members found' : filter !== 'All' ? 'No team members with this status' : 'No direct reports'}
+        {!loading ? (
+          <View style={styles.section}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statsRail}>
+              <TeamStat label="Total" value={stats.total} icon="people-outline" accent={theme.colors.primary} />
+              <TeamStat label="Present" value={stats.present} icon="checkmark-circle-outline" accent={theme.colors.success} />
+              <TeamStat label="Absent" value={stats.absent} icon="close-circle-outline" accent={theme.colors.danger} />
+              <TeamStat label="Late" value={stats.late} icon="time-outline" accent={theme.colors.warning} />
+              <TeamStat label="Leave" value={stats.onLeave} icon="airplane-outline" accent={theme.colors.violet} />
+            </ScrollView>
+          </View>
+        ) : null}
+
+        <View style={styles.section}>
+          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.searchCard}>
+            <Ionicons name="search-outline" size={20} color={theme.colors.textMuted} />
+            <TextInput
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Search name, role or department"
+              placeholderTextColor={theme.colors.textMuted}
+              selectionColor={theme.colors.primary}
+              autoCorrect={false}
+              style={[theme.typography.body, styles.searchInput, { color: theme.colors.text }]}
+            />
+            {search ? (
+              <MotionPressable
+                onPress={() => setSearch('')}
+                haptic="selection"
+                contentStyle={styles.clearSearch}
+                accessibilityLabel="Clear search"
+              >
+                <Ionicons name="close-circle" size={19} color={theme.colors.textMuted} />
+              </MotionPressable>
+            ) : null}
+          </GlassSurface>
+        </View>
+
+        <View style={styles.sectionCompact}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRail}>
+            {statusFilters.map((item) => {
+              const selected = filter === item.key;
+              return (
+                <MotionPressable
+                  key={item.key}
+                  onPress={() => setFilter(item.key)}
+                  haptic="selection"
+                  contentStyle={[
+                    styles.filterChip,
+                    {
+                      backgroundColor: selected ? `${theme.colors.primary}22` : theme.colors.surface,
+                      borderColor: selected ? theme.colors.primary : theme.colors.border,
+                    },
+                  ]}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected }}
+                >
+                  <Text
+                    style={[
+                      theme.typography.caption,
+                      { color: selected ? theme.colors.primary : theme.colors.textSecondary, fontWeight: selected ? '700' : '500' },
+                    ]}
+                  >
+                    {item.label}{item.stat ? ` · ${stats[item.stat]}` : ''}
+                  </Text>
+                </MotionPressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+
+        <View style={styles.section}>
+          <SectionHeader title="Team status" subtitle={`${filtered.length} matching employee${filtered.length === 1 ? '' : 's'}`} />
+          {loading ? (
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <ActivityIndicator color={theme.colors.primary} />
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading team…</Text>
+            </GlassSurface>
+          ) : filtered.length === 0 ? (
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
+              <View style={[styles.emptyIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
+                <Ionicons name="people-outline" size={30} color={theme.colors.primary} />
+              </View>
+              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>No team members found</Text>
+              <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
+                Try another status filter or clear the search.
               </Text>
-            </View>
+            </GlassSurface>
           ) : (
-            filtered.map((m) => <MemberCard key={m.employeeId} member={m} />)
+            <View style={styles.list}>
+              {filtered.map((member) => <MemberCard key={member.employeeId} member={member} />)}
+            </View>
           )}
-        </ScrollView>
-      )}
+        </View>
+        <View style={styles.bottomSpacer} />
+      </ScrollView>
     </View>
   );
 }
+
+function TeamStat({
+  label,
+  value,
+  icon,
+  accent,
+}: {
+  label: string;
+  value: number;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  accent: string;
+}) {
+  const { theme } = useTheme();
+  return (
+    <GlassSurface elevated={false} radius={theme.radius.xl} style={styles.statCard} contentStyle={styles.statContent}>
+      <View style={[styles.statIcon, { backgroundColor: `${accent}18` }]}>
+        <Ionicons name={icon} size={18} color={accent} />
+      </View>
+      <Text style={[styles.statValue, { color: theme.colors.text }]}>{value}</Text>
+      <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>{label}</Text>
+    </GlassSurface>
+  );
+}
+
+function MemberCard({ member }: { member: TeamMember }) {
+  const { theme } = useTheme();
+  const meta = getStatusMeta(member.todayStatus ?? 'UNKNOWN', theme);
+  const initials = member.fullName
+    .split(' ')
+    .map((part) => part[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
+
+  return (
+    <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.memberCard}>
+      <View style={[styles.avatar, { backgroundColor: `${theme.colors.primary}20` }]}>
+        <Text style={[styles.initials, { color: theme.colors.primary }]}>{initials}</Text>
+      </View>
+      <View style={styles.memberCopy}>
+        <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{member.fullName}</Text>
+        <Text numberOfLines={1} style={[theme.typography.caption, { color: theme.colors.textSecondary, marginTop: 2 }]}>
+          {member.jobTitle ?? member.department ?? 'Employee'}
+        </Text>
+        {member.clockIn ? (
+          <View style={styles.punchLine}>
+            <Ionicons name="log-in-outline" size={13} color={theme.colors.success} />
+            <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>
+              {formatDate(member.clockIn, 'time')}
+              {member.clockOut ? ` – ${formatDate(member.clockOut, 'time')}` : ' · Active'}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+      <View style={[styles.statusPill, { backgroundColor: `${meta.color}18` }]}>
+        <View style={[styles.statusDot, { backgroundColor: meta.color }]} />
+        <Text style={[theme.typography.micro, { color: meta.color }]}>{meta.label}</Text>
+      </View>
+    </GlassSurface>
+  );
+}
+
+function getStatusMeta(status: string, theme: ReturnType<typeof useTheme>['theme']) {
+  const map: Record<string, { label: string; color: string }> = {
+    PRESENT: { label: 'Present', color: theme.colors.success },
+    ABSENT: { label: 'Absent', color: theme.colors.danger },
+    LATE: { label: 'Late', color: theme.colors.warning },
+    ON_LEAVE: { label: 'On leave', color: theme.colors.primary },
+    HALF_DAY: { label: 'Half day', color: theme.colors.warning },
+    MISSING_PUNCH: { label: 'Missing punch', color: theme.colors.danger },
+    HOLIDAY: { label: 'Holiday', color: theme.colors.violet },
+    WEEKEND: { label: 'Rest day', color: theme.colors.textMuted },
+  };
+  return map[status] ?? { label: 'No record', color: theme.colors.textMuted };
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  content: { paddingBottom: 34 },
+  section: { paddingHorizontal: 16, marginTop: 16 },
+  sectionCompact: { marginTop: 10 },
+  statsRail: { gap: 9, paddingRight: 4 },
+  statCard: { width: 106, minHeight: 122 },
+  statContent: { padding: 13, justifyContent: 'space-between' },
+  statIcon: { width: 37, height: 37, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  statValue: { fontSize: 25, lineHeight: 29, fontWeight: '800', marginTop: 7 },
+  searchCard: { minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14 },
+  searchInput: { flex: 1, minHeight: 52 },
+  clearSearch: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  filterRail: { paddingHorizontal: 16, gap: 8 },
+  filterChip: { minHeight: 39, borderRadius: 999, borderWidth: StyleSheet.hairlineWidth, justifyContent: 'center', paddingHorizontal: 14 },
+  list: { gap: 9 },
+  memberCard: { minHeight: 86, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 13 },
+  avatar: { width: 48, height: 48, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  initials: { fontSize: 15, fontWeight: '800', letterSpacing: 0.2 },
+  memberCopy: { flex: 1, minWidth: 0 },
+  punchLine: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 5 },
+  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 999 },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  stateCard: { minHeight: 180, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 22 },
+  emptyCard: { minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 24 },
+  emptyIcon: { width: 60, height: 60, borderRadius: 21, alignItems: 'center', justifyContent: 'center', marginBottom: 3 },
+  emptyText: { textAlign: 'center', maxWidth: 280 },
+  bottomSpacer: { height: 12 },
+});

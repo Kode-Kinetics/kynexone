@@ -1,47 +1,48 @@
-// ============================================================
-// ZAYRA MOBILE — Login Screen
-// ============================================================
-
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
+  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  ActivityIndicator,
-  Alert,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useForm, Controller } from 'react-hook-form';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Controller, useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useAuthStore } from '@/auth/authStore';
-import { appStorage } from '@/storage';
-import { COLORS } from '@/config';
 import { useTranslation } from 'react-i18next';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { AuthStackParamList } from '@/navigation/authTypes';
+import { useAuthStore } from '@/auth/authStore';
+import { appStorage } from '@/storage';
+import { useTheme } from '@/theme/ThemeProvider';
+import {
+  GlassSurface,
+  GlassTextField,
+  LiquidBackdrop,
+  LiquidButton,
+  MotionPressable,
+} from '@/components/ui';
 
 const loginSchema = z.object({
-  tenantId: z.string().min(1, 'Company ID is required'),
-  username: z.string().min(1, 'Username is required'),
+  tenantId: z.string().trim().min(1, 'Company ID is required'),
+  username: z.string().trim().min(1, 'Email or username is required'),
   password: z.string().min(1, 'Password is required'),
 });
 
 type LoginFormData = z.infer<typeof loginSchema>;
-
 type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
-
 export default function LoginScreen({ navigation, route }: Props) {
   const { t } = useTranslation();
+  const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
   const { login, isLoading, error, clearError } = useAuthStore();
-
   const [showPassword, setShowPassword] = useState(false);
+
   const {
     control,
     handleSubmit,
@@ -62,19 +63,16 @@ export default function LoginScreen({ navigation, route }: Props) {
   }, [loadRememberedTenant]);
 
   useEffect(() => {
-    if (route?.params?.tenantId) setValue('tenantId', route.params.tenantId);
-    if (route?.params?.email) setValue('username', route.params.email);
-    if (route?.params?.enrollmentComplete) {
-      Alert.alert('MFA enabled', 'Enter your password and new authentication code to sign in.');
+    if (route.params?.tenantId) setValue('tenantId', route.params.tenantId);
+    if (route.params?.email) setValue('username', route.params.email);
+    if (route.params?.enrollmentComplete) {
+      Alert.alert('MFA enabled', 'Enter your password and authentication code to sign in.');
     }
-  }, [route?.params, setValue]);
+  }, [route.params, setValue]);
 
   useEffect(() => {
-    if (error) {
-      Alert.alert('Login Failed', error, [{ text: 'OK', onPress: clearError }]);
-    }
+    if (error) Alert.alert('Sign-in failed', error, [{ text: 'OK', onPress: clearError }]);
   }, [clearError, error]);
-
   const onSubmit = useCallback(
     async (data: LoginFormData) => {
       try {
@@ -84,259 +82,235 @@ export default function LoginScreen({ navigation, route }: Props) {
         } else if (outcome.kind === 'mfaEnrollment') {
           navigation.navigate('MfaEnrollment', outcome);
         }
-        // Authenticated sessions switch RootNavigator automatically.
       } catch {
-        // Error handled by store
+        // The auth store owns the user-facing error state.
       }
     },
-    [login, navigation]
+    [login, navigation],
   );
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.root, { backgroundColor: theme.colors.canvas }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <LinearGradient
-        colors={['#0B1020', '#0F1830', '#0B1020']}
-        style={StyleSheet.absoluteFill}
-      />
-
-      {/* Background pattern */}
-      <View style={styles.bgPattern} />
-
+      <LiquidBackdrop />
       <ScrollView
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[
+          styles.scroll,
+          {
+            paddingTop: Math.max(insets.top + 28, 54),
+            paddingBottom: Math.max(insets.bottom + 28, 34),
+          },
+        ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Logo */}
-        <View style={styles.logoContainer}>
-          <View style={styles.logoMark}>
-            <Text style={styles.logoZ}>K</Text>
-          </View>
-          <Text style={styles.logoText}>KYNEXONE</Text>
-          <Text style={styles.logoTagline}>AI Workforce Intelligence</Text>
-        </View>
-
-        {/* Card */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{t('auth.login')}</Text>
-          <Text style={styles.cardSubtitle}>Access your workforce portal</Text>
-
-          {/* Company ID */}
-          <View style={styles.fieldGroup}>
-            <Text style={styles.label}>{t('auth.tenantId')}</Text>
-            <Controller
-              control={control}
-              name="tenantId"
-              render={({ field: { onChange, value, onBlur } }) => (
-                <View style={[styles.inputWrapper, errors.tenantId && styles.inputError]}>
-                  <Ionicons name="business-outline" size={18} color={COLORS.muted} />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="e.g. acme-corp"
-                    placeholderTextColor={COLORS.muted}
-                    value={value}
-                    onChangeText={onChange}
-                    onBlur={onBlur}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="next"
-                  />
-                </View>
-              )}
-            />
-            {errors.tenantId && (
-              <Text style={styles.errorText}>{errors.tenantId.message}</Text>
-            )}
-          </View>
-
-          {/* Username */}
-          <View style={styles.fieldGroup}>
-            <Text style={styles.label}>{t('auth.username')}</Text>
-            <Controller
-              control={control}
-              name="username"
-              render={({ field: { onChange, value, onBlur } }) => (
-                <View style={[styles.inputWrapper, errors.username && styles.inputError]}>
-                  <Ionicons name="person-outline" size={18} color={COLORS.muted} />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Enter your username"
-                    placeholderTextColor={COLORS.muted}
-                    value={value}
-                    onChangeText={onChange}
-                    onBlur={onBlur}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="next"
-                  />
-                </View>
-              )}
-            />
-            {errors.username && (
-              <Text style={styles.errorText}>{errors.username.message}</Text>
-            )}
-          </View>
-
-          {/* Password */}
-          <View style={styles.fieldGroup}>
-            <Text style={styles.label}>{t('auth.password')}</Text>
-            <Controller
-              control={control}
-              name="password"
-              render={({ field: { onChange, value, onBlur } }) => (
-                <View style={[styles.inputWrapper, errors.password && styles.inputError]}>
-                  <Ionicons name="lock-closed-outline" size={18} color={COLORS.muted} />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Enter your password"
-                    placeholderTextColor={COLORS.muted}
-                    value={value}
-                    onChangeText={onChange}
-                    onBlur={onBlur}
-                    secureTextEntry={!showPassword}
-                    returnKeyType="done"
-                    onSubmitEditing={handleSubmit(onSubmit)}
-                  />
-                  <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-                    <Ionicons
-                      name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                      size={18}
-                      color={COLORS.muted}
-                    />
-                  </TouchableOpacity>
-                </View>
-              )}
-            />
-            {errors.password && (
-              <Text style={styles.errorText}>{errors.password.message}</Text>
-            )}
-          </View>
-
-          {/* Forgot password */}
-          <TouchableOpacity
-            style={styles.forgotBtn}
-            onPress={() => navigation.navigate('ForgotPassword')}
-          >
-            <Text style={styles.forgotText}>{t('auth.forgotPassword')}</Text>
-          </TouchableOpacity>
-
-          {/* Login button */}
-          <TouchableOpacity
-            style={[styles.loginBtn, isLoading && styles.loginBtnDisabled]}
-            onPress={handleSubmit(onSubmit)}
-            disabled={isLoading}
-            activeOpacity={0.85}
+        <View style={styles.brandBlock}>
+          <GlassSurface
+            radius={26}
+            style={styles.logoSurface}
+            contentStyle={styles.logoContent}
+            tintColor={theme.isDark ? 'rgba(47,107,255,0.26)' : 'rgba(255,255,255,0.50)'}
           >
             <LinearGradient
-              colors={['#2F6BFF', '#1A4FCC']}
-              style={styles.loginBtnGradient}
+              colors={theme.gradients.primary}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.logoMark}
             >
-              {isLoading ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <>
-                  <Text style={styles.loginBtnText}>{t('auth.login')}</Text>
-                  <Ionicons name="arrow-forward" size={18} color="#fff" />
-                </>
-              )}
+              <Text style={styles.logoLetter}>K</Text>
             </LinearGradient>
-          </TouchableOpacity>
+          </GlassSurface>
+          <Text style={[styles.wordmark, { color: theme.colors.text }]}>KYNEXONE</Text>
+          <Text style={[theme.typography.caption, styles.tagline, { color: theme.colors.textSecondary }]}>
+            One intelligent workspace for your workforce
+          </Text>
+        </View>
+        <GlassSurface
+          radius={theme.radius.xxl}
+          style={styles.formCard}
+          contentStyle={styles.formContent}
+          tintColor={theme.isDark ? 'rgba(10,31,70,0.32)' : 'rgba(255,255,255,0.45)'}
+        >
+          <View style={styles.formHeading}>
+            <Text style={[theme.typography.h1, { color: theme.colors.text }]}>Welcome back</Text>
+            <Text style={[theme.typography.body, { color: theme.colors.textSecondary, marginTop: 6 }]}>
+              Sign in to attendance, leave, payroll and approvals.
+            </Text>
+          </View>
 
+          <Controller
+            control={control}
+            name="tenantId"
+            render={({ field: { onChange, value, onBlur } }) => (
+              <GlassTextField
+                label={t('auth.tenantId')}
+                icon="business-outline"
+                value={value}
+                onChangeText={onChange}
+                onBlur={onBlur}
+                placeholder="e.g. acme-corp"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="organization"
+                returnKeyType="next"
+                error={errors.tenantId?.message}
+                accessibilityLabel="Company ID"
+              />
+            )}
+          />
 
+          <Controller
+            control={control}
+            name="username"
+            render={({ field: { onChange, value, onBlur } }) => (
+              <GlassTextField
+                label={t('auth.username')}
+                icon="person-outline"
+                value={value}
+                onChangeText={onChange}
+                onBlur={onBlur}
+                placeholder="Work email or username"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="username"
+                keyboardType="email-address"
+                returnKeyType="next"
+                error={errors.username?.message}
+                accessibilityLabel="Work email or username"
+              />
+            )}
+          />
+          <Controller
+            control={control}
+            name="password"
+            render={({ field: { onChange, value, onBlur } }) => (
+              <GlassTextField
+                label={t('auth.password')}
+                icon="lock-closed-outline"
+                value={value}
+                onChangeText={onChange}
+                onBlur={onBlur}
+                placeholder="Enter your password"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="current-password"
+                secureTextEntry={!showPassword}
+                returnKeyType="done"
+                onSubmitEditing={handleSubmit(onSubmit)}
+                error={errors.password?.message}
+                accessibilityLabel="Password"
+                trailing={
+                  <MotionPressable
+                    accessibilityRole="button"
+                    accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+                    onPress={() => setShowPassword((current) => !current)}
+                    haptic="selection"
+                    contentStyle={styles.passwordToggle}
+                  >
+                    <Ionicons
+                      name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                      size={20}
+                      color={theme.colors.textMuted}
+                    />
+                  </MotionPressable>
+                }
+              />
+            )}
+          />
+
+          <MotionPressable
+            onPress={() => navigation.navigate('ForgotPassword')}
+            haptic="selection"
+            contentStyle={styles.forgotPressable}
+          >
+            <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>
+              {t('auth.forgotPassword')}
+            </Text>
+          </MotionPressable>
+
+          <LiquidButton
+            label={t('auth.login')}
+            icon="log-in-outline"
+            onPress={handleSubmit(onSubmit)}
+            loading={isLoading}
+            disabled={isLoading}
+            style={styles.submit}
+            testID="login-submit"
+          />
+        </GlassSurface>
+        <View style={styles.trustRow}>
+          <TrustItem icon="shield-checkmark-outline" label="Secure access" />
+          <TrustItem icon="language-outline" label="English · عربي" />
+          <TrustItem icon="sparkles-outline" label="AI assisted" />
         </View>
 
-        {/* Footer */}
-        <Text style={styles.footer}>
-          Secured by KynexOne · Enterprise Grade · GCC Compliant
+        <Text style={[theme.typography.micro, styles.footer, { color: theme.colors.textMuted }]}>
+          Enterprise workforce operations · Privacy-first · GCC ready
         </Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
+function TrustItem({ icon, label }: { icon: React.ComponentProps<typeof Ionicons>['name']; label: string }) {
+  const { theme } = useTheme();
+  return (
+    <GlassSurface elevated={false} radius={theme.radius.pill} contentStyle={styles.trustItem}>
+      <Ionicons name={icon} size={14} color={theme.colors.primary} />
+      <Text style={[theme.typography.micro, { color: theme.colors.textSecondary }]}>{label}</Text>
+    </GlassSurface>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.navy },
-  bgPattern: {
-    position: 'absolute',
-    top: -100,
-    right: -100,
-    width: 400,
-    height: 400,
-    borderRadius: 200,
-    backgroundColor: 'rgba(47, 107, 255, 0.06)',
-  },
+  root: { flex: 1 },
   scroll: {
     flexGrow: 1,
     justifyContent: 'center',
-    padding: 24,
-    paddingTop: 60,
+    paddingHorizontal: 20,
   },
-  logoContainer: { alignItems: 'center', marginBottom: 40 },
-  logoMark: {
-    width: 60,
-    height: 60,
-    borderRadius: 16,
-    backgroundColor: COLORS.blue,
+  brandBlock: { alignItems: 'center', marginBottom: 26 },
+  logoSurface: { width: 76, height: 76, marginBottom: 14 },
+  logoContent: { alignItems: 'center', justifyContent: 'center', padding: 7 },
+  logoMark: { flex: 1, width: '100%', borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  logoLetter: { color: '#FFFFFF', fontSize: 37, fontWeight: '800', letterSpacing: -1.5 },
+  wordmark: { fontSize: 25, lineHeight: 30, fontWeight: '800', letterSpacing: 5.5 },
+  tagline: { marginTop: 6, textAlign: 'center', maxWidth: 310 },
+  formCard: { width: '100%', maxWidth: 480, alignSelf: 'center' },
+  formContent: { paddingHorizontal: 22, paddingVertical: 24 },
+  formHeading: { marginBottom: 22 },
+  passwordToggle: {
+    width: 42,
+    height: 42,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
-    shadowColor: COLORS.blue,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    elevation: 12,
+    borderRadius: 14,
   },
-  logoZ: { fontSize: 32, fontWeight: '800', color: '#fff', letterSpacing: -1 },
-  logoText: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#fff',
-    letterSpacing: 6,
-    marginBottom: 4,
+  forgotPressable: {
+    alignSelf: 'flex-end',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
   },
-  logoTagline: { fontSize: 12, color: 'rgba(255,255,255,0.4)', letterSpacing: 1 },
-  card: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    padding: 24,
-    marginBottom: 24,
-  },
-  cardTitle: { fontSize: 22, fontWeight: '700', color: '#fff', marginBottom: 4 },
-  cardSubtitle: { fontSize: 14, color: 'rgba(255,255,255,0.5)', marginBottom: 24 },
-  fieldGroup: { marginBottom: 16 },
-  label: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.7)', marginBottom: 8 },
-  inputWrapper: {
+  submit: { marginTop: 16 },
+  trustRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 10,
-  },
-  inputError: { borderColor: COLORS.error },
-  input: { flex: 1, fontSize: 15, color: '#fff' },
-  errorText: { fontSize: 12, color: COLORS.error, marginTop: 4 },
-  forgotBtn: { alignSelf: 'flex-end', marginBottom: 20 },
-  forgotText: { fontSize: 13, color: COLORS.cyan, fontWeight: '500' },
-  loginBtn: { borderRadius: 14, overflow: 'hidden', marginBottom: 16 },
-  loginBtnDisabled: { opacity: 0.7 },
-  loginBtnGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 16,
+    flexWrap: 'wrap',
     gap: 8,
+    marginTop: 20,
   },
-  loginBtnText: { fontSize: 16, fontWeight: '700', color: '#fff', letterSpacing: 0.3 },
-  footer: { textAlign: 'center', fontSize: 11, color: 'rgba(255,255,255,0.25)' },
+  trustItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+  },
+  footer: {
+    textAlign: 'center',
+    marginTop: 18,
+    letterSpacing: 0.25,
+  },
 });

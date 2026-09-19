@@ -101,7 +101,12 @@ export function createApiClient(tenantId: string): AxiosInstance {
         );
       }
 
-      if (error.response?.status === 401 && !originalRequest._retry) {
+      // Only attempt token refresh for requests that were already authenticated.
+      // Public auth bootstrap requests (login/MFA/etc.) legitimately return 401
+      // for bad credentials and must surface the server's error instead of
+      // being replaced by a misleading "No refresh token" failure.
+      const hadAuthorization = Boolean(originalRequest?.headers?.Authorization);
+      if (error.response?.status === 401 && !originalRequest._retry && hadAuthorization) {
         originalRequest._retry = true;
         try {
           const newToken = await getOrStartRefresh();

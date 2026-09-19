@@ -1,77 +1,60 @@
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity,
-  Alert, Switch, ActivityIndicator,
+  ActivityIndicator,
+  Alert,
+  Linking,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/auth/authStore';
-import { APP_VERSION, COLORS } from '@/config';
+import { APP_VERSION } from '@/config';
 import { FEATURES } from '@/config/features';
 import { notificationsApi } from '@/api/services';
+import { useTheme } from '@/theme/ThemeProvider';
+import type { ThemePreference } from '@/theme/tokens';
+import {
+  GlassSurface,
+  LiquidBackdrop,
+  MotionPressable,
+  ScreenHero,
+  SectionHeader,
+} from '@/components/ui';
 
 interface SettingRowProps {
-  icon: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
   title: string;
   subtitle?: string;
   onPress?: () => void;
   rightElement?: React.ReactNode;
   destructive?: boolean;
-}
-
-function SettingRow({ icon, title, subtitle, onPress, rightElement, destructive }: SettingRowProps) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      disabled={!onPress && !rightElement}
-      style={{
-        flexDirection: 'row', alignItems: 'center', padding: 16,
-        borderBottomWidth: 1, borderBottomColor: '#F3F4F6',
-      }}
-    >
-      <View style={{
-        width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
-        backgroundColor: destructive ? '#FEF2F2' : '#F3F4F6', marginRight: 14,
-      }}>
-        <Text style={{ fontSize: 18 }}>{icon}</Text>
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={{ fontSize: 15, fontWeight: '500', color: destructive ? '#DC2626' : '#111827' }}>
-          {title}
-        </Text>
-        {subtitle && <Text style={{ fontSize: 12, color: '#9CA3AF', marginTop: 1 }}>{subtitle}</Text>}
-      </View>
-      {rightElement ? rightElement : onPress ? (
-        <Text style={{ color: '#D1D5DB', fontSize: 18 }}>›</Text>
-      ) : null}
-    </TouchableOpacity>
-  );
-}
-
-function SectionHeader({ title }: { title: string }) {
-  return (
-    <Text style={{ fontSize: 11, fontWeight: '700', color: '#9CA3AF', paddingHorizontal: 16, paddingTop: 20, paddingBottom: 6, textTransform: 'uppercase' }}>
-      {title}
-    </Text>
-  );
+  isLast?: boolean;
 }
 
 export default function SettingsScreen() {
   const navigation = useNavigation<any>();
   const { i18n } = useTranslation();
   const { user, logout } = useAuthStore();
-  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const { theme, preference, setPreference } = useTheme();
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushSaving, setPushSaving] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-
   useEffect(() => {
     let active = true;
     if (!FEATURES.NOTIFICATION_PREFERENCES) return () => { active = false; };
+
     notificationsApi
       .getChannelSwitches()
-      .then((settings) => active && setPushEnabled(settings.pushEnabled))
+      .then((settings) => {
+        if (active) setPushEnabled(settings.pushEnabled);
+      })
       .catch((error) => console.warn('[Settings] Notification preferences unavailable:', error));
+
     return () => { active = false; };
   }, []);
 
@@ -84,181 +67,191 @@ export default function SettingsScreen() {
       setPushEnabled(saved.pushEnabled);
     } catch (error: any) {
       setPushEnabled(previous);
-      Alert.alert('Could not update notifications', error?.message || 'Please try again.');
+      Alert.alert('Could not update notifications', error?.message ?? 'Please try again.');
     } finally {
       setPushSaving(false);
     }
   };
 
   const toggleLanguage = async () => {
-    const newLang = i18n.language === 'ar' ? 'en' : 'ar';
-    await i18n.changeLanguage(newLang);
-    // Note: RTL change requires app restart in production
-    // I18nManager.forceRTL(newLang === 'ar');
+    const next = i18n.language === 'ar' ? 'en' : 'ar';
+    await i18n.changeLanguage(next);
     Alert.alert(
-      'Language Changed',
-      newLang === 'ar' ? 'تم التغيير إلى العربية' : 'Changed to English',
+      'Language changed',
+      next === 'ar'
+        ? 'تم التغيير إلى العربية. سيكتمل اتجاه الواجهة بعد إعادة تشغيل التطبيق.'
+        : 'Changed to English. Layout direction completes after an app restart.',
     );
   };
 
   const handleLogout = () => {
-    Alert.alert(
-      'Sign Out',
-      'Are you sure you want to sign out?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Sign Out',
-          style: 'destructive',
-          onPress: async () => {
-            setLoggingOut(true);
-            await logout();
-            setLoggingOut(false);
-          },
+    Alert.alert('Sign out', 'End this secure session on this device?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: async () => {
+          setLoggingOut(true);
+          await logout();
+          setLoggingOut(false);
         },
-      ]
-    );
+      },
+    ]);
   };
-
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-      {/* Header */}
-      <View style={{ backgroundColor: COLORS.navy, paddingTop: 56, paddingBottom: 20, paddingHorizontal: 20 }}>
-        <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700' }}>Settings</Text>
-      </View>
+    <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
+      <LiquidBackdrop subtle />
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <ScreenHero
+          eyebrow="Preferences"
+          title="Settings"
+          subtitle="Security, appearance and communication controls"
+        />
 
-      {/* Profile summary */}
-      <View style={{
-        backgroundColor: '#fff', padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14,
-        borderBottomWidth: 1, borderBottomColor: '#F3F4F6',
-      }}>
-        <View style={{
-          width: 50, height: 50, borderRadius: 25, backgroundColor: COLORS.blue,
-          alignItems: 'center', justifyContent: 'center',
-        }}>
-          <Text style={{ color: '#fff', fontSize: 20, fontWeight: '700' }}>
-            {(user?.name ?? 'U').charAt(0).toUpperCase()}
-          </Text>
+        <View style={styles.section}>
+          <GlassSurface radius={theme.radius.xl} contentStyle={styles.profileCard}>
+            <View style={[styles.avatar, { backgroundColor: theme.colors.primary }]}>
+              <Text style={styles.avatarText}>
+                {(user?.name ?? user?.fullName ?? 'U').charAt(0).toUpperCase()}
+              </Text>
+            </View>
+            <View style={styles.profileCopy}>
+              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>
+                {user?.name ?? user?.fullName}
+              </Text>
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, marginTop: 2 }]}>
+                {user?.email}
+              </Text>
+              <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 4 }]}>
+                {user?.role}{user?.department ? ` · ${user.department}` : ''}
+              </Text>
+            </View>
+            <View style={[styles.securePill, { backgroundColor: `${theme.colors.success}1A` }]}>
+              <Ionicons name="shield-checkmark" size={14} color={theme.colors.success} />
+              <Text style={[theme.typography.micro, { color: theme.colors.success }]}>Secure</Text>
+            </View>
+          </GlassSurface>
         </View>
-        <View>
-          <Text style={{ fontSize: 16, fontWeight: '700', color: '#111827' }}>{user?.name}</Text>
-          <Text style={{ fontSize: 13, color: '#6B7280' }}>{user?.email}</Text>
-          <Text style={{ fontSize: 11, color: '#9CA3AF', marginTop: 2 }}>{user?.role} · {user?.department}</Text>
-        </View>
-      </View>
 
-      <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
-        {/* Account */}
-        <SectionHeader title="Account" />
-        <View style={{ backgroundColor: '#fff', marginHorizontal: 16, borderRadius: 14, overflow: 'hidden' }}>
+        <View style={styles.section}>
+          <SectionHeader title="Appearance" subtitle="Liquid Glass adapts to your preference" />
+          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.appearanceCard}>
+            <ThemeSelector
+              value={preference}
+              onChange={(next) => void setPreference(next)}
+            />
+          </GlassSurface>
+        </View>
+        <SettingsSection title="Account">
           <SettingRow
-            icon="🔑"
-            title="Change Password"
-            subtitle="Update your login password"
+            icon="key-outline"
+            title="Change password"
+            subtitle="Update your workforce account password"
             onPress={() => navigation.navigate('ChangePassword')}
           />
           <SettingRow
-            icon="👆"
-            title="Biometric Login"
-            subtitle={FEATURES.BIOMETRIC_LOGIN ? 'Use Face ID / Fingerprint to sign in' : 'Coming soon'}
-            rightElement={
-              <Switch
-                value={FEATURES.BIOMETRIC_LOGIN && biometricEnabled}
-                disabled={!FEATURES.BIOMETRIC_LOGIN}
-                onValueChange={setBiometricEnabled}
-                trackColor={{ false: '#D1D5DB', true: COLORS.blue }}
-                thumbColor="#fff"
-              />
+            icon="finger-print-outline"
+            title="Biometric access"
+            subtitle={
+              FEATURES.BIOMETRIC_LOGIN
+                ? 'Use Face ID or device biometrics'
+                : 'Protected biometric sign-in is being finalized'
             }
+            onPress={FEATURES.BIOMETRIC_LOGIN ? () => undefined : undefined}
+            isLast
           />
-        </View>
+        </SettingsSection>
 
-        {/* Preferences */}
-        <SectionHeader title="Preferences" />
-        <View style={{ backgroundColor: '#fff', marginHorizontal: 16, borderRadius: 14, overflow: 'hidden' }}>
+        <SettingsSection title="Preferences">
           <SettingRow
-            icon="🌐"
+            icon="language-outline"
             title="Language"
             subtitle={i18n.language === 'ar' ? 'العربية' : 'English'}
             onPress={toggleLanguage}
             rightElement={
-              <View style={{
-                backgroundColor: '#EFF6FF', borderRadius: 8,
-                paddingHorizontal: 10, paddingVertical: 4,
-              }}>
-                <Text style={{ color: COLORS.blue, fontSize: 13, fontWeight: '600' }}>
+              <View style={[styles.languagePill, { backgroundColor: `${theme.colors.primary}18` }]}>
+                <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>
                   {i18n.language === 'ar' ? 'عربي → EN' : 'EN → عربي'}
                 </Text>
               </View>
             }
           />
           <SettingRow
-            icon="🔔"
-            title="Push Notifications"
+            icon="notifications-outline"
+            title="Push notifications"
             subtitle={
               FEATURES.NOTIFICATION_PREFERENCES
-                ? 'Receive real-time alerts'
-                : 'Managed in your device Settings › KynexOne › Notifications'
+                ? 'Real-time alerts and request updates'
+                : 'Managed in device notification settings'
             }
             rightElement={
-              <Switch
-                // Per-user preferences need GET/PUT /ess/notification-preferences (not built).
-                // The toggle used to flip local state only, silently doing nothing.
-                value={pushEnabled}
-                disabled={!FEATURES.NOTIFICATION_PREFERENCES || pushSaving}
-                onValueChange={togglePush}
-                trackColor={{ false: '#D1D5DB', true: COLORS.blue }}
-                thumbColor="#fff"
-              />
+              pushSaving ? (
+                <ActivityIndicator color={theme.colors.primary} size="small" />
+              ) : (
+                <Switch
+                  value={pushEnabled}
+                  disabled={!FEATURES.NOTIFICATION_PREFERENCES}
+                  onValueChange={(next) => void togglePush(next)}
+                  trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
+                  thumbColor="#FFFFFF"
+                />
+              )
             }
           />
           <SettingRow
-            icon="📅"
+            icon="calendar-clear-outline"
             title="Calendar"
-            subtitle="Hijri / Gregorian · Gregorian (default)"
-            onPress={() => Alert.alert('Coming Soon', 'Hijri calendar support coming in a future update')}
+            subtitle="Gregorian default · Hijri support planned"
+            onPress={() => Alert.alert('Calendar', 'Hijri calendar selection is being prepared for a future release.')}
+            isLast
           />
-        </View>
-
-        {/* About */}
-        <SectionHeader title="About" />
-        <View style={{ backgroundColor: '#fff', marginHorizontal: 16, borderRadius: 14, overflow: 'hidden' }}>
+        </SettingsSection>
+        <SettingsSection title="About">
           <SettingRow
-            icon="ℹ️"
-            title="App Version"
-            subtitle={`${APP_VERSION} (build ${String(require('../../../app.json').expo.ios?.buildNumber ?? 'dev')})`}
+            icon="information-circle-outline"
+            title="App version"
+            subtitle={`${APP_VERSION} · Build ${String(require('../../../app.json').expo.ios?.buildNumber ?? 'dev')}`}
           />
           <SettingRow
-            icon="📋"
-            title="Privacy Policy"
-            onPress={() => Alert.alert('Privacy Policy', 'Contact your HR department for privacy policy details')}
+            icon="lock-closed-outline"
+            title="Privacy policy"
+            subtitle="How KynexOne protects workforce data"
+            onPress={() => Alert.alert('Privacy policy', 'The published privacy-policy URL will be linked before store submission.')}
           />
           <SettingRow
-            icon="💬"
+            icon="help-buoy-outline"
             title="Support"
-            subtitle="Contact HR support"
-            onPress={() => Alert.alert('Support', 'Please contact your HR department for support')}
+            subtitle="Contact your HR support team"
+            onPress={() => Alert.alert('Support', 'Contact your HR department or organization support desk.')}
           />
-        </View>
-
-        {/* Sign out */}
-        <SectionHeader title="Session" />
-        <View style={{ backgroundColor: '#fff', marginHorizontal: 16, borderRadius: 14, overflow: 'hidden' }}>
           <SettingRow
-            icon="🚪"
-            title={loggingOut ? 'Signing out...' : 'Sign Out'}
+            icon="options-outline"
+            title="Device settings"
+            subtitle="Permissions, notifications and biometrics"
+            onPress={() => void Linking.openSettings()}
+            isLast
+          />
+        </SettingsSection>
+
+        <SettingsSection title="Session">
+          <SettingRow
+            icon="log-out-outline"
+            title={loggingOut ? 'Signing out…' : 'Sign out'}
+            subtitle="Remove the secure session from this device"
             destructive
             onPress={loggingOut ? undefined : handleLogout}
-            rightElement={loggingOut ? <ActivityIndicator color="#DC2626" size="small" /> : undefined}
+            rightElement={
+              loggingOut ? <ActivityIndicator color={theme.colors.danger} size="small" /> : undefined
+            }
+            isLast
           />
-        </View>
+        </SettingsSection>
 
-        {/* Tenant / device info */}
-        <View style={{ marginHorizontal: 16, marginTop: 20, alignItems: 'center' }}>
-          <Text style={{ fontSize: 11, color: '#D1D5DB' }}>
-            Employee #{user?.employeeId} · Tenant {user?.tenantId}
+        <View style={styles.tenantInfo}>
+          <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>
+            Employee #{user?.employeeId ?? '—'} · Tenant {user?.tenantId ?? '—'}
           </Text>
-          <Text style={{ fontSize: 10, color: '#E5E7EB', marginTop: 2 }}>
+          <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 3 }]}>
             KynexOne Workforce Platform
           </Text>
         </View>
@@ -266,3 +259,182 @@ export default function SettingsScreen() {
     </View>
   );
 }
+function ThemeSelector({
+  value,
+  onChange,
+}: {
+  value: ThemePreference;
+  onChange: (value: ThemePreference) => void;
+}) {
+  const { theme } = useTheme();
+  const options: {
+    value: ThemePreference;
+    label: string;
+    icon: React.ComponentProps<typeof Ionicons>['name'];
+  }[] = [
+    { value: 'system', label: 'System', icon: 'phone-portrait-outline' },
+    { value: 'light', label: 'Light', icon: 'sunny-outline' },
+    { value: 'dark', label: 'Dark', icon: 'moon-outline' },
+  ];
+
+  return (
+    <View style={styles.themeRow}>
+      {options.map((option) => {
+        const selected = value === option.value;
+        return (
+          <MotionPressable
+            key={option.value}
+            onPress={() => onChange(option.value)}
+            haptic="selection"
+            style={styles.themeOptionShell}
+            contentStyle={[
+              styles.themeOption,
+              {
+                backgroundColor: selected ? `${theme.colors.primary}1F` : theme.colors.surfaceSoft,
+                borderColor: selected ? theme.colors.primary : theme.colors.border,
+              },
+            ]}
+            accessibilityRole="radio"
+            accessibilityState={{ selected }}
+          >
+            <Ionicons
+              name={option.icon}
+              size={19}
+              color={selected ? theme.colors.primary : theme.colors.textMuted}
+            />
+            <Text
+              style={[
+                theme.typography.caption,
+                {
+                  color: selected ? theme.colors.text : theme.colors.textSecondary,
+                  fontWeight: selected ? '700' : '500',
+                },
+              ]}
+            >
+              {option.label}
+            </Text>
+          </MotionPressable>
+        );
+      })}
+    </View>
+  );
+}
+function SettingsSection({ title, children }: { title: string; children: React.ReactNode }) {
+  const { theme } = useTheme();
+  return (
+    <View style={styles.section}>
+      <SectionHeader title={title} />
+      <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.rowsCard}>
+        {children}
+      </GlassSurface>
+    </View>
+  );
+}
+
+function SettingRow({
+  icon,
+  title,
+  subtitle,
+  onPress,
+  rightElement,
+  destructive,
+  isLast,
+}: SettingRowProps) {
+  const { theme } = useTheme();
+  const accent = destructive ? theme.colors.danger : theme.colors.primary;
+
+  return (
+    <MotionPressable
+      onPress={onPress}
+      disabled={!onPress && !rightElement}
+      haptic={onPress ? 'selection' : 'none'}
+      contentStyle={styles.rowPressable}
+      accessibilityRole={onPress ? 'button' : undefined}
+    >
+      <View
+        style={[
+          styles.settingRow,
+          !isLast && {
+            borderBottomColor: theme.colors.divider,
+            borderBottomWidth: StyleSheet.hairlineWidth,
+          },
+        ]}
+      >
+        <View style={[styles.settingIcon, { backgroundColor: `${accent}17` }]}>
+          <Ionicons name={icon} size={20} color={accent} />
+        </View>
+        <View style={styles.settingCopy}>
+          <Text
+            style={[
+              theme.typography.bodyStrong,
+              { color: destructive ? theme.colors.danger : theme.colors.text },
+            ]}
+          >
+            {title}
+          </Text>
+          {subtitle ? (
+            <Text style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 2 }]}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+        {rightElement ?? (onPress ? (
+          <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
+        ) : null)}
+      </View>
+    </MotionPressable>
+  );
+}
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  content: { paddingBottom: 38 },
+  section: { paddingHorizontal: 16, marginTop: 16 },
+  profileCard: { flexDirection: 'row', alignItems: 'center', gap: 13, padding: 16 },
+  avatar: {
+    width: 52,
+    height: 52,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: { color: '#FFFFFF', fontSize: 21, fontWeight: '800' },
+  profileCopy: { flex: 1, minWidth: 0 },
+  securePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  appearanceCard: { padding: 12 },
+  themeRow: { flexDirection: 'row', gap: 8 },
+  themeOptionShell: { flex: 1 },
+  themeOption: {
+    minHeight: 72,
+    borderRadius: 17,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  rowsCard: { paddingHorizontal: 14 },
+  rowPressable: { borderRadius: 18 },
+  settingRow: {
+    minHeight: 72,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 11,
+  },
+  settingIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingCopy: { flex: 1, minWidth: 0 },
+  languagePill: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 11 },
+  tenantInfo: { marginTop: 24, alignItems: 'center', paddingHorizontal: 16 },
+});

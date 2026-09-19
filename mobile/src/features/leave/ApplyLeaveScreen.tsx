@@ -1,56 +1,71 @@
-// ============================================================
-// ZAYRA MOBILE — Apply Leave Screen
-// ============================================================
-
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  TextInput, Alert, ActivityIndicator, Platform, Switch,
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as DocumentPicker from 'expo-document-picker';
-import { documentsApi, leaveApi, normalizePickedFile, type PickedFile } from '@/api/services';
+import {
+  documentsApi,
+  leaveApi,
+  normalizePickedFile,
+  type PickedFile,
+} from '@/api/services';
 import { formatDate, toISODate } from '@/utils/date';
-import { COLORS } from '@/config';
 import { FEATURES } from '@/config/features';
+import { useTheme } from '@/theme/ThemeProvider';
+import {
+  GlassIconButton,
+  GlassSurface,
+  LiquidBackdrop,
+  LiquidButton,
+  MotionPressable,
+  ScreenHero,
+  SectionHeader,
+} from '@/components/ui';
 import type { LeaveBalance } from '@/types';
 
 interface Props {
   navigation: any;
 }
 
+type HalfDayPeriod = 'MORNING' | 'AFTERNOON';
+
 export default function ApplyLeaveScreen({ navigation }: Props) {
+  const { theme } = useTheme();
   const [leaveTypes, setLeaveTypes] = useState<{ id: string; name: string }[]>([]);
   const [balances, setBalances] = useState<LeaveBalance[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-
-  // Form state
   const [selectedTypeId, setSelectedTypeId] = useState('');
   const [startDate, setStartDate] = useState(new Date());
   const [endDate, setEndDate] = useState(new Date());
   const [isHalfDay, setIsHalfDay] = useState(false);
-  const [halfDayPeriod, setHalfDayPeriod] = useState<'MORNING' | 'AFTERNOON'>('MORNING');
+  const [halfDayPeriod, setHalfDayPeriod] = useState<HalfDayPeriod>('MORNING');
   const [reason, setReason] = useState('');
   const [attachment, setAttachment] = useState<PickedFile | null>(null);
-
-  // Date picker control
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
-
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [types, bals] = await Promise.all([
+      const [types, currentBalances] = await Promise.all([
         leaveApi.getLeaveTypes(),
         leaveApi.getLeaveBalances(),
       ]);
       setLeaveTypes(types);
-      setBalances(bals);
-      if (types.length > 0) setSelectedTypeId(types[0].id);
-    } catch {
-      Alert.alert('Error', 'Could not load leave types.');
+      setBalances(currentBalances);
+      setSelectedTypeId((current) => current || types[0]?.id || '');
+    } catch (error) {
+      console.error('[ApplyLeave] load failed:', error);
+      Alert.alert('Leave unavailable', 'Could not load leave types and balances.');
     } finally {
       setLoading(false);
     }
@@ -60,33 +75,47 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
     void loadData();
   }, [loadData]);
 
-  async function pickAttachment() {
+  const pickAttachment = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: ['application/pdf', 'image/*'],
         copyToCacheDirectory: true,
       });
       if (!result.canceled && result.assets?.[0]) {
-        const asset = result.assets[0];
+        const file = result.assets[0];
         setAttachment(normalizePickedFile({
-          uri: asset.uri,
-          name: asset.name,
-          mimeType: asset.mimeType,
-          size: asset.size,
+          uri: file.uri,
+          name: file.name,
+          mimeType: file.mimeType,
+          size: file.size,
         }));
       }
     } catch {
-      Alert.alert('Error', 'Could not pick file.');
+      Alert.alert('Attachment unavailable', 'Could not select this file.');
     }
-  }
+  };
 
-  async function submit() {
+  const selectedBalance = useMemo(
+    () => balances.find((balance) => balance.leaveTypeId === selectedTypeId),
+    [balances, selectedTypeId],
+  );
+
+  const totalDays = useMemo(() => {
+    if (isHalfDay) return 0.5;
+    return Math.max(
+      1,
+      Math.floor((endDate.getTime() - startDate.getTime()) / 86_400_000) + 1,
+    );
+  }, [endDate, isHalfDay, startDate]);
+
+  const exceedsBalance = !!selectedBalance && totalDays > selectedBalance.available;
+  const submit = async () => {
     if (!selectedTypeId) {
-      Alert.alert('Error', 'Please select a leave type.');
+      Alert.alert('Leave type required', 'Choose the leave type you want to request.');
       return;
     }
     if (endDate < startDate) {
-      Alert.alert('Error', 'End date cannot be before start date.');
+      Alert.alert('Check the dates', 'End date cannot be before start date.');
       return;
     }
 
@@ -98,6 +127,7 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
             documentType: 'Leave Attachment',
           })
         : null;
+
       await leaveApi.submitLeaveRequest({
         leaveTypeId: selectedTypeId,
         startDate: toISODate(startDate),
@@ -107,360 +137,445 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
         reason: reason.trim() || undefined,
         attachmentDocumentId: uploaded?.id,
       });
-      Alert.alert('Success', 'Your leave request has been submitted.', [
-        { text: 'OK', onPress: () => navigation.goBack() },
+
+      Alert.alert('Request submitted', 'Your leave request is now in the approval workflow.', [
+        { text: 'Done', onPress: () => navigation.goBack() },
       ]);
-    } catch (err: any) {
+    } catch (error: any) {
       Alert.alert(
-        'Submission Failed',
-        err?.response?.data?.message ?? 'Could not submit request. Please try again.'
+        'Submission failed',
+        error?.response?.data?.message ?? 'Could not submit the request. Please try again.',
       );
     } finally {
       setSubmitting(false);
     }
-  }
+  };
 
-  const selectedBalance = balances.find((b) => b.leaveTypeId === selectedTypeId);
-
-  const totalDays = isHalfDay
-    ? 0.5
-    : Math.max(
-        1,
-        Math.floor(
-          (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
-        ) + 1
-      );
+  const selectStartDate = (date?: Date) => {
+    setShowStartPicker(false);
+    if (!date) return;
+    setStartDate(date);
+    if (date > endDate || isHalfDay) setEndDate(date);
+  };
 
   if (loading) {
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator color={COLORS.blue} size="large" />
+      <View style={[styles.loadingRoot, { backgroundColor: theme.colors.canvas }]}>
+        <LiquidBackdrop subtle />
+        <GlassSurface radius={theme.radius.xl} style={styles.loadingCard} contentStyle={styles.loadingContent}>
+          <ActivityIndicator color={theme.colors.primary} />
+          <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading leave balances…</Text>
+        </GlassSurface>
       </View>
     );
   }
-
   return (
-    <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Ionicons name="close" size={24} color={COLORS.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Apply for Leave</Text>
-        <TouchableOpacity
-          style={[styles.submitHeaderBtn, submitting && { opacity: 0.5 }]}
-          onPress={submit}
-          disabled={submitting}
-        >
-          {submitting ? (
-            <ActivityIndicator size="small" color={COLORS.blue} />
-          ) : (
-            <Text style={styles.submitHeaderBtnText}>Submit</Text>
-          )}
-        </TouchableOpacity>
-      </View>
+    <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
+      <LiquidBackdrop subtle />
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <ScreenHero
+          eyebrow="Time off"
+          title="Apply for leave"
+          subtitle="Plan your absence and send it through the approval workflow"
+          actions={
+            navigation.canGoBack() ? (
+              <GlassIconButton icon="close" label="Close" onPress={() => navigation.goBack()} />
+            ) : undefined
+          }
+        />
 
-      <ScrollView style={styles.form} contentContainerStyle={styles.formContent}>
-        {/* Leave Type */}
-        <View style={styles.field}>
-          <Text style={styles.label}>Leave Type *</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            {leaveTypes.map((lt) => {
-              const bal = balances.find((b) => b.leaveTypeId === lt.id);
-              const isSelected = selectedTypeId === lt.id;
+        <View style={styles.section}>
+          <SectionHeader title="Leave type" subtitle="Available balances are shown live" />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.typeRail}>
+            {leaveTypes.map((leaveType) => {
+              const balance = balances.find((item) => item.leaveTypeId === leaveType.id);
+              const selected = selectedTypeId === leaveType.id;
               return (
-                <TouchableOpacity
-                  key={lt.id}
-                  style={[styles.typeChip, isSelected && styles.typeChipSelected]}
-                  onPress={() => setSelectedTypeId(lt.id)}
+                <MotionPressable
+                  key={leaveType.id}
+                  onPress={() => setSelectedTypeId(leaveType.id)}
+                  haptic="selection"
+                  contentStyle={[
+                    styles.typeChip,
+                    {
+                      backgroundColor: selected ? `${theme.colors.primary}1F` : theme.colors.surfaceSoft,
+                      borderColor: selected ? theme.colors.primary : theme.colors.border,
+                    },
+                  ]}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected }}
                 >
-                  <Text style={[styles.typeChipText, isSelected && styles.typeChipTextSelected]}>
-                    {lt.name}
-                  </Text>
-                  {bal && (
+                  <Ionicons
+                    name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                    size={18}
+                    color={selected ? theme.colors.primary : theme.colors.textMuted}
+                  />
+                  <View>
                     <Text
-                      style={[styles.typeChipBalance, isSelected && styles.typeChipBalanceSelected]}
+                      style={[
+                        theme.typography.bodyStrong,
+                        { color: selected ? theme.colors.primary : theme.colors.text },
+                      ]}
                     >
-                      {bal.available} avail.
+                      {leaveType.name}
                     </Text>
-                  )}
-                </TouchableOpacity>
+                    {balance ? (
+                      <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>
+                        {balance.available} {balance.unit.toLowerCase()} available
+                      </Text>
+                    ) : null}
+                  </View>
+                </MotionPressable>
               );
             })}
           </ScrollView>
-
-          {/* Balance info */}
-          {selectedBalance && (
-            <View style={styles.balanceInfo}>
-              <View style={styles.balanceItem}>
-                <Text style={styles.balanceValue}>{selectedBalance.available}</Text>
-                <Text style={styles.balanceLabel}>Available</Text>
-              </View>
-              <View style={styles.balanceSep} />
-              <View style={styles.balanceItem}>
-                <Text style={styles.balanceValue}>{selectedBalance.used}</Text>
-                <Text style={styles.balanceLabel}>Used</Text>
-              </View>
-              <View style={styles.balanceSep} />
-              <View style={styles.balanceItem}>
-                <Text style={[styles.balanceValue, { color: COLORS.warning }]}>
-                  {selectedBalance.pending}
-                </Text>
-                <Text style={styles.balanceLabel}>Pending</Text>
-              </View>
-            </View>
-          )}
         </View>
-
-        {/* Half Day toggle */}
-        <View style={styles.field}>
-          <View style={styles.switchRow}>
-            <View>
-              <Text style={styles.label}>Half Day</Text>
-              <Text style={styles.fieldHint}>Apply for half a working day</Text>
-            </View>
-            <Switch
-              value={isHalfDay}
-              onValueChange={setIsHalfDay}
-              trackColor={{ true: COLORS.blue }}
-              thumbColor="#fff"
-            />
+        {selectedBalance ? (
+          <View style={styles.section}>
+            <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.balanceCard}>
+              <BalanceMetric label="Available" value={selectedBalance.available} accent={theme.colors.success} />
+              <View style={[styles.balanceDivider, { backgroundColor: theme.colors.divider }]} />
+              <BalanceMetric label="Used" value={selectedBalance.used} accent={theme.colors.textSecondary} />
+              <View style={[styles.balanceDivider, { backgroundColor: theme.colors.divider }]} />
+              <BalanceMetric label="Pending" value={selectedBalance.pending} accent={theme.colors.warning} />
+            </GlassSurface>
           </View>
-          {isHalfDay && (
-            <View style={styles.halfDayPicker}>
-              {(['MORNING', 'AFTERNOON'] as const).map((period) => (
-                <TouchableOpacity
-                  key={period}
-                  style={[styles.periodBtn, halfDayPeriod === period && styles.periodBtnActive]}
-                  onPress={() => setHalfDayPeriod(period)}
-                >
-                  <Text
-                    style={[
-                      styles.periodBtnText,
-                      halfDayPeriod === period && styles.periodBtnTextActive,
-                    ]}
-                  >
-                    {period === 'MORNING' ? '☀️ Morning' : '🌙 Afternoon'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-        </View>
+        ) : null}
 
-        {/* Dates */}
-        {!isHalfDay ? (
-          <>
-            <View style={styles.field}>
-              <Text style={styles.label}>Start Date *</Text>
-              <TouchableOpacity
-                style={styles.dateBtn}
-                onPress={() => setShowStartPicker(true)}
-              >
-                <Ionicons name="calendar-outline" size={18} color={COLORS.blue} />
-                <Text style={styles.dateBtnText}>{formatDate(toISODate(startDate), 'date')}</Text>
-                <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
-              </TouchableOpacity>
-              {showStartPicker && (
-                <DateTimePicker
-                  value={startDate}
-                  mode="date"
-                  minimumDate={new Date()}
-                  onChange={(_, date) => {
-                    setShowStartPicker(false);
-                    if (date) {
-                      setStartDate(date);
-                      if (date > endDate) setEndDate(date);
-                    }
-                  }}
-                />
-              )}
-            </View>
-            <View style={styles.field}>
-              <Text style={styles.label}>End Date *</Text>
-              <TouchableOpacity
-                style={styles.dateBtn}
-                onPress={() => setShowEndPicker(true)}
-              >
-                <Ionicons name="calendar-outline" size={18} color={COLORS.blue} />
-                <Text style={styles.dateBtnText}>{formatDate(toISODate(endDate), 'date')}</Text>
-                <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
-              </TouchableOpacity>
-              {showEndPicker && (
-                <DateTimePicker
-                  value={endDate}
-                  mode="date"
-                  minimumDate={startDate}
-                  onChange={(_, date) => {
-                    setShowEndPicker(false);
-                    if (date) setEndDate(date);
-                  }}
-                />
-              )}
-            </View>
-          </>
-        ) : (
-          <View style={styles.field}>
-            <Text style={styles.label}>Date *</Text>
-            <TouchableOpacity
-              style={styles.dateBtn}
-              onPress={() => setShowStartPicker(true)}
-            >
-              <Ionicons name="calendar-outline" size={18} color={COLORS.blue} />
-              <Text style={styles.dateBtnText}>{formatDate(toISODate(startDate), 'date')}</Text>
-              <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
-            </TouchableOpacity>
-            {showStartPicker && (
-              <DateTimePicker
-                value={startDate}
-                mode="date"
-                minimumDate={new Date()}
-                onChange={(_, date) => {
-                  setShowStartPicker(false);
-                  if (date) { setStartDate(date); setEndDate(date); }
-                }}
+        <View style={styles.section}>
+          <SectionHeader title="Duration" subtitle="Choose full-day or half-day leave" />
+          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.durationCard}>
+            <View style={styles.switchRow}>
+              <View style={styles.switchCopy}>
+                <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>Half day</Text>
+                <Text style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 2 }]}>
+                  Request a morning or afternoon only
+                </Text>
+              </View>
+              <Switch
+                value={isHalfDay}
+                onValueChange={setIsHalfDay}
+                trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
+                thumbColor="#FFFFFF"
               />
-            )}
-          </View>
-        )}
-
-        {/* Duration preview */}
-        <View style={styles.durationPreview}>
-          <Ionicons name="time-outline" size={16} color={COLORS.blue} />
-          <Text style={styles.durationText}>
-            Duration:{' '}
-            <Text style={styles.durationBold}>
-              {totalDays} {totalDays === 1 ? 'day' : 'days'}
-            </Text>
-          </Text>
-          {selectedBalance && totalDays > selectedBalance.available && (
-            <View style={styles.overBalance}>
-              <Ionicons name="warning-outline" size={14} color={COLORS.error} />
-              <Text style={styles.overBalanceText}>Exceeds balance</Text>
             </View>
-          )}
+
+            {isHalfDay ? (
+              <View style={styles.periodRow}>
+                {(['MORNING', 'AFTERNOON'] as const).map((period) => {
+                  const selected = period === halfDayPeriod;
+                  return (
+                    <MotionPressable
+                      key={period}
+                      onPress={() => setHalfDayPeriod(period)}
+                      haptic="selection"
+                      style={styles.periodShell}
+                      contentStyle={[
+                        styles.periodButton,
+                        {
+                          backgroundColor: selected ? `${theme.colors.primary}1F` : theme.colors.surfaceSoft,
+                          borderColor: selected ? theme.colors.primary : theme.colors.border,
+                        },
+                      ]}
+                    >
+                      <Ionicons
+                        name={period === 'MORNING' ? 'sunny-outline' : 'moon-outline'}
+                        size={19}
+                        color={selected ? theme.colors.primary : theme.colors.textMuted}
+                      />
+                      <Text
+                        style={[
+                          theme.typography.caption,
+                          { color: selected ? theme.colors.primary : theme.colors.textSecondary, fontWeight: '700' },
+                        ]}
+                      >
+                        {period === 'MORNING' ? 'Morning' : 'Afternoon'}
+                      </Text>
+                    </MotionPressable>
+                  );
+                })}
+              </View>
+            ) : null}
+          </GlassSurface>
+        </View>
+        <View style={styles.section}>
+          <SectionHeader title="Dates" subtitle={isHalfDay ? 'Select the day' : 'Select the start and end dates'} />
+          <View style={styles.dateGrid}>
+            <DateField
+              label={isHalfDay ? 'Date' : 'Start date'}
+              value={startDate}
+              onPress={() => setShowStartPicker(true)}
+            />
+            {!isHalfDay ? (
+              <DateField
+                label="End date"
+                value={endDate}
+                onPress={() => setShowEndPicker(true)}
+              />
+            ) : null}
+          </View>
+          {showStartPicker ? (
+            <DateTimePicker
+              value={startDate}
+              mode="date"
+              minimumDate={new Date()}
+              onChange={(_, date) => selectStartDate(date)}
+            />
+          ) : null}
+          {showEndPicker ? (
+            <DateTimePicker
+              value={endDate}
+              mode="date"
+              minimumDate={startDate}
+              onChange={(_, date) => {
+                setShowEndPicker(false);
+                if (date) setEndDate(date);
+              }}
+            />
+          ) : null}
         </View>
 
-        {/* Reason */}
-        <View style={styles.field}>
-          <Text style={styles.label}>Reason</Text>
-          <TextInput
-            style={styles.textarea}
-            placeholder="Optional: Provide a reason for your leave request"
-            placeholderTextColor={COLORS.muted}
-            value={reason}
-            onChangeText={setReason}
-            multiline
-            numberOfLines={4}
-            textAlignVertical="top"
-          />
-        </View>
-
-        {/* Attachment — hidden until the storage upload flow exists (FEATURES.FILE_UPLOAD) */}
-        {FEATURES.FILE_UPLOAD && (
-        <View style={styles.field}>
-          <Text style={styles.label}>Attachment</Text>
-          <TouchableOpacity style={styles.uploadBtn} onPress={pickAttachment}>
-            {attachment ? (
-              <View style={styles.attachedFile}>
-                <Ionicons name="document-outline" size={18} color={COLORS.blue} />
-                <Text style={styles.attachedFileName} numberOfLines={1}>
-                  {attachment.name}
-                </Text>
-                <TouchableOpacity onPress={() => setAttachment(null)}>
-                  <Ionicons name="close-circle" size={18} color={COLORS.error} />
-                </TouchableOpacity>
+        <View style={styles.section}>
+          <GlassSurface
+            elevated={false}
+            radius={theme.radius.xl}
+            contentStyle={styles.durationPreview}
+            tintColor={theme.isDark ? 'rgba(43,82,178,0.22)' : 'rgba(255,255,255,0.45)'}
+          >
+            <View style={[styles.durationIcon, { backgroundColor: `${theme.colors.primary}1C` }]}>
+              <Ionicons name="hourglass-outline" size={22} color={theme.colors.primary} />
+            </View>
+            <View style={styles.durationCopy}>
+              <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>Requested duration</Text>
+              <Text style={[theme.typography.h2, { color: theme.colors.text, marginTop: 2 }]}>
+                {totalDays} {totalDays === 1 ? 'day' : 'days'}
+              </Text>
+            </View>
+            {exceedsBalance ? (
+              <View style={[styles.balanceWarning, { backgroundColor: `${theme.colors.danger}18` }]}>
+                <Ionicons name="warning-outline" size={14} color={theme.colors.danger} />
+                <Text style={[theme.typography.micro, { color: theme.colors.danger }]}>Over balance</Text>
               </View>
             ) : (
-              <>
-                <Ionicons name="cloud-upload-outline" size={22} color={COLORS.muted} />
-                <Text style={styles.uploadBtnText}>Upload document (PDF or image)</Text>
-              </>
+              <Ionicons name="checkmark-circle" size={24} color={theme.colors.success} />
             )}
-          </TouchableOpacity>
+          </GlassSurface>
         </View>
-        )}
+        <View style={styles.section}>
+          <SectionHeader title="Additional details" subtitle="Optional context for your approver" />
+          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.detailsCard}>
+            <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>Reason</Text>
+            <TextInput
+              value={reason}
+              onChangeText={setReason}
+              multiline
+              numberOfLines={4}
+              textAlignVertical="top"
+              placeholder="Add a short reason for your request"
+              placeholderTextColor={theme.colors.textMuted}
+              selectionColor={theme.colors.primary}
+              style={[
+                styles.textarea,
+                theme.typography.body,
+                {
+                  color: theme.colors.text,
+                  backgroundColor: theme.colors.surfaceSoft,
+                  borderColor: theme.colors.border,
+                },
+              ]}
+            />
 
-        <View style={{ height: 32 }} />
+            {FEATURES.FILE_UPLOAD ? (
+              <View style={styles.attachmentBlock}>
+                <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>
+                  Supporting document
+                </Text>
+                {attachment ? (
+                  <View style={[styles.attachmentSelected, { backgroundColor: theme.colors.surfaceSoft }]}>
+                    <View style={[styles.fileIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
+                      <Ionicons name="document-outline" size={20} color={theme.colors.primary} />
+                    </View>
+                    <View style={styles.attachmentCopy}>
+                      <Text numberOfLines={1} style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
+                        {attachment.name}
+                      </Text>
+                      <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>Ready to upload</Text>
+                    </View>
+                    <MotionPressable
+                      onPress={() => setAttachment(null)}
+                      haptic="selection"
+                      contentStyle={styles.removeFile}
+                      accessibilityLabel="Remove attachment"
+                    >
+                      <Ionicons name="close" size={19} color={theme.colors.danger} />
+                    </MotionPressable>
+                  </View>
+                ) : (
+                  <MotionPressable
+                    onPress={() => void pickAttachment()}
+                    haptic="selection"
+                    contentStyle={[
+                      styles.attachmentPicker,
+                      { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceSoft },
+                    ]}
+                  >
+                    <Ionicons name="cloud-upload-outline" size={23} color={theme.colors.primary} />
+                    <View style={styles.attachmentCopy}>
+                      <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>Add document</Text>
+                      <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>PDF or image</Text>
+                    </View>
+                    <Ionicons name="add-circle-outline" size={20} color={theme.colors.primary} />
+                  </MotionPressable>
+                )}
+              </View>
+            ) : null}
+          </GlassSurface>
+        </View>
+
+        <View style={styles.submitSection}>
+          <LiquidButton
+            label={submitting ? 'Submitting request…' : 'Submit leave request'}
+            icon="paper-plane-outline"
+            onPress={() => void submit()}
+            loading={submitting}
+            disabled={submitting || !selectedTypeId}
+          />
+          <Text style={[theme.typography.micro, styles.submitNote, { color: theme.colors.textMuted }]}>
+            Your manager and HR will be notified through the configured approval workflow.
+          </Text>
+        </View>
       </ScrollView>
+    </View>
+  );
+}
+function BalanceMetric({ label, value, accent }: { label: string; value: number; accent: string }) {
+  const { theme } = useTheme();
+  return (
+    <View style={styles.balanceMetric}>
+      <Text style={[styles.balanceValue, { color: accent }]}>{value}</Text>
+      <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>{label}</Text>
+    </View>
+  );
+}
+
+function DateField({ label, value, onPress }: { label: string; value: Date; onPress: () => void }) {
+  const { theme } = useTheme();
+  return (
+    <View style={styles.dateField}>
+      <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>
+        {label}
+      </Text>
+      <MotionPressable
+        onPress={onPress}
+        haptic="selection"
+        contentStyle={[
+          styles.dateButton,
+          { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+        ]}
+      >
+        <View style={[styles.dateIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
+          <Ionicons name="calendar-outline" size={19} color={theme.colors.primary} />
+        </View>
+        <Text style={[theme.typography.bodyStrong, { color: theme.colors.text, flex: 1 }]}>
+          {formatDate(toISODate(value), 'date')}
+        </Text>
+        <Ionicons name="chevron-down" size={17} color={theme.colors.textMuted} />
+      </MotionPressable>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bg },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingTop: Platform.OS === 'ios' ? 56 : 40, paddingBottom: 16,
-    backgroundColor: COLORS.card,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 2,
-  },
-  headerTitle: { fontSize: 17, fontWeight: '700', color: COLORS.text },
-  submitHeaderBtn: { paddingHorizontal: 16, paddingVertical: 8, backgroundColor: COLORS.blue, borderRadius: 20 },
-  submitHeaderBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
-  form: { flex: 1 },
-  formContent: { padding: 16 },
-  field: { marginBottom: 20 },
-  label: { fontSize: 14, fontWeight: '600', color: COLORS.text, marginBottom: 8 },
-  fieldHint: { fontSize: 12, color: COLORS.muted, marginTop: 2 },
+  root: { flex: 1 },
+  content: { paddingBottom: 38 },
+  loadingRoot: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  loadingCard: { width: '100%', maxWidth: 320, minHeight: 170 },
+  loadingContent: { alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
+  section: { paddingHorizontal: 16, marginTop: 16 },
+  typeRail: { gap: 9, paddingRight: 4 },
   typeChip: {
-    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, marginRight: 8,
-    backgroundColor: COLORS.card, borderWidth: 1.5, borderColor: COLORS.border,
-  },
-  typeChipSelected: { backgroundColor: `${COLORS.blue}15`, borderColor: COLORS.blue },
-  typeChipText: { fontSize: 14, fontWeight: '600', color: COLORS.text },
-  typeChipTextSelected: { color: COLORS.blue },
-  typeChipBalance: { fontSize: 11, color: COLORS.muted, marginTop: 1 },
-  typeChipBalanceSelected: { color: COLORS.blue },
-  balanceInfo: {
-    flexDirection: 'row', backgroundColor: COLORS.card, borderRadius: 12,
-    padding: 14, marginTop: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 1,
-  },
-  balanceItem: { flex: 1, alignItems: 'center' },
-  balanceValue: { fontSize: 20, fontWeight: '800', color: COLORS.text },
-  balanceLabel: { fontSize: 11, color: COLORS.muted, marginTop: 2 },
-  balanceSep: { width: 1, backgroundColor: COLORS.border, marginHorizontal: 8 },
-  switchRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: COLORS.card, borderRadius: 12, padding: 14,
-  },
-  halfDayPicker: { flexDirection: 'row', gap: 10, marginTop: 10 },
-  periodBtn: {
-    flex: 1, paddingVertical: 10, borderRadius: 10,
-    backgroundColor: COLORS.card, borderWidth: 1.5, borderColor: COLORS.border,
+    minWidth: 164,
+    minHeight: 72,
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 19,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
   },
-  periodBtnActive: { backgroundColor: `${COLORS.blue}15`, borderColor: COLORS.blue },
-  periodBtnText: { fontSize: 14, fontWeight: '600', color: COLORS.text },
-  periodBtnTextActive: { color: COLORS.blue },
-  dateBtn: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: COLORS.card, borderRadius: 12, padding: 14, gap: 10,
-    borderWidth: 1, borderColor: COLORS.border,
+  balanceCard: { flexDirection: 'row', alignItems: 'stretch', paddingVertical: 14 },
+  balanceMetric: { flex: 1, alignItems: 'center', gap: 3 },
+  balanceValue: { fontSize: 23, lineHeight: 28, fontWeight: '800' },
+  balanceDivider: { width: StyleSheet.hairlineWidth },
+  durationCard: { padding: 15 },
+  switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  switchCopy: { flex: 1 },
+  periodRow: { flexDirection: 'row', gap: 9, marginTop: 14 },
+  periodShell: { flex: 1 },
+  periodButton: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  dateBtnText: { flex: 1, fontSize: 15, fontWeight: '600', color: COLORS.text },
-  durationPreview: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: `${COLORS.blue}10`, borderRadius: 10, padding: 12, gap: 8,
-    marginBottom: 20,
+  dateGrid: { gap: 12 },
+  dateField: { flex: 1 },
+  fieldLabel: { marginBottom: 7, fontWeight: '700' },
+  dateButton: {
+    minHeight: 60,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    paddingHorizontal: 12,
   },
-  durationText: { fontSize: 14, color: COLORS.text, flex: 1 },
-  durationBold: { fontWeight: '700', color: COLORS.blue },
-  overBalance: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  overBalanceText: { fontSize: 12, color: COLORS.error, fontWeight: '600' },
+  dateIcon: { width: 38, height: 38, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  durationPreview: { flexDirection: 'row', alignItems: 'center', gap: 13, padding: 15 },
+  durationIcon: { width: 48, height: 48, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  durationCopy: { flex: 1 },
+  balanceWarning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  detailsCard: { padding: 15 },
   textarea: {
-    backgroundColor: COLORS.card, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border,
-    padding: 14, fontSize: 15, color: COLORS.text, minHeight: 100,
+    minHeight: 112,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 17,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
-  uploadBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: COLORS.card, borderRadius: 12,
-    borderWidth: 1.5, borderColor: COLORS.border, borderStyle: 'dashed',
-    padding: 20, gap: 10,
+  attachmentBlock: { marginTop: 16 },
+  attachmentPicker: {
+    minHeight: 72,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 17,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: 'dashed',
+    paddingHorizontal: 14,
   },
-  uploadBtnText: { fontSize: 14, color: COLORS.muted },
-  attachedFile: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
-  attachedFileName: { flex: 1, fontSize: 14, color: COLORS.text, fontWeight: '500' },
+  attachmentSelected: {
+    minHeight: 72,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 17,
+    paddingHorizontal: 12,
+  },
+  fileIcon: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  attachmentCopy: { flex: 1, minWidth: 0 },
+  removeFile: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  submitSection: { paddingHorizontal: 16, marginTop: 22 },
+  submitNote: { textAlign: 'center', marginTop: 10, paddingHorizontal: 12 },
 });

@@ -12,9 +12,10 @@
         "NSCameraUsageDescription": "KynexOne needs camera access for attendance selfie verification.",
         "NSLocationWhenInUseUsageDescription": "KynexOne needs your location to verify attendance at approved work locations.",
         "NSPhotoLibraryUsageDescription": "KynexOne needs photo library access to upload documents.",
+        "NSMotionUsageDescription": "KynexOne uses motion activity data to improve attendance verification where your organization enables this feature.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "1",
+      "buildNumber": "5",
       "icon": "./assets/icon.png"
     },
     "android": {
@@ -24,7 +25,7 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION"
       ],
-      "versionCode": 1,
+      "versionCode": 5,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0B1020",
@@ -35,6 +36,14 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "enableSceneSupport": true
+          }
+        }
+      ],
       [
         "expo-secure-store",
         {
@@ -54,7 +63,7 @@
           "locationAlwaysAndWhenInUsePermission": false,
           "locationAlwaysPermission": false,
           "locationWhenInUsePermission": "Allow KynexOne to verify attendance at an approved work location.",
-          "motionUsagePermission": false,
+          "motionUsagePermission": "KynexOne uses motion activity data to improve attendance verification where your organization enables this feature.",
           "isIosBackgroundLocationEnabled": false,
           "isAndroidBackgroundLocationEnabled": false,
           "isAndroidForegroundServiceEnabled": false,
