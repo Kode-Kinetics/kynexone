@@ -99,21 +99,11 @@ async function gotoPayroll(page: Page): Promise<void> {
   });
 }
 
-/**
- * The payroll tab strip. Scoped structurally rather than by class: the Dashboard tab renders
- * quick-action tiles labelled "Approvals", "Validation" and "New Payroll Run" that collide with
- * the tab names, so `getByRole('button', { name: 'Approvals' })` is ambiguous while the dashboard
- * is mounted. "Bank / WPS Files" is a label only the tab strip uses; the innermost <div> that
- * contains it IS the strip.
- */
-const tabStrip = (page: Page): Locator =>
-  content(page)
-    .locator('div')
-    .filter({ has: page.getByRole('button', { name: 'Bank / WPS Files', exact: true }) })
-    .last();
-
+/** Select the semantic payroll tab and verify React committed the new panel. */
 async function openTab(page: Page, label: string): Promise<void> {
-  await tabStrip(page).getByRole('button', { name: label, exact: true }).click();
+  const tab = content(page).getByRole('tab', { name: label, exact: true });
+  await tab.click();
+  await expect(tab).toHaveAttribute('aria-selected', 'true');
 }
 
 /**
@@ -185,8 +175,7 @@ test.describe('Payroll — run to WPS file', () => {
         // The run list is read only once its fetch has actually landed. An empty list and a
         // freshly-mounted-but-unloaded list look identical ("0 payroll runs", no cards), and the
         // difference decides which period is free — reading too early concluded every month was
-        // free and tried to create a run for a month that already had one. The Dashboard tab does
-        // not touch /payroll/runs, so arming this before the tab click cannot catch a stray call.
+        // free and tried to create a run for a month that already had one.
         const runsFetch = admin.waitForResponse(
           (r) => /\/api\/payroll\/runs\?/.test(r.url()) && r.request().method() === 'GET',
           { timeout: 60_000 },

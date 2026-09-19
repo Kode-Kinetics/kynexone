@@ -87,7 +87,7 @@ test.describe('browserless UI truthfulness contracts', () => {
 
     expect(login).toContain('aria-busy={loading}');
     expect(login).toContain('aria-pressed={showPw}');
-    expect(people).toContain('role="button"');
+    expect(people).toContain('aria-label={`Open profile for ${employee.fullName}`}');
     expect(people).toContain('Clear filters');
     expect(approvals).toContain('aria-pressed={queueFilter === key}');
     expect(approvals).not.toContain("alert('Please add a clear rejection reason");

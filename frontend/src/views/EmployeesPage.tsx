@@ -1368,18 +1368,8 @@ export function EmployeesPage() {
                     return (
                     <tr
                       key={employee.id}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`Open profile for ${employee.fullName}`}
                       onClick={() => openDetail(employee.id)}
-                      onKeyDown={(event) => {
-                        if ((event.target as HTMLElement).closest('button, input, a, select, textarea')) return;
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault();
-                          openDetail(employee.id);
-                        }
-                      }}
-                      className={`cursor-pointer outline-none hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sapphire dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}
+                      className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}
                     >
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
@@ -1394,7 +1384,14 @@ export function EmployeesPage() {
                         <div className="flex items-center gap-3">
                           <Avatar name={employee.fullName} size="sm" />
                           <div>
-                            <p className="font-semibold text-slate-900 dark:text-white">{employee.fullName}</p>
+                            <button
+                              type="button"
+                              aria-label={`Open profile for ${employee.fullName}`}
+                              onClick={(event) => { event.stopPropagation(); openDetail(employee.id); }}
+                              className="rounded-sm text-left font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
+                            >
+                              {employee.fullName}
+                            </button>
                             <p className="text-xs text-slate-400">{employee.employeeCode}</p>
                           </div>
                         </div>
