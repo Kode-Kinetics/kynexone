@@ -26,6 +26,18 @@ public class CompaniesController : ControllerBase
             "QiwaEstablishmentId", "DefaultCurrency", "IsActive"
         };
 
+    /// <summary>The template's example row, kept adjacent to the header it is positionally paired with
+    /// so a new column cannot be added to one without the other. Every value is a neutral placeholder —
+    /// never a real-looking company and never another tenant's name. LegalNameEn, CountryCode and
+    /// RegistrationNumber are the three columns the importer refuses a row without, so all three carry
+    /// a visible placeholder rather than being left blank.</summary>
+    private static readonly string[] CsvExampleRow =
+        {
+            "Example Company Ltd", "", "Example Company", "SA", "SA-default",
+            "0000000000", "", "", "", "",
+            "SAR", "true"
+        };
+
     public CompaniesController(IOrganizationSetupService organization, ZayraDbContext db)
     {
         _organization = organization;
@@ -216,14 +228,8 @@ public class CompaniesController : ControllerBase
 
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public IActionResult ImportTemplate()
-    {
-        var sb = new StringBuilder();
-        sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("IntelliFlow Systems LLC,انتيلي فلو,IntelliFlow,AE,UAE-mainland,1234567,TN123456,WPS-AE-001,GOSI-AE-001,QIWA-AE-001,AED,true\n");
-        sb.Append("Evostel Trading LLC,إيفوستيل للتجارة,Evostel,KW,KW-mainland,7654321,,WPS-KW-001,,,KWD,true\n");
-        return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "companies_import_template.csv");
-    }
+    public IActionResult ImportTemplate() =>
+        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "companies_import_template.csv");
 
     // ── Import Preview ────────────────────────────────────────────────────────
 

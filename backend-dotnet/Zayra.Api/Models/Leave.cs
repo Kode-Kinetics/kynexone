@@ -76,7 +76,7 @@ public class EmployeeLeaveBalance : ITenantOwned
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 
     public decimal Available =>
-        Entitled + Accrued + CarriedForward + ManualAdjustment - Used - Pending - Encashed;
+        Entitled + Accrued + CarriedForward + ManualAdjustment - Used - Pending - Encashed - Expired;
 }
 
 public class LeaveBalanceTransaction : ITenantOwned, ICompanyScopedOperational

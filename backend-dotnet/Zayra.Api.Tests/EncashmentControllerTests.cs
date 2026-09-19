@@ -22,7 +22,7 @@ public class EncashmentControllerTests
         var company = new Company
         {
             TenantId = tenantId, LegalNameEn = "Saudi Co", CountryCode = CountryCodes.Saudi,
-            Jurisdiction = Jurisdictions.KsaMainland, IsActive = true
+            Jurisdiction = Jurisdictions.KsaMainland, DefaultCurrency = "SAR", IsActive = true
         };
         var leaveType = new LeaveType { TenantId = tenantId, Code = "AL", NameEn = "Annual", IsActive = true };
         db.AddRange(company, leaveType);
@@ -72,6 +72,23 @@ public class EncashmentControllerTests
         rules.LastLookup!.Value.Country.Should().Be(CountryCodes.Saudi);
         rules.LastLookup.Value.Jurisdiction.Should().Be(Jurisdictions.KsaMainland);
         rules.LastLookup.Value.Tenant.Should().Be(tenantId);
+    }
+
+    [Fact]
+    public void AvailableBalance_SubtractsExpiredAndPendingWithoutDoubleSubtractingEncashmentTransfer()
+    {
+        var balance = new EmployeeLeaveBalance
+        {
+            Entitled = 20m, Accrued = 2m, CarriedForward = 3m, ManualAdjustment = 1m,
+            Used = 4m, Pending = 2m, Encashed = 3m, Expired = 5m
+        };
+        balance.Available.Should().Be(12m);
+
+        var beforeApproval = balance.Available;
+        balance.Pending -= 2m;
+        balance.Encashed += 2m;
+        balance.Available.Should().Be(beforeApproval,
+            "payroll approval converts a reservation to encashed leave; it must not deduct the same days twice");
     }
 
     private sealed class OwnScope(int employeeId) : IDataScopeService

@@ -410,7 +410,13 @@ public record EssEmployeeProfileDto
     public DateOnly? VisaIssueDate { get; init; }
     public DateOnly? VisaExpiryDate { get; init; }
     public string IqamaNumber { get; init; } = string.Empty;
+    public DateOnly? IqamaExpiryDate { get; init; }
     public string EmiratesId { get; init; } = string.Empty;
+    public DateOnly? EmiratesIdExpiryDate { get; init; }
+    public string Qid { get; init; } = string.Empty;
+    public DateOnly? QidExpiryDate { get; init; }
+    public string CivilId { get; init; } = string.Empty;
+    public DateOnly? CivilIdExpiryDate { get; init; }
     public decimal ProfileCompletenessScore { get; init; }
     public DateTime? ActivatedAtUtc { get; init; }
 
@@ -455,7 +461,13 @@ public record EssEmployeeProfileDto
         VisaIssueDate            = e.VisaIssueDate,
         VisaExpiryDate           = e.VisaExpiryDate,
         IqamaNumber              = e.IqamaNumber,
+        IqamaExpiryDate          = e.IqamaExpiryDate,
         EmiratesId               = e.EmiratesId,
+        EmiratesIdExpiryDate     = e.EmiratesIdExpiryDate,
+        Qid                      = e.Qid,
+        QidExpiryDate            = e.QidExpiryDate,
+        CivilId                  = e.CivilId,
+        CivilIdExpiryDate        = e.CivilIdExpiryDate,
         ProfileCompletenessScore = e.ProfileCompletenessScore,
         ActivatedAtUtc           = e.ActivatedAtUtc,
     };

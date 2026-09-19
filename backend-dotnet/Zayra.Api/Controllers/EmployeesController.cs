@@ -212,6 +212,29 @@ public class EmployeesController : ControllerBase
     private static IReadOnlyList<string> EmployeeCsvHeaders =>
         Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.CsvHeaders;
 
+    // The template's example row comes from the SAME registry, derived from the same ordered catalog in
+    // the same pass — never a hardcoded row. A literal example row is positional, so it would silently
+    // shift one column per field added to the catalog: precisely the drift the hand-maintained header
+    // array was deleted to prevent, reintroduced one line lower down.
+    private static IReadOnlyList<string> EmployeeCsvExampleRow =>
+        Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.CsvExampleRow;
+
+    // A directory export is useful to HR operations and auditors, but it must not silently become a
+    // payroll/identity-document dump. Only the effective employees.sensitive claim (after per-user Deny
+    // overrides are applied at token issuance) unlocks these columns. Role names are deliberately not a
+    // bypass: denying employees.sensitive from an Admin/Payroll Officer must also mask their export.
+    private static readonly HashSet<string> SensitiveEmployeeExportHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "PersonalEmail", "Phone", "DateOfBirth", "MaritalStatus", "EmergencyContactName", "EmergencyContactPhone",
+        "BasicSalary", "HousingAllowance", "TransportAllowance", "FoodAllowance", "MobileAllowance", "OtherAllowance",
+        "FixedDeduction", "PaymentMethod", "IBAN", "AccountNumber", "BankName", "BankRoutingCode", "MolId",
+        "SocialInsuranceReference", "PassportNumber", "PassportIssueDate", "PassportExpiryDate", "VisaNumber",
+        "VisaIssueDate", "VisaExpiryDate", "VisaFileNumber", "IqamaNumber", "IqamaExpiry", "MuqeemNumber",
+        "GosiReference", "QiwaContractNumber", "EmiratesId", "EmiratesIdExpiry", "LaborCardNumber", "Qid",
+        "QidExpiry", "CivilId", "CivilIdExpiry", "WorkPermitNumber", "WorkPermitIssueDate", "ResidencyNumber",
+        "ResidencyIssueDate", "IdNumber", "SponsorName", "ContractReference", "WorkPermitReference", "QiwaEmployeeReference"
+    };
+
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
     public async Task<IActionResult> Export(CancellationToken ct)
@@ -228,7 +251,8 @@ public class EmployeesController : ControllerBase
             exportQuery = exportQuery.Where(e => e.CompanyId.HasValue && accessibleIds.Contains(e.CompanyId.Value));
         }
         var emps = await exportQuery.OrderBy(e => e.EmployeeCode).ToListAsync(ct);
-        var csv = await BuildEmployeesCsvAsync(emps, tenantId, ct);
+        var includesSensitive = User.HasPermission("employees.sensitive");
+        var csv = await BuildEmployeesCsvAsync(emps, tenantId, includesSensitive, ct);
         // Export audit: actor, row count, and company-scope dimension — no PII values.
         await _audit.WriteAsync("employees.exported", "Employee", "bulk", Context(),
             JsonSerializer.Serialize(new
@@ -237,6 +261,7 @@ public class EmployeesController : ControllerBase
                 groupScope = entityScope.IsGroupLevel,
                 companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
                 exportType = "employees_csv",
+                includesSensitive,
             }), ct);
         return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
@@ -247,7 +272,7 @@ public class EmployeesController : ControllerBase
     /// "export selected" path emit byte-identical output from ONE builder — a column can never drift between
     /// the two surfaces. Loads only the given rows' related data (never an unfiltered tenant scan).
     /// </summary>
-    private async Task<string> BuildEmployeesCsvAsync(IReadOnlyList<Employee> emps, Guid tenantId, CancellationToken ct)
+    private async Task<string> BuildEmployeesCsvAsync(IReadOnlyList<Employee> emps, Guid tenantId, bool includeSensitive, CancellationToken ct)
     {
         var empIds = emps.Select(e => e.Id).ToList();
         var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
@@ -370,16 +395,21 @@ public class EmployeesController : ControllerBase
                 ["QiwaEmployeeReference"] = e.QiwaEmployeeReference,
                 ["QiwaSyncStatus"] = e.QiwaSyncStatus,
             };
-            return (IReadOnlyList<object?>)headers.Select(h => v.GetValueOrDefault(h)).ToList();
+            return (IReadOnlyList<object?>)headers
+                .Select(h => !includeSensitive && SensitiveEmployeeExportHeaders.Contains(h)
+                    ? string.Empty
+                    : v.GetValueOrDefault(h))
+                .ToList();
         });
         return Csv.Build(headers, rows);
     }
 
-    /// <summary>Downloadable blank template — the shareable "data format" to fill and import.</summary>
+    /// <summary>Downloadable template — the shareable "data format" to fill and import, with one
+    /// registry-derived placeholder row showing the expected shape of every column.</summary>
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders)), "text/csv", "employees_import_template.csv");
+        File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders, EmployeeCsvExampleRow)), "text/csv", "employees_import_template.csv");
 
     /// <summary>
     /// The Employee Field RESOLVER (§3.1/§3.3) — the ONE backend source of truth for the create/edit modal
@@ -940,7 +970,7 @@ public class EmployeesController : ControllerBase
         {
             var ibanRaw = rowData.GetValueOrDefault("IBAN", string.Empty).Trim();
             if (!string.IsNullOrWhiteSpace(ibanRaw) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanRaw))
-                warnings.Add($"Employee {emp.EmployeeCode}: IBAN '{ibanRaw}' fails the ISO 13616 mod-97 checksum — imported, but it must be corrected before this employee can be included in a payroll run.");
+                warnings.Add($"Employee {emp.EmployeeCode}: IBAN '{ibanRaw}' fails country format/length or the ISO 13616 mod-97 checksum — imported, but it must be corrected before this employee can be included in a payroll run.");
             var bankNameRaw = rowData.GetValueOrDefault("BankName", string.Empty).Trim();
             var molIdRaw = rowData.GetValueOrDefault("MolId", string.Empty).Trim();
             var accountRaw = rowData.GetValueOrDefault("AccountNumber", string.Empty).Trim();
@@ -1534,7 +1564,7 @@ public class EmployeesController : ControllerBase
             // Use the real ISO 13616 mod-97 check (not just structure) so a bad checksum is caught in
             // preview, matching what the payroll-run/WPS gate enforces later.
             if (!string.IsNullOrEmpty(ibanPreview) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanPreview))
-                rowWarnings.Add($"IBAN '{ibanPreview}' is invalid — fails ISO 13616 (mod-97) validation and will be stored as-is but must be corrected before this employee can be paid via WPS");
+                rowWarnings.Add($"IBAN '{ibanPreview}' is invalid — country format/length or ISO 13616 mod-97 validation failed; it will be stored as-is but must be corrected before this employee can be paid via WPS");
             var basicSalaryPreview = row.GetValueOrDefault("BasicSalary", string.Empty).Trim();
             if (!string.IsNullOrEmpty(basicSalaryPreview) && !decimal.TryParse(basicSalaryPreview, out _))
                 rowWarnings.Add($"BasicSalary '{basicSalaryPreview}' is not a valid number — salary will not be imported");
@@ -2757,7 +2787,8 @@ public class EmployeesController : ControllerBase
             var emps = await _db.Employees.AsNoTracking()
                 .Where(e => e.TenantId == tenantId && targetIds.Contains(e.Id))
                 .OrderBy(e => e.EmployeeCode).ToListAsync(cancellationToken);
-            var csv = await BuildEmployeesCsvAsync(emps, tenantId, cancellationToken);
+            var includesSensitive = User.HasPermission("employees.sensitive");
+            var csv = await BuildEmployeesCsvAsync(emps, tenantId, includesSensitive, cancellationToken);
             await _audit.WriteAsync("employees.exported", "Employee", "bulk", Context(), JsonSerializer.Serialize(new
             {
                 rowCount = emps.Count,
@@ -2765,6 +2796,7 @@ public class EmployeesController : ControllerBase
                 selectionType = idsMode ? "idset" : "allMatching",
                 groupScope = entityScope.IsGroupLevel,
                 companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
+                includesSensitive,
             }), cancellationToken);
             return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_selected_{DateTime.UtcNow:yyyyMMdd}.csv");
         }
@@ -3880,6 +3912,12 @@ public class EmployeesController : ControllerBase
                 case "visaIssueDate": employee.VisaIssueDate = ReadDateOnly(value); break;
                 case "visaExpiryDate": employee.VisaExpiryDate = ReadDateOnly(value); break;
                 case "iqamaNumber": employee.IqamaNumber = value.GetString() ?? employee.IqamaNumber; break;
+                // IqamaExpiry was readable and CSV-importable but had no edit path: it is exported at
+                // the employee-detail projection and read by both CSV importers, yet ApplyChanges had
+                // no case for it. GccReadinessFloor treats it as a fail-closed PAY gate for non-GCC
+                // expats, so an employee whose iqama expiry was wrong could be blocked from payroll
+                // with no supported way to correct it. Mirrors passportExpiryDate directly above.
+                case "iqamaExpiryDate": employee.IqamaExpiryDate = ReadDateOnly(value); break;
                 case "muqeemNumber": employee.MuqeemNumber = value.GetString() ?? employee.MuqeemNumber; break;
                 case "gosiReference": employee.GosiReference = value.GetString() ?? employee.GosiReference; break;
                 case "emiratesId": employee.EmiratesId = value.GetString() ?? employee.EmiratesId; break;

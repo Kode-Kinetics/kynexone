@@ -11,6 +11,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Seed;
+using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
@@ -33,7 +34,7 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
     public async Task EnterpriseSeeder_SeedsThreeGroups_Idempotently_WithoutRealPii()
     {
         await using var db = _fx.CreateDb();
-        var seeder = new EnterpriseGroupSeeder(db, new Pbkdf2PasswordHasher(), new SeederAuthSeederAdapter(db), NullLogger<EnterpriseGroupSeeder>.Instance);
+        var seeder = new EnterpriseGroupSeeder(db, new Pbkdf2PasswordHasher(), new SeederAuthSeederAdapter(db), new WorkWeekService(db), NullLogger<EnterpriseGroupSeeder>.Instance);
 
         await seeder.SeedAsync();
         db.ChangeTracker.Clear();

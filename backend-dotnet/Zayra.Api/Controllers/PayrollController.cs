@@ -3783,10 +3783,13 @@ public class PayrollController : ControllerBase
                 overrides       = overriddenErrors,
             });
 
-        // Maker-checker: the user who processed the run cannot approve it.
+        // Maker-checker: neither the user who created the run nor the user who processed it may
+        // approve it. Checking only ProcessedByUserId let a creator hand processing to a colleague
+        // and then approve their own payroll proposal.
         var approverId = GetUserId();
-        if (run.ProcessedByUserId.HasValue && run.ProcessedByUserId == approverId)
-            return StatusCode(403, new { error = "maker_checker_violation", message = "The user who processed this run cannot approve it. A different approver is required (maker-checker policy)." });
+        if (approverId.HasValue
+            && (run.CreatedByUserId == approverId || run.ProcessedByUserId == approverId))
+            return StatusCode(403, new { error = "maker_checker_violation", message = "The user who created or processed this run cannot approve it. A different approver is required (maker-checker policy)." });
 
         var isAdmin = User.IsInRole("Admin");
         var isHROrPayroll = User.IsInRole("HR Manager") || User.IsInRole("Payroll Manager");
@@ -3799,7 +3802,8 @@ public class PayrollController : ControllerBase
             run.Status = "Approved";
             await PayrollAudit("payroll.run.approved", "PayrollRun", id.ToString(), new { notes = req.Notes, level = "Finance" }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
-            await _notifications.NotifyAsync(tenantId, GetUserId(), $"Payroll Run Approved — {run.Year}/{run.Month:D2}", $"Payroll run for {run.Year}/{run.Month:D2} has been approved by Finance. Total net: {run.TotalNetSalary:N2} AED.", "PayrollRun", id.ToString(), cancellationToken);
+            var runCurrency = await ResolveRunCurrencyAsync(tenantId, run.CompanyId, cancellationToken);
+            await _notifications.NotifyAsync(tenantId, GetUserId(), $"Payroll Run Approved — {run.Year}/{run.Month:D2}", $"Payroll run for {run.Year}/{run.Month:D2} has been approved by Finance. Total net: {run.TotalNetSalary:N2} {runCurrency}.", "PayrollRun", id.ToString(), cancellationToken);
             return Ok(run);
         }
 
@@ -7400,6 +7404,19 @@ public class PayrollController : ControllerBase
             "Amount", "Percentage", "IsTaxable", "ComponentIsActive"
         };
 
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with. This is
+    /// the widest template in the product (20 columns) and the one where a hand-written row drifting out
+    /// of step with the header would be hardest to spot by eye. The two Eligible* columns are blank
+    /// because they are cross-references to grades/designations the tenant may not have imported yet.</summary>
+    private static readonly string[] SalaryStructureCsvExampleRow =
+        {
+            "Example Company Ltd", "STD", "Standard Structure", "SAR", "2026-01-01", "true",
+            "0", "0", "0", "0",
+            "", "",
+            "BASIC", "Basic Salary", "Earning", "Fixed",
+            "8000", "0", "false", "true"
+        };
+
     [HttpGet("structures/export")]
     [HttpGet("salary-structures/export")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
@@ -7455,7 +7472,7 @@ public class PayrollController : ControllerBase
     public IActionResult StructuresImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=salary_structures_import_template.csv";
-        return Content(Csv.Template(SalaryStructureCsvHeaders), "text/csv");
+        return Content(Csv.Template(SalaryStructureCsvHeaders, SalaryStructureCsvExampleRow), "text/csv");
     }
 
     [HttpPost("structures/import")]
@@ -8800,6 +8817,21 @@ public class PayrollController : ControllerBase
     private Task<string> ResolveCurrencyAsync(Guid tenantId, CancellationToken ct)
         => _db.ResolveTenantCurrencyAsync(tenantId, ct);
 
+    private async Task<string> ResolveRunCurrencyAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    {
+        if (companyId.HasValue)
+        {
+            var companyCurrency = await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.Id == companyId.Value && !c.IsDeleted)
+                .Select(c => c.DefaultCurrency)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrWhiteSpace(companyCurrency))
+                return companyCurrency.Trim().ToUpperInvariant();
+        }
+
+        return (await _db.ResolveTenantCurrencyAsync(tenantId, ct)).Trim().ToUpperInvariant();
+    }
+
     // ── Payroll Command Center ────────────────────────────────────────────────────
 
     [HttpGet("companies")]
@@ -9039,6 +9071,10 @@ public class PayrollController : ControllerBase
     private static readonly string[] EmployeeSalaryCsvHeaders =
         { "EmployeeCode", "SalaryStructureCode", "BasicSalary", "HousingAllowance", "TransportAllowance", "FoodAllowance", "MobileAllowance", "OtherAllowance", "FixedDeduction", "Currency", "EffectiveDate" };
 
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.</summary>
+    private static readonly string[] EmployeeSalaryCsvExampleRow =
+        { "EMP-0001", "STD", "8000", "2000", "1000", "0", "0", "0", "0", "SAR", "2026-01-01" };
+
     [HttpGet("employee-salaries")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListEmployeeSalaries([FromQuery] Guid? companyId, [FromQuery] string? departmentId, [FromQuery] bool activeOnly = true, CancellationToken cancellationToken = default)
@@ -9099,7 +9135,7 @@ public class PayrollController : ControllerBase
     public IActionResult EmployeeSalariesImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=employee_salaries_import_template.csv";
-        return Content(Csv.Template(EmployeeSalaryCsvHeaders), "text/csv");
+        return Content(Csv.Template(EmployeeSalaryCsvHeaders, EmployeeSalaryCsvExampleRow), "text/csv");
     }
 
     [HttpPost("employee-salaries/import")]

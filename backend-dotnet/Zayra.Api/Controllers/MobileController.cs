@@ -36,7 +36,14 @@ public class MobileController : ControllerBase
     private async Task<int?> ResolveCallerEmployeeIdAsync(Guid tenantId, CancellationToken ct)
     {
         if (int.TryParse(User.FindFirstValue("employee_id"), out var empId))
-            return empId;
+        {
+            // A JWT claim is an identifier, not proof that the employee still exists in this tenant.
+            // Validate it so a stale/cross-tenant/unlinked session cannot mutate mobile resources.
+            var linked = await _db.Employees.AsNoTracking()
+                .AnyAsync(x => x.TenantId == tenantId && x.Id == empId && !x.IsDeleted
+                    && x.Status == EmployeeStatuses.Active, ct);
+            return linked ? empId : null;
+        }
 
         var email = User.FindFirstValue("email") ?? User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
         if (!string.IsNullOrWhiteSpace(email))
@@ -44,6 +51,7 @@ public class MobileController : ControllerBase
             var normalizedEmail = email.Trim().ToUpperInvariant();
             var employee = await _db.Employees.AsNoTracking()
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted &&
+                    x.Status == EmployeeStatuses.Active &&
                     (x.WorkEmail.ToUpper() == normalizedEmail || x.PersonalEmail.ToUpper() == normalizedEmail), ct);
             if (employee is not null) return employee.Id;
         }
@@ -89,6 +97,33 @@ public class MobileController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { deviceId = existing.Id, registered = true });
+    }
+
+    /// <summary>
+    /// Removes this caller's device registration. The operation is intentionally idempotent and does
+    /// not reveal whether the same identifier belongs to another employee or tenant.
+    /// </summary>
+    [HttpDelete("register-device/{deviceIdentifier}")]
+    public async Task<IActionResult> UnregisterDevice(string deviceIdentifier, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+
+        var employeeId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (employeeId is null) return Forbid();
+        if (string.IsNullOrWhiteSpace(deviceIdentifier)) return BadRequest(new { message = "Device identifier is required." });
+
+        var device = await _db.EmployeeMobileDevices.FirstOrDefaultAsync(d =>
+            d.TenantId == tenantId.Value
+            && d.EmployeeId == employeeId.Value
+            && d.DeviceIdentifier == deviceIdentifier, ct);
+        if (device is not null)
+        {
+            _db.EmployeeMobileDevices.Remove(device);
+            await _db.SaveChangesAsync(ct);
+        }
+
+        return NoContent();
     }
 
     // ── Dashboard (lightweight) ──────────────────────────────────────────────
@@ -334,8 +369,13 @@ public class MobileController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
+        var employeeId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (employeeId is null) return Forbid();
+
         var notification = await _db.EmployeeNotifications
-            .FirstOrDefaultAsync(n => n.Id == notificationId && n.TenantId == tenantId, ct);
+            .FirstOrDefaultAsync(n => n.Id == notificationId
+                && n.TenantId == tenantId.Value
+                && n.EmployeeId == employeeId.Value, ct);
 
         if (notification is null) return NotFound();
 

@@ -219,13 +219,15 @@ public class AttendanceController : ControllerBase
     [HttpPost("regularization")]
     public async Task<IActionResult> Regularization(RegularizationRequestDto request, CancellationToken ct)
     {
-        // Employees may only submit for themselves; managers and HR/Admin may submit for any in-scope employee.
+        // Employees submit for themselves. Delegated submissions require BOTH permission and data scope;
+        // approvals.decide/employees.write is authority to act, not authority to escape the caller's team.
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        if (!scope.IsUnrestricted && scope.CallerEmployeeId.HasValue && request.EmployeeId != scope.CallerEmployeeId.Value)
+        var isSelf = scope.CallerEmployeeId == request.EmployeeId;
+        if (!isSelf)
         {
             var hasWritePermission = User.Claims.Any(c => c.Type == "permission" &&
                 (c.Value == "employees.write" || c.Value == "approvals.decide"));
-            if (!hasWritePermission)
+            if (!hasWritePermission || !scope.CanAccessEmployee(request.EmployeeId))
                 return Forbid();
         }
         try

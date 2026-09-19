@@ -1,14 +1,18 @@
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+using System.Data.Common;
 using System.Security.Claims;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
@@ -35,6 +39,16 @@ public class DashboardTests
 
     private static DashboardController MakeCtrl(ZayraDbContext db, Guid tenantId, IDataScopeService? scope = null)
     {
+        if (!db.Tenants.Any(t => t.Id == tenantId))
+        {
+            db.Tenants.Add(new Tenant
+            {
+                Id = tenantId,
+                Name = $"Dashboard Tenant {tenantId:N}",
+                Slug = $"dashboard-{tenantId:N}",
+            });
+            db.SaveChanges();
+        }
         var claims = new List<Claim>
         {
             new("tenant_id", tenantId.ToString()),
@@ -71,6 +85,15 @@ public class DashboardTests
     // Seeds 15 active employees for the tenant (matching rasalmanar fixture).
     private static List<Employee> SeedEmployees(ZayraDbContext db, Guid tenantId, int count = 15)
     {
+        if (!db.Tenants.Any(t => t.Id == tenantId))
+        {
+            db.Tenants.Add(new Tenant
+            {
+                Id = tenantId,
+                Name = $"Dashboard Tenant {tenantId:N}",
+                Slug = $"dashboard-{tenantId:N}",
+            });
+        }
         var employees = Enumerable.Range(1, count).Select(i => new Employee
         {
             TenantId      = tenantId,
@@ -84,6 +107,32 @@ public class DashboardTests
         db.Employees.AddRange(employees);
         db.SaveChanges();
         return employees;
+    }
+
+    [Fact]
+    public async Task Summary_ColdLoad_UsesOneDatabaseCommand()
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        var counter = new DashboardCommandCounter();
+        var options = new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseSqlite(connection)
+            .AddInterceptors(counter)
+            .Options;
+        await using var db = new ZayraDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var tenantId = Guid.NewGuid();
+        SeedEmployees(db, tenantId, 2);
+        var controller = MakeCtrl(db, tenantId);
+        counter.Reset();
+
+        var result = await controller.Summary(CancellationToken.None);
+
+        var summary = Assert.IsType<DashboardSummaryDto>(Assert.IsType<OkObjectResult>(result).Value);
+        summary.TotalEmployees.Should().Be(2);
+        counter.Count.Should().Be(1,
+            "summary counters must share one aggregate command instead of paying a hosted-database round-trip per card");
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────
@@ -343,6 +392,32 @@ public class DashboardTests
         var payload = ExtractFull(result);
         payload.Summary.TotalEmployees.Should().Be(4);
         payload.Summary.ActiveEmployees.Should().Be(2);
+    }
+}
+
+file sealed class DashboardCommandCounter : DbCommandInterceptor
+{
+    private int _count;
+    public int Count => _count;
+    public void Reset() => Interlocked.Exchange(ref _count, 0);
+
+    public override InterceptionResult<DbDataReader> ReaderExecuting(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result)
+    {
+        Interlocked.Increment(ref _count);
+        return result;
+    }
+
+    public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _count);
+        return ValueTask.FromResult(result);
     }
 }
 

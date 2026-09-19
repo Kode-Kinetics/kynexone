@@ -293,7 +293,8 @@ public static class CleanDemoKsaSeeder
             string code, string en, string ar,
             Department dept, Designation desig,
             decimal basic, DateTime joining,
-            string nationality, string saudiFlag, string idType, string idNum) => new()
+            string nationality, string saudiFlag, string idType, string idNum,
+            DateOnly? iqamaExpiry = null) => new()
         {
             TenantId        = tid,
             CompanyId       = co.Id,
@@ -321,6 +322,9 @@ public static class CleanDemoKsaSeeder
             IdType          = idType,
             IdNumber        = idNum,
             IqamaNumber     = idType == "Iqama" ? idNum : string.Empty,
+            // Iqama expiry is a fail-closed PAY gate for non-GCC expats (GccReadinessFloor); seeding
+            // the number without it left every expat unpayable. Saudi nationals never hold one.
+            IqamaExpiryDate = idType == "Iqama" ? iqamaExpiry : null,
             GosiReference   = GosiEmployerId,
             EstablishmentId = EstablishmentId,
             IsDeleted       = false,
@@ -338,12 +342,16 @@ public static class CleanDemoKsaSeeder
         var empTurki       = Emp(tenantId, company, branch, grade, "RAM-009", "Turki Al-Otaibi",         "تركي العتيبي",       deptOps, desigOpsSpec,   9_000m, new DateTime(2023, 4, 15), "Saudi",    "Saudi",    "NationalId", "1091209876");
         var empLina        = Emp(tenantId, company, branch, grade, "RAM-010", "Lina Al-Sulami",          "لينا السلمي",        deptFin, desigAcct,      8_500m, new DateTime(2023, 7, 10), "Saudi",    "Saudi",    "NationalId", "2012098765");
 
-        // 5 expat employees
-        var empAhmed  = Emp(tenantId, company, branch, grade, "RAM-011", "Ahmed Hassan",   "أحمد حسن",      deptIT,  desigSrSWE,    13_000m, new DateTime(2022, 2,  1), "Egyptian",  "NonSaudi", "Iqama", "2430000001");
-        var empPriya  = Emp(tenantId, company, branch, grade, "RAM-012", "Priya Sharma",   "بريا شارما",     deptIT,  desigBA,       10_500m, new DateTime(2022, 5, 15), "Indian",    "NonSaudi", "Iqama", "2430000002");
-        var empOmar   = Emp(tenantId, company, branch, grade, "RAM-013", "Omar Abdallah",  "عمر عبدالله",    deptOps, desigPrjCoord,  9_000m, new DateTime(2023, 1, 20), "Jordanian", "NonSaudi", "Iqama", "2430000003");
-        var empDavid  = Emp(tenantId, company, branch, grade, "RAM-014", "David Mensah",   "ديفيد مينساه",   deptIT,  desigSWE,       9_500m, new DateTime(2023, 3, 12), "Ghanaian",  "NonSaudi", "Iqama", "2430000004");
-        var empMaria  = Emp(tenantId, company, branch, grade, "RAM-015", "Maria Santos",   "ماريا سانتوس",   deptHR,  desigAdminAst,  7_500m, new DateTime(2023, 8,  1), "Filipino",  "NonSaudi", "Iqama", "2430000005");
+        // 5 expat employees. Iqama expiry anchored on seed day so the demo never goes stale: a spread
+        // of valid permits with one inside the 60-day alert window for Compliance to surface as amber.
+        // Nothing back-dated — an expired Iqama is a fail-closed PAY blocker (GccReadinessFloor), so it
+        // is a state to demonstrate deliberately, not one to ship as the default dataset.
+        var ramIqamaFrom = DateOnly.FromDateTime(now.Date);
+        var empAhmed  = Emp(tenantId, company, branch, grade, "RAM-011", "Ahmed Hassan",   "أحمد حسن",      deptIT,  desigSrSWE,    13_000m, new DateTime(2022, 2,  1), "Egyptian",  "NonSaudi", "Iqama", "2430000001", ramIqamaFrom.AddDays(300));
+        var empPriya  = Emp(tenantId, company, branch, grade, "RAM-012", "Priya Sharma",   "بريا شارما",     deptIT,  desigBA,       10_500m, new DateTime(2022, 5, 15), "Indian",    "NonSaudi", "Iqama", "2430000002", ramIqamaFrom.AddDays(47));  // expiring soon (amber)
+        var empOmar   = Emp(tenantId, company, branch, grade, "RAM-013", "Omar Abdallah",  "عمر عبدالله",    deptOps, desigPrjCoord,  9_000m, new DateTime(2023, 1, 20), "Jordanian", "NonSaudi", "Iqama", "2430000003", ramIqamaFrom.AddDays(520));
+        var empDavid  = Emp(tenantId, company, branch, grade, "RAM-014", "David Mensah",   "ديفيد مينساه",   deptIT,  desigSWE,       9_500m, new DateTime(2023, 3, 12), "Ghanaian",  "NonSaudi", "Iqama", "2430000004", ramIqamaFrom.AddDays(190));
+        var empMaria  = Emp(tenantId, company, branch, grade, "RAM-015", "Maria Santos",   "ماريا سانتوس",   deptHR,  desigAdminAst,  7_500m, new DateTime(2023, 8,  1), "Filipino",  "NonSaudi", "Iqama", "2430000005", ramIqamaFrom.AddDays(365));
 
         db.Employees.AddRange(empAbdulrahman, empNoura, empKhalid, empFatimah, empMohammed,
                                empHessa, empFaisal, empReem, empTurki, empLina);
@@ -467,16 +475,58 @@ public static class CleanDemoKsaSeeder
         var ltSick   = leaveTypes.First(x => x.Code == "SICK");
         var ltCasual = leaveTypes.First(x => x.Code == "CASUAL");
 
+        var ramLeaveWorkflow = new ApprovalWorkflow
+        {
+            TenantId   = tenantId,
+            Code       = "LEAVE-APPROVAL",
+            Name       = "Leave Approval",
+            EntityName = nameof(LeaveRequest),
+            IsActive   = true,
+        };
+        ramLeaveWorkflow.Steps.Add(new ApprovalWorkflowStep
+        {
+            TenantId = tenantId, WorkflowId = ramLeaveWorkflow.Id, StepOrder = 1,
+            StepName = "Line Manager Approval", ApproverRole = "Manager",
+        });
+        ramLeaveWorkflow.Steps.Add(new ApprovalWorkflowStep
+        {
+            TenantId = tenantId, WorkflowId = ramLeaveWorkflow.Id, StepOrder = 2,
+            StepName = "HR Approval", ApproverRole = "HR Manager", IsFinalStep = true,
+        });
+        db.ApprovalWorkflows.Add(ramLeaveWorkflow);
+        await db.SaveChangesAsync(ct);
+
         // ── 13. Leave requests ────────────────────────────────────────────────
+        // Built through DemoLeaveSeed so every row carries the employee's CompanyId. These six were
+        // previously written with CompanyId null, which made them invisible to every company-scoped
+        // user in the tenant: hr@rasalmanar.com.sa read total:0 from /api/leave/requests while the
+        // group-scope admin saw all six. See DemoLeaveSeed's remarks for why nothing repaired them.
         var today = DateOnly.FromDateTime(now.Date);
-        db.LeaveRequests.AddRange(
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empNoura.Id,  EmployeeName=empNoura.FullName,  DepartmentName=empNoura.Department,  LeaveTypeId=ltAnnual.Id, LeaveTypeName=ltAnnual.NameEn, StartDate=today.AddDays(30), EndDate=today.AddDays(43), DayType="Full", Reason="Annual vacation",    Status="Submitted", SubmittedAtUtc=now.AddHours(-2) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empFaisal.Id, EmployeeName=empFaisal.FullName, DepartmentName=empFaisal.Department, LeaveTypeId=ltSick.Id,   LeaveTypeName=ltSick.NameEn,   StartDate=today.AddDays(-5), EndDate=today.AddDays(-4), DayType="Full", Reason="Illness",            Status="Approved",  SubmittedAtUtc=now.AddDays(-6), DecidedAtUtc=now.AddDays(-5) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empHessa.Id,  EmployeeName=empHessa.FullName,  DepartmentName=empHessa.Department,  LeaveTypeId=ltAnnual.Id, LeaveTypeName=ltAnnual.NameEn, StartDate=today.AddDays(14), EndDate=today.AddDays(20), DayType="Full", Reason="Personal leave",     Status="Approved",  SubmittedAtUtc=now.AddDays(-3), DecidedAtUtc=now.AddDays(-2) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empAhmed.Id,  EmployeeName=empAhmed.FullName,  DepartmentName=empAhmed.Department,  LeaveTypeId=ltAnnual.Id, LeaveTypeName=ltAnnual.NameEn, StartDate=today.AddDays(20), EndDate=today.AddDays(29), DayType="Full", Reason="Home country visit", Status="Submitted", SubmittedAtUtc=now.AddDays(-1) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empPriya.Id,  EmployeeName=empPriya.FullName,  DepartmentName=empPriya.Department,  LeaveTypeId=ltSick.Id,   LeaveTypeName=ltSick.NameEn,   StartDate=today.AddDays(-1), EndDate=today.AddDays(-1), DayType="Full", Reason="Migraine",           Status="Approved",  SubmittedAtUtc=now.AddDays(-1), DecidedAtUtc=now.AddHours(-6) },
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empTurki.Id,  EmployeeName=empTurki.FullName,  DepartmentName=empTurki.Department,  LeaveTypeId=ltCasual.Id, LeaveTypeName=ltCasual.NameEn, StartDate=today.AddDays(2),  EndDate=today.AddDays(2),  DayType="Full", Reason="Family commitment",  Status="Submitted", SubmittedAtUtc=now.AddHours(-4) }
-        );
+        var ramLeave = new (LeaveRequest Request, string Role)[]
+        {
+            (DemoLeaveSeed.Request(tenantId, empNoura, ltAnnual, today.AddDays(30), today.AddDays(43),
+                DemoLeaveSeed.PendingManager, "Annual vacation", now.AddHours(-2)), "Manager"),
+            (DemoLeaveSeed.Request(tenantId, empFaisal, ltSick, today.AddDays(-5), today.AddDays(-4),
+                DemoLeaveSeed.Approved, "Illness", now.AddDays(-6), now.AddDays(-5)), "Manager"),
+            (DemoLeaveSeed.Request(tenantId, empHessa, ltAnnual, today.AddDays(14), today.AddDays(20),
+                DemoLeaveSeed.Approved, "Personal leave", now.AddDays(-3), now.AddDays(-2)), "Manager"),
+            (DemoLeaveSeed.Request(tenantId, empAhmed, ltAnnual, today.AddDays(20), today.AddDays(29),
+                DemoLeaveSeed.PendingHr, "Home country visit", now.AddDays(-1)), "HR Manager"),
+            (DemoLeaveSeed.Request(tenantId, empPriya, ltSick, today.AddDays(-1), today.AddDays(-1),
+                DemoLeaveSeed.Approved, "Migraine", now.AddDays(-1), now.AddHours(-6)), "Manager"),
+            (DemoLeaveSeed.Request(tenantId, empTurki, ltCasual, today.AddDays(2), today.AddDays(2),
+                DemoLeaveSeed.PendingManager, "Family commitment", now.AddHours(-4)), "Manager"),
+            (DemoLeaveSeed.Request(tenantId, empOmar, ltAnnual, today.AddDays(4), today.AddDays(18),
+                DemoLeaveSeed.Rejected, "Extended personal travel", now.AddDays(-11), now.AddDays(-10),
+                rejectionReason: "Two other team members are already off in that window."), "Manager"),
+        };
+        foreach (var (request, role) in ramLeave)
+        {
+            db.LeaveRequests.Add(request);
+            DemoLeaveSeed.AddApprovalTrail(db, request, role,
+                approverUserId: null, approverName: string.Empty, approverEmployeeId: null,
+                workflowId: ramLeaveWorkflow.Id);
+        }
 
         foreach (var (emp, idx) in allEmps.Select((e, i) => (e, i)))
         {
@@ -496,21 +546,33 @@ public static class CleanDemoKsaSeeder
         await db.SaveChangesAsync(ct);
 
         // ── 14. Attendance (last 45 working days, all 15 employees) ──────────
-        var rng     = new Random(tenantId.GetHashCode() & 0x7fffffff);
-        var attRecs = new List<AttendanceRecord>();
+        // Seeds AttendanceDailyRecord — the table GET /api/attendance and /monthly actually read —
+        // plus the punches behind it and the legacy projection. Only the punch times are chosen
+        // here; status/worked/late/overtime are derived by AttendanceDemoSeed through the pipeline's
+        // own formulas. Days already covered by the approved leave seeded above get no punches and
+        // read "On leave" rather than contradicting their own leave request with "Present".
+        var rng       = new Random(tenantId.GetHashCode() & 0x7fffffff);
+        var attPolicy = await AttendanceDemoSeed.ResolvePolicyAsync(db, tenantId, ct);
+        var attTz     = await AttendanceDemoSeed.ResolveTimeZoneAsync(db, tenantId, ct);
+        var approvedLeave = await db.LeaveRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Status == "Approved")
+            .Select(x => new { x.EmployeeId, x.StartDate, x.EndDate })
+            .ToListAsync(ct);
         for (var d = today.AddDays(-45); d <= today; d = d.AddDays(1))
         {
             if (d.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday) continue;
             foreach (var emp in allEmps)
-                attRecs.Add(new AttendanceRecord
-                {
-                    TenantId   = tenantId, EmployeeId = emp.Id, WorkDate = d,
-                    TimeIn     = new TimeOnly(8,  30 + rng.Next(0, 20)),
-                    TimeOut    = new TimeOnly(17, 30 + rng.Next(0, 29)),
-                    Status     = "Present", Notes = string.Empty,
-                });
+            {
+                var inLocal  = new TimeOnly(8,  30 + rng.Next(0, 20));
+                var outLocal = new TimeOnly(17, 30 + rng.Next(0, 29));
+                var onLeave  = approvedLeave.Any(l => l.EmployeeId == emp.Id && l.StartDate <= d && l.EndDate >= d);
+                AttendanceDemoSeed.AddDay(db, tenantId, AttendanceDemoSeed.EmployeeFacts.From(emp), d,
+                    onLeave ? null : inLocal,
+                    onLeave ? null : outLocal,
+                    attPolicy, attTz,
+                    onLeave ? AttendanceDemoSeed.DayContext.ApprovedLeave : AttendanceDemoSeed.DayContext.WorkingDay);
+            }
         }
-        db.AttendanceRecords.AddRange(attRecs);
         await db.SaveChangesAsync(ct);
 
         // ── 15. Bonus type + batch (paid in locked payroll run) ───────────────

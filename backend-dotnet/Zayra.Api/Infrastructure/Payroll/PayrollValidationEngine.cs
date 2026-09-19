@@ -15,7 +15,7 @@ namespace Zayra.Api.Infrastructure.Payroll;
 ///            expat must have zero; 45,000 SAR covered-wage ceiling flagged
 ///   3  Net salary not negative; not zero when gross > 0
 ///   4  Duplicate employee entry in run
-///   5  WPS readiness: IBAN present + valid Saudi format (SA + 22 alphanumeric);
+///   5  WPS readiness: IBAN present + valid Saudi format (24 characters total) and mod-97;
 ///            MOL ID present on payroll profile for KSA runs
 ///   6  Nationality present on employee record (drives GOSI branch)
 ///   7  Run-level totals reconcile: Σ(gross), Σ(deductions), Σ(net) match header
@@ -302,7 +302,7 @@ public static class PayrollValidationEngine
                     slip.EmployeeId);
             else if (!IbanValidator.IsValid(iban))
                 Err("INVALID_IBAN",
-                    $"Employee {slip.EmployeeCode} IBAN '{iban}' fails ISO 13616 mod-97 validation. " +
+                    $"Employee {slip.EmployeeCode} IBAN '{iban}' fails country format/length or ISO 13616 mod-97 validation. " +
                     "Correct the IBAN before approving this run.",
                     slip.EmployeeId);
             else if (isKsa && !IbanValidator.IsSaudiIban(iban))

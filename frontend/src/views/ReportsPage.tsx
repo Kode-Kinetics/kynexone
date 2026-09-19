@@ -30,6 +30,7 @@ import type {
   ReportSchedule, ReportExecutionLog, AnalyticsKPIs,
 } from '../api/reports';
 import { Modal } from '../components/Modal';
+import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 
 type Tab = 'analytics' | 'library' | 'saved' | 'schedules' | 'executions';
 
@@ -677,31 +678,15 @@ export function ReportsPage() {
         </p>
       </div>
 
-      <div className="flex items-center gap-1 border-b border-slate-200 dark:border-white/[0.08]">
-        {tabs.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setActiveTab(id)}
-            className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-semibold transition whitespace-nowrap ${
-              activeTab === id
-                ? 'border-sapphire text-sapphire'
-                : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
-            }`}
-          >
-            <Icon className="h-4 w-4" />
-            {label}
-          </button>
-        ))}
-      </div>
+      <RovingTabList items={tabs} activeId={activeTab} onChange={setActiveTab} idPrefix="reports" label="Reports sections" variant="underline" />
 
-      <div>
+      <TabPanel idPrefix="reports" tabId={activeTab}>
         {activeTab === 'analytics' && <AnalyticsDashboard />}
         {activeTab === 'library' && <ReportLibrary />}
         {activeTab === 'saved' && <SavedReportsTab />}
         {activeTab === 'schedules' && <ScheduledReportsTab />}
         {activeTab === 'executions' && <ExecutionHistoryTab />}
-      </div>
+      </TabPanel>
     </div>
   );
 }

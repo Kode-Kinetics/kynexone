@@ -9,16 +9,9 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
+import { LOGIN_CAPABILITIES, LOGIN_PREVIEW_DISCLOSURE } from '../lib/loginCapabilities';
 
 // Feature-specific marketing ticker — a scrolling marquee of real modules/capabilities.
-const FEATURE_TICKER = [
-  'WPS / SIF export', 'GOSI & social insurance', 'EOSB gratuity', 'Qiwa & Mudad',
-  'Shift & roster planning', 'Overtime & time-off', 'Loans & advances', 'Payslip designer',
-  'Performance & calibration', 'Recruitment & onboarding', 'Org chart', 'Employee self-service',
-  'Multi-company & multi-currency', 'Approval workflows', 'Saudization tracking', 'Hijri calendar',
-  'Document & visa compliance', 'Bank file generation', 'Role-based access', 'Audit trails',
-];
-
 // Illustrative product-preview slides (a UI glimpse, like a product screenshot) — the
 // carousel cycles these to show the platform's breadth at a glance.
 const PREVIEW_SLIDES = [
@@ -259,7 +252,7 @@ export function LoginPage() {
         }
       `}</style>
 
-      <div className="tenant-login-shell grid min-h-[100svh] w-full lg:grid-cols-2">
+      <div className="tenant-login-shell grid min-h-[100svh] w-full min-w-0 overflow-x-hidden lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         {/* ── Brand panel ───────────────────────────────────────────────── */}
         <section
           onMouseMove={(e) => {
@@ -267,7 +260,7 @@ export function LoginPage() {
             e.currentTarget.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`);
             e.currentTarget.style.setProperty('--my', `${((e.clientY - r.top) / r.height) * 100}%`);
           }}
-          className="relative hidden flex-col overflow-hidden bg-[#060a17] px-12 py-14 text-white lg:flex"
+          className="relative hidden min-w-0 flex-col overflow-hidden bg-[#060a17] px-12 py-14 text-white lg:flex"
         >
           {/* Aurora mesh */}
           <div className="pointer-events-none absolute -left-1/4 -top-1/4 h-[70%] w-[70%] rounded-full bg-[radial-gradient(circle,rgba(47,107,255,0.55),transparent_60%)] blur-3xl aurora-a" />
@@ -329,8 +322,8 @@ export function LoginPage() {
                       <span className="h-2 w-2 rounded-full bg-white/15" />
                       <span className="h-2 w-2 rounded-full bg-white/15" />
                     </div>
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Live
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-400/10 px-2 py-0.5 text-[10px] font-semibold text-sky-200">
+                      <span className="h-1.5 w-1.5 rounded-full bg-sky-300" /> Product preview
                     </span>
                   </div>
 
@@ -382,6 +375,7 @@ export function LoginPage() {
                       />
                     ))}
                   </div>
+                  <p className="mt-2 text-center text-[10px] font-medium text-slate-400">{LOGIN_PREVIEW_DISCLOSURE}</p>
                 </div>
               );
             })()}
@@ -389,7 +383,7 @@ export function LoginPage() {
             {/* Feature ticker — scrolling marquee of platform capabilities */}
             <div className="ticker-mask relative mt-6 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_8%,black_92%,transparent)]">
               <div className="ticker-track flex w-max items-center gap-2.5">
-                {[...FEATURE_TICKER, ...FEATURE_TICKER].map((f, i) => (
+                {[...LOGIN_CAPABILITIES, ...LOGIN_CAPABILITIES].map((f, i) => (
                   <span
                     key={i}
                     className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.03] px-3 py-1 text-[11px] font-medium text-slate-300"
@@ -408,8 +402,8 @@ export function LoginPage() {
         </section>
 
         {/* ── Form panel ────────────────────────────────────────────────── */}
-        <section className="flex items-center justify-center bg-slate-50 px-5 py-10 dark:bg-[#0a0f1e] sm:px-8">
-          <div className="auth-fade w-full max-w-[420px]">
+        <section className="flex min-w-0 flex-col items-center [justify-content:safe_center] overflow-x-hidden bg-slate-50 px-5 py-10 dark:bg-[#0a0f1e] sm:px-8">
+          <div className="auth-fade min-w-0 w-full max-w-[420px]">
             {/* Mobile brand */}
             <div className="mb-8 flex items-center gap-3 lg:hidden">
               <div className="rounded-xl border border-slate-200 bg-white p-2.5 shadow-sm dark:border-white/10 dark:bg-white/5">
@@ -429,12 +423,12 @@ export function LoginPage() {
                 </p>
 
                 <form onSubmit={handleLogin} noValidate className="mt-8 space-y-5">
-                  <FormField label="Work email">
+                  <FormField label="Work email" htmlFor="li-em">
                     <input id="li-em" type="email" value={email} onChange={e => setEmail(e.target.value)}
                       className="auth-input" placeholder="you@company.com" autoComplete="email" required />
                   </FormField>
 
-                  <FormField label="Password" labelRight={
+                  <FormField label="Password" htmlFor="li-pw" labelRight={
                     <button type="button" onClick={() => go('forgot')}
                       className="text-xs font-medium text-sapphire hover:text-blue-700 dark:text-sky-400">
                       Forgot password?
@@ -445,16 +439,17 @@ export function LoginPage() {
                         onChange={e => setPassword(e.target.value)}
                         className="auth-input pr-11" placeholder="••••••••••"
                         autoComplete="current-password" required />
-                      <button type="button" onClick={() => setShowPw(v => !v)} tabIndex={-1}
+                      <button type="button" onClick={() => setShowPw(v => !v)}
                         className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                        aria-label={showPw ? 'Hide password' : 'Show password'}>
+                        aria-label={showPw ? 'Hide password' : 'Show password'} aria-pressed={showPw}
+                        title={showPw ? 'Hide password' : 'Show password'}>
                         {showPw ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
                       </button>
                     </div>
                   </FormField>
 
                   <FormField
-                    label="Workspace"
+                    label="Workspace" htmlFor="li-ws"
                     labelRight={tenantLocked
                       ? <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400"><Lock className="h-3 w-3" />Auto-detected</span>
                       : tenantSlug ? <span className="text-xs text-slate-400">Pre-filled</span> : null}
@@ -466,10 +461,10 @@ export function LoginPage() {
 
                   <AuthFeedback error={error} info={info} />
 
-                  <button type="submit" disabled={loading}
+                  <button type="submit" disabled={loading} aria-busy={loading}
                     className="auth-btn disabled:cursor-not-allowed disabled:opacity-60">
                     {loading
-                      ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                      ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" aria-hidden="true" />Signing in…</>
                       : 'Sign in'}
                   </button>
                 </form>
@@ -492,12 +487,12 @@ export function LoginPage() {
                   </p>
                 </div>
 
-                <FormField label="Work email">
+                <FormField label="Work email" htmlFor="fg-em">
                   <input id="fg-em" type="email" value={forgotEmail || email}
                     onChange={e => setForgotEmail(e.target.value)}
                     className="auth-input" placeholder="you@company.com" autoComplete="email" required />
                 </FormField>
-                <FormField label="Workspace" hint="Optional — helps locate your account">
+                <FormField label="Workspace" htmlFor="fg-ws" hint="Optional — helps locate your account">
                   <input id="fg-ws" type="text" value={tenantSlug}
                     onChange={e => setTenantSlug(e.target.value)}
                     className="auth-input" placeholder="your-workspace" />
@@ -525,20 +520,20 @@ export function LoginPage() {
                   <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">Enter the code from your email and set a new password.</p>
                 </div>
 
-                <FormField label="Work email">
+                <FormField label="Work email" htmlFor="rs-em">
                   <input id="rs-em" type="email" value={forgotEmail || email}
                     onChange={e => setForgotEmail(e.target.value)}
                     className="auth-input" placeholder="you@company.com" autoComplete="email" required />
                 </FormField>
-                <FormField label="Reset code">
+                <FormField label="Reset code" htmlFor="rs-tk">
                   <input id="rs-tk" type="text" value={resetToken} onChange={e => setResetToken(e.target.value)}
                     className="auth-input font-mono tracking-wider" placeholder="Paste code from email" required />
                 </FormField>
-                <FormField label="New password" hint="Minimum 10 characters">
+                <FormField label="New password" htmlFor="rs-pw" hint="Minimum 10 characters">
                   <input id="rs-pw" type="password" value={newPw} onChange={e => setNewPw(e.target.value)}
                     className="auth-input" placeholder="••••••••••" autoComplete="new-password" required />
                 </FormField>
-                <FormField label="Confirm password">
+                <FormField label="Confirm password" htmlFor="rs-cf">
                   <input id="rs-cf" type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)}
                     className="auth-input" placeholder="••••••••••" autoComplete="new-password" required />
                 </FormField>
@@ -567,7 +562,7 @@ export function LoginPage() {
                   </p>
                 </div>
 
-                <FormField label="Authentication code">
+                <FormField label="Authentication code" htmlFor="mfa-code">
                   <input
                     id="mfa-code"
                     type="text"
@@ -612,8 +607,8 @@ export function LoginPage() {
                 </div>
 
                 {enrollmentSecret && (
-                  <FormField label="Setup key">
-                    <input className="auth-input font-mono text-xs" value={enrollmentSecret} readOnly />
+                  <FormField label="Setup key" htmlFor="mfa-setup-key">
+                    <input id="mfa-setup-key" className="auth-input font-mono text-xs" value={enrollmentSecret} readOnly />
                   </FormField>
                 )}
                 {enrollmentUri && (
@@ -622,8 +617,9 @@ export function LoginPage() {
                   </p>
                 )}
 
-                <FormField label="Authentication code">
+                <FormField label="Authentication code" htmlFor="mfa-enrollment-code">
                   <input
+                    id="mfa-enrollment-code"
                     type="text"
                     inputMode="numeric"
                     pattern="[0-9]{6}"
@@ -744,8 +740,9 @@ export function LoginPage() {
 
 // ── File-local sub-components ─────────────────────────────────────────────────
 
-function FormField({ label, labelRight, hint, children }: {
+function FormField({ label, htmlFor, labelRight, hint, children }: {
   label: string;
+  htmlFor?: string;
   labelRight?: React.ReactNode;
   hint?: string;
   children: React.ReactNode;
@@ -753,7 +750,7 @@ function FormField({ label, labelRight, hint, children }: {
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between">
-        <p className="text-sm font-medium text-slate-700 dark:text-slate-300">{label}</p>
+        <label htmlFor={htmlFor} className="text-sm font-medium text-slate-700 dark:text-slate-300">{label}</label>
         {labelRight}
       </div>
       {children}
@@ -764,13 +761,13 @@ function FormField({ label, labelRight, hint, children }: {
 
 function AuthFeedback({ error, info }: { error: string; info: string }) {
   if (error) return (
-    <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 dark:border-red-500/20 dark:bg-red-500/[0.08]">
+    <div role="alert" aria-live="assertive" className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 dark:border-red-500/20 dark:bg-red-500/[0.08]">
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
       <p className="text-sm leading-relaxed text-red-700 dark:text-red-400">{error}</p>
     </div>
   );
   if (info) return (
-    <div className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/[0.08]">
+    <div role="status" aria-live="polite" className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/[0.08]">
       <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
       <p className="text-sm leading-relaxed text-emerald-700 dark:text-emerald-400">{info}</p>
     </div>

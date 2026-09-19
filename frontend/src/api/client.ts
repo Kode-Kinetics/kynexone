@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { RefreshQueue } from './refreshQueue';
 
 // In the browser, use relative URLs so Next.js proxy handles CORS.
 // On the server (SSR), we need the absolute URL since there's no proxy.
@@ -33,7 +34,7 @@ client.interceptors.request.use((config) => {
 });
 
 let isRefreshing = false;
-let pending: Array<(token: string) => void> = [];
+const pendingRefreshes = new RefreshQueue();
 
 client.interceptors.response.use(
   (res) => res,
@@ -89,11 +90,9 @@ client.interceptors.response.use(
     original._retry = true;
 
     if (isRefreshing) {
-      return new Promise((resolve, reject) => {
-        pending.push((token) => {
-          original.headers.Authorization = `Bearer ${token}`;
-          resolve(client(original));
-        });
+      return pendingRefreshes.wait().then((token) => {
+        original.headers.Authorization = `Bearer ${token}`;
+        return client(original);
       });
     }
 
@@ -104,14 +103,14 @@ client.interceptors.response.use(
       const { data } = await axios.post(`${resolveBaseUrl()}/api/auth/refresh`, { refreshToken });
       localStorage.setItem('zayra_access_token', data.accessToken);
       localStorage.setItem('zayra_refresh_token', data.refreshToken);
-      pending.forEach((cb) => cb(data.accessToken));
-      pending = [];
+      pendingRefreshes.resolve(data.accessToken);
       original.headers.Authorization = `Bearer ${data.accessToken}`;
       return client(original);
-    } catch {
+    } catch (refreshError) {
+      pendingRefreshes.reject(refreshError);
       localStorage.clear();
       window.location.href = '/login';
-      return Promise.reject(err);
+      return Promise.reject(refreshError);
     } finally {
       isRefreshing = false;
     }

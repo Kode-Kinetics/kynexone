@@ -98,13 +98,7 @@ test.describe('Tenant isolation (API-level)', () => {
 
   // ── Leave request isolation ──────────────────────────────────────────────────
 
-  // KNOWN BROKEN — tracked in #55. This asserts real isolation, but the endpoint returns zero
-  // rows to its OWN tenant: the seeded leave_requests all have company_id = NULL, LeaveRequest is
-  // ICompanyScopedOperational, and its filter hides null-company rows from any non-group-scope
-  // caller. The filter is correct; the seeder never stamps CompanyId. Marked failing rather than
-  // skipped so this flips to an unexpected PASS the moment #55 is fixed, instead of rotting.
   test('IntelliFlow leave requests are not visible to Ras Al-Manar token', async ({ request }) => {
-    test.fail(); // see the comment above — tracked in #55
     const myIds    = idsOf(await fetchRows(request, '/api/leave/requests', intelliflowToken, 'IntelliFlow'), '/api/leave/requests');
     const theirIds = idsOf(await fetchRows(request, '/api/leave/requests', rasAlManarToken,  'Ras Al-Manar'), '/api/leave/requests');
 
@@ -119,14 +113,12 @@ test.describe('Tenant isolation (API-level)', () => {
 
   // ── Attendance isolation ─────────────────────────────────────────────────────
 
-  // KNOWN BROKEN — tracked in #55. AttendanceController.Daily reads AttendanceDailyRecords,
-  // which has 0 rows tenant-wide, while the seeder populates attendance_records (276 intelliflow,
-  // 510 rasalmanar) — also all company_id = NULL. No date range recovers data. Same marker
-  // rationale as above.
   test('IntelliFlow attendance records not visible to Ras Al-Manar token', async ({ request }) => {
-    test.fail(); // see the comment above — tracked in #55
-    const myIds    = idsOf(await fetchRows(request, '/api/attendance', intelliflowToken, 'IntelliFlow'), '/api/attendance');
-    const theirIds = idsOf(await fetchRows(request, '/api/attendance', rasAlManarToken,  'Ras Al-Manar'), '/api/attendance');
+    // Fixed, intentionally broad window keeps the isolation witness deterministic as the demo
+    // clock moves. Both tenants must query the identical range.
+    const range = '?from=2025-01-01&to=2030-12-31&pageSize=100';
+    const myIds    = idsOf(await fetchRows(request, `/api/attendance${range}`, intelliflowToken, 'IntelliFlow'), '/api/attendance');
+    const theirIds = idsOf(await fetchRows(request, `/api/attendance${range}`, rasAlManarToken,  'Ras Al-Manar'), '/api/attendance');
 
     expect(myIds.length, 'IntelliFlow must have visible attendance records for this isolation check to mean anything').toBeGreaterThan(0);
     expect(theirIds.length, 'Ras Al-Manar must have visible attendance records for this isolation check to mean anything').toBeGreaterThan(0);

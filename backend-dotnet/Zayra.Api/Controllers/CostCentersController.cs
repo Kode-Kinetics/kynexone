@@ -21,6 +21,12 @@ public class CostCentersController : ControllerBase
 
     private static readonly string[] CsvHeaders = { "Code", "Name", "NameAr", "DepartmentCode", "IsActive" };
 
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.
+    /// DepartmentCode is deliberately blank: it is a cross-reference, and a tenant that has not yet
+    /// imported departments has nothing for it to resolve to.</summary>
+    private static readonly string[] CsvExampleRow =
+        { "CC-OPS", "Operations", "", "", "true" };
+
     public CostCentersController(IOrganizationSetupService organization, ZayraDbContext db) { _organization = organization; _db = db; }
 
     [HttpGet]
@@ -90,14 +96,8 @@ public class CostCentersController : ControllerBase
 
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public IActionResult ImportTemplate()
-    {
-        var sb = new StringBuilder();
-        sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("CC-001,Operations,العمليات,DEPT-001,true\n");
-        sb.Append("CC-002,Marketing,التسويق,,true\n");
-        return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "cost_centers_import_template.csv");
-    }
+    public IActionResult ImportTemplate() =>
+        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "cost_centers_import_template.csv");
 
     [HttpPost("import-preview")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]

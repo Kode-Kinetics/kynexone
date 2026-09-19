@@ -21,6 +21,30 @@ public static class Csv
     public static string Template(IReadOnlyList<string> headers) =>
         string.Join(",", headers.Select(Escape)) + "\n";
 
+    /// <summary>
+    /// A template carrying the header row plus ONE worked example row.
+    ///
+    /// The example row is written through <see cref="Build"/>, so it inherits exactly the same
+    /// formula-injection neutralisation and RFC-4180 quoting the export path applies — a template
+    /// can never be the one CSV surface that forgets to escape a cell.
+    ///
+    /// CSV rows are POSITIONAL. An example row with the wrong number of cells shifts every value
+    /// into the wrong column and there is nothing in the file that says so; a spreadsheet renders
+    /// the corrupted row as happily as a correct one. That silent failure is the whole reason this
+    /// overload exists, so the count mismatch is refused here instead of being emitted — and
+    /// <c>ImportTemplateShapeTests</c> re-checks it for every template endpoint in the build.
+    /// </summary>
+    public static string Template(IReadOnlyList<string> headers, IReadOnlyList<string> exampleRow)
+    {
+        if (exampleRow.Count != headers.Count)
+            throw new ArgumentException(
+                $"CSV template example row has {exampleRow.Count} cell(s) but the header declares "
+                + $"{headers.Count} column(s). CSV rows are positional, so a mismatched example row "
+                + "silently shifts every value into the wrong column.",
+                nameof(exampleRow));
+        return Build(headers, new[] { (IReadOnlyList<object?>)exampleRow });
+    }
+
     /// <summary>Parse CSV text into a list of column maps keyed by header name.</summary>
     public static List<Dictionary<string, string>> Parse(string content)
     {
@@ -39,6 +63,13 @@ public static class Csv
         }
         return rows;
     }
+
+    /// <summary>
+    /// Splits ONE physical CSV line into its cells, honouring RFC-4180 quoting. Public so a caller
+    /// can count a row's columns with precisely the splitter the importer uses, rather than a
+    /// naive <c>Split(',')</c> that would miscount any quoted cell containing a comma.
+    /// </summary>
+    public static IReadOnlyList<string> SplitRow(string line) => ParseLine(line);
 
     private static List<string> SplitLines(string content) =>
         content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').ToList();
