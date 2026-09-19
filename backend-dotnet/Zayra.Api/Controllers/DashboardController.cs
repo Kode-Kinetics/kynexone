@@ -171,9 +171,11 @@ public class DashboardController : ControllerBase
                 OnLeave = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today
                     && (a.Status == "Leave" || a.Status == "On Leave")),
                 Absent = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today && a.Status == "Absent"),
+                // Hours are safe to aggregate as REAL as well as NUMERIC; this keeps the query
+                // portable to the SQLite regression harness without changing the decimal API.
                 OvertimeHours = _db.AttendanceRecords
                     .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today)
-                    .Sum(a => (decimal?)a.OvertimeHours) ?? 0m,
+                    .Sum(a => (double?)a.OvertimeHours) ?? 0d,
                 ChurnRisk = _db.AttendanceRecords
                     .Where(a => a.TenantId == tenantId && a.WorkDate >= today.AddDays(-30)
                         && (a.Status == "Absent" || a.OvertimeHours >= 4))
@@ -189,7 +191,7 @@ public class DashboardController : ControllerBase
             aggregate?.Present ?? 0,
             aggregate?.OnLeave ?? 0,
             aggregate?.Absent ?? 0,
-            aggregate?.OvertimeHours ?? 0m,
+            aggregate is null ? 0m : Convert.ToDecimal(aggregate.OvertimeHours),
             aggregate?.ChurnRisk ?? 0);
     }
 
