@@ -39,12 +39,14 @@ public class OrganizationStructureImportController : ControllerBase
     public IActionResult Template()
     {
         var sb = new StringBuilder();
-        void Section(string name, string[] headers, string sample)
+        // Each section is written through Csv.Template, which refuses an example row whose cell count
+        // does not match its header (CSV rows are positional — a short row silently shifts every value
+        // one column left) and applies the same formula-injection escaping the export path does.
+        void Section(string name, string[] headers, params string[] sample)
         {
-            sb.AppendLine($"# {name}");
-            sb.AppendLine(string.Join(",", headers.Select(Csv.Escape)));
-            sb.AppendLine(sample);
-            sb.AppendLine();
+            sb.Append("# ").Append(name).Append('\n');
+            sb.Append(Csv.Template(headers, sample));
+            sb.Append('\n');
         }
 
         // One consistent, self-explanatory EXAMPLE row per section. Every value is
@@ -53,14 +55,22 @@ public class OrganizationStructureImportController : ControllerBase
         // Preview() with no blocking errors (see OrganizationStructureTemplateRoundTripTests).
         // ManagerEmployeeCode / ParentDepartmentCode are intentionally blank — an empty
         // tenant has no employees or parent departments to reference yet.
-        Section("companies", CompaniesHeaders, "Example Company Ltd,,Example Company,SA,SA-default,,,,,,SAR,true");
-        Section("branches", BranchesHeaders, "Example Company Ltd,HQ,Head Office,,SA,Main City,,,Asia/Riyadh,,true,true");
-        Section("costCenters", CostCentersHeaders, "Example Company Ltd,CC-OPS,Operations,true");
-        Section("departments", DepartmentsHeaders, "Example Company Ltd,HQ,OPS,Operations,,,,CC-OPS,10,100000,true");
-        Section("grades", GradesHeaders, "G1,Grade 1,Staff,1,8000,10000,12000,SAR,true");
-        Section("gradePayComponents", GradePayHeaders, "G1,BASIC,Basic Salary,Earning,Fixed,8000,0,Monthly,false,true");
-        Section("designations", DesignationsHeaders, "OPS-OFF,Operations Officer,,OPS,G1,G1,Staff,,false,5,true");
-        Section("positions", PositionsHeaders, "POS-OPS-001,Operations Officer,Example Company Ltd,HQ,OPS,CC-OPS,OPS-OFF,G1,1,10000,SAR,Open,2026-01-01,");
+        Section("companies", CompaniesHeaders,
+            "Example Company Ltd", "", "Example Company", "SA", "SA-default", "", "", "", "", "", "SAR", "true");
+        Section("branches", BranchesHeaders,
+            "Example Company Ltd", "HQ", "Head Office", "", "SA", "Main City", "", "", "Asia/Riyadh", "", "true", "true");
+        Section("costCenters", CostCentersHeaders,
+            "Example Company Ltd", "CC-OPS", "Operations", "true");
+        Section("departments", DepartmentsHeaders,
+            "Example Company Ltd", "HQ", "OPS", "Operations", "", "", "", "CC-OPS", "10", "100000", "true");
+        Section("grades", GradesHeaders,
+            "G1", "Grade 1", "Staff", "1", "8000", "10000", "12000", "SAR", "true");
+        Section("gradePayComponents", GradePayHeaders,
+            "G1", "BASIC", "Basic Salary", "Earning", "Fixed", "8000", "0", "Monthly", "false", "true");
+        Section("designations", DesignationsHeaders,
+            "OPS-OFF", "Operations Officer", "", "OPS", "G1", "G1", "Staff", "", "false", "5", "true");
+        Section("positions", PositionsHeaders,
+            "POS-OPS-001", "Operations Officer", "Example Company Ltd", "HQ", "OPS", "CC-OPS", "OPS-OFF", "G1", "1", "10000", "SAR", "Open", "2026-01-01", "");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/plain", "organization_structure_import_package.txt");
     }
 

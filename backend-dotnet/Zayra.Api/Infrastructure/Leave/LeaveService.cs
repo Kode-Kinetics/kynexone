@@ -420,6 +420,20 @@ public class LeaveService : ILeaveService
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == request.EmployeeId && !e.IsDeleted, ct)
             ?? throw new InvalidOperationException("Employee not found.");
 
+        var blackout = await _db.LeaveBlackoutDates.AsNoTracking()
+            .Where(b => b.TenantId == tenantId
+                && b.StartDate <= request.EndDate && b.EndDate >= request.StartDate
+                && (b.IsCompanyWide
+                    || (!string.IsNullOrWhiteSpace(b.DepartmentName)
+                        && b.DepartmentName == employee.Department)))
+            .OrderBy(b => b.StartDate)
+            .Select(b => new { b.NameEn, b.StartDate, b.EndDate, b.Reason })
+            .FirstOrDefaultAsync(ct);
+        if (blackout is not null)
+            throw new InvalidOperationException(
+                $"Leave cannot be requested during blackout '{blackout.NameEn}' " +
+                $"({blackout.StartDate:yyyy-MM-dd} to {blackout.EndDate:yyyy-MM-dd}). {blackout.Reason}".Trim());
+
         var effectivePolicy = await ResolveLeavePolicyAsync(tenantId, employee, request.LeaveTypeId, request.PolicyId, ct);
         request.PolicyId = effectivePolicy?.Id;
         request.CompanyId = employee.CompanyId;

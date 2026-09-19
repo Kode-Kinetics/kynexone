@@ -22,6 +22,10 @@ public class GradesController : ControllerBase
     private static readonly string[] CsvHeaders =
         { "Code", "Name", "Level", "MinSalary", "MaxSalary", "IsActive" };
 
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.</summary>
+    private static readonly string[] CsvExampleRow =
+        { "G1", "Grade 1", "1", "8000", "12000", "true" };
+
     public GradesController(IOrganizationSetupService organization, ZayraDbContext db) { _organization = organization; _db = db; }
 
     [HttpGet]
@@ -91,14 +95,8 @@ public class GradesController : ControllerBase
 
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public IActionResult ImportTemplate()
-    {
-        var sb = new StringBuilder();
-        sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("G1,Junior,1,3000,6000,true\n");
-        sb.Append("G2,Mid,2,6000,10000,true\n");
-        return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "grades_import_template.csv");
-    }
+    public IActionResult ImportTemplate() =>
+        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "grades_import_template.csv");
 
     [HttpPost("import-preview")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]

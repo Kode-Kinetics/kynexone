@@ -22,6 +22,12 @@ public class DesignationsController : ControllerBase
     private static readonly string[] CsvHeaders =
         { "Code", "TitleEn", "TitleAr", "DepartmentCode", "JobGrade", "IsActive" };
 
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.
+    /// DepartmentCode is blank because it is a cross-reference to a department the tenant may not have
+    /// imported yet; JobGrade is free text on the designation, so a placeholder grade is safe there.</summary>
+    private static readonly string[] CsvExampleRow =
+        { "OPS-OFF", "Operations Officer", "", "", "G1", "true" };
+
     public DesignationsController(IOrganizationSetupService organization, ZayraDbContext db)
     {
         _organization = organization;
@@ -109,14 +115,8 @@ public class DesignationsController : ControllerBase
 
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public IActionResult ImportTemplate()
-    {
-        var sb = new StringBuilder();
-        sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("DES-001,Software Engineer,مهندس برمجيات,DEPT-001,G3,true\n");
-        sb.Append("DES-002,Senior Developer,مطور أول,DEPT-001,G4,true\n");
-        return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "designations_import_template.csv");
-    }
+    public IActionResult ImportTemplate() =>
+        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "designations_import_template.csv");
 
     [HttpPost("import-preview")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]

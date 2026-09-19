@@ -19,6 +19,10 @@ public class LocationsController : ControllerBase
     private static readonly string[] CsvHeaders =
         { "Code", "NameEn", "NameAr", "CountryCode", "City", "IsActive" };
 
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.</summary>
+    private static readonly string[] CsvExampleRow =
+        { "LOC-001", "Main Office", "", "SA", "Main City", "true" };
+
     public LocationsController(ZayraDbContext db) => _db = db;
 
     [HttpGet]
@@ -111,14 +115,8 @@ public class LocationsController : ControllerBase
     }
 
     [HttpGet("import-template")]
-    public IActionResult ImportTemplate()
-    {
-        var sb = new StringBuilder();
-        sb.Append(string.Join(",", CsvHeaders)).Append('\n');
-        sb.Append("LOC-001,Riyadh HQ,مقر الرياض,SA,Riyadh,true\n");
-        sb.Append("LOC-002,Dubai Office,مكتب دبي,AE,Dubai,true\n");
-        return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "locations_import_template.csv");
-    }
+    public IActionResult ImportTemplate() =>
+        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "locations_import_template.csv");
 
     [HttpPost("import-preview")]
     public async Task<IActionResult> ImportPreview([FromBody] LocationImportRequest req, CancellationToken ct)

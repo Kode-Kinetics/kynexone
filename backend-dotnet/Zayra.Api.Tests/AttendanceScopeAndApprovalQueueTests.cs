@@ -8,9 +8,12 @@ using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers;
+using Zayra.Api.Controllers.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Attendance;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Models;
@@ -19,6 +22,49 @@ namespace Zayra.Api.Tests;
 
 public class AttendanceScopeAndApprovalQueueTests
 {
+    [Fact]
+    public async Task AttendanceRegularization_PermissionCannotEscapeEmployeeScope_NoMutation()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var allowed = await AddEmployee(db, tenantId, "E-100");
+        var outOfScope = await AddEmployee(db, tenantId, "E-200");
+        var controller = CreateAttendanceController(db, tenantId, new FixedScope(allowed.Id));
+        controller.User.AddIdentity(new ClaimsIdentity([new Claim("permission", "approvals.decide")]));
+
+        var result = await controller.Regularization(new RegularizationRequestDto(
+            outOfScope.Id, new DateOnly(2026, 9, 18), "Missed punch",
+            DateTime.UtcNow.AddHours(-8), DateTime.UtcNow, "test"), CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(result);
+        Assert.Empty(db.AttendanceRegularizationRequests);
+    }
+
+    [Fact]
+    public async Task LeaveSubmission_PermissionCannotEscapeEmployeeScope_NoMutation()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var allowed = await AddEmployee(db, tenantId, "E-100");
+        var outOfScope = await AddEmployee(db, tenantId, "E-200");
+        var leaveType = new LeaveType { TenantId = tenantId, Code = "AL", NameEn = "Annual", IsActive = true };
+        db.LeaveTypes.Add(leaveType);
+        await db.SaveChangesAsync();
+        var controller = new LeaveRequestsController(
+            db,
+            new LeaveService(db, new ApprovalPolicyService(db)),
+            new FixedScope(allowed.Id),
+            new NullNotificationService());
+        controller.ControllerContext = CreateControllerContext(tenantId, Guid.NewGuid(), "Manager", "approvals.decide");
+
+        var result = await controller.Submit(new SubmitLeaveRequestRequest(
+            outOfScope.Id, leaveType.Id, null, new DateOnly(2026, 10, 1), new DateOnly(2026, 10, 1),
+            "Full", null, "test", false, null), CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(result);
+        Assert.Empty(db.LeaveRequests);
+    }
+
     [Fact]
     public async Task PushEvent_ForbidsResolvedEmployeeOutsideCallerScope()
     {
@@ -208,6 +254,92 @@ public class AttendanceScopeAndApprovalQueueTests
         Assert.Equal("Manager queue item", page.Items.Single().Title);
     }
 
+    [Fact]
+    public async Task ScopedCaller_OverdueAndUnknownQueues_CannotEnumerateTenantQueue()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var otherTenantId = Guid.NewGuid();
+        db.ApprovalRequests.AddRange(
+            PendingApproval(tenantId, "Mine", "Manager"),
+            PendingApproval(tenantId, "Not mine", "HR Manager"),
+            PendingApproval(otherTenantId, "Other tenant", "Manager"));
+        await db.SaveChangesAsync();
+        var service = new ApprovalWorkflowService(db, new NullAuditService());
+        var context = new RequestContext(null, null, Guid.NewGuid(), tenantId, ["Manager"], ["approvals.read"]);
+
+        var overdue = await service.GetRequestsAsync(tenantId, null, null, "overdue", 1, 25, context, CancellationToken.None);
+        Assert.Single(overdue.Items);
+        Assert.Equal("Mine", overdue.Items.Single().Title);
+
+        var explicitAll = await service.GetRequestsAsync(tenantId, null, null, "all", 1, 25, context, CancellationToken.None);
+        Assert.Empty(explicitAll.Items);
+        var unknown = await service.GetRequestsAsync(tenantId, null, null, "unexpected", 1, 25, context, CancellationToken.None);
+        Assert.Empty(unknown.Items);
+    }
+
+    [Fact]
+    public void ApprovalRequestContract_UsesReadForQueries_AndDecideForMutations()
+    {
+        var search = typeof(ApprovalRequestsController).GetMethod(nameof(ApprovalRequestsController.Search))!;
+        var get = typeof(ApprovalRequestsController).GetMethod(nameof(ApprovalRequestsController.Get))!;
+        var decide = typeof(ApprovalRequestsController).GetMethod(nameof(ApprovalRequestsController.Decide))!;
+
+        Assert.Contains("approvals.read", search.GetCustomAttributes(typeof(HasPermissionAttribute), true)
+            .Cast<HasPermissionAttribute>().Single().Permissions);
+        Assert.Contains("approvals.read", get.GetCustomAttributes(typeof(HasPermissionAttribute), true)
+            .Cast<HasPermissionAttribute>().Single().Permissions);
+        Assert.Contains("approvals.decide", decide.GetCustomAttributes(typeof(HasPermissionAttribute), true)
+            .Cast<HasPermissionAttribute>().Single().Permissions);
+        Assert.DoesNotContain("approvals.decide", search.GetCustomAttributes(typeof(HasPermissionAttribute), true)
+            .Cast<HasPermissionAttribute>().Single().Permissions);
+    }
+
+    [Fact]
+    public async Task ApprovalReaderRoles_AreSeededWithLeastPrivilege()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        db.Tenants.Add(new Zayra.Api.Domain.Entities.Tenant
+        {
+            Id = tenantId,
+            Name = "Approval permission test",
+            Slug = $"approval-{Guid.NewGuid():N}"[..20]
+        });
+        await db.SaveChangesAsync();
+        var seeder = new Zayra.Api.Infrastructure.Seed.AuthSeeder(
+            db,
+            new Zayra.Api.Infrastructure.Auth.Pbkdf2PasswordHasher(),
+            Microsoft.Extensions.Options.Options.Create(new SeedAdminOptions()));
+
+        await seeder.EnsureTenantRolesAsync(tenantId, CancellationToken.None);
+
+        var rolePermissions = await db.Roles
+            .Where(role => role.TenantId == tenantId &&
+                (role.Name == "Payroll Manager" || role.Name == "Payroll Officer" || role.Name == "Finance Approver"))
+            .ToDictionaryAsync(
+                role => role.Name,
+                role => role.RolePermissions.Select(mapping => mapping.Permission!.Key).ToHashSet());
+        Assert.Equal(3, rolePermissions.Count);
+        Assert.All(rolePermissions.Values, permissions => Assert.Contains("approvals.read", permissions));
+        Assert.Contains("approvals.decide", rolePermissions["Payroll Manager"]);
+        Assert.Contains("approvals.decide", rolePermissions["Finance Approver"]);
+        Assert.DoesNotContain("approvals.decide", rolePermissions["Payroll Officer"]);
+    }
+
+    private static ApprovalRequest PendingApproval(Guid tenantId, string title, string role) => new()
+    {
+        TenantId = tenantId,
+        WorkflowId = Guid.NewGuid(),
+        EntityName = "PayrollRun",
+        EntityId = Guid.NewGuid().ToString(),
+        Title = title,
+        Status = "Pending",
+        CurrentApproverType = "Role",
+        CurrentApproverRole = role,
+        DueAtUtc = DateTime.UtcNow.AddHours(-1)
+    };
+
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
@@ -257,6 +389,25 @@ public class AttendanceScopeAndApprovalQueueTests
         controller.ControllerContext.HttpContext.Connection.RemoteIpAddress = IPAddress.Loopback;
         controller.ControllerContext.HttpContext.Request.Headers.UserAgent = "test";
         return controller;
+    }
+
+    private static ControllerContext CreateControllerContext(Guid tenantId, Guid userId, string role, params string[] permissions)
+    {
+        var claims = new List<Claim>
+        {
+            new("tenant_id", tenantId.ToString()),
+            new(ClaimTypes.NameIdentifier, userId.ToString()),
+            new("sub", userId.ToString()),
+            new(ClaimTypes.Role, role)
+        };
+        claims.AddRange(permissions.Select(permission => new Claim("permission", permission)));
+        return new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"))
+            }
+        };
     }
 
     private static ApprovalWorkflowsController CreateApprovalWorkflowsController(ZayraDbContext db, Guid tenantId, Guid userId, string role)

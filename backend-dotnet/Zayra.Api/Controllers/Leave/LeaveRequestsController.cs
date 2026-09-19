@@ -105,13 +105,16 @@ public class LeaveRequestsController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        // GCC compliance: employees may only submit for themselves unless they hold employees.write or approvals.decide
+        // Employees submit for themselves. Delegated HR/manager submissions require BOTH the
+        // corresponding effective permission and employee data-scope; a permission claim must never
+        // widen a team/company boundary.
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-        if (!scope.IsUnrestricted && scope.CallerEmployeeId.HasValue && req.EmployeeId != scope.CallerEmployeeId.Value)
+        var isSelf = scope.CallerEmployeeId == req.EmployeeId;
+        if (!isSelf)
         {
             var hasWritePermission = User.Claims.Any(c => c.Type == "permission" &&
                 (c.Value == "employees.write" || c.Value == "approvals.decide"));
-            if (!hasWritePermission)
+            if (!hasWritePermission || !scope.CanAccessEmployee(req.EmployeeId))
                 return Forbid();
         }
 
@@ -486,6 +489,12 @@ public class LeaveRequestsController : ControllerBase
     private static readonly string[] LeaveRequestCsvHeaders =
         { "EmployeeCode", "EmployeeName", "LeaveTypeCode", "LeaveType", "StartDate", "EndDate", "DayType", "HoursRequested", "IsEmergency", "AttachmentPath", "Days", "Status", "Reason" };
 
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with. The
+    /// header is shared with the export, so EmployeeName, Days and Status are export-only columns the
+    /// importer derives for itself and are left blank here.</summary>
+    private static readonly string[] LeaveRequestCsvExampleRow =
+        { "EMP-0001", "", "EXAMPLE", "", "2026-01-01", "2026-01-05", "Full", "0", "false", "", "", "", "Example reason" };
+
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<IActionResult> Export(CancellationToken ct)
@@ -524,7 +533,7 @@ public class LeaveRequestsController : ControllerBase
     public IActionResult ImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=leave_requests_import_template.csv";
-        return Content(Csv.Template(LeaveRequestCsvHeaders), "text/csv");
+        return Content(Csv.Template(LeaveRequestCsvHeaders, LeaveRequestCsvExampleRow), "text/csv");
     }
 
     [HttpPost("import")]

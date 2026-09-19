@@ -318,9 +318,37 @@ public class AttendanceService : IAttendanceService
 
     public async Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct)
     {
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await PushEventCoreAsync(tenantId, request, context, ct);
+
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await _db.Database.BeginTransactionAsync(
+                System.Data.IsolationLevel.ReadCommitted, ct);
+            var created = await PushEventCoreAsync(tenantId, request, context, ct);
+            await transaction.CommitAsync(ct);
+            return created;
+        });
+    }
+
+    private async Task<AttendanceRawEvent> PushEventCoreAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct)
+    {
         var employee = await ResolveEmployee(tenantId, request.EmployeeId, request.EmployeeCode, ct);
         if (employee is null) throw new InvalidOperationException("Employee could not be mapped from attendance event.");
         var direction = NormalizeDirection(request.PunchDirection);
+
+        // The nullable DeviceId in the unique index does not serialize two web/mobile writes on
+        // PostgreSQL (NULL values are distinct). Serialize the exact logical punch before probing so
+        // concurrent retries/double-clicks cannot both pass the read and insert two rows.
+        if ((_db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase)
+            && _db.Database.CurrentTransaction is not null)
+        {
+            var lockIdentity = $"attendance-punch:{tenantId:N}:{employee.Id}:{request.PunchTimestampUtc.ToUniversalTime().Ticks}:{direction}:{request.DeviceId?.ToString("N") ?? "self"}";
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtextextended({lockIdentity}, 0))", ct);
+        }
+
         var duplicate = await _db.AttendanceRawEvents.AnyAsync(x =>
             x.TenantId == tenantId && x.EmployeeId == employee.Id && x.PunchTimestampUtc == request.PunchTimestampUtc &&
             x.PunchDirection == direction && x.DeviceId == request.DeviceId, ct);
@@ -529,7 +557,9 @@ public class AttendanceService : IAttendanceService
                 && x.Status == "Locked" && x.PeriodStart <= request.ToDate && x.PeriodEnd >= request.FromDate, ct))
             throw new InvalidOperationException("Attendance cannot be processed for a payroll-locked period.");
 
-        var employees = await _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted && (request.EmployeeId == null || x.Id == request.EmployeeId)).ToListAsync(ct);
+        var employees = await _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted
+            && x.Status == EmployeeStatuses.Active
+            && (request.EmployeeId == null || x.Id == request.EmployeeId)).ToListAsync(ct);
         var policies = await _db.AttendancePolicies
             .Where(x => x.TenantId == tenantId && x.IsActive)
             .ToListAsync(ct);
@@ -584,8 +614,37 @@ public class AttendanceService : IAttendanceService
             .OrderBy(x => x.EmployeeName).ToList();
     }
 
-    public Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct) =>
-        PushEventAsync(tenantId, new AttendanceRawEventRequest(request.EmployeeId, null, null, source, DateTime.UtcNow, request.PunchDirection, request.LocationName, request.Latitude, request.Longitude, context.IpAddress, null, null, "", source.Contains("mobile", StringComparison.OrdinalIgnoreCase) ? "Mobile" : "Web", null), context, ct);
+    public async Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct)
+    {
+        var punchedAtUtc = DateTime.UtcNow;
+        var raw = await PushEventAsync(tenantId,
+            new AttendanceRawEventRequest(request.EmployeeId, null, null, source, punchedAtUtc,
+                request.PunchDirection, request.LocationName, request.Latitude, request.Longitude,
+                context.IpAddress, null, null, "",
+                source.Contains("mobile", StringComparison.OrdinalIgnoreCase) ? "Mobile" : "Web", null),
+            context, ct);
+
+        var employee = await ResolveEmployee(tenantId, request.EmployeeId, null, ct)
+            ?? throw new InvalidOperationException("Employee could not be mapped from attendance event.");
+        var workDate = await ResolvePunchWorkDateAsync(tenantId, employee.Id, punchedAtUtc, ct);
+        if (!await IsLocked(tenantId, workDate, ct))
+        {
+            var policies = await _db.AttendancePolicies
+                .Where(x => x.TenantId == tenantId && x.IsActive)
+                .ToListAsync(ct);
+            if (policies.Count == 0)
+            {
+                var defaultPolicy = DefaultPolicy(tenantId);
+                _db.AttendancePolicies.Add(defaultPolicy);
+                policies.Add(defaultPolicy);
+            }
+            await ProcessEmployeeDay(tenantId, employee, workDate,
+                ResolveAttendancePolicy(employee, policies), context, ct);
+            await _db.SaveChangesAsync(ct);
+        }
+
+        return raw;
+    }
 
     public async Task<AttendanceRegularizationRequest> CreateRegularizationAsync(Guid tenantId, RegularizationRequestDto request, RequestContext context, CancellationToken ct)
     {
@@ -733,7 +792,11 @@ public class AttendanceService : IAttendanceService
 
     public async Task<AttendanceDashboardDto> DashboardAsync(Guid tenantId, DateOnly date, CancellationToken ct)
     {
-        var records = await _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && x.WorkDate == date).ToListAsync(ct);
+        var activeIds = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted
+            && e.Status == EmployeeStatuses.Active).Select(e => e.Id);
+        var records = await _db.AttendanceDailyRecords
+            .Where(x => x.TenantId == tenantId && x.WorkDate == date && activeIds.Contains(x.EmployeeId))
+            .ToListAsync(ct);
         var activeEmployees = await _db.Employees.CountAsync(x => x.TenantId == tenantId && x.Status == "Active" && !x.IsDeleted, ct);
         return new AttendanceDashboardDto(date, activeEmployees, records.Count(x => x.Status is "Present" or "Late" or "Half day"), records.Count(x => x.Status == "Absent"), records.Count(x => x.LateMinutes > 0), records.Count(x => x.MissingPunch), records.Count(x => x.OvertimeMinutes > 0), await _db.AttendanceDevices.CountAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.LastSyncStatus == "Failed", ct), await _db.AttendanceRegularizationRequests.CountAsync(x => x.TenantId == tenantId && x.Status == "Submitted", ct));
     }
@@ -798,9 +861,27 @@ public class AttendanceService : IAttendanceService
     private async Task ProcessEmployeeDay(Guid tenantId, Employee employee, DateOnly date, AttendancePolicy policy, RequestContext context, CancellationToken ct)
     {
         var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
-        var start = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(date.ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified), tz);
-        var end = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(date.AddDays(1).ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified), tz);
-        var events = await _db.AttendanceRawEvents.Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.PunchTimestampUtc >= start && x.PunchTimestampUtc < end).OrderBy(x => x.PunchTimestampUtc).ToListAsync(ct);
+        // Resolve the employee's scheduled shift for this date and convert its local
+        // wall-clock start/end to UTC. Previously this hardcoded 09:00 *UTC* and ignored
+        // the assigned shift entirely — for a GCC tenant (Asia/Riyadh) 09:00 UTC = noon
+        // local, so every employee showed bogus late/early minutes.
+        var shift = await _db.ShiftAssignments.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.EmployeeId == employee.Id && a.AssignedDate == date)
+            .Join(_db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
+                  a => a.ShiftDefinitionId, d => d.Id, (a, d) => new { d.StartTime, d.EndTime })
+            .FirstOrDefaultAsync(ct);
+        var isOvernightShift = shift is not null && shift.EndTime <= shift.StartTime;
+        var startLocalBoundary = isOvernightShift
+            ? DateTime.SpecifyKind(date.ToDateTime(shift!.StartTime), DateTimeKind.Unspecified)
+            : DateTime.SpecifyKind(date.ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified);
+        var endLocalBoundary = isOvernightShift
+            ? DateTime.SpecifyKind(date.AddDays(1).ToDateTime(shift!.EndTime), DateTimeKind.Unspecified)
+            : DateTime.SpecifyKind(date.AddDays(1).ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified);
+        var start = TimeZoneInfo.ConvertTimeToUtc(startLocalBoundary, tz);
+        var end = TimeZoneInfo.ConvertTimeToUtc(endLocalBoundary, tz);
+        var events = await _db.AttendanceRawEvents.Where(x => x.TenantId == tenantId
+            && x.EmployeeId == employee.Id && x.PunchTimestampUtc >= start && x.PunchTimestampUtc < end)
+            .OrderBy(x => x.PunchTimestampUtc).ToListAsync(ct);
         var daily = await _db.AttendanceDailyRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.WorkDate == date, ct);
         if (daily is null)
         {
@@ -814,15 +895,6 @@ public class AttendanceService : IAttendanceService
         daily.MissingPunch = daily.FirstInUtc is null || daily.LastOutUtc is null;
         daily.BreakMinutes = daily.MissingPunch ? 0 : policy.BreakMinutes;
         daily.TotalWorkedMinutes = daily.FirstInUtc is not null && daily.LastOutUtc is not null ? Math.Max(0, (int)(daily.LastOutUtc.Value - daily.FirstInUtc.Value).TotalMinutes - policy.BreakMinutes) : 0;
-        // Resolve the employee's scheduled shift for this date and convert its local
-        // wall-clock start/end to UTC. Previously this hardcoded 09:00 *UTC* and ignored
-        // the assigned shift entirely — for a GCC tenant (Asia/Riyadh) 09:00 UTC = noon
-        // local, so every employee showed bogus late/early minutes.
-        var shift = await _db.ShiftAssignments.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.EmployeeId == employee.Id && a.AssignedDate == date)
-            .Join(_db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
-                  a => a.ShiftDefinitionId, d => d.Id, (a, d) => new { d.StartTime, d.EndTime })
-            .FirstOrDefaultAsync(ct);
         var startLocalTime = shift?.StartTime ?? new TimeOnly(9, 0);
         // Local wall-clock shift start on this date (Unspecified kind → interpret in tenant tz).
         var startLocal = DateTime.SpecifyKind(date.ToDateTime(startLocalTime), DateTimeKind.Unspecified);
@@ -854,19 +926,19 @@ public class AttendanceService : IAttendanceService
         daily.EarlyExitMinutes = daily.LastOutUtc is null ? 0 : Math.Max(0, (int)(shiftEnd - daily.LastOutUtc.Value).TotalMinutes - policy.EarlyExitThresholdMinutes);
         daily.OvertimeMinutes = Math.Max(0, daily.TotalWorkedMinutes - policy.StandardWorkMinutes);
         daily.UndertimeMinutes = Math.Max(0, policy.StandardWorkMinutes - daily.TotalWorkedMinutes);
-        if (daily.TotalWorkedMinutes == 0 && !string.IsNullOrWhiteSpace(approvedLeave))
+        if (daily.FirstInUtc is null && daily.TotalWorkedMinutes == 0 && !string.IsNullOrWhiteSpace(approvedLeave))
         {
             daily.Status = "On leave";
             daily.MissingPunch = false;
             daily.LateMinutes = daily.EarlyExitMinutes = daily.UndertimeMinutes = 0;
         }
-        else if (daily.TotalWorkedMinutes == 0 && isPublicHoliday)
+        else if (daily.FirstInUtc is null && daily.TotalWorkedMinutes == 0 && isPublicHoliday)
         {
             daily.Status = "Public holiday";
             daily.MissingPunch = false;
             daily.LateMinutes = daily.EarlyExitMinutes = daily.UndertimeMinutes = 0;
         }
-        else if (daily.TotalWorkedMinutes == 0 && isRestDay)
+        else if (daily.FirstInUtc is null && daily.TotalWorkedMinutes == 0 && isRestDay)
         {
             daily.Status = "Rest day";
             daily.MissingPunch = false;
@@ -874,7 +946,10 @@ public class AttendanceService : IAttendanceService
         }
         else
         {
-            daily.Status = daily.TotalWorkedMinutes == 0 ? "Absent" : daily.TotalWorkedMinutes < policy.HalfDayThresholdMinutes ? "Half day" : daily.LateMinutes > 0 ? "Late" : "Present";
+            daily.Status = daily.FirstInUtc is not null && daily.LastOutUtc is null ? "Present"
+                : daily.TotalWorkedMinutes == 0 ? "Absent"
+                : daily.TotalWorkedMinutes < policy.HalfDayThresholdMinutes ? "Half day"
+                : daily.LateMinutes > 0 ? "Late" : "Present";
         }
         daily.ProcessedAtUtc = DateTime.UtcNow;
         daily.UpdatedAtUtc = DateTime.UtcNow;
@@ -1005,11 +1080,34 @@ public class AttendanceService : IAttendanceService
 
         if (employeeId is not null)
             return await employees
-                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, ct);
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted
+                    && x.Status == EmployeeStatuses.Active, ct);
         if (!string.IsNullOrWhiteSpace(employeeCode))
             return await employees
-                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeCode == employeeCode && !x.IsDeleted, ct);
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeCode == employeeCode && !x.IsDeleted
+                    && x.Status == EmployeeStatuses.Active, ct);
         return null;
+    }
+
+    private async Task<DateOnly> ResolvePunchWorkDateAsync(Guid tenantId, int employeeId, DateTime punchUtc, CancellationToken ct)
+    {
+        var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
+        var utc = DateTime.SpecifyKind(punchUtc, DateTimeKind.Utc);
+        var local = TimeZoneInfo.ConvertTimeFromUtc(utc, tz);
+        var localDate = DateOnly.FromDateTime(local);
+        var previousDate = localDate.AddDays(-1);
+        var previousOvernightEnd = await _db.ShiftAssignments.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.EmployeeId == employeeId && a.AssignedDate == previousDate)
+            .Join(_db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
+                a => a.ShiftDefinitionId, d => d.Id,
+                (a, d) => new { d.StartTime, d.EndTime })
+            .Where(s => s.EndTime <= s.StartTime)
+            .Select(s => (TimeOnly?)s.EndTime)
+            .FirstOrDefaultAsync(ct);
+
+        return previousOvernightEnd.HasValue && TimeOnly.FromDateTime(local) <= previousOvernightEnd.Value
+            ? previousDate
+            : localDate;
     }
 
     private async Task<bool> IsLocked(Guid tenantId, DateOnly date, CancellationToken ct) =>

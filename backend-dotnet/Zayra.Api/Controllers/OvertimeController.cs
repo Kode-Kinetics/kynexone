@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
@@ -63,7 +64,8 @@ public class OvertimeController : ControllerBase
             CreatedBy = GetUserId()
         };
         _db.OvertimePolicies.Add(policy);
-        _db.OvertimeMultipliers.Add(new OvertimeMultiplier { TenantId = tenantId, OvertimePolicyId = policy.Id, DayCategory = "RegularDay", Multiplier = req.RegularDayMultiplier <= 0 ? 1.25m : req.RegularDayMultiplier });
+        var regularDayDefault = await ResolveRegularDayDefaultMultiplierAsync(tenantId, ct);
+        _db.OvertimeMultipliers.Add(new OvertimeMultiplier { TenantId = tenantId, OvertimePolicyId = policy.Id, DayCategory = "RegularDay", Multiplier = req.RegularDayMultiplier <= 0 ? regularDayDefault : req.RegularDayMultiplier });
         _db.OvertimeMultipliers.Add(new OvertimeMultiplier { TenantId = tenantId, OvertimePolicyId = policy.Id, DayCategory = "Weekend", Multiplier = req.WeekendMultiplier <= 0 ? 1.5m : req.WeekendMultiplier });
         _db.OvertimeMultipliers.Add(new OvertimeMultiplier { TenantId = tenantId, OvertimePolicyId = policy.Id, DayCategory = "PublicHoliday", Multiplier = req.HolidayMultiplier <= 0 ? 2.0m : req.HolidayMultiplier });
         await SaveAudit("overtime.policy.created", "OvertimePolicy", policy.Id.ToString(), ct);
@@ -428,7 +430,10 @@ public class OvertimeController : ControllerBase
         var workWeek = await _workWeek.ResolveAsync(tenantId, employee?.CompanyId, string.IsNullOrWhiteSpace(employee?.CountryCode) ? null : employee!.CountryCode, ct);
         var dayCategory = await IsPublicHoliday(tenantId, request.WorkDate, ct) ? "PublicHoliday" : workWeek.IsWeekend(request.WorkDate.DayOfWeek) ? "Weekend" : "RegularDay";
         var multiplier = await _db.OvertimeMultipliers.AsNoTracking().Where(x => x.TenantId == tenantId && x.OvertimePolicyId == policy.Id && x.DayCategory == dayCategory && x.IsActive).Select(x => x.Multiplier).FirstOrDefaultAsync(ct);
-        if (multiplier <= 0) multiplier = dayCategory == "PublicHoliday" ? 2m : dayCategory == "Weekend" ? 1.5m : 1.25m;
+        if (multiplier <= 0)
+            multiplier = dayCategory == "PublicHoliday" ? 2m
+                : dayCategory == "Weekend" ? 1.5m
+                : await ResolveRegularDayDefaultMultiplierAsync(tenantId, ct);
         var approvedHours = Math.Round(request.ApprovedMinutes / 60m, 2);
         var amount = Math.Round(approvedHours * hourlyRate * multiplier, 2);
         var currency = !string.IsNullOrWhiteSpace(salary?.Currency) ? salary.Currency : await _db.ResolveTenantCurrencyAsync(tenantId, ct);
@@ -437,6 +442,28 @@ public class OvertimeController : ControllerBase
 
     private Task<bool> IsPublicHoliday(Guid tenantId, DateOnly date, CancellationToken ct) =>
         _db.PublicHolidays.AnyAsync(x => x.TenantId == tenantId && x.Date == date && !x.IsOptional, ct);
+
+    private async Task<decimal> ResolveRegularDayDefaultMultiplierAsync(Guid tenantId, CancellationToken ct)
+    {
+        var countryCode = await _db.TenantLocalizationSettings.AsNoTracking()
+            .Where(x => x.TenantId == tenantId)
+            .Select(x => x.CountryCode)
+            .FirstOrDefaultAsync(ct);
+        if (string.IsNullOrWhiteSpace(countryCode))
+            countryCode = await _db.Companies.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)
+                .OrderBy(x => x.CreatedAtUtc)
+                .Select(x => x.CountryCode)
+                .FirstOrDefaultAsync(ct);
+
+        return DefaultRegularDayMultiplier(countryCode);
+    }
+
+    internal static decimal DefaultRegularDayMultiplier(string? countryCode) =>
+        string.Equals(countryCode, CountryCodes.Saudi, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(countryCode, "SA", StringComparison.OrdinalIgnoreCase)
+            ? 1.5m
+            : 1.25m;
 
     private static int ApplyRounding(int minutes, string? rule) => (rule ?? string.Empty) switch
     {

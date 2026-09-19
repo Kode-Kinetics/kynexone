@@ -24,6 +24,17 @@ public class ApprovalPoliciesController : ControllerBase
     private static readonly string[] StepCsvHeaders =
         { "PolicyCode", "StepOrder", "StepName", "ApproverType", "SpecificEmployeeCode", "IsFinalStep" };
 
+    // The template's example rows, kept adjacent to the headers they are positionally paired with so a
+    // new column cannot be added to one without the other. Every value is a neutral placeholder. The step
+    // row repeats the policy row's Code, which is what demonstrates the PolicyCode join this sectioned
+    // format exists for; SpecificEmployeeCode stays blank because it is a cross-reference to an employee
+    // a tenant setting up its first policy has no reason to have imported yet.
+    private static readonly string[] PolicyCsvExampleRow =
+        { "POL-001", "Example Leave Approval", "Leave", "true", "true" };
+
+    private static readonly string[] StepCsvExampleRow =
+        { "POL-001", "1", "Manager Approval", "Manager", "", "true" };
+
     public ApprovalPoliciesController(ZayraDbContext db) => _db = db;
 
     [HttpGet]
@@ -180,14 +191,9 @@ public class ApprovalPoliciesController : ControllerBase
     {
         var sb = new StringBuilder();
         sb.Append("# Policies\n");
-        sb.Append(string.Join(",", PolicyCsvHeaders)).Append('\n');
-        sb.Append("POL-001,Default Leave Approval,Leave,true,true\n");
-        sb.Append("POL-002,Payroll Approval,Payroll,true,true\n");
+        sb.Append(Csv.Template(PolicyCsvHeaders, PolicyCsvExampleRow));
         sb.Append("\n# Steps (use PolicyCode from above)\n");
-        sb.Append(string.Join(",", StepCsvHeaders)).Append('\n');
-        sb.Append("POL-001,1,Manager Approval,Manager,,false\n");
-        sb.Append("POL-001,2,HR Final Approval,HR,,true\n");
-        sb.Append("POL-002,1,Payroll Officer,Role,,true\n");
+        sb.Append(Csv.Template(StepCsvHeaders, StepCsvExampleRow));
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "approval_policies_import_template.csv");
     }
 
