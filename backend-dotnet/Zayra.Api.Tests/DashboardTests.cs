@@ -110,7 +110,7 @@ public class DashboardTests
     }
 
     [Fact]
-    public async Task Full_ColdLoad_UsesAtMostThirteenDatabaseCommands()
+    public async Task Summary_ColdLoad_UsesOneDatabaseCommand()
     {
         await using var connection = new SqliteConnection("DataSource=:memory:");
         await connection.OpenAsync();
@@ -127,11 +127,12 @@ public class DashboardTests
         var controller = MakeCtrl(db, tenantId);
         counter.Reset();
 
-        var result = await controller.Full(cancellationToken: CancellationToken.None);
+        var result = await controller.Summary(CancellationToken.None);
 
-        ExtractFull(result).Summary.TotalEmployees.Should().Be(2);
-        counter.Count.Should().BeLessThanOrEqualTo(13,
-            "a cold dashboard must aggregate related counters instead of paying a hosted-database round-trip per card");
+        var summary = Assert.IsType<DashboardSummaryDto>(Assert.IsType<OkObjectResult>(result).Value);
+        summary.TotalEmployees.Should().Be(2);
+        counter.Count.Should().Be(1,
+            "summary counters must share one aggregate command instead of paying a hosted-database round-trip per card");
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────
