@@ -1,0 +1,106 @@
+{
+  "expo": {
+    "name": "KynexOne",
+    "slug": "kynexone-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.kodekinetics.kynexone",
+      "infoPlist": {
+        "NSCameraUsageDescription": "KynexOne needs camera access for attendance selfie verification.",
+        "NSLocationWhenInUseUsageDescription": "KynexOne needs your location to verify attendance at approved work locations.",
+        "NSPhotoLibraryUsageDescription": "KynexOne needs photo library access to upload documents.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "buildNumber": "1",
+      "icon": "./assets/icon.png"
+    },
+    "android": {
+      "package": "com.kodekinetics.kynexone",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ],
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B1020",
+        "monochromeImage": "./assets/monochrome-icon.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": false,
+          "configureAndroidBackup": true
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow KynexOne to use Face ID for secure sign-in."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": false,
+          "locationAlwaysPermission": false,
+          "locationWhenInUsePermission": "Allow KynexOne to verify attendance at an approved work location.",
+          "motionUsagePermission": false,
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false,
+          "isAndroidForegroundServiceEnabled": false,
+          "isAndroidMotionActivityEnabled": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow KynexOne to access your camera for attendance selfie verification.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": false
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      "expo-font",
+      "expo-sharing",
+      "expo-status-bar",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#2F6BFF",
+          "defaultChannel": "default"
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0B1020",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "resizeMode": "contain"
+        }
+      ]
+    ],
+    "scheme": "kynexone",
+    "icon": "./assets/icon.png",
+    "description": "Secure mobile employee self-service for attendance, leave, payroll, approvals, documents, and HR support.",
+    "primaryColor": "#2F6BFF",
+    "extra": {
+      "eas": {
+        "projectId": "d8a0078a-97d3-493a-bfdb-866cc03962d0"
+      }
+    },
+    "owner": "kode_kinetics79"
+  }
+}
