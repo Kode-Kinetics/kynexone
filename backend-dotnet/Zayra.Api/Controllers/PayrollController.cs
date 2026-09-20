@@ -1828,12 +1828,20 @@ public class PayrollController : ControllerBase
             .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
             .ToListAsync(cancellationToken);
 
-        // L1: use policy-configured monthly hours as divisor; fall back to 240
-        var standardMonthlyHours = await _db.OvertimePolicies.AsNoTracking()
+        // L1: use policy-configured monthly hours as divisor; fall back to 240.
+        // The SAME policy row also carries the tenant's configured OT hourly BASIS. The run used to
+        // read only the divisor off it, so a tenant on HourlyRateBasis = FixedHourlyRate (or
+        // GrossSalary in a basic-base jurisdiction) was shown one overtime rate by OvertimeController
+        // and paid a different one here. Both now resolve the hour through
+        // OvertimeStatutoryCalculator.ResolveHourRate with these same two fields.
+        var otPolicy = await _db.OvertimePolicies.AsNoTracking()
             .Where(p => p.TenantId == tenantId && p.IsActive && !p.IsDeleted)
             .OrderBy(p => p.CreatedAtUtc)
-            .Select(p => (int?)p.StandardMonthlyHours)
-            .FirstOrDefaultAsync(cancellationToken) ?? 240;
+            .Select(p => new { p.StandardMonthlyHours, p.HourlyRateBasis, p.FixedHourlyRate })
+            .FirstOrDefaultAsync(cancellationToken);
+        var standardMonthlyHours = otPolicy?.StandardMonthlyHours ?? 240;
+        var otPolicyBasis = otPolicy?.HourlyRateBasis;
+        var otPolicyFixedHourlyRate = otPolicy?.FixedHourlyRate ?? 0m;
 
         // ── OT/LOP statutory rules from country pack config ───────────────────
         // Read from StatutoryRule table (tenant-overridable).  Fallback defaults are
@@ -2237,13 +2245,24 @@ public class PayrollController : ControllerBase
             var otBaseHourly = standardMonthlyHours > 0
                 ? (otBaseIsFullWage ? fullWageForOt : fullBasic) / standardMonthlyHours
                 : 0m;
+            // The full-wage hourly rate, for the GrossSalary policy basis. Identical to otBaseHourly
+            // wherever ot.hourly_base is already "wage" (KSA), so nothing moves there.
+            var otWageHourly = standardMonthlyHours > 0 ? fullWageForOt / standardMonthlyHours : 0m;
             // A per-request ApprovedMultiplier is honoured only where it is at or above the statutory
             // floor for the day actually worked. It was previously preferred unconditionally whenever
             // non-zero, which made it a back door around the statutory rate: an approved request on a
             // policy configured at 1.0 paid 1.0, with no floor check anywhere in the system.
-            var overtimePay = empOtImpacts.Count > 0 && otBaseHourly > 0m
-                ? Math.Round(empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.HourPay(
-                    otBaseHourly, hourlyRate, OtEffectiveMultiplier(x))), 2)
+            //
+            // The tenant's OvertimePolicy basis is applied HERE, through the same shared resolver
+            // OvertimeController calls, and is honoured only where it is worth at least the Art. 107
+            // hour. Before this the run ignored the policy basis outright, so a FixedHourlyRate
+            // tenant was shown one number by the overtime module and paid this one.
+            // The `otBaseHourly > 0` gate is widened to admit a configured fixed rate: with no salary
+            // structure the statutory base is zero, but a configured rate is still a real amount owed.
+            var overtimePay = empOtImpacts.Count > 0 && (otBaseHourly > 0m || otPolicyFixedHourlyRate > 0m)
+                ? Math.Round(empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
+                    otPolicyBasis, otPolicyFixedHourlyRate,
+                    otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).HourPay), 2)
                 : 0m;
 
             // The payslip line must describe the arithmetic that actually produced the money. The
@@ -2253,6 +2272,17 @@ public class PayrollController : ControllerBase
             var otEffectiveMultiplier = otHours > 0m
                 ? empOtImpacts.Sum(x => x.Hours * OtEffectiveMultiplier(x)) / otHours
                 : otMultiplier;
+
+            // For the same reason, the hourly rate on the line and on the payslip record must be the
+            // base the money was actually computed on — the statutory base, or the tenant's
+            // configured base where it beat it. Weighted the same way, and collapsing to
+            // otBaseHourly exactly when no configured base applies, so an unaffected run's label and
+            // PayrollSlip.HourlyRate are byte-identical.
+            var otEffectiveBaseHourly = otHours > 0m
+                ? empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
+                      otPolicyBasis, otPolicyFixedHourlyRate,
+                      otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).BaseHourly) / otHours
+                : otBaseHourly;
 
             decimal OtEffectiveMultiplier(OvertimePayrollImpact impact)
             {
@@ -2680,7 +2710,7 @@ public class PayrollController : ControllerBase
             {
                 var otRateDisplay = Math.Round(hourlyRate * otMultiplier, 2);
                 AddEarning(tenantId, id, e.Id, "OVERTIME",
-                    $"Overtime ({otHours:N2} h × {Math.Round(otBaseHourly, 2):N2}/h × {otEffectiveMultiplier:N2})",
+                    $"Overtime ({otHours:N2} h × {Math.Round(otEffectiveBaseHourly, 2):N2}/h × {otEffectiveMultiplier:N2})",
                     overtimePay, "Overtime");
             }
             if (fixedDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "FIXED_DEDUCTION",
@@ -2718,7 +2748,7 @@ public class PayrollController : ControllerBase
                 {
                     Basic = basic, Housing = housing, Transport = transport,
                     OtherAllowances = otherAllowances, FixedDeduction = fixedDeduction, Gross = gross,
-                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = otBaseHourly, OtMultiplier = otEffectiveMultiplier,
+                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = otEffectiveBaseHourly, OtMultiplier = otEffectiveMultiplier,
                     TaxDeduction = taxDeduction, IncomeTaxRate = incomeTaxRate,
                     AttendanceDeduction = attendanceDeduction,
                     LopDeduction = lopDeduction, LopDays = lopDays, LopDayRate = lopDayRate,

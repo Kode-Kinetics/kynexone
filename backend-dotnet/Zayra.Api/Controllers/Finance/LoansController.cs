@@ -7,6 +7,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -185,38 +186,60 @@ public class LoansController : ControllerBase
 
     [HttpPost("{id:guid}/approvals")]
     [Authorize(Roles = "Admin,HR Manager,Finance,Manager")]
-    public async Task<IActionResult> AddApprovalStep(Guid id, [FromBody] LoanApprovalRequest req, CancellationToken ct)
+    public Task<IActionResult> AddApprovalStep(Guid id, [FromBody] LoanApprovalRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
-        var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-        if (loan == null) return NotFound();
-        // A new Pending step on a decided loan resets the "all steps approved" roll-up that
-        // DecideApproval uses, which is the back door around the status guard added there.
-        // OffersController.AddApproval refuses the same way.
-        if (loan.Status != "Pending")
-            return Conflict(new
-            {
-                error = "invalid_loan_state",
-                message = $"Approval steps can only be added to a Pending loan (current: {loan.Status})."
-            });
-        var step = new LoanApproval
+        // Serialized against DecideApproval on the SAME loan: the status guard below is a
+        // read-then-write check, so without the lock a step added at the same instant as the final
+        // decide slips in behind the "all steps approved" roll-up and re-opens a disbursed loan.
+        return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, FinanceDecisionSerializer.ScopeLoan, tid, id, async () =>
         {
-            TenantId = tid, LoanId = id, StepOrder = req.StepOrder,
-            ApproverRole = req.ApproverRole,
-        };
-        _db.LoanApprovals.Add(step);
-        await _db.SaveChangesAsync(ct);
-        // SAFE-SERIALIZATION: LoanApproval is a workflow step record — no salary or personal financial data.
-        return Ok(step);
+            var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+            if (loan == null) return NotFound();
+            // A new Pending step on a decided loan resets the "all steps approved" roll-up that
+            // DecideApproval uses, which is the back door around the status guard added there.
+            // OffersController.AddApproval refuses the same way.
+            if (loan.Status != "Pending")
+                return Conflict(new
+                {
+                    error = "invalid_loan_state",
+                    message = $"Approval steps can only be added to a Pending loan (current: {loan.Status})."
+                });
+            var step = new LoanApproval
+            {
+                TenantId = tid, LoanId = id, StepOrder = req.StepOrder,
+                ApproverRole = req.ApproverRole,
+            };
+            _db.LoanApprovals.Add(step);
+            await _db.SaveChangesAsync(ct);
+            // SAFE-SERIALIZATION: LoanApproval is a workflow step record — no salary or personal financial data.
+            return Ok(step);
+        }, ct);
     }
 
     [HttpPatch("{id:guid}/approvals/{approvalId:guid}/decide")]
     [Authorize(Roles = "Admin,HR Manager,Finance,Manager")]
-    public async Task<IActionResult> DecideApproval(Guid id, Guid approvalId, [FromBody] ApprovalDecisionRequest req, CancellationToken ct)
+    public Task<IActionResult> DecideApproval(Guid id, Guid approvalId, [FromBody] ApprovalDecisionRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var uid = GetUserId();
 
+        // Pure input validation — no state is read, so it belongs outside the critical section.
+        if (req.Decision is not ("Approved" or "Rejected"))
+            return Task.FromResult<IActionResult>(
+                BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." }));
+
+        // ── The CONCURRENCY guard ────────────────────────────────────────────────────────────
+        // The status guards below are read-then-write checks. They close a sequential replay and
+        // nothing else: two decides arriving at the same instant both read Status == "Pending",
+        // both pass, and both disburse. Everything from here on runs as the sole writer of this
+        // loan (transaction-scoped advisory lock inside the retrying execution strategy — see
+        // FinanceDecisionSerializer for why the delegate is safe to re-run), so the loser's guard
+        // sees the winner's committed status and returns the 409 it was always meant to return.
+        return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, FinanceDecisionSerializer.ScopeLoan, tid, id, async () =>
+        {
         // ── The state guard ──────────────────────────────────────────────────────────────────
         // This endpoint used to act on a loan in ANY status and on an approval step that had
         // already been decided. Concretely, before this guard:
@@ -232,9 +255,6 @@ public class LoansController : ControllerBase
         // Only the GL posting was idempotent (POD-B1b, below), which was a band-aid over this
         // missing guard rather than the guard. The shape and the error codes mirror
         // OffersController.DecideApproval — the same route on the same kind of two-row aggregate.
-        if (req.Decision is not ("Approved" or "Rejected"))
-            return BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." });
-
         var approval = await _db.LoanApprovals.FirstOrDefaultAsync(x => x.Id == approvalId && x.LoanId == id && x.TenantId == tid, ct);
         if (approval == null) return NotFound();
         if (approval.Status != "Pending")
@@ -298,6 +318,7 @@ public class LoansController : ControllerBase
             JsonSerializer.Serialize(new { Status = oldStatus }),
             JsonSerializer.Serialize(new { Status = req.Decision, Step = approval.StepOrder, approval.Comments }), ct);
         return Ok(new { loan = EmployeeLoanDto.Project(loan), approval });
+        }, ct);
     }
 
     [HttpPatch("{id:guid}/settle")]
