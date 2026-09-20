@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Models;
 
@@ -98,12 +99,12 @@ public class HrLetterIssuer : IHrLetterIssuer
 
     public async Task<int> EnsureDefaultTemplatesAsync(Guid tenantId, CancellationToken cancellationToken)
     {
-        // IgnoreQueryFilters is intentional: seeding must see templates belonging to EVERY company
-        // in the tenant, not only the ones the caller's entity scope covers, or a company-scoped
-        // admin would re-seed duplicates that then trip the unique index.
-        var existing = await _db.HrLetterTemplates
-            .IgnoreQueryFilters()
-            .Where(x => x.TenantId == tenantId && x.CompanyId == null && !x.IsDeleted)
+        // Seeding must see templates belonging to EVERY company in the tenant, not only the ones
+        // the caller's entity scope covers, or a company-scoped admin re-seeds duplicates that
+        // then trip ux_hr_letter_templates_scope_type.
+        var existing = await ScopedBypass.TenantWide(_db.HrLetterTemplates, tenantId,
+                "Template seeding must observe every company's templates inside its own tenant.")
+            .Where(x => x.CompanyId == null && !x.IsDeleted)
             .Select(x => x.LetterType)
             .ToListAsync(cancellationToken);
 
@@ -313,12 +314,13 @@ public class HrLetterIssuer : IHrLetterIssuer
         var year = DateTime.UtcNow.Year;
         var prefix = HrLetterTypes.Prefixes[letterType];
 
-        // IgnoreQueryFilters is intentional and load-bearing: the reference series is per TENANT,
-        // so the highest ordinal must be read across every company. Reading it through the
-        // company-scope filter would restart the series at 1 for each legal entity and hand two
-        // employees the same reference number — the exact defect this table exists to prevent.
-        var highest = await _db.IssuedLetters.IgnoreQueryFilters()
-            .Where(x => x.TenantId == tenantId && x.LetterType == letterType && x.SequenceYear == year)
+        // Load-bearing bypass: the reference series is per TENANT, so the highest ordinal must be
+        // read across every company. Through the company-scope filter the series would restart at
+        // 1 for each legal entity and hand two employees the same reference number — the exact
+        // defect this table exists to prevent. TenantWide re-applies the tenant predicate.
+        var highest = await ScopedBypass.TenantWide(_db.IssuedLetters, tenantId,
+                "The letter reference series is allocated per tenant, across all its companies.")
+            .Where(x => x.LetterType == letterType && x.SequenceYear == year)
             .Select(x => (int?)x.SequenceNumber)
             .MaxAsync(cancellationToken) ?? 0;
 
@@ -404,12 +406,14 @@ public class HrLetterIssuer : IHrLetterIssuer
     private async Task<LetterheadData> BuildLetterheadAsync(
         Guid tenantId, Guid? companyId, Dictionary<string, string> values, CancellationToken cancellationToken)
     {
-        // IgnoreQueryFilters is intentional: the letterhead names the EMPLOYING legal entity,
-        // which for a group-company HR user issuing on another entity's behalf may sit outside
-        // their own entity scope. The explicit tenant + id predicate below is the boundary.
+        // The letterhead names the EMPLOYING legal entity, which for a group HR user issuing on
+        // another entity's behalf may sit outside their own entity scope. Company is ITenantOwned
+        // and not itself company-scoped, so TenantWide re-applies the only boundary that matters.
         var company = companyId is Guid cid
-            ? await _db.Companies.AsNoTracking().IgnoreQueryFilters()
-                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == cid && !x.IsDeleted, cancellationToken)
+            ? await ScopedBypass.TenantWide(_db.Companies, tenantId,
+                    "A letter's letterhead names the employing legal entity inside the same tenant.")
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Id == cid && !x.IsDeleted, cancellationToken)
             : null;
 
         var branding = await _db.TenantBrandings.AsNoTracking()
