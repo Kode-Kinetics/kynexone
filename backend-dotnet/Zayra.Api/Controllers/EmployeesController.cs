@@ -984,14 +984,55 @@ public class EmployeesController : ControllerBase
             var currency = string.IsNullOrWhiteSpace(currencyRaw)
                 ? defaultCompany is null && string.Equals(tenantCurrency, "USD", StringComparison.OrdinalIgnoreCase) ? "SAR" : tenantCurrency
                 : currencyRaw.ToUpperInvariant();
-            _ = decimal.TryParse(rowData.GetValueOrDefault("BasicSalary", string.Empty), out var basicSalary);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("HousingAllowance", string.Empty), out var housing);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("TransportAllowance", string.Empty), out var transport);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("FoodAllowance", string.Empty), out var food);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("MobileAllowance", string.Empty), out var mobile);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("OtherAllowance", string.Empty), out var other);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("FixedDeduction", string.Empty), out var fixedDeduction);
+            // ── A MALFORMED SALARY FIGURE IS NOW REPORTED, NOT SWALLOWED ────────────────────────────
+            // These seven lines used to read `_ = decimal.TryParse(...)`, discarding the result. A
+            // BasicSalary of "25,000" or "SAR 25000" — or a column the customer's extract simply spelled
+            // differently — therefore became 0.00 silently, while the row's own gate is `gross > 0` and
+            // gross includes the allowances. The employee was paid roughly the right net and accrued
+            // ZERO GOSI and ZERO end-of-service liability, because every GCC country pack computes
+            // covered wage, EOSB and LOP off basic. None of the 29 payroll validations catch it: the
+            // arithmetic is internally consistent. It surfaces when the employee resigns fourteen months
+            // later and the gratuity is a fraction of what it should be, or when GOSI audits the
+            // establishment. That is a legal exposure, not a support ticket.
+            //
+            // Import is the onboarding route for every new customer, so this was shipping wrong
+            // statutory data to every customer imported so far. The row is now rejected with the cell
+            // named, which is the same doctrine the opening-balance sections follow: a rejected file
+            // beats a silently-accepted wrong figure.
+            var salaryParseErrors = new List<string>();
+            decimal ParseMoneyCell(string column)
+            {
+                var raw = rowData.GetValueOrDefault(column, string.Empty).Trim();
+                if (raw.Length == 0) return 0m;
+                if (decimal.TryParse(raw, System.Globalization.NumberStyles.Number,
+                        System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+                    return parsed;
+                salaryParseErrors.Add($"{column} is not a number (found '{raw}')");
+                return 0m;
+            }
+
+            var basicSalary = ParseMoneyCell("BasicSalary");
+            var housing = ParseMoneyCell("HousingAllowance");
+            var transport = ParseMoneyCell("TransportAllowance");
+            var food = ParseMoneyCell("FoodAllowance");
+            var mobile = ParseMoneyCell("MobileAllowance");
+            var other = ParseMoneyCell("OtherAllowance");
+            var fixedDeduction = ParseMoneyCell("FixedDeduction");
             var gross = basicSalary + housing + transport + food + mobile + other;
+
+            if (salaryParseErrors.Count > 0)
+            {
+                warnings.Add($"Employee {emp.EmployeeCode}: {string.Join("; ", salaryParseErrors)}. No salary structure was created — correct the file and re-import, because a zero basic produces zero GOSI and zero end-of-service accrual.");
+                continue;
+            }
+            // A salary structure with a zero basic and a non-zero gross is the same defect arriving by a
+            // different door: the allowances alone clear the `gross > 0` gate below. PayrollController's
+            // own salary writer has always rejected `BasicSalary <= 0`; the import path did not.
+            if (gross > 0 && basicSalary <= 0)
+            {
+                warnings.Add($"Employee {emp.EmployeeCode}: BasicSalary is zero but the allowances total {gross}. No salary structure was created — basic salary drives GOSI, end-of-service and loss-of-pay in every country pack, so a zero basic is never a valid active structure.");
+                continue;
+            }
 
             var grade = emp.GradeId is not null ? lookups.GradeById.GetValueOrDefault(emp.GradeId.Value) : null;
 
