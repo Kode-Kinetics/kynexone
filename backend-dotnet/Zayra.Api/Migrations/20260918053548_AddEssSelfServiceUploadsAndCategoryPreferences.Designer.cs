@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260918053548_AddEssSelfServiceUploadsAndCategoryPreferences")]
+    partial class AddEssSelfServiceUploadsAndCategoryPreferences
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -9322,26 +9325,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("json")
                         .HasColumnName("eosb_result_json");
 
-                    b.Property<DateOnly?>("ExternalPaymentDate")
-                        .HasColumnType("date")
-                        .HasColumnName("external_payment_date");
-
-                    b.Property<string>("ExternalPaymentMethod")
-                        .HasColumnType("text")
-                        .HasColumnName("external_payment_method");
-
-                    b.Property<string>("ExternalPaymentRecordedByName")
-                        .HasColumnType("text")
-                        .HasColumnName("external_payment_recorded_by_name");
-
-                    b.Property<Guid?>("ExternalPaymentRecordedByUserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("external_payment_recorded_by_user_id");
-
-                    b.Property<string>("ExternalPaymentReference")
-                        .HasColumnType("text")
-                        .HasColumnName("external_payment_reference");
-
                     b.Property<string>("GlPeriod")
                         .HasMaxLength(7)
                         .HasColumnType("character varying(7)")
@@ -9412,10 +9395,6 @@ namespace Zayra.Api.Migrations
                     b.Property<DateTime?>("PaidAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("paid_at_utc");
-
-                    b.Property<bool>("PaidOutsidePayroll")
-                        .HasColumnType("boolean")
-                        .HasColumnName("paid_outside_payroll");
 
                     b.Property<Guid?>("PaymentBatchId")
                         .HasColumnType("uuid")
@@ -10355,14 +10334,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("access_revoked");
 
-                    b.Property<DateTime?>("AccessRevokedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("access_revoked_at_utc");
-
-                    b.Property<Guid?>("AccessRevokedByUserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("access_revoked_by_user_id");
-
                     b.Property<bool>("AssetsReturned")
                         .HasColumnType("boolean")
                         .HasColumnName("assets_returned");
@@ -10370,18 +10341,6 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("BackfillRequisitionId")
                         .HasColumnType("uuid")
                         .HasColumnName("backfill_requisition_id");
-
-                    b.Property<string>("CancelReason")
-                        .HasColumnType("text")
-                        .HasColumnName("cancel_reason");
-
-                    b.Property<DateTime?>("CancelledAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("cancelled_at_utc");
-
-                    b.Property<Guid?>("CancelledByUserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("cancelled_by_user_id");
 
                     b.Property<DateTime?>("CompletedAtUtc")
                         .HasColumnType("timestamp with time zone")

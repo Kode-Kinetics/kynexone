@@ -121,9 +121,10 @@ public sealed class ExpoPushProvider : IPushProvider
             ChannelId = string.Equals(message.Platform, "android", StringComparison.OrdinalIgnoreCase)
                 ? "default"
                 : null,
-            // The dispatcher already makes this per-device unique. It is a SHA-256 hex prefix
-            // (NotificationService.ComputeDedupeKey) — opaque, so no PII rides in the data payload.
-            Data = new Dictionary<string, string> { ["idempotencyKey"] = message.IdempotencyKey },
+            // idempotencyKey: the dispatcher already makes this per-device unique. It is a SHA-256 hex
+            // prefix (NotificationService.ComputeDedupeKey) — opaque, so no PII rides in the payload.
+            // type/entityName/entityId (W2-D S7): routing data for the app's getNotificationRoute.
+            Data = BuildRoutingData(message),
         };
 
         var client = _httpFactory.CreateClient(HttpClientName);
@@ -239,6 +240,43 @@ public sealed class ExpoPushProvider : IPushProvider
             _ => null,
         };
         return element is null ? null : element.Value.Deserialize<ExpoPushTicket>(Json);
+    }
+
+    // Event codes and entity names are business identifiers ("PAYSLIP_READY", "LeaveRequest.Notice",
+    // "HRRequest"). Anything outside this shape is dropped rather than forwarded.
+    private static readonly System.Text.RegularExpressions.Regex CodeShape =
+        new(@"^[A-Za-z][A-Za-z0-9_.:\-]{0,63}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// W2-D (S7) — the Expo <c>data</c> object. It is shown to Expo's relay and, on some OS versions,
+    /// readable from the lock screen, so it carries ONLY:
+    ///   • idempotencyKey — opaque hash prefix;
+    ///   • type          — the business event code, when it matches <see cref="CodeShape"/>;
+    ///   • entityName    — the entity type name, same shape rule;
+    ///   • entityId      — ONLY a GUID or a positive integer. Any other string (an email, a name,
+    ///                      a date, an amount) is dropped, so a caller that put something readable
+    ///                      in NotificationRequest.EntityId cannot leak it through this channel.
+    /// No names, amounts or dates are ever copied from Subject/Body/RecipientName.
+    /// </summary>
+    internal static Dictionary<string, string> BuildRoutingData(ProviderMessage message)
+    {
+        var data = new Dictionary<string, string> { ["idempotencyKey"] = message.IdempotencyKey };
+        if (IsCode(message.EventCode)) data["type"] = message.EventCode.Trim();
+        if (IsCode(message.EntityName)) data["entityName"] = message.EntityName.Trim();
+        if (IsOpaqueId(message.EntityId)) data["entityId"] = message.EntityId!.Trim();
+        return data;
+    }
+
+    private static bool IsCode(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && CodeShape.IsMatch(value.Trim());
+
+    internal static bool IsOpaqueId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var v = value.Trim();
+        if (Guid.TryParse(v, out _)) return true;
+        return v.Length <= 18 && long.TryParse(v, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var n) && n > 0;
     }
 
     /// <summary>Expo emits both spellings; both are valid and both must be accepted.</summary>

@@ -376,6 +376,19 @@ public class CrossTenantControllerTests
 
     // ── P4.2 IDOR: ESS — Employee A cannot read Employee B's payslips ────────────
 
+    /// <summary>
+    /// W2-D (S6): this endpoint no longer returns PayrollSlip entities — it returns
+    /// <see cref="EssPayslipSummaryDto"/>. The test is therefore written against the DTO's own
+    /// members (not reflection over an anonymous shape), and it asserts A's row is actually
+    /// PRESENT before asserting B's is absent: on an empty list every "must not contain"
+    /// assertion below is trivially true, so without that guard the test would pass even if
+    /// the endpoint returned nothing at all.
+    ///
+    /// Isolation is checked on three independent surfaces, because the DTO now carries more of
+    /// the slip than the old entity projection did: the identity (EmployeeId), the human label
+    /// (EmployeeCode) and — the thing that actually matters to the employee whose privacy this
+    /// protects — every money field, none of which may carry B's 99,000.
+    /// </summary>
     [Fact]
     public async Task EssPayslips_EmployeeA_CannotReadEmployeeBPayslips()
     {
@@ -385,19 +398,31 @@ public class CrossTenantControllerTests
         var empA = SeedEmployee(db, tenantId, "A-001");
         var empB = SeedEmployee(db, tenantId, "B-001");
 
-        // Seed finalised payslips for both employees
+        // A real locked run, so the S6 period join keeps both rows: a slip whose run is missing or
+        // Voided is dropped by the endpoint, which would empty the list for reasons unrelated to
+        // isolation and hide a genuine leak.
+        var runId = Guid.NewGuid();
+        db.PayrollRuns.Add(new PayrollRun
+        {
+            Id = runId, TenantId = tenantId, Year = 2026, Month = 3,
+            Status = "Locked", RunType = PayrollRunTypes.Regular, CreatedAtUtc = DateTime.UtcNow
+        });
+
+        // Seed finalised payslips for both employees, in the same run
         db.PayrollSlips.AddRange(
             new PayrollSlip
             {
-                TenantId = tenantId, EmployeeId = empA.Id, RunId = Guid.NewGuid(),
+                TenantId = tenantId, EmployeeId = empA.Id, RunId = runId,
                 EmployeeCode = "A-001", EmployeeName = "Employee A",
-                BasicSalary = 10_000m, NetSalary = 10_000m, Status = "Final"
+                BasicSalary = 10_000m, GrossSalary = 10_000m, NetSalary = 10_000m,
+                YtdGross = 30_000m, YtdNet = 30_000m, Status = "Final"
             },
             new PayrollSlip
             {
-                TenantId = tenantId, EmployeeId = empB.Id, RunId = Guid.NewGuid(),
+                TenantId = tenantId, EmployeeId = empB.Id, RunId = runId,
                 EmployeeCode = "B-001", EmployeeName = "Employee B",
-                BasicSalary = 99_000m, NetSalary = 99_000m, Status = "Final"
+                BasicSalary = 99_000m, GrossSalary = 99_000m, NetSalary = 99_000m,
+                YtdGross = 99_000m, YtdNet = 99_000m, Status = "Final"
             });
         await db.SaveChangesAsync();
 
@@ -406,17 +431,36 @@ public class CrossTenantControllerTests
         var result = await controller.Payslips(CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(result.Result);
-        var payslips = (ok.Value as IEnumerable<object>)?.ToList();
-        payslips.Should().NotBeNull();
+        var payslips = Assert.IsAssignableFrom<IEnumerable<EssPayslipSummaryDto>>(ok.Value).ToList();
 
-        var employeeIds = payslips!
-            .Select(p => (int?)p.GetType().GetProperty("EmployeeId")?.GetValue(p))
-            .ToList();
+        // Non-vacuity guard: A owns exactly one finalised slip and must see it. If this fails the
+        // assertions below prove nothing.
+        payslips.Should().ContainSingle(
+            "Employee A has exactly one finalised payslip in a locked run and must see it — an empty " +
+            "list would make every isolation assertion below vacuously true");
 
-        employeeIds.Should().AllSatisfy(id =>
-            id.Should().Be(empA.Id, "ESS payslip list must contain only the requesting employee's payslips"));
-        employeeIds.Should().NotContain(empB.Id,
-            "Employee A must not see Employee B's payslips — EmployeeB has salary 99,000 which must remain private");
+        payslips.Should().OnlyContain(p => p.EmployeeId == empA.Id,
+            "the ESS payslip list must contain only the requesting employee's payslips");
+        payslips.Should().NotContain(p => p.EmployeeId == empB.Id,
+            "Employee A must not see Employee B's payslips");
+        payslips.Should().NotContain(p => p.EmployeeCode == "B-001",
+            "Employee B's payslip must not appear under its employee code either");
+
+        payslips
+            .SelectMany(p => new[]
+            {
+                p.GrossSalary, p.Deductions, p.TotalDeductions, p.NetSalary,
+                p.BasicSalary, p.HousingAllowance, p.TransportAllowance, p.OtherAllowances,
+                p.ArrearsAmount, p.EmployeeStatutoryTotal, p.LoanDeductions,
+                p.YtdGross, p.YtdNet
+            })
+            .Should().NotContain(99_000m,
+                "Employee B earns 99,000 — that figure must not surface in ANY money field of the DTO " +
+                "Employee A receives");
+
+        // And A's own figures are intact — the endpoint returns the right slip, not a blanked one.
+        payslips[0].NetSalary.Should().Be(10_000m);
+        payslips[0].EmployeeCode.Should().Be("A-001");
     }
 
     [Fact]
@@ -441,10 +485,10 @@ public class CrossTenantControllerTests
         var result = await controller.Payslips(CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(result.Result);
-        var payslips = (ok.Value as IEnumerable<object>)?.ToList();
+        var payslips = Assert.IsAssignableFrom<IEnumerable<EssPayslipSummaryDto>>(ok.Value).ToList();
 
         // empA has no payslips — list must be empty, not contain empB's 250k payslip
-        payslips.Should().NotBeNull().And.BeEmpty(
+        payslips.Should().BeEmpty(
             "Employee A has no payslips; the 250,000 payslip belongs to Employee B and must not appear");
     }
 

@@ -65,7 +65,10 @@ public sealed record NotificationDispatchRequest(
     string Body,
     string IdempotencyKey,
     string Platform = "",
-    IReadOnlyList<PushTarget>? PushTargets = null);
+    IReadOnlyList<PushTarget>? PushTargets = null,
+    // W2-D (S7) — routing identity for push taps. Opaque codes/ids only; see ExpoPushProvider.
+    string EntityName = "",
+    string? EntityId = null);
 
 /// <summary>A registered device token for a specific employee inside a specific tenant.</summary>
 public sealed record PushTarget(Guid DeviceId, string Token, string Platform);
@@ -149,7 +152,14 @@ public sealed record ProviderMessage(
     string Subject,
     string Body,
     string IdempotencyKey,
-    string Platform = "");
+    string Platform = "",
+    // W2-D (S7) — where a tap on this message should land. Populated from the NotificationRequest
+    // (via the delivery row). These are BUSINESS CODES and OPAQUE IDS only: a provider that forwards
+    // them (Expo's `data`) must not add names, amounts or dates — the payload is visible on the
+    // lock screen and to the vendor. ExpoPushProvider.BuildRoutingData enforces the shape.
+    string EventCode = "",
+    string EntityName = "",
+    string? EntityId = null);
 
 public sealed record ProviderSendResult(
     ProviderSendStatus Status,
