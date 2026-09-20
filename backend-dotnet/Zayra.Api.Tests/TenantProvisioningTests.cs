@@ -470,10 +470,13 @@ public class TenantProvisioningTests
                 .Where(w => w.TenantId == tenant.Id && w.IsDefault && w.IsActive)
                 .Select(w => w.EntityName)
                 .ToListAsync())
-            .Should().BeEquivalentTo(new[] { "LeaveRequest", "OvertimeRequest", "PayrollRun", "Timesheet" });
+            .Should().BeEquivalentTo(new[] { "LeaveRequest", "OvertimeRequest", "PayrollRun", "Timesheet", "ManpowerRequisition" });
         (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "LeaveRequest" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();
         // Without this one, the first timesheet a tenant submits 422s on approval_route_not_configured.
         (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "Timesheet" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();
+        // Without this one the router returns null for a requisition, Submit creates no shared
+        // approval row, and the headcount commitment is "approved" with nothing on the record.
+        (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "ManpowerRequisition" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();
         (await db.ApprovalPolicies.CountAsync(p => p.TenantId == tenant.Id)).Should().Be(0, "the retired model is never written");
 
         var countryRuleCount = countryRules.Count;

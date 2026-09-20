@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Recruitment;
 
 namespace Zayra.Api.Infrastructure.Seed;
 
@@ -355,6 +356,12 @@ public static class TenantProvisioningBundle
         // Without this row the first timesheet a tenant submits 422s with
         // approval_route_not_configured — the module would look shipped and be unusable.
         (TimesheetConstants.ApprovalEntityName, "TIMESHEET-DEFAULT", "Default Timesheet Approval"),
+        // ManpowerRequisition was the one entity with a producer and NO seeded workflow. The router
+        // returned null, Submit created no shared row, and a requisition's approval then existed
+        // nowhere but a status string: no queue entry, no decision ledger, no maker-checker. A
+        // headcount commitment approved by nobody on the record is a control failure, not a gap in
+        // configuration, so the default belongs here beside the other four.
+        (RequisitionApprovalSync.ApprovalEntityName, "REQUISITION-DEFAULT", "Default Manpower Requisition Approval"),
     };
 
     private static async Task<int> InstallDefaultApprovalWorkflowsAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)

@@ -1,11 +1,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
 import {
   FileText, Shield, Globe, AlertTriangle, BarChart3, Lightbulb,
-  Plus, CheckCircle, Clock, XCircle, RefreshCw,
+  Plus, CheckCircle, Clock, XCircle, RefreshCw, FileWarning,
 } from 'lucide-react';
+import { employeesApi } from '../api/employees';
+import type { EmployeeExpiringDocument, EmployeeMissingDocumentsReport } from '../api/employees';
 import {
   complianceContractsApi, complianceVisaApi, compliancePassportsApi,
   complianceWorkPermitsApi, complianceRenewalsApi, complianceReportsApi,
@@ -537,6 +540,159 @@ function ExpiryAlertsTab() {
   );
 }
 
+// ── Employee Documents Tab ────────────────────────────────────────────────────
+//
+// The dashboard has counted expiring and missing EMPLOYEE DOCUMENTS since it was written, and both
+// chips linked here — to a page whose every tab reads a DIFFERENT table. `Expiry Alerts` above
+// walks the visa / passport / work-permit / contract records; these two counters walk
+// `EmployeeDocuments`. The reports themselves have existed at
+// `/api/employees/reports/expiring-documents` and `/missing-documents` with no caller, so the
+// numbers were real and the click went nowhere. This is where they live.
+
+function EmployeeDocumentsTab() {
+  const [view, setView] = useState<'expiring' | 'missing'>('expiring');
+  const [days, setDays] = useState(60);
+  const [expiring, setExpiring] = useState<EmployeeExpiringDocument[] | null>(null);
+  const [missing, setMissing] = useState<EmployeeMissingDocumentsReport[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError('');
+    const req = view === 'expiring'
+      ? employeesApi.reports.expiringDocuments(days).then(r => { if (!cancelled) setExpiring(r); })
+      : employeesApi.reports.missingDocuments().then(r => { if (!cancelled) setMissing(r); });
+    req
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        const status = (e as { response?: { status?: number } })?.response?.status;
+        setError(status === 403
+          ? 'Your role cannot read employee document reports. These are restricted to Admin, HR Manager, HR Officer, Payroll Officer and Auditor.'
+          : 'The employee document report could not be loaded.');
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [view, days]);
+
+  const rows = view === 'expiring' ? expiring : missing;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]">
+          {([['expiring', 'Expiring'], ['missing', 'Missing']] as const).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setView(k)}
+              aria-pressed={view === k}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                view === k
+                  ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {view === 'expiring' && (
+          <select
+            title="Filter expiry window"
+            value={days}
+            onChange={e => setDays(Number(e.target.value))}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-200"
+          >
+            <option value={30}>Expiring within 30 days</option>
+            <option value={60}>Expiring within 60 days</option>
+            <option value={90}>Expiring within 90 days</option>
+            <option value={180}>Expiring within 180 days</option>
+          </select>
+        )}
+        {rows && <span className="text-sm text-slate-500 dark:text-slate-400">{rows.length} employee record(s)</span>}
+      </div>
+
+      {error && (
+        <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-400">
+          {error}
+        </p>
+      )}
+
+      {loading ? (
+        <p className="py-8 text-center text-sm text-slate-400">Loading…</p>
+      ) : error ? null : view === 'expiring' ? (
+        (expiring ?? []).length === 0 ? (
+          <div className="py-12 text-center">
+            <CheckCircle className="mx-auto mb-3 h-10 w-10 text-emerald-400" />
+            <p className="text-sm font-medium text-slate-800 dark:text-slate-200">No employee documents expire within {days} days</p>
+            <p className="mt-1 text-xs text-slate-400">Every filed document is in date.</p>
+          </div>
+        ) : (
+          <div className="surface overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-white/10">
+                  {['Employee', 'Code', 'Document Type', 'Expiry Date', 'Days Left'].map(h => (
+                    <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                {(expiring ?? []).map((d, i) => {
+                  const left = d.expiryDate ? daysUntil(d.expiryDate) : null;
+                  return (
+                    <tr key={`${d.employeeId}-${d.documentType}-${i}`} className={`hover:bg-slate-50 dark:hover:bg-white/[0.02] ${left !== null && left <= 0 ? 'bg-rose-50/50 dark:bg-rose-500/5' : ''}`}>
+                      <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{d.fullName}</td>
+                      <td className="p-3 font-mono text-xs text-slate-500 dark:text-slate-400">{d.employeeCode}</td>
+                      <td className="p-3 text-slate-500 dark:text-slate-400">{d.documentType}</td>
+                      <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{d.expiryDate ?? '—'}</td>
+                      <td className="p-3">{left === null ? <span className="text-xs text-slate-400">—</span> : <ExpiryBadge daysLeft={left} />}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : (missing ?? []).length === 0 ? (
+        <div className="py-12 text-center">
+          <CheckCircle className="mx-auto mb-3 h-10 w-10 text-emerald-400" />
+          <p className="text-sm font-medium text-slate-800 dark:text-slate-200">No employee is missing a required document</p>
+          <p className="mt-1 text-xs text-slate-400">Every active employee file is complete.</p>
+        </div>
+      ) : (
+        <div className="surface overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 dark:border-white/10">
+                {['Employee', 'Code', 'Missing Documents'].map(h => (
+                  <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+              {(missing ?? []).map(m => (
+                <tr key={m.employeeId} className="hover:bg-slate-50 dark:hover:bg-white/[0.02]">
+                  <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{m.fullName}</td>
+                  <td className="p-3 font-mono text-xs text-slate-500 dark:text-slate-400">{m.employeeCode}</td>
+                  <td className="p-3">
+                    <div className="flex flex-wrap gap-1">
+                      {m.missingDocumentTypes.map(t => (
+                        <span key={t} className="rounded-full bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">{t}</span>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Compliance AI Tab ─────────────────────────────────────────────────────────
 
 function ComplianceAITab() {
@@ -605,10 +761,16 @@ function ComplianceAITab() {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'contracts' | 'visa' | 'passports' | 'renewals' | 'expiry' | 'ai';
+type Tab = 'dashboard' | 'contracts' | 'visa' | 'passports' | 'renewals' | 'expiry' | 'employee-documents' | 'ai';
+
+const TAB_KEYS: Tab[] = ['dashboard', 'contracts', 'visa', 'passports', 'renewals', 'expiry', 'employee-documents', 'ai'];
 
 export default function CompliancePage() {
-  const [tab, setTab] = useState<Tab>('dashboard');
+  const params = useSearchParams();
+  const requested = params.get('tab');
+  const [tab, setTab] = useState<Tab>(
+    requested && (TAB_KEYS as string[]).includes(requested) ? (requested as Tab) : 'dashboard',
+  );
 
   const tabs: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
@@ -616,6 +778,7 @@ export default function CompliancePage() {
     { id: 'visa', label: 'Visa & ID', icon: Globe },
     { id: 'renewals', label: 'Renewals', icon: RefreshCw },
     { id: 'expiry', label: 'Expiry Alerts', icon: AlertTriangle },
+    { id: 'employee-documents', label: 'Employee Documents', icon: FileWarning },
     { id: 'ai', label: 'Insights', icon: Lightbulb },
   ];
 
@@ -651,6 +814,7 @@ export default function CompliancePage() {
       {tab === 'visa' && <VisaPassportTab />}
       {tab === 'renewals' && <RenewalsTab />}
       {tab === 'expiry' && <ExpiryAlertsTab />}
+      {tab === 'employee-documents' && <EmployeeDocumentsTab />}
       {tab === 'ai' && <ComplianceAITab />}
     </div>
   );

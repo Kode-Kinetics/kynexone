@@ -682,9 +682,13 @@ export function DashboardPage() {
           { label: 'Pending Leave',          value: kpis.pendingLeaveRequests,         tone: 'amber' as const, to: '/leave'      },
           { label: 'Attendance Corrections', value: kpis.pendingAttendanceCorrections, tone: 'amber' as const, to: '/attendance' },
           { label: 'Attendance Exceptions',  value: kpis.attendanceExceptions,         tone: 'rose'  as const, to: '/attendance' },
-          { label: 'Expiring Documents',     value: kpis.expiringDocuments,            tone: 'amber' as const, to: '/compliance' },
-          { label: 'Expired Documents',      value: kpis.expiredDocuments,             tone: 'rose'  as const, to: '/compliance' },
-          { label: 'Missing Documents',      value: kpis.missingDocuments,             tone: 'rose'  as const, to: '/compliance' },
+          // These three count rows of EmployeeDocuments. /compliance's own tabs read the visa /
+          // passport / work-permit / contract records instead, so the bare link landed on a page
+          // that could not show the number it was clicked from. The Employee Documents tab is where
+          // this data actually lives.
+          { label: 'Expiring Documents',     value: kpis.expiringDocuments,            tone: 'amber' as const, to: '/compliance?tab=employee-documents' },
+          { label: 'Expired Documents',      value: kpis.expiredDocuments,             tone: 'rose'  as const, to: '/compliance?tab=employee-documents' },
+          { label: 'Missing Documents',      value: kpis.missingDocuments,             tone: 'rose'  as const, to: '/compliance?tab=employee-documents' },
         ];
         const sevRank = (t: 'rose' | 'amber') => (t === 'rose' ? 0 : 1);
         const sorted = [...ops].sort((a, b) =>
@@ -1019,7 +1023,7 @@ export function DashboardPage() {
                     <button
                       key={label}
                       type="button"
-                      onClick={() => router.push('/compliance')}
+                      onClick={() => router.push('/compliance?tab=employee-documents')}
                       className="flex flex-col items-center gap-0.5 rounded-lg py-2 text-center transition hover:bg-slate-50 dark:hover:bg-white/[0.04]"
                     >
                       <Ic className={`h-3.5 w-3.5 ${value > 0 ? cls : 'text-slate-300 dark:text-slate-700'}`} aria-hidden />
