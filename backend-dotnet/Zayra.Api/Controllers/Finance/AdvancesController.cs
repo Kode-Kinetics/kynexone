@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
@@ -200,10 +201,29 @@ public class AdvancesController : ControllerBase
             _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
         {
         var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-        if (adv == null) return NotFound();
-        if (adv.Status != "Pending") return BadRequest("Advance is not in Pending status.");
-        if (adv.CreatedBy.HasValue && uid.HasValue && adv.CreatedBy == uid)
-            return BadRequest("Maker-checker control: requester cannot approve their own salary advance.");
+
+        // Shared checklist — see ApprovalDecisionGuard. This endpoint IS the decision, so there is
+        // no decision vocabulary to validate, and an advance carries no approval step rows.
+        var verdict = ApprovalDecisionGuard.Evaluate(new ApprovalDecisionSpec
+        {
+            Decision = "Approved",
+            AllowedDecisions = Array.Empty<string>(),
+            Step = null,
+            ParentLabel = "advance",
+            ParentExists = adv is not null,
+            ParentStatus = adv?.Status ?? string.Empty,
+            ParentStatusesAllowingDecision = new[] { "Pending" },
+            // DECLARED ABSENCE: SalaryAdvance carries IsLockedByPayroll and LoansController refuses
+            // a decision on a locked loan, but this endpoint has never consulted it. Preserved as-is
+            // — closing it changes behaviour and belongs in its own change, not in a refactor.
+            Lock = ApprovalLock.None,
+            MakerChecker = new MakerCheckerRule(
+                adv?.CreatedBy is { } maker && uid.HasValue && maker == uid,
+                null,
+                "Maker-checker control: requester cannot approve their own salary advance."),
+        });
+        if (!verdict.Passed) return AdvanceApproveRefusal(verdict);
+        ArgumentNullException.ThrowIfNull(adv);
 
         var oldStatus = adv.Status;
         adv.Status = "Active"; adv.ApprovedAmount = req.ApprovedAmount;
@@ -247,18 +267,27 @@ public class AdvancesController : ControllerBase
             _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
         {
         var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-        if (adv == null) return NotFound();
-        // The same hole this batch closed on LoansController.DecideApproval, on the sibling
-        // module: Reject wrote "Rejected" over ANY status while Approve (above) has always
-        // required Pending. Rejecting an Active advance left the disbursement GL entry and the
-        // installment schedule live under a Rejected header, and payroll's deduction query keys
-        // on Status == "Active", so the repayments simply stopped.
-        if (adv.Status != "Pending")
-            return Conflict(new
-            {
-                error = "invalid_advance_state",
-                message = $"Only a Pending advance can be rejected (current: {adv.Status})."
-            });
+
+        // This is the hole the correctness batch closed, and the reason the checklist is now shared:
+        // Reject wrote "Rejected" over ANY status while Approve (above) has always required Pending.
+        // Rejecting an Active advance left the disbursement GL entry and the installment schedule
+        // live under a Rejected header, and payroll's deduction query keys on Status == "Active",
+        // so the repayments simply stopped. The guard cannot be satisfied without answering the
+        // status question, which is what makes the omission unrepeatable.
+        var verdict = ApprovalDecisionGuard.Evaluate(new ApprovalDecisionSpec
+        {
+            Decision = "Rejected",
+            AllowedDecisions = Array.Empty<string>(),
+            Step = null,
+            ParentLabel = "advance",
+            ParentExists = adv is not null,
+            ParentStatus = adv?.Status ?? string.Empty,
+            ParentStatusesAllowingDecision = new[] { "Pending" },
+            Lock = ApprovalLock.None,                 // DECLARED ABSENCE — as in Approve, above.
+            MakerChecker = MakerCheckerRule.None,     // DECLARED ABSENCE: a requester may withdraw.
+        });
+        if (!verdict.Passed) return AdvanceRejectRefusal(verdict, adv?.Status);
+        ArgumentNullException.ThrowIfNull(adv);
         var oldStatus = adv.Status;
         adv.Status = "Rejected"; adv.RejectionReason = req.Reason;
         adv.UpdatedAtUtc = DateTime.UtcNow; adv.UpdatedBy = uid;
@@ -405,6 +434,29 @@ public class AdvancesController : ControllerBase
         _db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
             .AnyAsync(x => x.TenantId == tid && x.SourceModule == "Advance"
                         && x.SourceEntityId == advanceId && x.EventType == "Disbursement" && !x.IsReversed, ct);
+
+    /// <summary>Approve's refusals, unchanged: a bare-string 400 where Reject uses a coded 409.
+    /// The asymmetry is pre-existing and preserved deliberately.</summary>
+    private IActionResult AdvanceApproveRefusal(ApprovalGuardVerdict verdict) => verdict.Outcome switch
+    {
+        ApprovalGuardOutcome.ParentNotFound => NotFound(),
+        ApprovalGuardOutcome.ParentStateForbidsDecision => BadRequest("Advance is not in Pending status."),
+        ApprovalGuardOutcome.MakerIsChecker => BadRequest(verdict.Message),
+        _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
+    };
+
+    /// <summary>Reject's refusals, unchanged: a coded 409 where Approve uses a bare-string 400.</summary>
+    private IActionResult AdvanceRejectRefusal(ApprovalGuardVerdict verdict, string? advanceStatus) => verdict.Outcome switch
+    {
+        ApprovalGuardOutcome.ParentNotFound => NotFound(),
+        ApprovalGuardOutcome.ParentStateForbidsDecision =>
+            Conflict(new
+            {
+                error = "invalid_advance_state",
+                message = $"Only a Pending advance can be rejected (current: {advanceStatus})."
+            }),
+        _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
+    };
 
     private async Task WriteAdvanceAudit(Guid tid, Guid? uid, Guid advId, string action, string? oldVal, string newVal, CancellationToken ct)
     {

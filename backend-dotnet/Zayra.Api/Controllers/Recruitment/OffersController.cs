@@ -2,6 +2,7 @@ using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
@@ -27,6 +28,29 @@ public class OffersController : ControllerBase
         Guid.TryParse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
 
     private string GetUserName() => User.FindFirst("name")?.Value ?? User.Identity?.Name ?? "System";
+
+    /// <summary>Maps a shared-guard refusal to the exact response this endpoint has always
+    /// returned. Note "This approval is already in ..." — Loans says "This approval step is
+    /// already in ...". The wording differs per module and is preserved rather than unified.</summary>
+    private IActionResult OfferDecisionRefusal(ApprovalGuardVerdict verdict, string? stepStatus, string? offerStatus) => verdict.Outcome switch
+    {
+        ApprovalGuardOutcome.DecisionOutsideVocabulary =>
+            BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." }),
+        ApprovalGuardOutcome.StepNotFound or ApprovalGuardOutcome.ParentNotFound => NotFound(),
+        ApprovalGuardOutcome.StepAlreadyDecided =>
+            Conflict(new
+            {
+                error = "approval_already_decided",
+                message = $"This approval is already in '{stepStatus}' status."
+            }),
+        ApprovalGuardOutcome.ParentStateForbidsDecision =>
+            Conflict(new
+            {
+                error = "invalid_offer_state",
+                message = $"Offer approval decisions require PendingApproval status (current: {offerStatus})."
+            }),
+        _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
+    };
 
     // GET /api/recruitment/offers?applicationId=...&status=...
     [HttpGet]
@@ -258,27 +282,33 @@ public class OffersController : ControllerBase
     public async Task<IActionResult> DecideApproval(Guid id, Guid approvalId, [FromBody] DecideApprovalRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
-        if (req.Decision is not ("Approved" or "Rejected"))
-            return BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." });
 
+        // Shared checklist — see ApprovalDecisionGuard. Both records are resolved first so the
+        // checklist runs in one place; the order of refusals and every response body are unchanged.
         var approval = await _db.OfferApprovals
             .FirstOrDefaultAsync(x => x.Id == approvalId && x.TenantId == tid && x.OfferLetterId == id, ct);
-        if (approval == null) return NotFound();
-        if (approval.Status != "Pending")
-            return Conflict(new
-            {
-                error = "approval_already_decided",
-                message = $"This approval is already in '{approval.Status}' status."
-            });
-
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-        if (offer == null) return NotFound();
-        if (offer.Status != "PendingApproval")
-            return Conflict(new
-            {
-                error = "invalid_offer_state",
-                message = $"Offer approval decisions require PendingApproval status (current: {offer.Status})."
-            });
+
+        var verdict = ApprovalDecisionGuard.Evaluate(new ApprovalDecisionSpec
+        {
+            Decision = req.Decision,
+            AllowedDecisions = ApprovalDecisionGuard.ApprovedOrRejected,
+            Step = new ApprovalStepState(approval is not null, approval?.Status ?? string.Empty),
+            ParentLabel = "offer",
+            ParentExists = offer is not null,
+            ParentStatus = offer?.Status ?? string.Empty,
+            ParentStatusesAllowingDecision = new[] { "PendingApproval" },
+            Lock = ApprovalLock.None,                 // DECLARED ABSENCE: an offer has no payroll lock.
+            // DECLARED ABSENCE: OfferLetter records no creator at all — there is no CreatedBy or
+            // equivalent on the entity — so this module has no maker to check the checker against.
+            // Closing this needs a schema change, not a refactor.
+            MakerChecker = MakerCheckerRule.None,
+        });
+        if (!verdict.Passed) return OfferDecisionRefusal(verdict, approval?.Status, offer?.Status);
+
+        // Guard postcondition: a passing verdict means both records were found.
+        ArgumentNullException.ThrowIfNull(approval);
+        ArgumentNullException.ThrowIfNull(offer);
 
         approval.Status = req.Decision;
         approval.Comments = req.Comments ?? string.Empty;
