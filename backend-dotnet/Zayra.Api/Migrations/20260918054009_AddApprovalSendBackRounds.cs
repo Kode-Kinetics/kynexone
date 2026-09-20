@@ -33,6 +33,26 @@ namespace Zayra.Api.Migrations
                 nullable: false,
                 defaultValue: 1);
 
+            // On a database that has only ever run the previous build every (request, step) pair is
+            // unique, so this is a no-op. After a Down that rebuilt the old index NON-unique (a request
+            // had been resubmitted), re-applying this migration would otherwise try to build a unique
+            // index over rows that all defaulted back to round 1. Number such duplicates by decision
+            // time so the index can be built and no audit row is lost.
+            migrationBuilder.Sql("""
+                UPDATE approval_decisions d
+                SET submission_round = r.rn
+                FROM (
+                    SELECT id, ROW_NUMBER() OVER (PARTITION BY tenant_id, approval_request_id, step_order ORDER BY decided_at_utc, id) AS rn
+                    FROM approval_decisions
+                ) r
+                WHERE d.id = r.id AND d.submission_round <> r.rn;
+
+                UPDATE approval_requests a
+                SET submission_round = m.max_round
+                FROM (SELECT approval_request_id, MAX(submission_round) AS max_round FROM approval_decisions GROUP BY approval_request_id) m
+                WHERE a.id = m.approval_request_id AND a.submission_round < m.max_round;
+                """);
+
             migrationBuilder.CreateIndex(
                 name: "IX_approval_decisions_request_round_step",
                 table: "approval_decisions",
