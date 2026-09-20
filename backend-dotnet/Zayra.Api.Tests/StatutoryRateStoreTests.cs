@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using Zayra.Api.Infrastructure.Compliance;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Qatar;
 using Zayra.Api.Infrastructure.CountryPack.Uae;
@@ -124,16 +126,70 @@ public class StatutoryRateStoreTests
     {
         // Source lint: the two production callers must add the housing allowance. A unit test on the
         // pure function cannot see which number a caller hands it, and that was the whole defect.
-        foreach (var (file, needle) in new[]
+        //
+        // WHY THE READINESS NEEDLE IS A LIST. The rule being enforced is "the caller must not pass
+        // basic alone". It was originally expressed as one literal, the inline `basic + housing`
+        // that the caller happened to be written with. The readiness report now delegates to
+        // GosiContributoryWageBasis.CoveredWage(basic, housing) — the ONE definition of the covered
+        // wage, shared with the payslip — which satisfies the rule more strongly than the inline
+        // sum did, because it also cannot drift from SalaryBreakdown.GosiCoveredWage. Accepting
+        // either form keeps the lint enforcing the rule instead of a since-refactored spelling; the
+        // negative assertion below is what actually stops a regression to basic-only.
+        foreach (var (file, needles) in new[]
                  {
-                     ("Infrastructure/Compliance/GosiReadinessReportService.cs", "salary!.BasicSalary + salary.HousingAllowance"),
-                     ("Controllers/GosiController.cs",                           "salary.BasicSalary + salary.HousingAllowance"),
+                     ("Infrastructure/Compliance/GosiReadinessReportService.cs", new[]
+                     {
+                         "salary!.BasicSalary + salary.HousingAllowance",
+                         "GosiContributoryWageBasis.CoveredWage(\n                    salary!.BasicSalary, salary.HousingAllowance)",
+                         "GosiContributoryWageBasis.CoveredWage(",
+                     }),
+                     ("Controllers/GosiController.cs", new[]
+                     {
+                         "salary.BasicSalary + salary.HousingAllowance",
+                     }),
                  })
         {
             var path = ResolveApiFile(file);
             if (path is null) continue;
-            Assert.Contains(needle, File.ReadAllText(path), StringComparison.Ordinal);
+            var source = File.ReadAllText(path);
+
+            Assert.True(
+                needles.Any(n => source.Contains(n, StringComparison.Ordinal)),
+                $"{file} must build the GOSI contributory wage from basic + housing — either inline "
+                + "or via GosiContributoryWageBasis.CoveredWage. None of the accepted forms was found.");
+
+            // The regression this guards, stated directly: handing the calculator the basic salary
+            // on its own. That is what under-stated every contribution against the payslip.
+            Assert.DoesNotMatch(
+                new Regex(@"GosiCalculationService\.Calculate\(\s*[A-Za-z_.!?]*[Nn]ationality\s*,\s*salary!?\.BasicSalary\s*,"),
+                source);
         }
+    }
+
+    /// <summary>
+    /// A2(c), second half — the compliance surfaces must cap the contributory wage at the SAME
+    /// ceiling the payslip uses.
+    ///
+    /// <para>Agreeing on the BASE (basic + housing) was only half the fix. The payslip caps via the
+    /// effective-dated statutory rule <c>gosi.covered_wage_ceiling_sar</c>; GosiCalculationService
+    /// caps via <c>GosiContributionRule.MaxContributoryWage</c>, which the platform seeder never
+    /// sets. So on a wage above the ceiling the readiness report reported SAR 5,850 against the
+    /// SAR 4,387.50 the payslip deducted. Two sources for one statutory number is the defect;
+    /// populating the second source would not have fixed it, because they would drift again at the
+    /// next ceiling change.</para>
+    /// </summary>
+    [Fact]
+    public void GosiReadiness_CapsAtTheSameCeilingSourceThePayslipUses()
+    {
+        var path = ResolveApiFile("Infrastructure/Compliance/GosiReadinessReportService.cs");
+        if (path is null) return;
+        var source = File.ReadAllText(path);
+
+        Assert.Contains("GosiContributoryWageBasis.CeilingAsync", source, StringComparison.Ordinal);
+
+        // And the helper must read the payslip's key, not a second one of its own.
+        Assert.Equal(RuleKeys.GosiCoveredWageCeilingSar, GosiContributoryWageBasis.CeilingRuleKey);
+        Assert.Equal(45_000m, GosiContributoryWageBasis.DefaultCoveredWageCeilingSar);
     }
 
     // ── A2(c) — one ceiling, not a compiled third copy ──────────────────────────────────────────

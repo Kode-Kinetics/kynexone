@@ -7,8 +7,8 @@ import {
   Minus, RefreshCw, Settings2, ShieldAlert, TrendingDown, TrendingUp, UserPlus, Users,
 } from 'lucide-react';
 import {
-  bandLabel, bandStyle, nitaqatApi,
-  type NitaqatActivity, type NitaqatHireImpact, type NitaqatStanding,
+  bandLabel, bandStyle, nitaqatApi, NITAQAT_CURVE_METHOD,
+  type NitaqatActivity, type NitaqatGridCoverage, type NitaqatHireImpact, type NitaqatStanding,
   type NitaqatStandingResponse, type NitaqatTrendResponse,
 } from '../api/nitaqat';
 import { companiesApi, type CompanyDto } from '../api/organization';
@@ -97,10 +97,19 @@ function BandRail({ standing }: { standing: NitaqatStanding }) {
   );
 }
 
-function Refused({ refusal, onConfigure }: {
+/** The MHRSD annex a customer must load before any real activity can be banded. */
+const MHRSD_ANNEX_URL = 'https://www.hrsd.gov.sa/sites/default/files/2026-03/ntaqat-almtwr.pdf';
+
+function Refused({ refusal, coverage, onConfigure }: {
   refusal: { reason: string; message: string; remedy: string };
+  coverage: NitaqatGridCoverage | null;
   onConfigure: () => void;
 }) {
+  // The refusal a real customer hits: they picked their actual economic activity and the
+  // product has no band floors for it. Before, this rendered as a bare message with no way
+  // forward, which reads as a broken screen rather than a missing configuration.
+  const thresholdsMissing = refusal.reason === 'nitaqat_thresholds_not_published';
+
   return (
     <div className="surface flex flex-col items-start gap-3 p-6">
       <div className="flex items-center gap-2">
@@ -115,6 +124,52 @@ function Refused({ refusal, onConfigure }: {
         <span className="font-semibold">What to do: </span>
         {refusal.remedy}
       </div>
+
+      {thresholdsMissing && (
+        <div className="w-full space-y-3 rounded-lg border border-amber-200 bg-amber-50/70 p-4 dark:border-amber-500/25 dark:bg-amber-500/[0.07]">
+          <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+            Saudization banding needs configuring before it can answer
+          </p>
+          <p className="text-sm text-amber-900/90 dark:text-amber-100/90">
+            Since 1&nbsp;December&nbsp;2021 MHRSD works out the band floor from a curve published
+            per economic activity, not from a fixed table. Those constants are published by the
+            Ministry and are deliberately <strong>not shipped with this product</strong>: they are
+            revised periodically, and a stale constant would produce a confident wrong answer about
+            whether you can issue a work visa.
+          </p>
+          <ol className="list-decimal space-y-1 pl-5 text-sm text-amber-900/90 dark:text-amber-100/90">
+            <li>
+              Download the current annex —{' '}
+              <a
+                href={MHRSD_ANNEX_URL}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="font-medium underline underline-offset-2"
+              >
+                MHRSD Nitaqat Mutawar procedural guide
+              </a>{' '}
+              (hrsd.gov.sa, free, no login).
+            </li>
+            <li>Find your establishment&apos;s economic activity in Annex&nbsp;1.</li>
+            <li>
+              Load its figures under <strong>Saudi Compliance → Saudization → Nitaqat grid</strong>,
+              or ask your implementation consultant to. Every load records where the numbers came
+              from and who checked them.
+            </li>
+          </ol>
+          <p className="text-sm text-amber-900/90 dark:text-amber-100/90">
+            You can also record the band Qiwa itself reports for your establishment — Qiwa is
+            authoritative and the dashboard will show it alongside our estimate.
+          </p>
+          {coverage && (
+            <p className="text-xs text-amber-900/80 dark:text-amber-100/80">
+              {coverage.activitiesWithCompleteGrid} of {coverage.activitiesTotal} economic
+              activities currently have band floors loaded for this tenant.
+            </p>
+          )}
+        </div>
+      )}
+
       {refusal.reason === 'nitaqat_activity_not_configured' && (
         <button
           type="button"
@@ -125,6 +180,39 @@ function Refused({ refusal, onConfigure }: {
           Set the economic activity
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * Shown when a band WAS produced but off the pre-2021 size-tier table rather than the curve
+ * MHRSD uses today. The band is still the best answer available, so it is not suppressed —
+ * but a reader must not take it for the current regime's answer.
+ */
+function BandingMethodNotice({ standing }: { standing: NitaqatStanding }) {
+  if (standing.bandingMethod === NITAQAT_CURVE_METHOD) return null;
+
+  return (
+    <div className="surface flex items-start gap-2.5 border-l-4 border-amber-400 p-4 dark:border-amber-500/60">
+      <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+      <div className="space-y-1">
+        <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+          This band came from a manually loaded table, not the MHRSD curve
+        </p>
+        <p className="text-sm text-slate-600 dark:text-slate-300">{standing.bandingMethodNote}</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          Load this activity&apos;s curve constants from the{' '}
+          <a
+            href={MHRSD_ANNEX_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="underline underline-offset-2"
+          >
+            current MHRSD annex
+          </a>{' '}
+          for an answer on the regime in force.
+        </p>
+      </div>
     </div>
   );
 }
@@ -487,6 +575,8 @@ export function NitaqatPanel() {
   const [companyId, setCompanyId] = useState<string>('');
   const [data, setData] = useState<NitaqatStandingResponse | null>(null);
   const [trend, setTrend] = useState<NitaqatTrendResponse | null>(null);
+  // Grid coverage is context for the refusal — how much of the MHRSD table this tenant has.
+  const [coverage, setCoverage] = useState<NitaqatGridCoverage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
@@ -512,12 +602,15 @@ export function NitaqatPanel() {
     setLoading(true);
     setError(null);
     try {
-      const [standing, series] = await Promise.all([
+      const [standing, series, grid] = await Promise.all([
         nitaqatApi.standing(companyId || undefined),
         nitaqatApi.trend(180, companyId || undefined).catch(() => null),
+        // Coverage is context for the refusal, never a reason to fail the screen.
+        nitaqatApi.gridCoverage().catch(() => null),
       ]);
       setData(standing);
       setTrend(series);
+      setCoverage(grid);
       setShowSetup(standing.refusal?.reason === 'nitaqat_activity_not_configured' && companies.length > 0);
     } catch {
       setError('Unable to load Saudization data. You may not have access or the module is not enabled.');
@@ -631,8 +724,14 @@ export function NitaqatPanel() {
       )}
 
       {!standing && data?.refusal && (
-        <Refused refusal={data.refusal} onConfigure={() => setShowSetup(true)} />
+        <Refused
+          refusal={data.refusal}
+          coverage={coverage}
+          onConfigure={() => setShowSetup(true)}
+        />
       )}
+
+      {standing && <BandingMethodNotice standing={standing} />}
 
       {standing && (
         <>

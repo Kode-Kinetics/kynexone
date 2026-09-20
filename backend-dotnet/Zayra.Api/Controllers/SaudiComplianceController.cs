@@ -42,6 +42,7 @@ public class SaudiComplianceController : ControllerBase
     private readonly SaudiComplianceDashboardService _dashboard;
     private readonly GosiReadinessReportService _readiness;
     private readonly NitaqatCalculationService _nitaqat;
+    private readonly NitaqatGridImportService _grid;
     private readonly ZayraDbContext _db;
 
     private static readonly string[] GatingFeatures =
@@ -53,11 +54,13 @@ public class SaudiComplianceController : ControllerBase
         SaudiComplianceDashboardService dashboard,
         GosiReadinessReportService readiness,
         NitaqatCalculationService nitaqat,
+        NitaqatGridImportService grid,
         ZayraDbContext db)
     {
         _dashboard = dashboard;
         _readiness = readiness;
         _nitaqat = nitaqat;
+        _grid = grid;
         _db = db;
     }
 
@@ -288,6 +291,67 @@ public class SaudiComplianceController : ControllerBase
         await _db.SaveChangesAsync(cancellationToken);
 
         return Ok(new { ok = true, companyId = profile.CompanyId, activityCode = profile.ActivityCode });
+    }
+
+    // ── The MHRSD Nitaqat grid ────────────────────────────────────────────────
+    //
+    // The engine can band an establishment the moment the (activity × size tier ×
+    // band) grid exists for its activity. It does not ship with one, and it must not:
+    // MHRSD publishes a distinct percentage per activity per size tier, revises it
+    // periodically, and does not distribute it as open data — the authoritative grid
+    // for an establishment is the one on its own Qiwa account. Inventing ~3,000
+    // plausible numbers would produce confident wrong answers about a customer's
+    // compliance status, and a Nitaqat band gates work-visa issuance and Iqama
+    // transfer. So the product ships the LOADER, and says plainly, on the screen,
+    // that the grid needs configuring until it is loaded.
+
+    /// <summary>
+    /// What this tenant can actually band today: per-activity grid coverage, verification status,
+    /// and a plain-language notice when the grid is missing or unverified. The Saudization screen
+    /// renders the notice rather than implying the module is configured when it is not.
+    /// </summary>
+    [HttpGet("nitaqat/grid")]
+    public async Task<IActionResult> GetNitaqatGridCoverage(
+        [FromQuery] DateOnly? asOf, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("compliance.read") && !HasPermission("qiwa.read")) return Forbid();
+
+        var tenantId = RequireTenant();
+        if (!await HasAnyGatingFeatureAsync(tenantId, cancellationToken))
+            return StatusCode(403, new { error = "feature_not_enabled" });
+
+        var date = asOf ?? DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        return Ok(await _grid.GetCoverageAsync(tenantId, date, cancellationToken));
+    }
+
+    /// <summary>
+    /// Loads (or supersedes) this tenant's MHRSD Nitaqat grid for one economic activity.
+    ///
+    /// <para>Rows are written under THIS TENANT, never as a platform default: one customer's
+    /// reading of the MHRSD table must not become every customer's. They are effective-dated, so a
+    /// later MHRSD reissue closes the prior rows at the new date rather than restating what the
+    /// establishment's band was last quarter. A mandatory source citation travels with every row
+    /// and is shown to whoever reads the band.</para>
+    ///
+    /// <para>Validation is all-or-nothing and refuses a non-monotonic ladder, an out-of-range
+    /// percentage, a tier with no Low Green floor, and an unsourced load.</para>
+    /// </summary>
+    [HttpPut("nitaqat/grid")]
+    public async Task<IActionResult> PutNitaqatGrid(
+        [FromBody] NitaqatGridImportRequest body, CancellationToken cancellationToken)
+    {
+        // Loading a statutory threshold table is a compliance-configuration act, not a read.
+        if (!HasPermission("compliance.write")) return Forbid();
+
+        var tenantId = RequireTenant();
+        if (!await HasAnyGatingFeatureAsync(tenantId, cancellationToken))
+            return StatusCode(403, new { error = "feature_not_enabled" });
+
+        if (body is null)
+            return BadRequest(new { error = "body_required", message = "A grid payload is required." });
+
+        var result = await _grid.ImportAsync(tenantId, body, this.GetUserId(), cancellationToken);
+        return result.Ok ? Ok(result) : BadRequest(result);
     }
 
     private sealed record ResolvedCompany(Guid CompanyId, IActionResult? Error);

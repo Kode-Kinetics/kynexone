@@ -23,6 +23,40 @@ public static class NitaqatRefusalReasons
 
 public sealed record NitaqatRefusal(string Reason, string Message, string Remedy);
 
+/// <summary>
+/// WHICH REGIME produced the band floors. Reported on every standing, because the two are not
+/// equivalent and a customer who is being banded off the obsolete one deserves to know.
+///
+/// <para>MHRSD abolished the fixed establishment size bands on 1 December 2021 (Ministerial
+/// Decision 182495) and replaced the grid with a per-activity logarithmic curve. A product that
+/// silently bands off the old grid is answering last regime's question.</para>
+/// </summary>
+public static class NitaqatBandingMethods
+{
+    /// <summary>
+    /// The current regime: y = m·ln(x) + c, per economic activity, with c effective-dated by year.
+    /// </summary>
+    public const string Curve = "nitaqat_mutawar_curve";
+
+    /// <summary>
+    /// The pre-2021-12-01 regime, and the manual override for a customer who has band percentages
+    /// from their own Qiwa screen but no curve constants loaded.
+    /// </summary>
+    public const string SizeTierGrid = "size_tier_grid";
+
+    public static string Explain(string method) => method switch
+    {
+        Curve =>
+            "Banded by the MHRSD Nitaqat Mutawar curve (y = m·ln(x) + c) for this economic "
+            + "activity — the regime in force since 1 December 2021.",
+        _ =>
+            "Banded from a stored (activity × establishment size tier) percentage table. MHRSD "
+            + "abolished fixed size bands on 1 December 2021 and now derives the floor from a "
+            + "per-activity curve, so this is either a pre-2021 period or a manually loaded "
+            + "override. Load this activity's curve constants for a current-regime answer.",
+    };
+}
+
 /// <summary>One row of the "show your working" breakdown.</summary>
 public sealed record NitaqatWeightLine(
     string Classification,
@@ -89,7 +123,11 @@ public sealed record NitaqatStanding(
     // Band Qiwa itself reports, if the customer recorded it. Qiwa is authoritative.
     string? QiwaReportedBand,
     DateOnly? QiwaReportedOn,
-    bool    DisagreesWithQiwa);
+    bool    DisagreesWithQiwa,
+    // One of NitaqatBandingMethods. Which regime produced the floors above.
+    string  BandingMethod,
+    // NitaqatBandingMethods.Explain(BandingMethod), rendered for the reader.
+    string  BandingMethodNote);
 
 public sealed record NitaqatStandingResponse(
     bool Ok,

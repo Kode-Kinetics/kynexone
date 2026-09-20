@@ -44,7 +44,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 10_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await TestReconciliation.GosiReadiness(db).BuildAsync(TenantA, CancellationToken.None);
 
         var emp = Assert.Single(report.Employees);
         Assert.True(emp.IsReady);
@@ -79,7 +79,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 15_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await TestReconciliation.GosiReadiness(db).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         var rules = await db.GosiContributionRules.IgnoreQueryFilters().AsNoTracking().ToListAsync();
@@ -108,7 +108,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 8_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await TestReconciliation.GosiReadiness(db).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         Assert.Equal("NonSaudi", emp.Classification);
@@ -133,7 +133,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 10_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await TestReconciliation.GosiReadiness(db).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         // Old flat math would give employerRate = 2% → 200.00.
@@ -157,7 +157,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 9_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await TestReconciliation.GosiReadiness(db).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         Assert.Equal("GCC", emp.Classification);
@@ -175,7 +175,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 9_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await TestReconciliation.GosiReadiness(db).BuildAsync(TenantA, CancellationToken.None);
         var json = System.Text.Json.JsonSerializer.Serialize(report);
 
         Assert.DoesNotContain(sensitiveRef, json);
@@ -194,7 +194,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 10_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await TestReconciliation.GosiReadiness(db).BuildAsync(TenantA, CancellationToken.None);
         var json = System.Text.Json.JsonSerializer.Serialize(report);
 
         Assert.DoesNotContain(sensitiveGosiRef, json);
@@ -211,7 +211,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, sentinelSalary));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await TestReconciliation.GosiReadiness(db).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         // Report must not have a field named basicSalary / ContributoryWage.
@@ -240,7 +240,7 @@ public class GosiReadinessEndpointTests
         }
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await TestReconciliation.GosiReadiness(db).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.Equal(1, report.TotalEmployees);
         Assert.Single(report.Employees);
@@ -261,7 +261,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 10_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await TestReconciliation.GosiReadiness(db).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         Assert.False(emp.IsReady);

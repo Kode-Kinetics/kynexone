@@ -425,6 +425,9 @@ builder.Services.AddScoped<IQiwaIntegrationService, QiwaIntegrationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.SaudiComplianceDashboardService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.GosiReadinessReportService>();
+// Nitaqat MHRSD grid loader: the product ships the MECHANISM, not the grid (see
+// NitaqatGridImportService for why seeding ~3,000 unverified thresholds would be worse than none).
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.NitaqatGridImportService>();
 // POD-A1: single GOSI/statutory reconciliation truth (contribution-summary, variance-report,
 // compliance dashboard variance count). Scoped so it shares the request's memoized IStatutoryRuleReader.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.GosiReconciliationService>();

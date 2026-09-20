@@ -191,7 +191,7 @@ public class CrossTenantQueryFilterTests
         db.GosiContributionRules.Add(GosiRule(Guid.Empty));
         await db.SaveChangesAsync();
 
-        var svc    = new GosiReadinessReportService(db);
+        var svc    = TestReconciliation.GosiReadiness(db);
         var report = await svc.BuildAsync(tenantA, CancellationToken.None);
 
         report.TotalEmployees.Should().Be(2,
