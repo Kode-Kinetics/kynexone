@@ -28,6 +28,21 @@ public class EmployeeProfileChangeRequest : ITenantOwned
     public Guid? DecidedBy { get; set; }
 }
 
+/// <summary>
+/// An employee asking HR for a document — the salary certificate for the bank, the
+/// employment-verification letter for the landlord.
+///
+/// <para>This entity and its DbSet already existed and had <b>zero references in any
+/// controller</b>: dead scaffolding for exactly this feature. Rather than stand up a parallel
+/// queue it is now the ESS request path, with the decision/issuance columns below added.</para>
+///
+/// <para><b>Deliberately NOT <c>ICompanyScopedOperational</c>.</b> The table pre-dates company
+/// scoping and has no CompanyId; adding the operational tier would filter every existing row
+/// (all of which would have CompanyId == null) out of every company-scoped user's view. The
+/// employee-row scope check in the controller (<c>IDataScopeService.CanAccessEmployee</c>) is the
+/// access boundary here, as it is for HRRequest next door. The letter this produces —
+/// <see cref="IssuedLetter"/> — IS company-scoped operational.</para>
+/// </summary>
 public class EmployeeDocumentRequest : ITenantOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -39,6 +54,42 @@ public class EmployeeDocumentRequest : ITenantOwned
     public string Status { get; set; } = "Pending";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
+
+    // ── Letter issuance (feat/hr-documents) ────────────────────────────────────────────
+    // Additive columns. Every one is nullable or has a default, so rows written before this
+    // feature keep their meaning.
+
+    /// <summary>Canonical <see cref="HrLetterTypes"/> value, when the request is for a letter.</summary>
+    public string LetterType { get; set; } = string.Empty;
+
+    /// <summary>en / ar / bilingual — what the employee asked for.</summary>
+    public string Language { get; set; } = HrLetterLanguages.Bilingual;
+
+    /// <summary>"Riyad Bank", "Embassy of Italy" — printed as the addressee when supplied.</summary>
+    public string AddresseeName { get; set; } = string.Empty;
+
+    /// <summary>The SAL-CERT (or sibling) ticket this request raised, so HR works one queue.</summary>
+    public Guid? HrRequestId { get; set; }
+
+    public DateTime? DecidedAtUtc { get; set; }
+    public Guid? DecidedByUserId { get; set; }
+
+    /// <summary>Mandatory when a request is declined; the employee is told why.</summary>
+    public string DecisionNote { get; set; } = string.Empty;
+
+    /// <summary>Set once HR issues; the register row that proves the document exists.</summary>
+    public Guid? IssuedLetterId { get; set; }
+}
+
+/// <summary>Closed vocabulary for <see cref="EmployeeDocumentRequest.Status"/>.</summary>
+public static class EmployeeDocumentRequestStatuses
+{
+    public const string Pending = "Pending";
+    public const string Issued = "Issued";
+    public const string Declined = "Declined";
+    public const string Cancelled = "Cancelled";
+
+    public static readonly IReadOnlyList<string> All = [Pending, Issued, Declined, Cancelled];
 }
 
 public class HRRequestCategory : ITenantOwned

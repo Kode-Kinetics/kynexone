@@ -39,7 +39,8 @@ public class ScopeFilteringTests
             new StubLetterService(),
             new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1),
             new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(db)),
-            new Zayra.Api.Infrastructure.Attendance.AttendanceService(db, new StubNotificationService(), new StubHttpClientFactory()));
+            new Zayra.Api.Infrastructure.Attendance.AttendanceService(db, new StubNotificationService(), new StubHttpClientFactory()),
+            new Zayra.Api.Infrastructure.Documents.Letters.HrLetterIssuer(db, new StubLetterService(), new NullDocumentStorage()));
         controller.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext

@@ -881,6 +881,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<ESSDashboardPreference> ESSDashboardPreferences => Set<ESSDashboardPreference>();
     public DbSet<EmployeeProfileChangeRequest> EmployeeProfileChangeRequests => Set<EmployeeProfileChangeRequest>();
     public DbSet<EmployeeDocumentRequest> EmployeeDocumentRequests => Set<EmployeeDocumentRequest>();
+
+    // ── B6: template-driven HR letters and the register of what was issued ────
+    public DbSet<HrLetterTemplate> HrLetterTemplates => Set<HrLetterTemplate>();
+    public DbSet<IssuedLetter> IssuedLetters => Set<IssuedLetter>();
+
     public DbSet<HRRequest> HRRequests => Set<HRRequest>();
     public DbSet<HRRequestCategory> HRRequestCategories => Set<HRRequestCategory>();
     public DbSet<HRRequestComment> HRRequestComments => Set<HRRequestComment>();
@@ -1334,6 +1339,69 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("employee_document_requests");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+            entity.Property(x => x.LetterType).HasMaxLength(40);
+            entity.Property(x => x.Language).HasMaxLength(20);
+            entity.Property(x => x.AddresseeName).HasMaxLength(200);
+            entity.Property(x => x.DecisionNote).HasMaxLength(1000);
+            // The HR-side worklist: "everything still waiting on me, oldest first".
+            entity.HasIndex(x => new { x.TenantId, x.Status, x.CreatedAtUtc })
+                .HasDatabaseName("ix_employee_document_requests_tenant_status_created");
+        });
+
+        // ── B6: HR letter templates ───────────────────────────────────────────────
+        // Tenant isolation and the ICompanyScoped (config-tier) filter come from the
+        // interfaces via ApplyTenantQueryFilters — nothing to add here.
+        modelBuilder.Entity<HrLetterTemplate>(entity =>
+        {
+            entity.ToTable("hr_letter_templates");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.LetterType).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.NameEn).HasMaxLength(200);
+            entity.Property(x => x.NameAr).HasMaxLength(200);
+            entity.Property(x => x.Language).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.TitleEn).HasMaxLength(200);
+            entity.Property(x => x.TitleAr).HasMaxLength(200);
+            entity.Property(x => x.ClosingEn).HasMaxLength(500);
+            entity.Property(x => x.ClosingAr).HasMaxLength(500);
+            // One live template per (tenant, company, type). The partial filter is what lets a
+            // tenant keep superseded versions as soft-deleted history without tripping the index.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LetterType },
+                    "ux_hr_letter_templates_scope_type")
+                .IsUnique()
+                .HasFilter("is_deleted = false");
+        });
+
+        // ── B6: the register of issued letters ────────────────────────────────────
+        modelBuilder.Entity<IssuedLetter>(entity =>
+        {
+            entity.ToTable("issued_letters");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.LetterType).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.ReferenceNumber).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.EmployeeCode).HasMaxLength(60);
+            entity.Property(x => x.EmployeeName).HasMaxLength(200);
+            entity.Property(x => x.Language).HasMaxLength(20);
+            entity.Property(x => x.Purpose).HasMaxLength(500);
+            entity.Property(x => x.AddresseeName).HasMaxLength(200);
+            entity.Property(x => x.IssuedByName).HasMaxLength(200);
+            entity.Property(x => x.IssuedByTitle).HasMaxLength(200);
+            entity.Property(x => x.FileHash).HasMaxLength(64);
+            entity.Property(x => x.MergedValuesJson).HasColumnType("jsonb");
+            entity.Property(x => x.RenderedContentJson).HasColumnType("jsonb");
+
+            // THE point of the table. Two experience letters for one person in one month used to
+            // share the string EXP-{code}-{yyyyMM} because it was recomputed inline and stored
+            // nowhere. The reference is now allocated, stored, and unique in the database — a bank
+            // quoting one gets exactly one answer.
+            entity.HasIndex(x => new { x.TenantId, x.ReferenceNumber })
+                .IsUnique()
+                .HasDatabaseName("ux_issued_letters_tenant_reference");
+            // Backs the allocator: MAX(sequence_number) for a (tenant, type, year) series.
+            entity.HasIndex(x => new { x.TenantId, x.LetterType, x.SequenceYear, x.SequenceNumber })
+                .IsUnique()
+                .HasDatabaseName("ux_issued_letters_series_ordinal");
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.IssuedAtUtc })
+                .HasDatabaseName("ix_issued_letters_tenant_employee_issued");
         });
 
         modelBuilder.Entity<HRRequest>(entity =>
@@ -3969,7 +4037,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("report_schedules");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.FiltersJson).HasColumnType("json");
+            entity.Property(x => x.LastFailureReason).HasMaxLength(1000);
             entity.HasIndex(x => new { x.TenantId, x.IsActive });
+            // Backs the "which of my schedules are broken?" filter the UI now shows.
+            entity.HasIndex(x => new { x.TenantId, x.ConsecutiveFailureCount })
+                .HasDatabaseName("ix_report_schedules_tenant_failures");
         });
 
         modelBuilder.Entity<ReportExecutionLog>(entity =>

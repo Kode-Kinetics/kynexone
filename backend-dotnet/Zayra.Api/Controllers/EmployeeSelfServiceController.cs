@@ -14,6 +14,13 @@ using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
 
+// Name collision: Controllers/EmployeesController.cs declares a DTO record called
+// EmployeeDocumentRequest in this same namespace, which shadows the entity. Alias the entity
+// rather than rename either — the DTO is on a public upload contract and the entity name is in
+// the database schema.
+using DocumentRequest = Zayra.Api.Models.EmployeeDocumentRequest;
+
+
 namespace Zayra.Api.Controllers;
 
 [ApiController]
@@ -35,17 +42,21 @@ public class EmployeeSelfServiceController : ControllerBase
     private readonly PdfRenderGate _pdfGate;
     private readonly Application.Leave.ILeaveService _leaveService;
     private readonly IAttendanceService _attendanceService;
+    private readonly IHrLetterIssuer _letterIssuer;
     private readonly IDocumentStorage? _documentStorage;
 
-    // W2-D: IDocumentStorage is a trailing OPTIONAL parameter so the existing test harnesses that
-    // construct this controller with five arguments keep compiling; the DI container always supplies it.
-    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IDocumentStorage? documentStorage = null)
+    // W2-D: IDocumentStorage is a trailing OPTIONAL parameter, after the required
+    // IHrLetterIssuer that the HR-documents stream added. Both streams' shapes are kept:
+    // the issuer is required because an ESS document request that cannot reach the issuer is
+    // a broken endpoint, and storage stays optional/trailing as W2-D designed it.
+    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IHrLetterIssuer letterIssuer, IDocumentStorage? documentStorage = null)
     {
         _letters = letters;
         _db = db;
         _pdfGate = pdfGate;
         _leaveService = leaveService;
         _attendanceService = attendanceService;
+        _letterIssuer = letterIssuer;
         _documentStorage = documentStorage;
     }
 
@@ -982,6 +993,176 @@ public class EmployeeSelfServiceController : ControllerBase
             ContentType = contentType,
         };
 
+    // ── HR document requests (B6) ─────────────────────────────────────────────────────────
+    //
+    // The employee asks; HR issues. There is deliberately NO endpoint here that produces a
+    // letter — an employee who could issue their own salary certificate could issue one saying
+    // anything, which is the entire reason a bank asks for one on company letterhead.
+    //
+    // Each request also raises a ticket in the HR Request Centre under the seeded SAL-CERT
+    // family, so HR works the one queue they already work rather than a second inbox nobody
+    // remembers to open. The demo tenant has carried a Resolved "Salary certificate for embassy"
+    // ticket since AuthSeeder day one; this is the path that lets that ticket be true.
+
+    [HttpGet("document-requests/types")]
+    public async Task<IActionResult> DocumentRequestTypes(CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, _, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        // Only offer what this tenant has actually configured a template for. Offering a type
+        // whose issuance would fail is the "shipping a field that lies" failure mode.
+        var configured = await _db.HrLetterTemplates.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)
+            .Select(x => x.LetterType)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var defaults = HrLetterTemplateDefaults.Build().ToDictionary(x => x.LetterType, StringComparer.Ordinal);
+        return Ok(HrLetterTypes.EmployeeRequestable
+            .Where(configured.Contains)
+            .Select(type => new EssLetterTypeDto(
+                type,
+                defaults.GetValueOrDefault(type)?.NameEn ?? type,
+                defaults.GetValueOrDefault(type)?.NameAr ?? string.Empty)));
+    }
+
+    [HttpPost("document-requests")]
+    public async Task<IActionResult> CreateDocumentRequest(EssDocumentRequestDto request, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        var letterType = HrLetterTypes.Normalize(request.LetterType);
+        if (letterType is null || !HrLetterTypes.EmployeeRequestable.Contains(letterType))
+            return BadRequest(new { message = $"'{request.LetterType}' is not a document you can request. Ask HR directly." });
+
+        var language = HrLetterLanguages.IsKnown(request.Language)
+            ? request.Language!.ToLowerInvariant()
+            : HrLetterLanguages.Bilingual;
+
+        var templateExists = await _db.HrLetterTemplates.AsNoTracking()
+            .AnyAsync(x => x.TenantId == tenantId && x.LetterType == letterType && x.IsActive && !x.IsDeleted, cancellationToken);
+        if (!templateExists)
+            return Conflict(new
+            {
+                code = "template_not_configured",
+                message = "Your organisation has not configured this document yet. Please contact HR.",
+            });
+
+        // One open request per document type. Without this a frustrated employee raises the same
+        // request five times and HR issues five certificates with five references.
+        var duplicate = await _db.EmployeeDocumentRequests.AsNoTracking().AnyAsync(
+            x => x.TenantId == tenantId && x.EmployeeId == employeeId
+                 && x.LetterType == letterType && x.Status == EmployeeDocumentRequestStatuses.Pending,
+            cancellationToken);
+        if (duplicate)
+            return Conflict(new
+            {
+                code = "duplicate_pending_request",
+                message = "You already have an open request for this document. HR will respond to it.",
+            });
+
+        var category = await _db.HRRequestCategories.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Code == HrLetterTypes.Prefixes[letterType] && x.IsActive, cancellationToken);
+        var subject = $"{letterType} request";
+
+        var ticket = new HRRequest
+        {
+            TenantId = tenantId,
+            EmployeeId = employeeId,
+            CategoryId = category?.Id,
+            CategoryName = category?.Name ?? "HR Document",
+            Subject = subject,
+            Description = string.IsNullOrWhiteSpace(request.Purpose)
+                ? subject
+                : $"Purpose: {request.Purpose.Trim()}",
+            Priority = "Normal",
+            Status = "Open",
+            DueAtUtc = DateTime.UtcNow.AddHours(category?.DefaultSlaHours ?? 24),
+            CreatedBy = GetUserId(),
+        };
+        _db.HRRequests.Add(ticket);
+
+        var documentRequest = new DocumentRequest
+        {
+            TenantId = tenantId,
+            EmployeeId = employeeId,
+            RequestType = "Letter",
+            DocumentType = letterType,
+            LetterType = letterType,
+            Language = language,
+            Purpose = (request.Purpose ?? string.Empty).Trim(),
+            AddresseeName = (request.AddresseeName ?? string.Empty).Trim(),
+            Status = EmployeeDocumentRequestStatuses.Pending,
+            HrRequestId = ticket.Id,
+            CreatedBy = GetUserId(),
+        };
+        _db.EmployeeDocumentRequests.Add(documentRequest);
+        await _db.SaveChangesAsync(cancellationToken);
+        await EssAudit(tenantId, employeeId, "ess.document_request.created", nameof(DocumentRequest), documentRequest.Id.ToString(), cancellationToken);
+
+        return Created($"/api/ess/document-requests/{documentRequest.Id}", ToEssDocumentRequest(documentRequest, null));
+    }
+
+    [HttpGet("document-requests")]
+    public async Task<IActionResult> MyDocumentRequests(CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        var requests = await _db.EmployeeDocumentRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .Take(50)
+            .ToListAsync(cancellationToken);
+
+        var letterIds = requests.Where(x => x.IssuedLetterId != null).Select(x => x.IssuedLetterId!.Value).ToList();
+        var letters = letterIds.Count == 0
+            ? []
+            : await _db.IssuedLetters.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && letterIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.ReferenceNumber })
+                .ToListAsync(cancellationToken);
+
+        return Ok(requests.Select(r => ToEssDocumentRequest(
+            r, letters.FirstOrDefault(l => l.Id == r.IssuedLetterId)?.ReferenceNumber)));
+    }
+
+    /// <summary>
+    /// Download the letter HR issued in answer to my request. Re-rendered from the frozen content
+    /// on the register row, so the employee and HR are looking at the same document under the
+    /// same reference.
+    /// </summary>
+    [HttpGet("document-requests/{id:guid}/pdf")]
+    public async Task<IActionResult> MyDocumentRequestPdf(Guid id, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        var request = await _db.EmployeeDocumentRequests.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && x.EmployeeId == employeeId, cancellationToken);
+        if (request is null) return NotFound();
+        if (request.IssuedLetterId is not Guid letterId)
+            return Conflict(new { code = "not_issued_yet", message = $"This request is {request.Status}. There is nothing to download yet." });
+
+        var letter = await _db.IssuedLetters.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == letterId && x.EmployeeId == employeeId, cancellationToken);
+        if (letter is null) return NotFound();
+
+        byte[]? pdf;
+        try { pdf = await _pdfGate.RenderAsync(() => _letterIssuer.ReprintAsync(tenantId, letterId, cancellationToken), cancellationToken); }
+        catch (PdfConcurrencyException ex) { return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = ex.Message }); }
+        if (pdf is null) return Conflict(new { code = "reprint_unavailable", message = "This document can no longer be regenerated. Please contact HR." });
+
+        await EssAudit(tenantId, employeeId, "ess.document_request.downloaded", nameof(IssuedLetter), letterId.ToString(), cancellationToken);
+        return File(pdf, "application/pdf", $"{letter.ReferenceNumber}.pdf");
+    }
+
+    private static EssDocumentRequestResponse ToEssDocumentRequest(DocumentRequest r, string? reference) =>
+        new(r.Id, r.LetterType, r.Language, r.Purpose, r.AddresseeName, r.Status,
+            r.CreatedAtUtc, r.DecidedAtUtc, r.DecisionNote, reference, r.IssuedLetterId != null);
+
     [HttpPost("hr-requests")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: CategoryId/Name, Subject, Description, Priority, Status, DueAtUtc. Employee's own service ticket. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<HRRequest>> CreateHrRequest(ESSHRRequestCreateDto request, CancellationToken cancellationToken)
@@ -1277,6 +1458,11 @@ public record ProfileChangeDecisionDto(string? Notes);
 public record ESSAttendanceRegularizationDto(DateOnly WorkDate, string RequestType, DateTime? RequestedInUtc, DateTime? RequestedOutUtc, string Reason);
 public record ESSLeaveRequestDto(Guid LeaveTypeId, DateOnly StartDate, DateOnly EndDate, string? DayType, string Reason);
 public record ESSDocumentUploadDto(string DocumentType, string FileName, string ContentType, string StorageUrl, DateOnly? ExpiryDate, bool IsRequired);
+public record EssLetterTypeDto(string LetterType, string NameEn, string NameAr);
+public record EssDocumentRequestDto(string LetterType, string? Language, string? Purpose, string? AddresseeName);
+public record EssDocumentRequestResponse(
+    Guid Id, string LetterType, string Language, string Purpose, string AddresseeName, string Status,
+    DateTime CreatedAtUtc, DateTime? DecidedAtUtc, string DecisionNote, string? ReferenceNumber, bool IsIssued);
 public record ESSHRRequestCreateDto(Guid? CategoryId, string? CategoryName, string Subject, string Description, string? Priority, Guid? AttachmentDocumentId = null);
 public record ESSCommentDto(string Comment);
 public record ESSAIQuestionDto(string Question);

@@ -396,6 +396,7 @@ builder.Services.AddScoped<INotificationChannelDispatcher, SmsChannelDispatcher>
 builder.Services.AddScoped<INotificationChannelDispatcher, WhatsAppChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, PushChannelDispatcher>();
 builder.Services.AddScoped<ILetterService, LetterService>();
+builder.Services.AddScoped<IHrLetterIssuer, HrLetterIssuer>();
 var pdfCapacity = builder.Configuration.GetValue("Pdf:MaxConcurrentRenders", 3);
 builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Documents.PdfRenderGate(pdfCapacity));
 builder.Services.AddScoped<IRecruitmentService, RecruitmentService>();

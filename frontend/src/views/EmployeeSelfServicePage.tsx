@@ -5,10 +5,11 @@ import {
   MessageSquareText, Loader2, CalendarOff, Send, FileText, Clock,
   ChevronRight, Megaphone, CheckCircle2, AlertCircle,
   Zap, ClipboardList, TrendingUp, CreditCard, Banknote,
-  Star, Target, Calendar, BadgeCheck, User, X,
+  Star, Target, Calendar, BadgeCheck, User, X, Download, FileSignature,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { essApi, type EssDashboard, type EssHrRequest, type EssHrRequestDetail, type EssRosterEntry } from '../api/ess';
+import { essDocumentsApi, type EssDocumentRequest, type EssLetterType } from '../api/hrLetters';
 import { useAuth } from '../contexts/AuthContext';
 import { StatusChip } from '../components/StatusChip';
 
@@ -191,6 +192,170 @@ function MyShiftsCard() {
               </li>
             ))}
           </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+
+// ── My documents (B6) ─────────────────────────────────────────────────────────
+//
+// The employee asks; HR issues. There is no "produce it myself" button here, and there is no
+// endpoint behind one: a salary certificate an employee could mint would not be worth the paper
+// to the bank that asked for it.
+
+function MyDocumentsCard() {
+  const [types, setTypes] = useState<EssLetterType[] | null>(null);
+  const [requests, setRequests] = useState<EssDocumentRequest[]>([]);
+  const [letterType, setLetterType] = useState('');
+  const [language, setLanguage] = useState('bilingual');
+  const [purpose, setPurpose] = useState('');
+  const [addressee, setAddressee] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [note, setNote] = useState('');
+
+  const refresh = async () => {
+    try { setRequests(await essDocumentsApi.list()); } catch { /* non-blocking */ }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    essDocumentsApi.types()
+      .then((t) => { if (!cancelled) { setTypes(t); if (t.length > 0) setLetterType(t[0].letterType); } })
+      .catch(() => { if (!cancelled) setTypes([]); });
+    void refresh();
+    return () => { cancelled = true; };
+  }, []);
+
+  const submit = async () => {
+    if (!letterType) return;
+    setBusy(true); setError(''); setNote('');
+    try {
+      await essDocumentsApi.create({ letterType, language, purpose, addresseeName: addressee });
+      setNote('Requested. HR will issue it and it will appear below to download.');
+      setPurpose(''); setAddressee('');
+      await refresh();
+    } catch (e) {
+      const detail = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setError(detail ?? 'The request could not be submitted. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const download = async (id: string) => {
+    setDownloading(id);
+    try { await essDocumentsApi.download(id); }
+    catch { setError('That document could not be downloaded. Please contact HR.'); }
+    finally { setDownloading(null); }
+  };
+
+  return (
+    <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
+      <div className="border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
+        <p className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+          <FileSignature className="h-4 w-4" /> Request a Document
+        </p>
+      </div>
+      <div className="space-y-3 p-5">
+        {types === null ? (
+          <p className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…
+          </p>
+        ) : types.length === 0 ? (
+          <p className="text-sm text-slate-400 dark:text-slate-500">
+            Your organisation has not set up HR letters yet. Raise an HR request instead and someone will help.
+          </p>
+        ) : (
+          <>
+            {error && (
+              <p className="flex items-start gap-2 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> {error}
+              </p>
+            )}
+            {note && (
+              <p className="flex items-center gap-2 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                <CheckCircle2 className="h-4 w-4 shrink-0" /> {note}
+              </p>
+            )}
+
+            <select
+              value={letterType}
+              onChange={(e) => setLetterType(e.target.value)}
+              aria-label="Document type"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white"
+            >
+              {types.map((t) => <option key={t.letterType} value={t.letterType}>{t.nameEn} — {t.nameAr}</option>)}
+            </select>
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              aria-label="Language"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white"
+            >
+              <option value="bilingual">Bilingual (English + Arabic)</option>
+              <option value="en">English only</option>
+              <option value="ar">Arabic only</option>
+            </select>
+            <input
+              value={purpose}
+              onChange={(e) => setPurpose(e.target.value)}
+              placeholder="What do you need it for? e.g. a bank loan"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white dark:placeholder-slate-600"
+            />
+            <input
+              value={addressee}
+              onChange={(e) => setAddressee(e.target.value)}
+              placeholder="Addressed to (optional) e.g. Riyad Bank"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white dark:placeholder-slate-600"
+            />
+            <button
+              type="button"
+              onClick={submit}
+              disabled={busy || !letterType}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-slate-900 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100"
+            >
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+              {busy ? 'Requesting…' : 'Request document'}
+            </button>
+          </>
+        )}
+
+        {requests.length > 0 && (
+          <div className="space-y-2 border-t border-slate-100 pt-3 dark:border-white/[0.07]">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">My Documents</p>
+            {requests.map((r) => (
+              <div key={r.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 dark:border-white/[0.07]">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.letterType}</p>
+                  <p className="truncate text-xs text-slate-400 dark:text-slate-500">
+                    {r.referenceNumber ?? new Date(r.createdAtUtc).toLocaleDateString()}
+                    {r.status === 'Declined' && r.decisionNote ? ` — ${r.decisionNote}` : ''}
+                  </p>
+                </div>
+                {r.isIssued ? (
+                  <button
+                    type="button"
+                    onClick={() => download(r.id)}
+                    disabled={downloading !== null}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-white/[0.08] dark:text-slate-200 dark:hover:bg-white/[0.04]"
+                  >
+                    {downloading === r.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />} PDF
+                  </button>
+                ) : (
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                    r.status === 'Declined'
+                      ? 'bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400'
+                      : 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400'}`}>
+                    {r.status}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </section>
@@ -851,6 +1016,8 @@ export function EmployeeSelfServicePage() {
               )}
             </div>
           </section>
+
+          <MyDocumentsCard />
 
           {/* Quick navigation cards */}
           <div className="grid grid-cols-2 gap-2">

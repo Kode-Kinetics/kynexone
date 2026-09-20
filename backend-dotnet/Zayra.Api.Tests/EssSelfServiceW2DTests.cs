@@ -95,6 +95,11 @@ public class EssSelfServiceW2DTests
             db, new StubLetterService(), new PdfRenderGate(1),
             new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(db)),
             new Zayra.Api.Infrastructure.Attendance.AttendanceService(db, new StubNotificationService(), new StubHttpClientFactory()),
+            // Wave 3: the HR-documents stream made IHrLetterIssuer a required dependency of this
+            // controller. Supplied here over the same DbContext and the same storage this harness
+            // already owns — a real issuer, not null!, so an ESS document-request path exercised
+            // from these tests would work rather than throw.
+            new HrLetterIssuer(db, new StubLetterService(), storage),
             storage);
         controller.ControllerContext = new ControllerContext
         {
