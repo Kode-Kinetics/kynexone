@@ -4,8 +4,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.Memory;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Modules;
 
 namespace Zayra.Api.Controllers;
 
@@ -35,11 +37,19 @@ public class DashboardController : ControllerBase
     private static readonly string[] QiwaRequiredDocsLower =
         QiwaRequiredDocs.Select(d => d.ToLowerInvariant()).ToArray();
 
-    public DashboardController(ZayraDbContext db, IDistributedCache cache, IDataScopeService scopeService)
+    private readonly ITenantModuleService _modules;
+
+    public DashboardController(
+        ZayraDbContext db,
+        IDistributedCache cache,
+        IDataScopeService scopeService,
+        ITenantModuleService? modules = null)
     {
         _db = db;
         _cache = cache;
         _scopeService = scopeService;
+        // Optional with concrete fallback (house pattern) so direct constructions keep working.
+        _modules = modules ?? new TenantModuleService(db, new MemoryCache(new MemoryCacheOptions()));
     }
 
     /// <summary>
@@ -78,11 +88,21 @@ public class DashboardController : ControllerBase
         // ── Role-scoped KPIs (always fresh — caller-specific) ─────────────────
         var kpis = await BuildKpis(tid, cancellationToken);
 
+        // ── Module gate ───────────────────────────────────────────────────────
+        // A switched-off module contributes no widget. Applied AFTER the 60 s cache rather than
+        // inside BuildCached, so switching payroll off takes effect on the next load instead of
+        // up to a minute later — a stale pay-cost chart on a tenant that has just turned payroll
+        // off is exactly the kind of "the toggle did nothing" the module surface exists to avoid.
+        var modules = await _modules.GetStateAsync(tid, cancellationToken);
+        var payrollTrends = modules.IsEnabled(ModuleKeys.Payroll)
+            ? cached.PayrollTrends
+            : Array.Empty<PayrollTrendDto>();
+
         return Ok(new DashboardFullDto(
             cached.Summary,
             cached.Trends,
             cached.Overview,
-            cached.PayrollTrends,
+            payrollTrends,
             cached.ActivityFeed,
             kpis));
     }
@@ -539,10 +559,16 @@ public class DashboardController : ControllerBase
                 ExpiredDocuments = _db.EmployeeDocuments.Count(x => x.TenantId == tenantId && !x.IsDeleted
                     && x.ExpiryDate != null && x.ExpiryDate < today
                     && (isUnrestricted || (x.EmployeeId != null && scopeIds.Contains(x.EmployeeId.Value)))),
-                QiwaEnabled = _db.TenantFeatureFlags.Any(x => x.TenantId == tenantId
-                    && x.FeatureKey == Zayra.Api.Models.FeatureKeys.QiwaIntegration && x.IsEnabled),
             })
             .FirstOrDefaultAsync(ct);
+
+        // Saudization visibility follows the EFFECTIVE module state, not the raw flag row.
+        // The previous inline `Any(... && x.IsEnabled)` was fail-CLOSED — a tenant with no row at
+        // all (the default for every new tenant) got `false`, hiding the Saudization KPI from KSA
+        // tenants who are legally required to track it, while every other layer treated an absent
+        // row as enabled.
+        var moduleState = await _modules.GetStateAsync(tenantId, ct);
+        var saudizationEnabled = moduleState.IsEnabled(ModuleKeys.Saudization);
 
         var empQ = _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted && x.Status == "Active");
         if (!isUnrestricted) empQ = empQ.Where(x => scopeIds.Contains(x.Id));
@@ -568,7 +594,7 @@ public class DashboardController : ControllerBase
             counters?.ExpiringDocuments ?? 0,
             counters?.ExpiredDocuments ?? 0,
             missingDocuments,
-            counters?.QiwaEnabled ?? false);
+            saudizationEnabled);
     }
 
     private static DashboardFullDto EmptyFull(DashboardKpisDto kpis) => new(

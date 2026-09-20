@@ -22,7 +22,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
   const router = useRouter();
   const pathname = usePathname();
   const { user, logout, hasPermission } = useAuth();
-  const { isFeatureEnabled } = useFeatureFlags();
+  const { isFeatureEnabled, verdictForPath } = useFeatureFlags();
   const { t } = useLocale();
 
   // All groups expanded by default
@@ -129,10 +129,16 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
         {/* Navigation */}
         <nav aria-label="Primary navigation" className="flex-1 overflow-y-auto overflow-x-hidden py-3">
           {navigationGroups.map((group, gi) => {
+            // Module visibility is resolved from the item's PATH against the backend catalog,
+            // not only from the hand-tagged `requiredFeatureKey`. Only 8 of ~35 items ever carried
+            // that tag, so switching off Timesheets, Benefits, Loans or HR Letters left their nav
+            // entries in place, leading straight to a page whose API refuses it.
+            // `requiredFeatureKey` is still honoured as an explicit override.
             const visibleItems = group.items.filter(
               (item) =>
                 canSee(item.requiredPermissions) &&
                 (!item.requiredFeatureKey || isFeatureEnabled(item.requiredFeatureKey)) &&
+                (!item.path || verdictForPath(item.path).allowed) &&
                 (!item.groupAccountOnly || canSeeGroupItem),
             );
             if (visibleItems.length === 0) return null;

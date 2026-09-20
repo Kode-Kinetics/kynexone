@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Modules;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Notifications;
@@ -147,6 +148,39 @@ public class NotificationService : INotificationService
         // A dedicated scope → a dedicated DbContext. Never the caller's, never inside its transaction.
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+
+        // MODULE GATE. A switched-off module must stop talking to people, not just stop answering
+        // its API — a tenant that turned payroll off should not keep receiving "your payslip is
+        // ready". Suppressed before the in-app row is written, because in-app is the terminal
+        // fallback and writing it would leave the notice visible in the bell menu.
+        //
+        // Only categories a module actually claims are suppressible; an event that classifies to
+        // no category, or to a mandatory one (security), is never dropped here.
+        var moduleCategory = NotificationCategories.Classify(request.EventCode, request.EntityName);
+        if (moduleCategory is not null && !NotificationCategories.IsMandatory(moduleCategory))
+        {
+            var owningModule = ModuleCatalog.ResolveNotificationCategory(moduleCategory);
+
+            // GetService, not GetRequiredService: EnqueueAsync swallows exceptions so that a
+            // notification can never break the business operation that raised it, which means a
+            // missing registration here would silently drop EVERY notification rather than fail
+            // loudly. The gate is not allowed to be the reason a message is lost — if it cannot
+            // resolve, the notice goes out.
+            var moduleService = scope.ServiceProvider.GetService<ITenantModuleService>();
+            if (owningModule is not null && moduleService is not null)
+            {
+                var moduleState = await moduleService.GetStateAsync(request.TenantId, ct);
+
+                if (!moduleState.IsEnabled(owningModule.Key))
+                {
+                    _log.LogInformation(
+                        "Notification suppressed: module {Module} is disabled for tenant {TenantId} "
+                        + "(event {EventCode}, category {Category}).",
+                        owningModule.Key, request.TenantId, request.EventCode, moduleCategory);
+                    return [];
+                }
+            }
+        }
 
         var recipient = await _recipients.ResolveAsync(db, request.TenantId, request.UserId, request.EmployeeId, ct);
         if (recipient is null && !string.IsNullOrWhiteSpace(request.ExternalEmail))

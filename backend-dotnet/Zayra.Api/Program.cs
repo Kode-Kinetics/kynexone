@@ -211,6 +211,11 @@ builder.Services.PostConfigure<EntityScopeOptions>(options =>
         options.StrictMode);
 });
 
+// Effective module state (stored flags + the catalog's statutory/core locks). Scoped because it
+// reads the tenant's DbContext; the result is cached per tenant in IMemoryCache.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Modules.ITenantModuleService,
+                           Zayra.Api.Infrastructure.Modules.TenantModuleService>();
+
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<SubscriptionGuardFilter>();
