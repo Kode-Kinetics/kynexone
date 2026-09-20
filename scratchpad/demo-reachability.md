@@ -1,12 +1,12 @@
 # Demo reachability — capability that existed with no way in
 
 Branch `feat/demo-reachability`, worktree `scratchpad/wt-reach`, cut from `develop` @ `4117a44`.
-Two commits, not pushed, not merged.
+Not pushed, not merged.
 
 | | |
 |---|---|
-| HEAD | `3914011` |
-| Commits | `762fcf6` frontend reachability · `3914011` requisitions approval hole |
+| Code commits | `762fcf6` frontend reachability · `3914011` requisitions approval hole |
+| Report commits | `2fe1008` this report · plus the full-suite result |
 | Deletions vs develop | none (see below) |
 
 ```
