@@ -1,6 +1,7 @@
 import {
   Building2,
   BarChart3,
+  DatabaseBackup,
   MessageSquareText,
   BriefcaseBusiness,
   CalendarCheck,
@@ -80,6 +81,9 @@ export const navigationGroups: NavGroup[] = [
       { label: 'GOSI Filing', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
       { label: 'Tenant Admin', icon: Settings2, path: '/tenant-admin', requiredPermissions: ['security.manage'] },
       { label: 'Setup', icon: UserRoundCog, path: '/setup', requiredPermissions: ['organization.write'] },
+      // Implementation-time screen: the consultant-facing front end for the opening-balance engine,
+      // which until now had no caller at all and was driven from Postman.
+      { label: 'Opening Balances', icon: DatabaseBackup, path: '/opening-balances', requiredPermissions: ['employees.write', 'payroll.write'] },
     ],
   },
 ];

@@ -814,6 +814,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PayrollPaymentBatch> PayrollPaymentBatches => Set<PayrollPaymentBatch>();
     public DbSet<PayrollPaymentRecord> PayrollPaymentRecords => Set<PayrollPaymentRecord>();
     public DbSet<PayrollOpeningBalance> PayrollOpeningBalances => Set<PayrollOpeningBalance>();
+    // Mid-year cutover — see Models/OpeningBalances.cs for the doctrine.
+    public DbSet<CompanyCutover> CompanyCutovers => Set<CompanyCutover>();
+    public DbSet<EmployeeEosbOpeningBalance> EmployeeEosbOpeningBalances => Set<EmployeeEosbOpeningBalance>();
+    public DbSet<OpeningBalanceOrigin> OpeningBalanceOrigins => Set<OpeningBalanceOrigin>();
     public DbSet<BankTransferFile> BankTransferFiles => Set<BankTransferFile>();
     public DbSet<WPSFileBatch> WPSFileBatches => Set<WPSFileBatch>();
     public DbSet<SIFFileRecord> SIFFileRecords => Set<SIFFileRecord>();
@@ -2135,6 +2139,39 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Amount).HasPrecision(14, 2);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Year, x.BalanceType, x.ComponentCode }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Year });
+        });
+        // ── Mid-year cutover ────────────────────────────────────────────────
+        modelBuilder.Entity<CompanyCutover>(entity =>
+        {
+            entity.ToTable("company_cutovers");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.SourceSystem).HasMaxLength(80);
+            // One cutover per legal entity. A group migrates in waves; each wave is one row.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId }).IsUnique();
+        });
+        modelBuilder.Entity<EmployeeEosbOpeningBalance>(entity =>
+        {
+            entity.ToTable("employee_eosb_opening_balances");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.AccruedAmount).HasPrecision(14, 2);
+            entity.Property(x => x.AccruedMonths).HasPrecision(9, 2);
+            entity.Property(x => x.Currency).HasMaxLength(3);
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.AsAtDate }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.AsAtDate });
+        });
+        modelBuilder.Entity<OpeningBalanceOrigin>(entity =>
+        {
+            entity.ToTable("opening_balance_origins");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CarriedAmount).HasPrecision(14, 2);
+            entity.Property(x => x.EntityType).HasMaxLength(30);
+            entity.Property(x => x.Currency).HasMaxLength(3);
+            // One provenance row per carried-in entity. Re-importing the same package updates this row
+            // rather than appending a second claim of origin for the same loan.
+            entity.HasIndex(x => new { x.TenantId, x.EntityType, x.EntityId }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.CutoverDate });
+            entity.HasIndex(x => new { x.TenantId, x.MigrationBatchId });
         });
         modelBuilder.Entity<BankTransferFile>(entity => { entity.ToTable("bank_transfer_files"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PaymentBatchId }); });
         modelBuilder.Entity<WPSFileBatch>(entity =>

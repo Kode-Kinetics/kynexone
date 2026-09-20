@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260920172526_AddOpeningBalanceCutover")]
+    partial class AddOpeningBalanceCutover
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -7866,11 +7869,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(5,2)")
                         .HasColumnName("profile_completeness_score");
 
-                    b.Property<string>("ProfilePhotoStorageKey")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("profile_photo_storage_key");
-
                     b.Property<string>("ProfilePhotoUrl")
                         .IsRequired()
                         .HasColumnType("text")
@@ -9468,26 +9466,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("json")
                         .HasColumnName("eosb_result_json");
 
-                    b.Property<DateOnly?>("ExternalPaymentDate")
-                        .HasColumnType("date")
-                        .HasColumnName("external_payment_date");
-
-                    b.Property<string>("ExternalPaymentMethod")
-                        .HasColumnType("text")
-                        .HasColumnName("external_payment_method");
-
-                    b.Property<string>("ExternalPaymentRecordedByName")
-                        .HasColumnType("text")
-                        .HasColumnName("external_payment_recorded_by_name");
-
-                    b.Property<Guid?>("ExternalPaymentRecordedByUserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("external_payment_recorded_by_user_id");
-
-                    b.Property<string>("ExternalPaymentReference")
-                        .HasColumnType("text")
-                        .HasColumnName("external_payment_reference");
-
                     b.Property<string>("GlPeriod")
                         .HasMaxLength(7)
                         .HasColumnType("character varying(7)")
@@ -9558,10 +9536,6 @@ namespace Zayra.Api.Migrations
                     b.Property<DateTime?>("PaidAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("paid_at_utc");
-
-                    b.Property<bool>("PaidOutsidePayroll")
-                        .HasColumnType("boolean")
-                        .HasColumnName("paid_outside_payroll");
 
                     b.Property<Guid?>("PaymentBatchId")
                         .HasColumnType("uuid")
@@ -10403,53 +10377,6 @@ namespace Zayra.Api.Migrations
                     b.ToTable("employee_notifications", (string)null);
                 });
 
-            modelBuilder.Entity("Zayra.Api.Models.EmployeeNotificationCategoryPreference", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<string>("Category")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasColumnName("category");
-
-                    b.Property<string>("Channel")
-                        .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
-                        .HasColumnName("channel");
-
-                    b.Property<int>("EmployeeId")
-                        .HasColumnType("integer")
-                        .HasColumnName("employee_id");
-
-                    b.Property<bool>("Enabled")
-                        .HasColumnType("boolean")
-                        .HasColumnName("enabled");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at_utc");
-
-                    b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("updated_by");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "EmployeeId", "Channel", "Category")
-                        .IsUnique();
-
-                    b.ToTable("employee_notification_category_preferences", (string)null);
-                });
-
             modelBuilder.Entity("Zayra.Api.Models.EmployeeNotificationPreference", b =>
                 {
                     b.Property<Guid>("Id")
@@ -10501,14 +10428,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("access_revoked");
 
-                    b.Property<DateTime?>("AccessRevokedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("access_revoked_at_utc");
-
-                    b.Property<Guid?>("AccessRevokedByUserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("access_revoked_by_user_id");
-
                     b.Property<bool>("AssetsReturned")
                         .HasColumnType("boolean")
                         .HasColumnName("assets_returned");
@@ -10516,18 +10435,6 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("BackfillRequisitionId")
                         .HasColumnType("uuid")
                         .HasColumnName("backfill_requisition_id");
-
-                    b.Property<string>("CancelReason")
-                        .HasColumnType("text")
-                        .HasColumnName("cancel_reason");
-
-                    b.Property<DateTime?>("CancelledAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("cancelled_at_utc");
-
-                    b.Property<Guid?>("CancelledByUserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("cancelled_by_user_id");
 
                     b.Property<DateTime?>("CompletedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -12752,10 +12659,6 @@ namespace Zayra.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    b.Property<Guid?>("AttachmentDocumentId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("attachment_document_id");
 
                     b.Property<Guid?>("CategoryId")
                         .HasColumnType("uuid")
