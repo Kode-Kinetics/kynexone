@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Assets;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Models;
@@ -25,8 +26,11 @@ public class OffboardingController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly IAuditService _audit;
     private readonly IEmployeeActivationGuard _activationGuard;
+    // W2-C: the asset register is the source of truth for "assets returned".
+    private readonly AssetClearanceService _assetClearance;
     public OffboardingController(ZayraDbContext db, IAuditService? audit = null, IEmployeeActivationGuard? activationGuard = null)
     {
+        _assetClearance = new AssetClearanceService(db);
         _db = db;
         // Mirror EmployeesController's ApprovalWorkflowService default: DI always supplies the audit
         // service in production; the optional fallback keeps direct-construction call sites working.
@@ -42,6 +46,10 @@ public class OffboardingController : ControllerBase
         var q = _db.EmployeeOffboardings.AsNoTracking().Where(o => o.TenantId == tenantId);
         if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.Status == status);
         var items = await q.OrderByDescending(o => o.CreatedAtUtc).ToListAsync(ct);
+        // W2-C: AssetsReturned is derived — a leaver who still holds register items is never "returned",
+        // whatever the stored checkbox says.
+        foreach (var item in items.Where(o => o.Status == "InProgress" && o.AssetsReturned))
+            if (await _assetClearance.CountOutstandingAsync(tenantId, item.EmployeeId, ct) > 0) item.AssetsReturned = false;
         return Ok(items);
     }
 
@@ -51,7 +59,11 @@ public class OffboardingController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var o = await _db.EmployeeOffboardings.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
-        return o is null ? NotFound() : Ok(o);
+        if (o is null) return NotFound();
+        // W2-C: derived, never trusted — see List.
+        if (o.Status == "InProgress" && o.AssetsReturned && await _assetClearance.CountOutstandingAsync(tenantId, o.EmployeeId, ct) > 0)
+            o.AssetsReturned = false;
+        return Ok(o);
     }
 
     /// <summary>Attrition insight: in-notice/completed counts, avg exit rating, and reasons breakdown.</summary>
@@ -140,6 +152,10 @@ public class OffboardingController : ControllerBase
         emp.Status = "Offboarded";
         emp.UpdatedAtUtc = DateTime.UtcNow;
 
+        // W2-C: everything the leaver holds is now due back by the last working day — this arms the
+        // asset return reminders. Staged here, saved with the offboarding below.
+        await _assetClearance.AlignReturnDatesToLastWorkingDayAsync(tenantId, emp.Id, lwd, ct);
+
         await _db.SaveChangesAsync(ct);
         return Ok(off);
     }
@@ -166,6 +182,22 @@ public class OffboardingController : ControllerBase
     {
         var off = await Find(id, ct);
         if (off is null) return NotFound();
+        // W2-C: the checkbox can no longer claim assets are back while the register says otherwise.
+        // Ticking it is refused while the leaver holds register items (return or write them off instead);
+        // with nothing outstanding it remains the attestation for items the register does not track.
+        // Un-ticking is always allowed.
+        if (req.AssetsReturned == true)
+        {
+            var outstanding = await _assetClearance.CountOutstandingAsync(off.TenantId, off.EmployeeId, ct);
+            if (outstanding > 0)
+                return Conflict(new
+                {
+                    error = "assets_outstanding",
+                    code = "assets_outstanding",
+                    message = $"{off.EmployeeName} still holds {outstanding} asset(s) in the register. Record each return, or have a write-off approved, before marking assets returned.",
+                    outstandingAssets = outstanding,
+                });
+        }
         off.AssetsReturned = req.AssetsReturned ?? off.AssetsReturned;
         off.AccessRevoked = req.AccessRevoked ?? off.AccessRevoked;
         off.KnowledgeHandover = req.KnowledgeHandover ?? off.KnowledgeHandover;
@@ -192,6 +224,18 @@ public class OffboardingController : ControllerBase
                 message = off.LastWorkingDay == default
                     ? "A valid last working day is required before offboarding can be completed."
                     : $"Offboarding cannot be completed before the last working day ({off.LastWorkingDay:yyyy-MM-dd})."
+            });
+        // W2-C: the register is checked directly — a stale or hand-set AssetsReturned cannot archive a
+        // leaver who still holds company property. An item clears only by a recorded return or a write-off
+        // approved by its workflow's final step.
+        var outstandingAssets = await _assetClearance.CountOutstandingAsync(off.TenantId, off.EmployeeId, ct);
+        if (outstandingAssets > 0)
+            return Conflict(new
+            {
+                error = "assets_outstanding",
+                code = "assets_outstanding",
+                message = $"{off.EmployeeName} still holds {outstandingAssets} asset(s). Record each return, or have a write-off approved, before archiving.",
+                outstandingAssets,
             });
         if (!off.AssetsReturned || !off.KnowledgeHandover
             || off.ExitInterviewStatus is not ("Completed" or "Waived"))

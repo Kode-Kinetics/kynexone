@@ -464,7 +464,9 @@ public class TenantProvisioningTests
         (await db.LeaveTypes.AnyAsync(t => t.TenantId == tenant.Id && t.Code == "ANNUAL")).Should().BeTrue();
         (await db.LeavePolicies.AnyAsync(p => p.TenantId == tenant.Id && p.CompanyId == null)).Should().BeTrue();
         // F1: defaults are ApprovalWorkflows (the single model the router reads), one per core entity.
-        (await db.ApprovalWorkflows.CountAsync(w => w.TenantId == tenant.Id && w.IsDefault && w.IsActive)).Should().Be(3);
+        // W2-C adds the fourth: AssetWriteOff (leave, overtime, payroll, asset write-off).
+        (await db.ApprovalWorkflows.CountAsync(w => w.TenantId == tenant.Id && w.IsDefault && w.IsActive)).Should().Be(4);
+        (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "AssetWriteOff" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();
         (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "LeaveRequest" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();
         (await db.ApprovalPolicies.CountAsync(p => p.TenantId == tenant.Id)).Should().Be(0, "the retired model is never written");
 

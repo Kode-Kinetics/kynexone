@@ -67,6 +67,8 @@ public class ReportsController : ControllerBase
             new { key = "attendance.corrections", name = "Attendance Corrections", category = "Attendance", description = "Submitted, approved, and rejected attendance correction requests" },
             new { key = "compliance.document-compliance", name = "Document Compliance", category = "Compliance", description = "Employee document status: verified, pending, rejected, expired, and missing required docs" },
             new { key = "qiwa.readiness", name = "Qiwa Readiness", category = "Compliance", description = "Employees missing Iqama, Work Permit, National ID, or Passport required for Qiwa" },
+            // W2-C — asset custody.
+            new { key = "assets.register", name = "Asset Register & Custody", category = "Assets", description = "Assets by status and current holder, with overdue returns (Status filter: InStock, Assigned, InRepair, Retired, Lost, or Overdue)" },
         };
         return Ok(catalog);
     }
@@ -132,6 +134,7 @@ public class ReportsController : ControllerBase
             "attendance.corrections" => await RunAttendanceCorrections(tid, req, employeeIds, ct),
             "compliance.document-compliance" => await RunDocumentCompliance(tid, req, employeeIds, ct),
             "qiwa.readiness" => await RunQiwaReadiness(tid, req, employeeIds, ct),
+            "assets.register" => await RunAssetRegister(tid, req, employeeIds, ct),
             _ => null,
         };
 
@@ -472,6 +475,42 @@ public class ReportsController : ControllerBase
     }
 
     // ── Finance Reports ───────────────────────────────────────────────────────
+
+    // W2-C — one row per asset: status, current holder, due date and days overdue. A scoped (non org-wide)
+    // caller sees only items held by employees in their scope; unassigned stock is org-wide information.
+    private async Task<object> RunAssetRegister(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var rows = await (
+                from a in _db.Assets.AsNoTracking().Where(x => x.TenantId == tid)
+                join h in _db.AssetAssignments.AsNoTracking().Where(x => x.TenantId == tid && x.Status == AssetAssignmentStatuses.Active)
+                    on a.Id equals h.AssetId into holders
+                from h in holders.DefaultIfEmpty()
+                select new
+                {
+                    a.AssetTag, a.Name, a.CategoryCode, a.Make, a.Model, a.SerialNumber, a.Status, a.Condition,
+                    HolderEmployeeId = h == null ? (int?)null : h.EmployeeId,
+                    Holder = h == null ? "" : h.EmployeeName,
+                    HolderCode = h == null ? "" : h.EmployeeCode,
+                    IssuedOn = h == null ? (DateOnly?)null : h.IssuedOn,
+                    ExpectedReturnDate = h == null ? null : h.ExpectedReturnDate,
+                    a.PurchaseCost, a.Currency,
+                })
+            .ToListAsync(ct);
+        if (employeeIds is not null)
+            rows = rows.Where(r => r.HolderEmployeeId is int e && employeeIds.Contains(e)).ToList();
+        var status = req.Filters?.Status;
+        var shaped = rows.Select(r => new
+        {
+            r.AssetTag, r.Name, r.CategoryCode, r.Make, r.Model, r.SerialNumber, r.Status, r.Condition,
+            r.Holder, r.HolderCode, r.IssuedOn, r.ExpectedReturnDate,
+            DaysOverdue = r.ExpectedReturnDate is DateOnly d && d < today ? today.DayNumber - d.DayNumber : 0,
+            r.PurchaseCost, r.Currency,
+        });
+        if (string.Equals(status, "Overdue", StringComparison.OrdinalIgnoreCase)) shaped = shaped.Where(r => r.DaysOverdue > 0);
+        else if (!string.IsNullOrWhiteSpace(status)) shaped = shaped.Where(r => r.Status == status);
+        return shaped.OrderByDescending(r => r.DaysOverdue).ThenBy(r => r.Status).ThenBy(r => r.AssetTag).ToList();
+    }
 
     private async Task<object> RunLoanBalance(Guid tid, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {

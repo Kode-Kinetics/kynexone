@@ -662,6 +662,11 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+// W2-C — asset and equipment custody: the custody service (issue/return/transfer/write-off) and the hourly
+// return-reminder + write-off settlement sweep (enqueue-only, like ComplianceReminderWorker).
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Assets.IAssetCustodyService, Zayra.Api.Infrastructure.Assets.AssetCustodyService>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Assets.AssetReturnReminderWorker>();
+
 var app = builder.Build();
 
 if (trustForwardedHeaders)

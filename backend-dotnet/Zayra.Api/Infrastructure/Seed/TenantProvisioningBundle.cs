@@ -192,6 +192,19 @@ public static class TenantProvisioningBundle
         {
             ("LIMITED", "Limited Term", "محدد المدة"), ("UNLIMITED", "Unlimited Term", "غير محدد المدة"),
         }),
+        // W2-C — asset register vocabularies (tenant-editable; the API falls back to the same list).
+        new("AssetCategory", "Asset Category", "فئة الأصل", new[]
+        {
+            ("LAPTOP", "Laptop", "حاسوب محمول"), ("DESKTOP", "Desktop", "حاسوب مكتبي"), ("MONITOR", "Monitor", "شاشة"),
+            ("MOBILE_PHONE", "Mobile phone", "هاتف محمول"), ("TABLET", "Tablet", "جهاز لوحي"), ("SIM_CARD", "SIM card", "شريحة اتصال"),
+            ("ACCESS_CARD", "Access card", "بطاقة دخول"), ("VEHICLE", "Vehicle", "مركبة"), ("TOOLS", "Tools & equipment", "أدوات ومعدات"),
+            ("FURNITURE", "Furniture", "أثاث"), ("OTHER", "Other", "أخرى"),
+        }),
+        new("AssetCondition", "Asset Condition", "حالة الأصل", new[]
+        {
+            ("NEW", "New", "جديد"), ("GOOD", "Good", "جيد"), ("FAIR", "Fair", "مقبول"),
+            ("POOR", "Poor", "ضعيف"), ("DAMAGED", "Damaged", "تالف"),
+        }),
     };
 
     private static async Task<(int types, int values)> InstallMasterDataAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
@@ -352,6 +365,8 @@ public static class TenantProvisioningBundle
         (nameof(LeaveRequest), "LEAVE-DEFAULT", "Default Leave Approval"),
         (nameof(OvertimeRequest), "OVERTIME-DEFAULT", "Default Overtime Approval"),
         ("PayrollRun", "PAYROLL-DEFAULT", "Default Payroll Approval"),
+        // W2-C — writing off a lost/damaged asset is a loss decision; it is routed, never a checkbox.
+        ("AssetWriteOff", "ASSET-WRITEOFF-DEFAULT", "Default Asset Write-off Approval"),
     };
 
     private static async Task<int> InstallDefaultApprovalWorkflowsAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
@@ -404,6 +419,14 @@ public static class TenantProvisioningBundle
         ("HR_REQUEST_UPDATE", "HrRequestUpdate", "Update on your HR request", "تحديث بخصوص طلبك",
             "Your HR request '{Subject}' has been updated to status {Status}.",
             "تم تحديث طلبك '{Subject}' إلى الحالة {Status}.", "Subject,Status"),
+        // W2-C — asset return reminders (AssetReturnReminderWorker). Bodies carry only stable values: the
+        // outbox dedupe key hashes the rendered content, so a varying body would defeat exactly-once.
+        ("ASSET_RETURN_DUE", "AssetReturnDue", "Asset due back soon", "موعد إعادة العهدة قريب",
+            "{AssetTag} {AssetName} is due back on {DueDate}. Please arrange to return it.",
+            "يجب إعادة العهدة {AssetTag} {AssetName} بتاريخ {DueDate}. يرجى ترتيب إعادتها.", "AssetTag,AssetName,DueDate"),
+        ("ASSET_RETURN_OVERDUE", "AssetReturnOverdue", "Asset return overdue", "تأخر إعادة العهدة",
+            "{AssetTag} {AssetName} was due back on {DueDate}. Please return it as soon as possible.",
+            "كان يجب إعادة العهدة {AssetTag} {AssetName} بتاريخ {DueDate}. يرجى إعادتها في أقرب وقت.", "AssetTag,AssetName,DueDate"),
     };
 
     private static async Task<int> InstallNotificationTemplatesAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)

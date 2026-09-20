@@ -1056,6 +1056,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<UserEntityAccess> UserEntityAccesses => Set<UserEntityAccess>();
     // ── HR Workflow Configuration ──────────────────────────────────────────────
     public DbSet<TenantHrConfig> TenantHrConfigs => Set<TenantHrConfig>();
+    // W2-C — asset and equipment custody.
+    public DbSet<Asset> Assets => Set<Asset>();
+    public DbSet<AssetAssignment> AssetAssignments => Set<AssetAssignment>();
+    public DbSet<AssetWriteOffRequest> AssetWriteOffRequests => Set<AssetWriteOffRequest>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -3860,6 +3864,77 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.UserId, x.CompanyId, x.Role }).IsUnique();
             entity.HasOne(x => x.User).WithMany(x => x.EntityAccesses).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // ── W2-C: asset and equipment custody ─────────────────────────────────────────
+        modelBuilder.Entity<Asset>(entity =>
+        {
+            entity.ToTable("assets");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.AssetTag).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.Name).HasMaxLength(200);
+            entity.Property(x => x.SerialNumber).HasMaxLength(120);
+            entity.Property(x => x.CategoryCode).HasMaxLength(64);
+            entity.Property(x => x.Make).HasMaxLength(120);
+            entity.Property(x => x.Model).HasMaxLength(120);
+            entity.Property(x => x.Currency).HasMaxLength(8);
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.Condition).HasMaxLength(64);
+            entity.Property(x => x.LocationNote).HasMaxLength(200);
+            entity.Property(x => x.RetirementReason).HasMaxLength(1000);
+            entity.Property(x => x.Notes).HasMaxLength(2000);
+            entity.Property(x => x.PurchaseCost).HasPrecision(14, 2);
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.TenantId, x.AssetTag }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.SerialNumber });
+            entity.ToTable(t => t.HasCheckConstraint("ck_assets_status",
+                "status IN ('InStock','Assigned','InRepair','Retired','Lost')"));
+        });
+
+        modelBuilder.Entity<AssetAssignment>(entity =>
+        {
+            entity.ToTable("asset_assignments");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.EmployeeName).HasMaxLength(200);
+            entity.Property(x => x.EmployeeCode).HasMaxLength(64);
+            entity.Property(x => x.IssuedByName).HasMaxLength(200);
+            entity.Property(x => x.ClosedByName).HasMaxLength(200);
+            entity.Property(x => x.ConditionOnIssue).HasMaxLength(64);
+            entity.Property(x => x.ConditionOnReturn).HasMaxLength(64);
+            entity.Property(x => x.IssueNotes).HasMaxLength(2000);
+            entity.Property(x => x.ReturnNotes).HasMaxLength(2000);
+            entity.HasOne<Asset>().WithMany().HasForeignKey(x => x.AssetId).OnDelete(DeleteBehavior.Restrict);
+            // THE custody invariant, enforced by PostgreSQL: an asset has at most ONE active holder.
+            // Two concurrent issues/transfers of the same asset cannot both commit — the loser gets 23505.
+            entity.HasIndex(x => x.AssetId).IsUnique()
+                .HasDatabaseName("ux_asset_assignments_one_active_holder")
+                .HasFilter("status = 'Active'");
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.AssetId, x.IssuedAtUtc });
+            entity.HasIndex(x => new { x.Status, x.ExpectedReturnDate });
+            entity.ToTable(t => t.HasCheckConstraint("ck_asset_assignments_status",
+                "status IN ('Active','Returned','Transferred','WrittenOff')"));
+        });
+
+        modelBuilder.Entity<AssetWriteOffRequest>(entity =>
+        {
+            entity.ToTable("asset_write_off_requests");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Kind).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.Reason).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.RequestedByName).HasMaxLength(200);
+            entity.Property(x => x.DecisionComments).HasMaxLength(2000);
+            entity.HasOne<Asset>().WithMany().HasForeignKey(x => x.AssetId).OnDelete(DeleteBehavior.Restrict);
+            // One open write-off per asset at a time.
+            entity.HasIndex(x => x.AssetId).IsUnique()
+                .HasDatabaseName("ux_asset_write_off_requests_one_pending")
+                .HasFilter("status = 'Pending'");
+            entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId });
+            entity.HasIndex(x => x.ApprovalRequestId);
         });
 
         ApplyTenantQueryFilters(modelBuilder);
