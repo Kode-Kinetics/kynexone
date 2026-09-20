@@ -18,10 +18,20 @@ public class ReportsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
-    public ReportsController(ZayraDbContext db, IDataScopeService scopeService)
+    private readonly Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService _nitaqat;
+    public ReportsController(
+        ZayraDbContext db,
+        IDataScopeService scopeService,
+        Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService? nitaqat = null)
     {
         _db = db;
         _scopeService = scopeService;
+        // Optional so the many call sites that construct this controller directly (the
+        // scheduled-report worker and a dozen scope tests) keep working; DI and the worker
+        // pass the scoped instance, everyone else gets an equivalent one over the same
+        // DbContext. There is no per-request state in it beyond the context.
+        _nitaqat = nitaqat ?? new Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService(
+            db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db));
     }
 
     private Guid GetTenantId() =>
@@ -67,6 +77,7 @@ public class ReportsController : ControllerBase
             new { key = "attendance.corrections", name = "Attendance Corrections", category = "Attendance", description = "Submitted, approved, and rejected attendance correction requests" },
             new { key = "compliance.document-compliance", name = "Document Compliance", category = "Compliance", description = "Employee document status: verified, pending, rejected, expired, and missing required docs" },
             new { key = "qiwa.readiness", name = "Qiwa Readiness", category = "Compliance", description = "Employees missing Iqama, Work Permit, National ID, or Passport required for Qiwa" },
+            new { key = "compliance.saudization", name = "Saudization / Nitaqat Standing", category = "Compliance", description = "Weighted Nitaqat position per Saudi establishment: Saudi units, total units, achieved percentage, band, and hires to the next band" },
         };
         return Ok(catalog);
     }
@@ -132,8 +143,83 @@ public class ReportsController : ControllerBase
             "attendance.corrections" => await RunAttendanceCorrections(tid, req, employeeIds, ct),
             "compliance.document-compliance" => await RunDocumentCompliance(tid, req, employeeIds, ct),
             "qiwa.readiness" => await RunQiwaReadiness(tid, req, employeeIds, ct),
+            "compliance.saudization" => await RunSaudizationStanding(tid, ct),
             _ => null,
         };
+
+    // ── Saudization / Nitaqat ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// One row per Saudi establishment. Establishments that cannot be banded appear
+    /// WITH THEIR REFUSAL REASON rather than being dropped or given a zero: the HR
+    /// review found there was no Saudization report at all, and a report that quietly
+    /// omits the establishments it could not compute is the next version of that
+    /// problem.
+    /// </summary>
+    private async Task<object> RunSaudizationStanding(Guid tid, CancellationToken ct)
+    {
+        var companies = await _db.Companies
+            .Where(c => c.TenantId == tid && c.IsActive && !c.IsDeleted
+                     && (c.CountryCode == "SA" || c.CountryCode == "SAU"))
+            .Select(c => new { c.Id, c.TradeName, c.LegalNameEn })
+            .ToListAsync(ct);
+
+        var asOf = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var rows = new List<object>();
+
+        foreach (var c in companies)
+        {
+            var name = string.IsNullOrWhiteSpace(c.TradeName) ? c.LegalNameEn : c.TradeName;
+            var result = await _nitaqat.GetStandingAsync(tid, c.Id, asOf, ct);
+
+            if (result.Standing is { } s)
+            {
+                rows.Add(new
+                {
+                    establishment = name,
+                    activity = s.ActivityNameEn,
+                    sizeTier = s.SizeTierNameEn,
+                    saudiWeighted = s.SaudiWeighted,
+                    totalWeighted = s.TotalWeighted,
+                    achievedPercent = s.AchievedPercent,
+                    band = s.Band,
+                    currentBandFloorPercent = s.CurrentBandFloorPercent,
+                    nextBand = s.NextBandUp?.Band,
+                    nextBandRequiredPercent = s.NextBandUp?.RequiredPercent,
+                    saudiHiresToNextBand = s.Scenario.SaudiHiresToNextBand,
+                    expatHiresBeforeDowngrade = s.Scenario.ExpatHiresBeforeDowngrade,
+                    restrictsServices = s.RestrictsServices,
+                    allInputsVerified = s.AllInputsVerified,
+                    unverifiedInputs = string.Join("; ", s.UnverifiedInputs),
+                    status = "Computed",
+                });
+            }
+            else
+            {
+                rows.Add(new
+                {
+                    establishment = name,
+                    activity = (string?)null,
+                    sizeTier = (string?)null,
+                    saudiWeighted = (decimal?)null,
+                    totalWeighted = (decimal?)null,
+                    achievedPercent = (decimal?)null,
+                    band = (string?)null,
+                    currentBandFloorPercent = (decimal?)null,
+                    nextBand = (string?)null,
+                    nextBandRequiredPercent = (decimal?)null,
+                    saudiHiresToNextBand = (int?)null,
+                    expatHiresBeforeDowngrade = (int?)null,
+                    restrictsServices = false,
+                    allInputsVerified = false,
+                    unverifiedInputs = result.Refusal?.Message ?? string.Empty,
+                    status = result.Refusal?.Reason ?? "Unknown",
+                });
+            }
+        }
+
+        return new { asOf, establishments = rows.Count, rows };
+    }
 
     // ── HR Reports ────────────────────────────────────────────────────────────
 

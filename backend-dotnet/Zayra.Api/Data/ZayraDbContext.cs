@@ -903,6 +903,18 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<TenantBranding> TenantBrandings => Set<TenantBranding>();
     public DbSet<CountryPayrollRule> CountryPayrollRules => Set<CountryPayrollRule>();
     public DbSet<StatutoryRule> StatutoryRules => Set<StatutoryRule>();
+
+    // ── KSA Nitaqat (Saudization banding) ─────────────────────────────────────
+    // Reference tables use INullableTenantOwned (TenantId null = platform default,
+    // the same override idiom as StatutoryRule). Establishment profile, per-employee
+    // weight overrides and trend snapshots are real tenant+company data.
+    public DbSet<NitaqatSizeTier> NitaqatSizeTiers => Set<NitaqatSizeTier>();
+    public DbSet<NitaqatActivity> NitaqatActivities => Set<NitaqatActivity>();
+    public DbSet<NitaqatBandThreshold> NitaqatBandThresholds => Set<NitaqatBandThreshold>();
+    public DbSet<NitaqatWeightRule> NitaqatWeightRules => Set<NitaqatWeightRule>();
+    public DbSet<NitaqatEstablishmentProfile> NitaqatEstablishmentProfiles => Set<NitaqatEstablishmentProfile>();
+    public DbSet<NitaqatEmployeeWeightOverride> NitaqatEmployeeWeightOverrides => Set<NitaqatEmployeeWeightOverride>();
+    public DbSet<NitaqatStandingSnapshot> NitaqatStandingSnapshots => Set<NitaqatStandingSnapshot>();
     public DbSet<CompanyTaxPolicy> CompanyTaxPolicies => Set<CompanyTaxPolicy>();
     public DbSet<CompanyComplianceProfile> CompanyComplianceProfiles => Set<CompanyComplianceProfile>();
     public DbSet<TenantFieldHelpText> TenantFieldHelpTexts => Set<TenantFieldHelpText>();
@@ -2917,6 +2929,102 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("country_payroll_rules");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.CountryCode, x.RuleKey, x.EffectiveFrom });
+        });
+
+        // ── KSA Nitaqat reference + standing tables ──────────────────────────
+        // No HasQueryFilter and no (TenantId, CompanyId) index is written here:
+        // ApplyTenantQueryFilters / ApplyCompanyScopeIndexes generate both from the
+        // marker interfaces at the end of OnModelCreating.
+        modelBuilder.Entity<NitaqatSizeTier>(entity =>
+        {
+            entity.ToTable("nitaqat_size_tiers");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Code).HasMaxLength(40);
+            entity.Property(x => x.NameEn).HasMaxLength(120);
+            entity.Property(x => x.NameAr).HasMaxLength(120);
+            entity.Property(x => x.SourceNote).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.Code, x.EffectiveFrom }).IsUnique();
+        });
+
+        modelBuilder.Entity<NitaqatActivity>(entity =>
+        {
+            entity.ToTable("nitaqat_activities");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Code).HasMaxLength(60);
+            entity.Property(x => x.NameEn).HasMaxLength(200);
+            entity.Property(x => x.NameAr).HasMaxLength(200);
+            entity.Property(x => x.ActivityGroup).HasMaxLength(120);
+            entity.Property(x => x.SourceNote).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+        });
+
+        modelBuilder.Entity<NitaqatBandThreshold>(entity =>
+        {
+            entity.ToTable("nitaqat_band_thresholds");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ActivityCode).HasMaxLength(60);
+            entity.Property(x => x.SizeTierCode).HasMaxLength(40);
+            entity.Property(x => x.Band).HasMaxLength(30);
+            entity.Property(x => x.SourceNote).HasMaxLength(500);
+            entity.Property(x => x.MinSaudizationPercent).HasPrecision(6, 3);
+            // One row per cell of the (activity x size tier x band) matrix per effective date.
+            entity.HasIndex(x => new { x.TenantId, x.ActivityCode, x.SizeTierCode, x.Band, x.EffectiveFrom })
+                  .IsUnique();
+            entity.HasIndex(x => new { x.ActivityCode, x.SizeTierCode });
+        });
+
+        modelBuilder.Entity<NitaqatWeightRule>(entity =>
+        {
+            entity.ToTable("nitaqat_weight_rules");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.RuleCode).HasMaxLength(60);
+            entity.Property(x => x.Classification).HasMaxLength(20);
+            entity.Property(x => x.CountBasis).HasMaxLength(20);
+            entity.Property(x => x.Category).HasMaxLength(40);
+            entity.Property(x => x.SourceNote).HasMaxLength(500);
+            entity.Property(x => x.NumeratorWeight).HasPrecision(8, 4);
+            entity.Property(x => x.DenominatorWeight).HasPrecision(8, 4);
+            entity.HasIndex(x => new { x.TenantId, x.RuleCode, x.EffectiveFrom }).IsUnique();
+        });
+
+        modelBuilder.Entity<NitaqatEstablishmentProfile>(entity =>
+        {
+            entity.ToTable("nitaqat_establishment_profiles");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ActivityCode).HasMaxLength(60);
+            entity.Property(x => x.MhrsdEstablishmentNumber).HasMaxLength(40);
+            entity.Property(x => x.LabourOfficeCode).HasMaxLength(40);
+            entity.Property(x => x.QiwaReportedBand).HasMaxLength(30);
+            // One live profile per company. Filtered so a soft-deleted row does not
+            // block re-registration of the same company.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId })
+                  .IsUnique()
+                  .HasFilter("is_deleted = false");
+        });
+
+        modelBuilder.Entity<NitaqatEmployeeWeightOverride>(entity =>
+        {
+            entity.ToTable("nitaqat_employee_weight_overrides");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Category).HasMaxLength(40);
+            entity.Property(x => x.Justification).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId })
+                  .IsUnique()
+                  .HasFilter("is_deleted = false");
+        });
+
+        modelBuilder.Entity<NitaqatStandingSnapshot>(entity =>
+        {
+            entity.ToTable("nitaqat_standing_snapshots");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ActivityCode).HasMaxLength(60);
+            entity.Property(x => x.SizeTierCode).HasMaxLength(40);
+            entity.Property(x => x.Band).HasMaxLength(30);
+            entity.Property(x => x.SaudiWeighted).HasPrecision(12, 4);
+            entity.Property(x => x.TotalWeighted).HasPrecision(12, 4);
+            entity.Property(x => x.AchievedPercent).HasPrecision(8, 4);
+            // One trend point per company per day; the standing read upserts today's.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.AsOfDate }).IsUnique();
         });
 
         modelBuilder.Entity<StatutoryRule>(entity =>

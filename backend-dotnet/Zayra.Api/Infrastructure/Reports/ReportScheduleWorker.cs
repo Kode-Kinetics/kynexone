@@ -136,6 +136,9 @@ public sealed class ReportScheduleWorker : BackgroundService
                 var filters = string.IsNullOrWhiteSpace(schedule.FiltersJson)
                     ? null
                     : JsonSerializer.Deserialize<ReportFilters>(schedule.FiltersJson);
+                // The Nitaqat service is left to the controller's own default: this worker's
+                // test harness builds a minimal service provider, and a GetRequiredService here
+                // would make the worker unconstructable in it for no gain.
                 var controller = new ReportsController(db, dataScope);
                 var data = await controller.ExecuteReportDataAsync(
                     schedule.TenantId, new RunReportRequest(schedule.ReportKey, filters), employeeIds, ct)

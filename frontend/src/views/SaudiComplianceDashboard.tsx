@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import client from '../api/client';
 import { SaudiComplianceConfig } from './SaudiComplianceConfig';
+import { NitaqatPanel } from './NitaqatPanel';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -618,11 +619,16 @@ function DashboardTab() {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'configure';
+type Tab = 'dashboard' | 'nitaqat' | 'configure';
 
+// Saudization sits beside QIWA/WPS/GOSI rather than inside the dashboard grid: a
+// Nitaqat band carries its own scenario modelling, trend and working, and squeezing
+// it into a fourth module card would reduce it to the single number this stream
+// exists to replace.
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: ShieldCheck },
-  { id: 'configure', label: 'Configure',  icon: Settings },
+  { id: 'dashboard', label: 'Dashboard',   icon: ShieldCheck },
+  { id: 'nitaqat',   label: 'Saudization', icon: Users },
+  { id: 'configure', label: 'Configure',   icon: Settings },
 ];
 
 export function SaudiComplianceDashboard() {
@@ -654,6 +660,7 @@ export function SaudiComplianceDashboard() {
       </div>
 
       {tab === 'dashboard' && <DashboardTab />}
+      {tab === 'nitaqat'   && <NitaqatPanel />}
       {tab === 'configure' && <SaudiComplianceConfig />}
     </div>
   );
