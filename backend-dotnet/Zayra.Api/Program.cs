@@ -421,6 +421,7 @@ builder.Services.AddScoped<Zayra.Api.Application.Recruitment.IRecruitmentAiServi
 builder.Services.AddScoped<IPolicyDocumentService, PolicyDocumentService>();
 builder.Services.AddScoped<IQiwaIntegrationService, QiwaIntegrationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.SaudiComplianceDashboardService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.GosiReadinessReportService>();
 // POD-A1: single GOSI/statutory reconciliation truth (contribution-summary, variance-report,
 // compliance dashboard variance count). Scoped so it shares the request's memoized IStatutoryRuleReader.
@@ -1001,6 +1002,7 @@ using (var scope = app.Services.CreateScope())
 
     await TrySeedAsync("GosiRuleSeeder",      () => GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger), logger);
     await TrySeedAsync("StatutoryRuleSeeder", () => Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.SeedAsync(dbContext, logger), logger);
+        await TrySeedAsync("NitaqatReferenceSeeder", () => Zayra.Api.Infrastructure.Seed.NitaqatReferenceSeeder.SeedAsync(dbContext, logger), logger);
 
     // Pricing config + module catalog must exist even in production (demo seeding is off there),
     // otherwise the platform-admin pricing/CPQ console is empty. Idempotent (skips when present).

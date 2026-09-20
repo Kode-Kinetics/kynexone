@@ -105,6 +105,7 @@ public sealed class ReportScheduleWorker : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
         var dataScope = scope.ServiceProvider.GetRequiredService<IDataScopeService>();
+        var nitaqat = scope.ServiceProvider.GetRequiredService<Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService>();
         var email = scope.ServiceProvider.GetRequiredService<IEmailService>();
         var now = DateTime.UtcNow;
         var due = await ScopedBypass.SystemWide(db.ReportSchedules, 20,
@@ -136,7 +137,7 @@ public sealed class ReportScheduleWorker : BackgroundService
                 var filters = string.IsNullOrWhiteSpace(schedule.FiltersJson)
                     ? null
                     : JsonSerializer.Deserialize<ReportFilters>(schedule.FiltersJson);
-                var controller = new ReportsController(db, dataScope);
+                var controller = new ReportsController(db, dataScope, nitaqat);
                 var data = await controller.ExecuteReportDataAsync(
                     schedule.TenantId, new RunReportRequest(schedule.ReportKey, filters), employeeIds, ct)
                     ?? throw new InvalidOperationException("The scheduled report key is no longer supported.");

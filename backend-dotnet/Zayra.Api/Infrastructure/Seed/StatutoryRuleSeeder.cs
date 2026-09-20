@@ -53,6 +53,7 @@ public static class StatutoryRuleSeeder
         var list = new List<StatutoryRule>();
         var eff16 = new DateTime(2016, 6, 1, 0, 0, 0, DateTimeKind.Utc);   // GOSI regulation effective date
         var eff22 = new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc);   // UAE/Qatar post-reform effective date
+        var eff21 = new DateTime(2021, 1, 1, 0, 0, 0, DateTimeKind.Utc);   // KSA balanced-Nitaqat revision
 
         // ── KSA GOSI ─────────────────────────────────────────────────────────
         // ⚠️  COMPLIANCE GATE — DO NOT REMOVE ⚠️
@@ -82,7 +83,28 @@ public static class StatutoryRuleSeeder
             "VERIFY: GOSI covered wage ceiling SAR 45,000 — confirm current ceiling"));
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "nitaqat.default_target_ratio", "0.35", "decimal", eff16,
-            "VERIFY: Nitaqat target ratio varies by sector; 35% is directional — confirm with HRSD"));
+            "SUPERSEDED for reporting — read by KsaNationalizationTracker only, which nothing in "
+            + "production calls. The real Nitaqat target is a function of (economic activity × "
+            + "establishment size tier) and lives in nitaqat_band_thresholds; see "
+            + "NitaqatCalculationService. Left in place so the country-pack tracker and its tests "
+            + "keep their existing behaviour."));
+
+        // ── KSA Nitaqat counting wage floor ───────────────────────────────────
+        // MHRSD counts a Saudi as a full unit only once their monthly wage clears a
+        // floor, and as a half unit between a lower and the full floor. These are
+        // genuine scalars, so they belong in StatutoryRule rather than in the
+        // Nitaqat matrix table. The nitaqat.* prefix is already a bounded statutory
+        // key (StatutoryRateGuard), so a tenant may override but not invent.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "nitaqat.counting_wage_floor_sar", "4000", "decimal", eff21,
+            "VERIFY: monthly wage at or above which a Saudi employee counts as a full Nitaqat unit. "
+            + "SAR 4,000 is the widely applied figure since the 2021 balanced-Nitaqat revision — "
+            + "confirm against the current MHRSD decision."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "nitaqat.counting_wage_half_floor_sar", "3000", "decimal", eff21,
+            "VERIFY: monthly wage at or above which a Saudi employee counts as HALF a Nitaqat unit; "
+            + "below it they do not count toward the Saudi total at all. SAR 3,000 is the widely "
+            + "applied figure — confirm against the current MHRSD decision."));
 
         // ── KSA OT / LOP ──────────────────────────────────────────────────────
         // ⚠️  FLAG FOR SAUDI COMPLIANCE SIGN-OFF — do NOT file payroll against these
