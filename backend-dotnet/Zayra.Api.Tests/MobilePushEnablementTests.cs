@@ -50,6 +50,28 @@ public class MobilePushEnablementTests
         return new MobileController(db) { ControllerContext = new ControllerContext { HttpContext = httpCtx } };
     }
 
+    /// <summary>
+    /// The caller must be a REAL, active employee of the tenant, not merely the bearer of an
+    /// employee_id claim. PR #59 hardened ResolveCallerEmployeeIdAsync to verify exactly that
+    /// ("a JWT claim is an identifier, not proof that the employee still exists in this tenant"),
+    /// so these fixtures now have to seed the caller they claim to be. Without this the controller
+    /// refuses every caller with 403 and the scoping assertions below would pass vacuously —
+    /// a cross-employee write would look "refused" because NOBODY can write, which is not the
+    /// property under test.
+    /// </summary>
+    private static Employee SeedEmployee(ZayraDbContext db, Guid tenantId, int employeeId)
+    {
+        var e = new Employee
+        {
+            Id = employeeId, TenantId = tenantId,
+            EmployeeCode = $"E-{employeeId}", FullName = $"Employee {employeeId}",
+            Status = EmployeeStatuses.Active, IsDeleted = false,
+        };
+        db.Employees.Add(e);
+        db.SaveChanges();
+        return e;
+    }
+
     private static EmployeeNotification SeedNotification(ZayraDbContext db, Guid tenantId, int employeeId)
     {
         var n = new EmployeeNotification
@@ -72,6 +94,8 @@ public class MobilePushEnablementTests
     {
         using var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        SeedEmployee(db, tenantId, employeeId: 2001);   // the caller, a genuine active employee
+        SeedEmployee(db, tenantId, employeeId: 2002);   // the colleague whose row must not be touched
         var victims = SeedNotification(db, tenantId, employeeId: 2002);
 
         var controller = CreateMobileController(db, tenantId, callerEmployeeId: 2001);
@@ -92,6 +116,7 @@ public class MobilePushEnablementTests
     {
         using var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        SeedEmployee(db, tenantId, employeeId: 2001);
         var mine = SeedNotification(db, tenantId, employeeId: 2001);
 
         var controller = CreateMobileController(db, tenantId, callerEmployeeId: 2001);
@@ -111,7 +136,11 @@ public class MobilePushEnablementTests
         using var db = CreateDb();
         var mine = Guid.NewGuid();
         var theirs = Guid.NewGuid();
-        // Same employee id in a different tenant: only the tenant predicate separates these.
+        // The caller is a genuine active employee OF THEIR OWN TENANT, so resolution succeeds and
+        // the refusal below is attributable to the tenant predicate on the notification rather than
+        // to an unresolvable caller. (Employee.Id is the primary key, so the foreign tenant's
+        // notification simply carries the same employee number; it needs no row of its own.)
+        SeedEmployee(db, mine, employeeId: 2001);
         var foreign = SeedNotification(db, theirs, employeeId: 2001);
 
         var controller = CreateMobileController(db, mine, callerEmployeeId: 2001);
