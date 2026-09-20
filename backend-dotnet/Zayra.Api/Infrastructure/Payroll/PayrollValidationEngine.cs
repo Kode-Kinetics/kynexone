@@ -106,6 +106,29 @@ public static class PayrollValidationEngine
         // For a Regular run IncludesRecurringPay is always true, so nothing about an existing run changes.
         var paysRecurring = ctx.Run.IncludesRecurringPay;
 
+        // ── S1/A3: the entrant-cohort dimension does not exist, and that is now SAID ─────────
+        // Since 3 July 2024 the Saudi schedule depends on WHEN THE INDIVIDUAL first registered, not
+        // only on the period: first-time entrants to the insured labour market are on a separate,
+        // rising ladder while existing subscribers stay on 9%/9%. Every rate lookup in this product
+        // is keyed by period alone, and EmployeePayrollProfile has no first-registration date, so no
+        // configuration can express the split — it is a schema change, not a rate change.
+        //
+        // This fires once per KSA run rather than per employee, and is suppressible: a customer who
+        // has confirmed they employ no post-3-July-2024 first-time entrant should not be nagged.
+        if (isKsa && paysRecurring && !ctx.EntrantCohortSchemeAcknowledged)
+            Warn("WARN_GOSI_ENTRANT_COHORT_NOT_MODELLED",
+                "This run assumes EVERY insured person is on the pre-3-July-2024 GOSI schedule (9% / 9% " +
+                "annuities). Saudi Arabia introduced a separate scheme for FIRST-TIME entrants to the insured " +
+                "labour market on 3 July 2024, whose contribution rate steps up year by year, and this product " +
+                "has no cohort dimension: the rate is looked up by period, never by person, and there is no " +
+                "first-registration date on the employee record to look one up with. If any employee in this " +
+                "run first registered with GOSI on or after 3 July 2024, their contribution is UNDER-STATED and " +
+                "will be collected later as back-contributions with a surcharge. Confirm with GOSI, and set the " +
+                "statutory rule 'gosi.new_entrant_scheme_acknowledged' to true once you have established that " +
+                "your population is entirely pre-3-July-2024 (or once the cohort schema lands). [COUNSEL] for " +
+                "the exact ladder. The same defect applies to UAE nationals under Decree-Law 57/2023.");
+
+
         // ── Rule 1: Missing salary structure / payroll profile ────────────────
         foreach (var emp in ctx.ActiveEmployees)
         {
@@ -318,6 +341,27 @@ public static class PayrollValidationEngine
                             $"Employee {slip.EmployeeCode} covered wage (Basic + Housing = {coveredWage:N2} SAR) exceeds the GOSI {ceiling:N0} SAR ceiling. " +
                             $"Verify that contributions were calculated on {ceiling:N0} SAR, not {coveredWage:N2} SAR.",
                             slip.EmployeeId);
+
+                    // S1/A3 corollary — GOSI annuities and SANED have AGE-based eligibility and cease
+                    // at retirement age. With no age test anywhere, the product deducts SANED from a
+                    // 62-year-old Saudi indefinitely. DateOfBirth exists on the employee record, so
+                    // the condition is at least detectable even though the cessation rule is not
+                    // implemented. Silent when no retirement age is configured.
+                    if (ctx.GosiRetirementAgeYears > 0 && hasGosiEe && emp.DateOfBirth is DateOnly dob)
+                    {
+                        var periodStartDate = new DateOnly(ctx.Run.Year, ctx.Run.Month, 1);
+                        var age = periodStartDate.Year - dob.Year
+                                - (periodStartDate < dob.AddYears(periodStartDate.Year - dob.Year) ? 1 : 0);
+                        if (age >= ctx.GosiRetirementAgeYears)
+                            Warn("WARN_GOSI_AGE_ELIGIBILITY_NOT_MODELLED",
+                                $"Employee {slip.EmployeeCode} is {age} and GOSI employee contributions of " +
+                                $"{gosiEeAmount:N2} SAR were still deducted. GOSI annuities and SANED have " +
+                                $"age-based eligibility and cease at retirement age ({ctx.GosiRetirementAgeYears}); " +
+                                "this product does not model the cessation, so the deduction may be an " +
+                                "OVER-deduction from the employee's net pay. [COUNSEL] confirm the cessation rule " +
+                                "for someone who continues working past retirement age, then correct this slip.",
+                                slip.EmployeeId);
+                    }
                 }
                 else  // NonSaudi / expat
                 {
@@ -605,6 +649,21 @@ public sealed record PayrollValidationContext(
     /// has not been updated behaves exactly as before.
     /// </summary>
     public decimal GosiCoveredWageCeiling { get; init; }
+
+    /// <summary>
+    /// S1/A3 — true when the tenant has acknowledged the post-3-July-2024 GOSI new-entrant scheme,
+    /// which suppresses WARN_GOSI_ENTRANT_COHORT_NOT_MODELLED. Driven by the statutory rule
+    /// <c>gosi.new_entrant_scheme_acknowledged</c>. Defaults to false: the gap is real and the
+    /// default must be to say so.
+    /// </summary>
+    public bool EntrantCohortSchemeAcknowledged { get; init; }
+
+    /// <summary>
+    /// S1/A3 (corollary) — the age at which GOSI annuities and SANED cease. Zero disables the check.
+    /// Driven by <c>gosi.retirement_age_years</c>; [COUNSEL] for the current figure and for the
+    /// treatment of someone who continues working past it.
+    /// </summary>
+    public int GosiRetirementAgeYears { get; init; }
 }
 
 /// <summary>

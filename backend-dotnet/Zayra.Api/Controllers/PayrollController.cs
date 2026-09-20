@@ -2405,7 +2405,14 @@ public class PayrollController : ControllerBase
                 Nationality:  e.Nationality ?? string.Empty,
                 ContractType: e.ContractType ?? "Indefinite",
                 PeriodYear:   run.Year,
-                PeriodMonth:  run.Month);
+                PeriodMonth:  run.Month)
+            {
+                // S1/A3 — the person dimension. DateOfBirth exists on Employee today and drives the
+                // age-based eligibility corollary (annuities and SANED cease at retirement age).
+                // SocialInsuranceFirstRegisteredOn has no column yet; null means UNKNOWN, and no pack
+                // may read unknown as "new entrant".
+                DateOfBirth = e.DateOfBirth,
+            };
             var statutoryResult = await deductionCalc.CalculateAsync(statutoryInput, cancellationToken);
             if (priorStatutoryByEmp.Count > 0)
             {
@@ -3035,6 +3042,12 @@ public class PayrollController : ControllerBase
             // default — so an unseeded tenant keeps the 45,000 warning it has always had rather than
             // silently losing it.
             GosiCoveredWageCeiling                  = statutoryCeiling == decimal.MaxValue ? 0m : statutoryCeiling,
+            // S1/A3 — the cohort gap is announced unless the tenant has acknowledged it, and the
+            // retirement-age corollary is checked only when an age is configured.
+            EntrantCohortSchemeAcknowledged         = await Zayra.Api.Application.CountryPack.StatutoryFlag.ReadAsync(
+                _ruleReader, packCc, packJur, "gosi.new_entrant_scheme_acknowledged", eff, false, cancellationToken),
+            GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
+                packCc, packJur, "gosi.retirement_age_years", eff, tenantId, cancellationToken) ?? 0m),
         };
         foreach (var r in PayrollValidationEngine.Run(validationCtx))
             _db.PayrollValidationResults.Add(r);
@@ -3837,6 +3850,12 @@ public class PayrollController : ControllerBase
             GosiCoveredWageCeiling                  = await _ruleReader.GetDecimalAsync(
                 "SAU", "KSA-mainland", "gosi.covered_wage_ceiling_sar",
                 new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 45_000m,
+            EntrantCohortSchemeAcknowledged         = await Zayra.Api.Application.CountryPack.StatutoryFlag.ReadAsync(
+                _ruleReader, "SAU", "KSA-mainland", "gosi.new_entrant_scheme_acknowledged",
+                new DateOnly(run.Year, run.Month, 1), false, cancellationToken),
+            GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
+                "SAU", "KSA-mainland", "gosi.retirement_age_years",
+                new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 0m),
         };
         var results = PayrollValidationEngine.Run(ctx);
 

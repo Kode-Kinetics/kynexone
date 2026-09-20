@@ -48,7 +48,34 @@ public sealed record StatutoryDeductionInput(
     string Nationality,
     string ContractType,
     int PeriodYear,
-    int PeriodMonth);
+    int PeriodMonth)
+{
+    /// <summary>
+    /// S1/A3 — the PERSON dimension the rate lookup has always lacked.
+    ///
+    /// <para>Every statutory rule in this product is keyed by PERIOD. Since 3 July 2024 the Saudi
+    /// schedule is also keyed by the INDIVIDUAL: first-time entrants to the insured labour market are
+    /// on a separate, rising ladder while existing subscribers stay on 9%/9%. UAE Federal Decree-Law
+    /// 57/2023 created the same two-cohort split for Emiratis from 31 October 2023. Without a person
+    /// dimension the system is structurally incapable of expressing "this employee is on the new
+    /// scheme and this one is not", whatever rows you put in StatutoryRule.</para>
+    ///
+    /// <para>This is the contract half of the fix, added now because retrofitting it across six packs
+    /// is far worse than across three. The LADDER itself is not implemented — the exact step years and
+    /// terminal rate need a current GOSI circular ([COUNSEL]) — and the run raises
+    /// WARN_GOSI_ENTRANT_COHORT_NOT_MODELLED so the gap is loud rather than silent.</para>
+    ///
+    /// <para><see cref="SocialInsuranceFirstRegisteredOn"/> has NO column to populate it from yet: the
+    /// schema change (a nullable date on EmployeePayrollProfile, beside the existing
+    /// SocialInsuranceReference) is deliberately left to a stream that is not also rewriting the money
+    /// path, because a model-snapshot change collides with every other branch in flight. It is always
+    /// null today, and the packs must treat null as "unknown", never as "new entrant".</para>
+    /// </summary>
+    public DateOnly? DateOfBirth { get; init; }
+
+    /// <inheritdoc cref="DateOfBirth"/>
+    public DateOnly? SocialInsuranceFirstRegisteredOn { get; init; }
+}
 
 public sealed record StatutoryDeductionLine(string Code, string Label, decimal EmployeeAmount, decimal EmployerAmount);
 
