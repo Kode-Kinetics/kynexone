@@ -161,6 +161,93 @@ public static class StatutoryRuleSeeder
             "ot.standard_multiplier", "1.25", "decimal", eff22,
             "[CONF] Qatar Art.74 ordinary overtime: basic + not less than 25%. This is a FLOOR."));
 
+        // ── KSA Art. 98 / 109 / 117 — working hours, annual leave tiering, sick-leave scale ──
+        // Effective-dated from the Labour Law's own commencement (eff07 = 1426-09-23H / 2005-09-27),
+        // exactly as the EOSB rules are: these are not new law, so there is no later commencement to
+        // date them from, and a payroll that has already closed is not recomputed (a LeavePayrollImpact
+        // is snapshotted at approval and only ever read once, then stamped Processed).
+        //
+        // ⚠️  SOURCE CONFLICT ON ART. 98 — READ BEFORE CHANGING THESE NUMBERS.
+        // MHRSD publishes two English texts that disagree:
+        //   (a) hrsd.gov.sa knowledge centre art. 312 (last modified 2025-09-02): 8h/day, 48h/week;
+        //       Ramadan for Muslims 6h/day or 36h/week.   ← implemented here
+        //   (b) hrsd.gov.sa/sites/default/files/2023-02/Labor.pdf: 9h/day, 45h/week; Ramadan 7h/35h.
+        // (b) is not the operative text — its Art. 104 grants TWO weekly rest days where the operative
+        // Art. 104 grants one rest day of not less than 24 consecutive hours (Friday); it reads as an
+        // un-enacted five-day-week package. (a) is also the employee-favourable reading, because a lower
+        // Ramadan baseline makes MORE hours overtime-bearing under Art. 107.
+        // [COUNSEL] Confirm the operative Art. 98 figures before filing KSA payroll.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "workhours.standard_minutes_per_day", "480", "decimal", eff07,
+            "[CONF] KSA Art.98 ordinary actual working hours: 8h/day (480 min). Mirrors the existing "
+            + "lop.standard_work_minutes_per_day; kept as its own key because this one is the OVERTIME "
+            + "threshold and that one is the LOP absent-day divisor, and a tenant may lawfully differ."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "workhours.ramadan_minutes_per_day", "360", "decimal", eff07,
+            "[CERT] KSA Art.98 Ramadan reduced actual working hours: 6h/day (360 min) for Muslims. Art.98 "
+            + "cuts HOURS, not wages — the monthly wage is unchanged, so every hour worked beyond 6 in a "
+            + "Ramadan day is overtime at the Art.107 rate. Raising this value REDUCES overtime pay."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "workhours.ramadan_minutes_per_week", "2160", "decimal", eff07,
+            "[CONF] KSA Art.98 Ramadan weekly ceiling: 36h/week (2,160 min). Recorded for completeness and "
+            + "for the weekly-criterion employer; the daily criterion is what this product measures overtime "
+            + "on today (AttendanceService is a per-day engine). NOT YET ENFORCED — see the report."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "workhours.ramadan_scope", "all", "string", eff07,
+            "[COUNSEL] Who the Art.98 Ramadan reduction applies to. Values: all | none. The statute says "
+            + "\"for Muslims\", but the Employee model carries no religion attribute, so 'muslim' is not "
+            + "evaluable and folds to 'all' with a notice. 'all' is the default because over-delivering to "
+            + "non-Muslim staff is lawful, whereas applying it to nobody strips a statutory entitlement."));
+
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.annual_base_days", "21", "decimal", eff07,
+            "[CERT] KSA Art.109(1) annual leave: \"not less than 21 days\". A statutory FLOOR — a configured "
+            + "leave policy below it is raised to it, never the other way round."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.annual_tiered_days", "30", "decimal", eff07,
+            "[CERT] KSA Art.109(1) annual leave after the service threshold: \"not less than 30 days\". Also a "
+            + "FLOOR. An employer may grant more; it may not grant less."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.annual_tier_threshold_years", "5", "decimal", eff07,
+            "[COUNSEL] KSA Art.109(1): the uplift applies \"if the worker spends five consecutive years in the "
+            + "service of the employer\". Applied at COMPLETION of the fifth year (>=), the employee-favourable "
+            + "reading. Confirm whether the uplift attaches from the fifth anniversary or from the start of the "
+            + "following leave year."));
+
+        // Art. 117 bands. Days AND rates are separate rules so counsel can move either without code.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band1_days", "30", "decimal", eff07,
+            "[CERT] KSA Art.117 band 1: the first 30 days of sick leave in a single year."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band1_pay_rate", "1.0", "decimal", eff07,
+            "[CERT] KSA Art.117 band 1 pay: full wage."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band2_days", "60", "decimal", eff07,
+            "[CERT] KSA Art.117 band 2: the next 60 days."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band2_pay_rate", "0.75", "decimal", eff07,
+            "[CERT] KSA Art.117 band 2 pay: \"three quarters of the wage\". Lowering this under-pays sick leave."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band3_days", "30", "decimal", eff07,
+            "[CERT] KSA Art.117 band 3: the following 30 days."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band3_pay_rate", "0.0", "decimal", eff07,
+            "[CERT] KSA Art.117 band 3 pay: without pay. Art.117 grants nothing beyond band 3 either, so days "
+            + "past the end of the scale continue at this rate."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_apply_statutory_scale", "true", "bool", eff07,
+            "[COUNSEL] Whether to apply the Art.117 reduction at all. Before this rule existed the product paid "
+            + "sick leave at 100% for every day without limit, which is ABOVE statute and therefore lawful — "
+            + "Art.117 is a floor. Turning this off restores that behaviour for an employer whose contracts "
+            + "promise full sick pay. Leaving it on applies exactly the statutory minimum."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_reduction_wage_base", "basic", "string", eff07,
+            "[COUNSEL] The wage the Art.117 reduction is measured on. Values: basic | wage. Art.117 says \"three "
+            + "quarters of the WAGE\", and Art.2 defines wage as basic plus all due increments — so the strict "
+            + "reading is 'wage'. The default is 'basic' because it DEDUCTS LESS and therefore over-pays the "
+            + "employee relative to statute, which is the safe direction to be wrong in, and because it matches "
+            + "the base the existing unpaid-leave deduction already uses. Move to 'wage' on a written opinion."));
+
         // ── S1/A1 + A8 — KSA EOSB wage base and service period ────────────────
         // Art. 84 M/51 awards on the LAST WAGE; Art. 2 defines wage as "the basic wage plus all other
         // due increments". The statutory FLOOR (basic + housing) is compiled into KsaEndOfServiceCalculator
