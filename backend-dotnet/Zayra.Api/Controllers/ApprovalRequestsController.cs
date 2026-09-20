@@ -69,8 +69,66 @@ public class ApprovalRequestsController : ControllerBase
         // NOT recorded (approval stays Pending), the requester raises the budget and re-decides.
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        // W2-E — only raised when the tenant turned on "different person at each step".
+        catch (ApprovalDistinctApproverException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    /// <summary>
+    /// W2-E (spec S5) — send a pending request back to its requester for changes. Same authorization as
+    /// /decisions: the approvals.decide permission AND being the current step's routed approver (or an
+    /// approvals.override holder). 409 when the request is not Pending; 403 when the caller may not act.
+    /// </summary>
+    [HttpPost("{id:guid}/send-back")]
+    [HasPermission("approvals.decide")]
+    public async Task<ActionResult<ApprovalRequestDto>> SendBack(Guid id, SendBackApprovalRequest request, CancellationToken cancellationToken)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        try
+        {
+            var approval = await _approvals.SendBackAsync(tenantId.Value, id, request, Context(), cancellationToken);
+            return approval is null ? NotFound() : Ok(approval);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException) { return ActionError(this, ex); }
+    }
+
+    /// <summary>
+    /// W2-E — the requester resubmits a request that was sent back. The chain restarts at step 1 of the
+    /// workflow the request was routed by; leave requests may carry edits and reserve their days again.
+    /// approvals.write is the permission for starting approval requests; the service additionally allows
+    /// only the requester. Employees use the self-service twin, POST /api/my-approval-requests/{id}/resubmit.
+    /// </summary>
+    [HttpPost("{id:guid}/resubmit")]
+    [HasPermission("approvals.write")]
+    public async Task<ActionResult<ApprovalRequestDto>> Resubmit(Guid id, ResubmitApprovalRequest request, CancellationToken cancellationToken)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        try
+        {
+            var approval = await _approvals.ResubmitAsync(tenantId.Value, id, request, Context(), cancellationToken);
+            return approval is null ? NotFound() : Ok(approval);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException) { return ActionError(this, ex); }
+    }
+
+    internal static ActionResult ActionError(ControllerBase c, Exception ex) => ex switch
+    {
+        ApprovalStateConflictException x => c.Conflict(new { code = x.Code, message = x.Message }),
+        ApprovalNotPermittedException x => c.StatusCode(StatusCodes.Status403Forbidden, new { code = x.Code, message = x.Message }),
+        ApprovalDistinctApproverException x => c.StatusCode(StatusCodes.Status403Forbidden, new { code = x.Code, message = x.Message }),
+        ApprovalRoutingException x => c.UnprocessableEntity(new { code = x.Code, message = x.Message }),
+        _ => c.BadRequest(new { message = ex.Message }),
+    };
+
+    internal static RequestContext BuildContext(ControllerBase c) => new(
+        c.HttpContext.Connection.RemoteIpAddress?.ToString(),
+        c.Request.Headers.UserAgent.ToString(),
+        c.GetUserId(),
+        c.GetTenantId(),
+        c.User.Claims.Where(x => x.Type == System.Security.Claims.ClaimTypes.Role).Select(x => x.Value).ToList(),
+        c.User.Claims.Where(x => x.Type == "permission").Select(x => x.Value).ToList());
 
     private RequestContext Context() => new(
         HttpContext.Connection.RemoteIpAddress?.ToString(),

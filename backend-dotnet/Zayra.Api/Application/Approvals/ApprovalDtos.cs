@@ -12,7 +12,9 @@ public record ApprovalWorkflowDto(
     IReadOnlyCollection<ApprovalWorkflowStepDto> Steps,
     Guid? DepartmentId = null,
     Guid? GradeId = null,
-    bool IsDefault = false);
+    bool IsDefault = false,
+    // W2-E — requests currently in flight on this workflow (Pending or sent back). Edits never change them.
+    int InFlightRequests = 0);
 
 public record ApprovalWorkflowStepDto(
     Guid Id,
@@ -72,7 +74,10 @@ public record ApprovalRequestDto(
     DateTime CreatedAtUtc,
     DateTime? CompletedAtUtc,
     IReadOnlyCollection<ApprovalDecisionDto> Decisions,
-    bool CanDecide);
+    bool CanDecide,
+    // W2-E — why the caller cannot decide although routed to them (the tenant's different-person rule).
+    string? DecisionBlockedReason = null,
+    int SubmissionRound = 1);
 
 /// <param name="WorkflowId">
 /// An explicit workflow, or null to let <c>IApprovalRouter</c> choose the workflow for
@@ -97,7 +102,8 @@ public record ApprovalDecisionDto(
     string Decision,
     string Comments,
     Guid? DecidedByUserId,
-    DateTime DecidedAtUtc);
+    DateTime DecidedAtUtc,
+    int SubmissionRound = 1);
 
 public static class ApprovalMappings
 {
@@ -122,7 +128,7 @@ public static class ApprovalMappings
         step.EscalationAfterHours,
         step.IsFinalStep);
 
-    public static ApprovalRequestDto ToDto(this ApprovalRequest request, bool canDecide = false) => new(
+    public static ApprovalRequestDto ToDto(this ApprovalRequest request, bool canDecide = false, string? decisionBlockedReason = null) => new(
         request.Id,
         request.WorkflowId,
         request.EntityName,
@@ -149,8 +155,10 @@ public static class ApprovalMappings
         request.Priority,
         request.CreatedAtUtc,
         request.CompletedAtUtc,
-        request.Decisions.OrderBy(x => x.StepOrder).Select(x => x.ToDto()).ToList(),
-        canDecide);
+        request.Decisions.OrderBy(x => x.SubmissionRound).ThenBy(x => x.StepOrder).Select(x => x.ToDto()).ToList(),
+        canDecide,
+        decisionBlockedReason,
+        request.SubmissionRound);
 
     public static ApprovalDecisionDto ToDto(this ApprovalDecision decision) => new(
         decision.Id,
@@ -158,5 +166,6 @@ public static class ApprovalMappings
         decision.Decision,
         decision.Comments,
         decision.DecidedByUserId,
-        decision.DecidedAtUtc);
+        decision.DecidedAtUtc,
+        decision.SubmissionRound);
 }

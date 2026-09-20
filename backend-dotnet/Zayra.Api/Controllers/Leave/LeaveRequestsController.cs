@@ -173,6 +173,8 @@ public class LeaveRequestsController : ControllerBase
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        // W2-E — the tenant requires a different person at each step and the caller decided an earlier one.
+        catch (Zayra.Api.Application.Approvals.ApprovalDistinctApproverException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -214,6 +216,8 @@ public class LeaveRequestsController : ControllerBase
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        // W2-E — the tenant requires a different person at each step and the caller decided an earlier one.
+        catch (Zayra.Api.Application.Approvals.ApprovalDistinctApproverException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -257,6 +261,8 @@ public class LeaveRequestsController : ControllerBase
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        // W2-E — the tenant requires a different person at each step and the caller decided an earlier one.
+        catch (Zayra.Api.Application.Approvals.ApprovalDistinctApproverException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -314,6 +320,8 @@ public class LeaveRequestsController : ControllerBase
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        // W2-E — the tenant requires a different person at each step and the caller decided an earlier one.
+        catch (Zayra.Api.Application.Approvals.ApprovalDistinctApproverException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -387,7 +395,8 @@ public class LeaveRequestsController : ControllerBase
             if (scope.CallerEmployeeId != leaveRequest.EmployeeId) return Forbid();
         }
 
-        var withdrawable = new[] { "Draft", "Submitted", "PendingManagerApproval", "PendingHRApproval" };
+        // W2-E — a request sent back to its requester can also be withdrawn instead of resubmitted.
+        var withdrawable = new[] { "Draft", "Submitted", "PendingManagerApproval", "PendingHRApproval", Zayra.Api.Application.Approvals.ApprovalStatuses.ReturnedToRequester };
         if (!withdrawable.Contains(leaveRequest.Status))
             return BadRequest(new { message = "Only unapproved requests can be withdrawn." });
 
@@ -399,11 +408,18 @@ public class LeaveRequestsController : ControllerBase
 
         // A request may span calendar years. Release the exact reservations recorded during
         // submission rather than subtracting the aggregate from the start-year balance.
-        var reservations = await _db.LeaveBalanceTransactions.AsNoTracking()
+        // W2-E — a sent-back request released its reservation ("Reversed") and a resubmission reserved
+        // again, so the reservation still held is the NET of Pending minus Reversed per year. Releasing
+        // every Pending row would release the same days twice.
+        var reservations = (await _db.LeaveBalanceTransactions.AsNoTracking()
             .Where(t => t.TenantId == tenantId && t.EmployeeId == leaveRequest.EmployeeId
                 && t.LeaveTypeId == leaveRequest.LeaveTypeId && t.Reference == leaveRequest.Id.ToString()
-                && t.TransactionType == "Pending")
-            .ToListAsync(ct);
+                && (t.TransactionType == "Pending" || t.TransactionType == "Reversed"))
+            .ToListAsync(ct))
+            .GroupBy(t => t.Year)
+            .Select(g => new { Year = g.Key, Amount = g.Sum(t => t.TransactionType == "Pending" ? t.Amount : -t.Amount) })
+            .Where(x => x.Amount > 0)
+            .ToList();
         foreach (var reservation in reservations)
         {
             var balance = await _db.EmployeeLeaveBalances.FirstOrDefaultAsync(b =>
@@ -432,7 +448,8 @@ public class LeaveRequestsController : ControllerBase
 
         var projection = await _db.ApprovalRequests
             .FirstOrDefaultAsync(a => a.TenantId == tenantId && a.EntityName == nameof(LeaveRequest)
-                && a.EntityId == leaveRequest.Id.ToString() && a.Status == "Pending", ct);
+                && a.EntityId == leaveRequest.Id.ToString()
+                && (a.Status == "Pending" || a.Status == Zayra.Api.Application.Approvals.ApprovalStatuses.ReturnedToRequester), ct);
         if (projection is not null)
         {
             projection.Status = "Cancelled";

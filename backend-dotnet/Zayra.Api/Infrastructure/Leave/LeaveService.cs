@@ -403,10 +403,73 @@ public class LeaveService : ILeaveService
 
     private async Task<LeaveRequest> SubmitRequestCoreAsync(Guid tenantId, LeaveRequest request, Guid? requestedByUserId, CancellationToken ct)
     {
+        var (employee, yearSegments) = await PrepareForRoutingAsync(tenantId, request, null, ct);
+
+        request.TenantId = tenantId;
+        request.SubmittedAtUtc = DateTime.UtcNow;
+
+        // F1 — route through the ONE approval router. The tenant's ApprovalWorkflow for LeaveRequest
+        // decides the chain; there is no hard-coded fallback any more. Before F1 this read the separate
+        // ApprovalPolicy table, found nothing for tenants that configure ApprovalWorkflow, and invented
+        // a single "manager, else HR Manager" step — so a configured two-step chain executed as one
+        // click. A tenant with no applicable workflow now gets ApprovalRouteNotConfiguredException: the
+        // submission is refused, this transaction rolls back, and no balance is reserved.
+        var route = await _router.ResolveAsync(tenantId, request.EmployeeId, nameof(LeaveRequest), ct);
+        var firstStep = route.FirstStep;
+        var firstApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, firstStep, ct);
+        request.Status = StatusForPendingStep(firstStep);
+        var firstApproverEmployeeId = firstApprover.EmployeeId;
+        var firstApproval = BuildPendingApproval(tenantId, request.Id, firstStep, firstApprover);
+
+        _db.LeaveApprovals.Add(firstApproval);
+        _db.LeaveRequests.Add(request);
+        if (request.DelegateEmployeeId.HasValue)
+        {
+            _db.LeaveDelegations.Add(new LeaveDelegation
+            {
+                TenantId = tenantId,
+                EmployeeId = request.EmployeeId,
+                EmployeeName = request.EmployeeName,
+                DelegateEmployeeId = request.DelegateEmployeeId.Value,
+                DelegateEmployeeName = request.DelegateEmployeeName,
+                LeaveRequestId = request.Id,
+                StartDate = request.StartDate,
+                EndDate = request.EndDate,
+                DelegationType = "ApprovalOnly",
+                Status = "Active"
+            });
+        }
+        _db.ApprovalRequests.Add(BuildApprovalProjection(
+            request,
+            firstApproval,
+            firstApproverEmployeeId,
+            route.WorkflowId,
+            requestedByUserId ?? employee.UserAccountId,
+            firstStep.EscalationAfterHours));
+
+        foreach (var segment in yearSegments)
+            await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year,
+                "Pending", request.Id.ToString(), request.EmployeeName, ct);
+
+        await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "Submitted",
+            string.Empty, "Submitted", "Leave request submitted", request.EmployeeName, ct);
+
+        return request;
+    }
+
+    /// <summary>
+    /// Validates a leave request against its type, policy, calendar and balance, and fills in the
+    /// derived fields (days, policy, company, names, payroll impact). Shared by first submission and by
+    /// W2-E resubmission after a send back, so an edited resubmission is held to exactly the same rules.
+    /// <paramref name="excludeRequestId"/> is the request itself on resubmission, so it does not overlap itself.
+    /// </summary>
+    private async Task<(Employee Employee, List<LeaveYearSegment> YearSegments)> PrepareForRoutingAsync(
+        Guid tenantId, LeaveRequest request, Guid? excludeRequestId, CancellationToken ct)
+    {
         if (request.EndDate < request.StartDate)
             throw new InvalidOperationException("End date must be after start date.");
 
-        var hasOverlap = await HasOverlappingLeaveAsync(tenantId, request.EmployeeId, request.StartDate, request.EndDate, null, ct);
+        var hasOverlap = await HasOverlappingLeaveAsync(tenantId, request.EmployeeId, request.StartDate, request.EndDate, excludeRequestId, ct);
         if (hasOverlap)
             throw new InvalidOperationException("Employee already has an approved or pending leave for the requested dates.");
 
@@ -481,57 +544,8 @@ public class LeaveService : ILeaveService
             if (!await HasSufficientBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year, ct))
                 throw new InvalidOperationException($"Insufficient leave balance for {segment.Year}.");
 
-        request.TenantId = tenantId;
         request.LeaveTypeName = leaveType.NameEn;
-        request.SubmittedAtUtc = DateTime.UtcNow;
-
-        // F1 — route through the ONE approval router. The tenant's ApprovalWorkflow for LeaveRequest
-        // decides the chain; there is no hard-coded fallback any more. Before F1 this read the separate
-        // ApprovalPolicy table, found nothing for tenants that configure ApprovalWorkflow, and invented
-        // a single "manager, else HR Manager" step — so a configured two-step chain executed as one
-        // click. A tenant with no applicable workflow now gets ApprovalRouteNotConfiguredException: the
-        // submission is refused, this transaction rolls back, and no balance is reserved.
-        var route = await _router.ResolveAsync(tenantId, request.EmployeeId, nameof(LeaveRequest), ct);
-        var firstStep = route.FirstStep;
-        var firstApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, firstStep, ct);
-        request.Status = StatusForPendingStep(firstStep);
-        var firstApproverEmployeeId = firstApprover.EmployeeId;
-        var firstApproval = BuildPendingApproval(tenantId, request.Id, firstStep, firstApprover);
-
-        _db.LeaveApprovals.Add(firstApproval);
-        _db.LeaveRequests.Add(request);
-        if (request.DelegateEmployeeId.HasValue)
-        {
-            _db.LeaveDelegations.Add(new LeaveDelegation
-            {
-                TenantId = tenantId,
-                EmployeeId = request.EmployeeId,
-                EmployeeName = request.EmployeeName,
-                DelegateEmployeeId = request.DelegateEmployeeId.Value,
-                DelegateEmployeeName = request.DelegateEmployeeName,
-                LeaveRequestId = request.Id,
-                StartDate = request.StartDate,
-                EndDate = request.EndDate,
-                DelegationType = "ApprovalOnly",
-                Status = "Active"
-            });
-        }
-        _db.ApprovalRequests.Add(BuildApprovalProjection(
-            request,
-            firstApproval,
-            firstApproverEmployeeId,
-            route.WorkflowId,
-            requestedByUserId ?? employee.UserAccountId,
-            firstStep.EscalationAfterHours));
-
-        foreach (var segment in yearSegments)
-            await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year,
-                "Pending", request.Id.ToString(), request.EmployeeName, ct);
-
-        await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "Submitted",
-            string.Empty, "Submitted", "Leave request submitted", request.EmployeeName, ct);
-
-        return request;
+        return (employee, yearSegments);
     }
 
     public async Task<LeaveRequest> ApproveRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string? notes, CancellationToken ct = default)
@@ -562,6 +576,8 @@ public class LeaveService : ILeaveService
             .FirstOrDefaultAsync(ct);
 
         var currentApproval = await EnsureCanonicalApprovalAsync(request, pendingApproval, ct);
+        // W2-E — when the tenant requires a different person at each step, refuse before anything moves.
+        await EnsureDistinctApproverAsync(request, currentApproval.StepNumber, approverId, ct);
         // F1 — the chain executes against the workflow this request was ROUTED by (pinned in
         // ApprovalRequest.WorkflowId at submission), not a fresh lookup. A fresh lookup is how the
         // pre-F1 code lost the chain: it re-resolved from a table tenants never configured, got null,
@@ -681,6 +697,7 @@ public class LeaveService : ILeaveService
         var strategy = _db.Database.CreateExecutionStrategy();
         var firstAttempt = true;
         int? attemptedStep = null;
+        var attemptedRound = 1;
         return await strategy.ExecuteInTransactionAsync(
             async retryCt =>
             {
@@ -693,11 +710,16 @@ public class LeaveService : ILeaveService
                     .OrderBy(a => a.StepNumber)
                     .Select(a => (int?)a.StepNumber)
                     .FirstOrDefaultAsync(retryCt);
+                // W2-E — a resubmitted request repeats step numbers in a new round; verify against this one.
+                attemptedRound = await _db.ApprovalRequests.AsNoTracking()
+                    .Where(a => a.TenantId == tenantId && a.Id == requestId)
+                    .Select(a => (int?)a.SubmissionRound)
+                    .FirstOrDefaultAsync(retryCt) ?? 1;
 
                 return await operation(retryCt);
             },
             retryCt => IsDecisionPersistedAsync(
-                tenantId, requestId, attemptedStep, approverId, decision, retryCt),
+                tenantId, requestId, attemptedStep, attemptedRound, approverId, decision, retryCt),
             ct);
     }
 
@@ -720,6 +742,7 @@ public class LeaveService : ILeaveService
         Guid tenantId,
         Guid requestId,
         int? attemptedStep,
+        int attemptedRound,
         Guid approverId,
         string decision,
         CancellationToken ct)
@@ -733,6 +756,7 @@ public class LeaveService : ILeaveService
                               && a.ApproverId == approverId, ct)
             && await _db.ApprovalDecisions.AsNoTracking()
                    .AnyAsync(d => d.TenantId == tenantId && d.ApprovalRequestId == requestId
+                              && d.SubmissionRound == attemptedRound
                               && d.StepOrder == attemptedStep.Value && d.Decision == decision
                               && d.DecidedByUserId == approverId, ct);
     }
@@ -758,6 +782,7 @@ public class LeaveService : ILeaveService
             .OrderBy(a => a.StepNumber)
             .FirstOrDefaultAsync(ct);
         pendingApproval = await EnsureCanonicalApprovalAsync(request, pendingApproval, ct);
+        await EnsureDistinctApproverAsync(request, pendingApproval.StepNumber, approverId, ct);
         await ConsumePendingApprovalAsync(pendingApproval, "Rejected", approverId, approverName, reason, ct);
         await SyncApprovalProjectionAsync(request, pendingApproval, "Rejected", approverId, reason, null, null, ct);
 
@@ -778,6 +803,187 @@ public class LeaveService : ILeaveService
         return request;
     }
 
+    // ── W2-E: send back and resubmission ───────────────────────────────────────────────────────────
+
+    private static bool IsAwaitingDecision(string status)
+        => status is "Submitted" or "PendingManagerApproval" or "PendingHRApproval";
+
+    /// <summary>
+    /// Sends a pending leave request back to its requester for changes. One transaction: the current
+    /// step is consumed (compare-and-swap, like approve/reject), a <c>SentBack</c> decision is recorded,
+    /// the routing projection and the leave request move to <c>ReturnedToRequester</c>, and the pending
+    /// reservation is released so the days are available again while the request is with the requester.
+    /// </summary>
+    public async Task<LeaveRequest> SendBackRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string comments, CancellationToken ct = default)
+    {
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await SendBackRequestCoreAsync(tenantId, requestId, approverId, approverName, comments, ct);
+
+        return await ExecuteDecisionTransactionAsync(
+            tenantId, requestId, approverId, ApprovalStatuses.SentBackDecision,
+            retryCt => SendBackRequestCoreAsync(tenantId, requestId, approverId, approverName, comments, retryCt), ct);
+    }
+
+    private async Task<LeaveRequest> SendBackRequestCoreAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string comments, CancellationToken ct)
+    {
+        var request = await _db.LeaveRequests
+            .FirstOrDefaultAsync(r => r.Id == requestId && r.TenantId == tenantId, ct)
+            ?? throw new InvalidOperationException("Leave request not found.");
+        if (!IsAwaitingDecision(request.Status))
+            throw new ApprovalStateConflictException($"Only a pending leave request can be sent back. This one is '{request.Status}'.");
+
+        await EnsureMakerCheckerAsync(request, approverId, ct);
+
+        var previousStatus = request.Status;
+        var pendingApproval = await _db.LeaveApprovals
+            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == requestId && a.Decision == "Pending")
+            .OrderBy(a => a.StepNumber)
+            .FirstOrDefaultAsync(ct);
+        pendingApproval = await EnsureCanonicalApprovalAsync(request, pendingApproval, ct);
+        await EnsureDistinctApproverAsync(request, pendingApproval.StepNumber, approverId, ct);
+        await ConsumePendingApprovalAsync(pendingApproval, ApprovalStatuses.SentBackDecision, approverId, approverName, comments, ct);
+        // Records the SentBack decision and closes the current step on the projection.
+        await SyncApprovalProjectionAsync(request, pendingApproval, ApprovalStatuses.SentBackDecision, approverId, comments, null, null, ct);
+        var projection = _db.ApprovalRequests.Local.First(x => x.Id == request.Id);
+        projection.Status = ApprovalStatuses.ReturnedToRequester;
+        // Not completed: the request is waiting for its requester, not finished.
+        projection.CompletedAtUtc = null;
+        projection.DecisionVersion++;
+
+        request.Status = ApprovalStatuses.ReturnedToRequester;
+        await ReleaseRequestBalancesAsync(tenantId, request, releaseUsed: false,
+            $"Sent back: {comments}", approverName, ct);
+
+        await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "SentBack",
+            previousStatus, ApprovalStatuses.ReturnedToRequester, comments, approverName, ct);
+
+        _db.EmployeeNotifications.Add(new EmployeeNotification
+        {
+            TenantId = tenantId, EmployeeId = request.EmployeeId, NotificationType = "Warning",
+            Title = "Leave sent back for changes",
+            Body = $"Your {request.LeaveTypeName} request ({request.StartDate:dd MMM} – {request.EndDate:dd MMM}) was sent back by {approverName}: {comments}",
+        });
+
+        await _db.SaveChangesAsync(ct);
+        return request;
+    }
+
+    /// <summary>
+    /// Resubmits a leave request that was sent back. Optional edits are applied and the request is
+    /// validated exactly as a first submission is (overlap, policy, balance). The chain restarts at
+    /// step 1 of the workflow the request was originally routed by (in-flight requests keep their
+    /// workflow), in a new submission round, and the days are reserved again — all in one transaction.
+    /// </summary>
+    public async Task<LeaveRequest> ResubmitRequestAsync(Guid tenantId, Guid requestId, string performedBy, LeaveResubmitChanges? changes, string? comments, CancellationToken ct = default)
+    {
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await ResubmitRequestCoreAsync(tenantId, requestId, performedBy, changes, comments, ct);
+
+        var strategy = _db.Database.CreateExecutionStrategy();
+        var firstAttempt = true;
+        var expectedRound = 0;
+        return await strategy.ExecuteInTransactionAsync(
+            async retryCt =>
+            {
+                if (!firstAttempt)
+                    _db.ChangeTracker.Clear();
+                firstAttempt = false;
+                expectedRound = (await _db.ApprovalRequests.AsNoTracking()
+                    .Where(a => a.TenantId == tenantId && a.Id == requestId)
+                    .Select(a => (int?)a.SubmissionRound)
+                    .FirstOrDefaultAsync(retryCt) ?? 1) + 1;
+                return await ResubmitRequestCoreAsync(tenantId, requestId, performedBy, changes, comments, retryCt);
+            },
+            retryCt => _db.ApprovalRequests.AsNoTracking().AnyAsync(a => a.TenantId == tenantId && a.Id == requestId
+                && a.SubmissionRound == expectedRound && a.Status == "Pending", retryCt),
+            ct);
+    }
+
+    private async Task<LeaveRequest> ResubmitRequestCoreAsync(Guid tenantId, Guid requestId, string performedBy, LeaveResubmitChanges? changes, string? comments, CancellationToken ct)
+    {
+        var request = await _db.LeaveRequests
+            .FirstOrDefaultAsync(r => r.Id == requestId && r.TenantId == tenantId, ct)
+            ?? throw new InvalidOperationException("Leave request not found.");
+        if (request.Status != ApprovalStatuses.ReturnedToRequester)
+            throw new ApprovalStateConflictException($"Only a leave request that was sent back can be resubmitted. This one is '{request.Status}'.");
+
+        if (changes is not null)
+        {
+            if (changes.StartDate.HasValue) request.StartDate = changes.StartDate.Value;
+            if (changes.EndDate.HasValue) request.EndDate = changes.EndDate.Value;
+            if (!string.IsNullOrWhiteSpace(changes.DayType)) request.DayType = changes.DayType.Trim();
+            if (changes.HoursRequested.HasValue) request.HoursRequested = changes.HoursRequested.Value;
+            if (changes.Reason is not null) request.Reason = changes.Reason.Trim();
+        }
+
+        // Same rules as a first submission, excluding the request itself from the overlap check.
+        var (_, yearSegments) = await PrepareForRoutingAsync(tenantId, request, request.Id, ct);
+
+        var projection = _db.ApprovalRequests.Local.FirstOrDefault(x => x.Id == request.Id)
+            ?? await _db.ApprovalRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.Id, ct)
+            ?? throw new InvalidOperationException("The leave request has no approval routing record.");
+        var route = await ResolvePinnedRouteAsync(request, ct);
+        var firstStep = route.FirstStep;
+        var firstApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, firstStep, ct);
+        var firstApproval = BuildPendingApproval(tenantId, request.Id, firstStep, firstApprover);
+        _db.LeaveApprovals.Add(firstApproval);
+
+        var previousStatus = request.Status;
+        request.Status = StatusForPendingStep(firstStep);
+        request.SubmittedAtUtc = DateTime.UtcNow;
+        request.DecidedAtUtc = null;
+
+        // An edited resubmission moves the approval delegation with the leave dates.
+        foreach (var delegation in await _db.LeaveDelegations
+                     .Where(d => d.TenantId == tenantId && d.LeaveRequestId == request.Id).ToListAsync(ct))
+        {
+            delegation.StartDate = request.StartDate;
+            delegation.EndDate = request.EndDate;
+        }
+
+        var template = BuildApprovalProjection(request, firstApproval, firstApprover.EmployeeId, route.WorkflowId,
+            projection.RequestedByUserId, firstStep.EscalationAfterHours);
+        projection.SubmissionRound++;
+        projection.Status = "Pending";
+        projection.Title = template.Title;
+        projection.CurrentStepOrder = template.CurrentStepOrder;
+        projection.CurrentApproverEmployeeId = template.CurrentApproverEmployeeId;
+        projection.CurrentApproverUserId = template.CurrentApproverUserId;
+        projection.CurrentApproverName = template.CurrentApproverName;
+        projection.CurrentApproverRole = template.CurrentApproverRole;
+        projection.CurrentApproverType = template.CurrentApproverType;
+        projection.CurrentQueue = template.CurrentQueue;
+        projection.SlaHours = template.SlaHours;
+        projection.DueAtUtc = template.DueAtUtc;
+        projection.LastRoutedAtUtc = template.LastRoutedAtUtc;
+        projection.EscalatedAtUtc = null;
+        projection.EscalatedToRole = firstApprover.Escalated ? firstApprover.QueueRole : string.Empty;
+        projection.CompletedAtUtc = null;
+        projection.DecisionVersion++;
+
+        foreach (var segment in yearSegments)
+            await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year,
+                "Pending", request.Id.ToString(), performedBy, ct);
+
+        await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "Resubmitted",
+            previousStatus, request.Status, comments ?? string.Empty, performedBy, ct);
+
+        await _db.SaveChangesAsync(ct);
+        return request;
+    }
+
+    /// <summary>W2-E — the tenant's "different person at each step" rule, evaluated on the leave aggregate.</summary>
+    private async Task EnsureDistinctApproverAsync(LeaveRequest request, int currentStep, Guid approverId, CancellationToken ct)
+    {
+        var round = _db.ApprovalRequests.Local.FirstOrDefault(x => x.Id == request.Id)?.SubmissionRound
+            ?? await _db.ApprovalRequests.AsNoTracking()
+                .Where(x => x.TenantId == request.TenantId && x.Id == request.Id)
+                .Select(x => (int?)x.SubmissionRound)
+                .FirstOrDefaultAsync(ct)
+            ?? 1;
+        await ApprovalGovernance.EnsureDistinctApproverAsync(_db, request.TenantId, request.Id, round, currentStep, approverId, ct);
+    }
+
     public async Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default)
     {
         var request = await _db.LeaveRequests
@@ -788,13 +994,17 @@ public class LeaveService : ILeaveService
             throw new InvalidOperationException("Request is already cancelled or withdrawn.");
 
         var wasApproved = request.Status is "Approved" or "CancellationRequested";
+        // W2-E — a request sent back to its requester already released its reservation at send back.
+        // Releasing again would take days off the Pending of the employee's OTHER requests.
+        var holdsReservation = request.Status != ApprovalStatuses.ReturnedToRequester;
         var previousStatus = request.Status;
         request.Status = "Cancelled";
         request.CancellationReason = reason;
         request.CancelledAtUtc = DateTime.UtcNow;
 
-        await ReleaseRequestBalancesAsync(tenantId, request, wasApproved,
-            $"Cancelled: {reason}", cancelledByName, ct);
+        if (holdsReservation)
+            await ReleaseRequestBalancesAsync(tenantId, request, wasApproved,
+                $"Cancelled: {reason}", cancelledByName, ct);
 
         // Remove any unpaid-leave payroll deduction that has not yet been picked up by a run,
         // so cancelling an approved unpaid leave does not still dock the employee's salary.
@@ -806,7 +1016,8 @@ public class LeaveService : ILeaveService
             _db.LeavePayrollImpacts.RemoveRange(pendingImpacts);
 
         var projection = await _db.ApprovalRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId
-            && x.EntityName == nameof(LeaveRequest) && x.EntityId == requestId.ToString() && x.Status == "Pending", ct);
+            && x.EntityName == nameof(LeaveRequest) && x.EntityId == requestId.ToString()
+            && (x.Status == "Pending" || x.Status == ApprovalStatuses.ReturnedToRequester), ct);
         if (projection is not null)
         {
             projection.Status = "Cancelled";
@@ -1095,6 +1306,7 @@ public class LeaveService : ILeaveService
             TenantId = request.TenantId,
             ApprovalRequestId = projection.Id,
             StepOrder = decidedApproval.StepNumber,
+            SubmissionRound = projection.SubmissionRound,
             Decision = decision,
             Comments = comments,
             DecidedByUserId = approverId,

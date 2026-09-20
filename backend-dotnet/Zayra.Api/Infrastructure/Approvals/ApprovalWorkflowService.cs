@@ -8,6 +8,7 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Leave;
+using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Approvals;
@@ -19,6 +20,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private readonly IEstablishmentGuard _establishmentGuard;
     private readonly ILeaveService _leaveService;
     private readonly IApprovalRouter _router;
+    private readonly INotificationService? _notifications;
+    // W2-E — the distinct-approver setting, read once per tenant per request scope (list views ask per row).
+    private readonly Dictionary<Guid, bool> _distinctRuleCache = new();
 
     public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit)
         : this(db, audit, new HrmHierarchyService(db, audit))
@@ -31,9 +35,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         IHrmHierarchyService hierarchy,
         IEstablishmentGuard? establishmentGuard = null,
         ILeaveService? leaveService = null,
-        IApprovalRouter? router = null)
+        IApprovalRouter? router = null,
+        INotificationService? notifications = null)
     {
         _db = db;
+        _notifications = notifications;
         _audit = audit;
         // Optional with concrete fallback so direct constructions keep compiling AND enforcing.
         _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
@@ -50,18 +56,35 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (!string.IsNullOrWhiteSpace(entityName)) query = query.Where(x => x.EntityName == entityName);
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(x => x.Code).Skip((page - 1) * pageSize).Take(pageSize).Select(x => x.ToDto()).ToListAsync(cancellationToken);
+        var inFlight = await InFlightCountsAsync(tenantId, items.Select(x => x.Id).ToList(), cancellationToken);
+        items = items.Select(x => x with { InFlightRequests = inFlight.GetValueOrDefault(x.Id) }).ToList();
         return new PagedResult<ApprovalWorkflowDto>(items, total, page, pageSize);
     }
 
     public async Task<ApprovalWorkflowDto?> GetWorkflowAsync(Guid tenantId, Guid id, CancellationToken cancellationToken)
     {
         var workflow = await _db.ApprovalWorkflows.AsNoTracking().Include(x => x.Steps).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
-        return workflow?.ToDto();
+        if (workflow is null) return null;
+        var inFlight = await InFlightCountsAsync(tenantId, [workflow.Id], cancellationToken);
+        return workflow.ToDto() with { InFlightRequests = inFlight.GetValueOrDefault(workflow.Id) };
+    }
+
+    /// <summary>W2-E — requests pinned to each workflow that are still open (Pending or sent back to the requester).</summary>
+    private async Task<Dictionary<Guid, int>> InFlightCountsAsync(Guid tenantId, List<Guid> workflowIds, CancellationToken cancellationToken)
+    {
+        if (workflowIds.Count == 0) return new();
+        return await _db.ApprovalRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && workflowIds.Contains(x.WorkflowId)
+                && (x.Status == ApprovalStatuses.Pending || x.Status == ApprovalStatuses.ReturnedToRequester))
+            .GroupBy(x => x.WorkflowId)
+            .Select(g => new { g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.Key, x => x.Count, cancellationToken);
     }
 
     public async Task<ApprovalWorkflowDto> CreateWorkflowAsync(Guid tenantId, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         await EnsureWorkflowCodeUnique(tenantId, request.Code, null, cancellationToken);
+        await ValidateStepsAsync(tenantId, request, cancellationToken);
         await EnsureScopeUnambiguousAsync(tenantId, request, null, cancellationToken);
         var workflow = new ApprovalWorkflow { TenantId = tenantId };
         Apply(workflow, request, tenantId);
@@ -76,6 +99,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (workflow is null) return null;
         await EnsureWorkflowCodeUnique(tenantId, request.Code, id, cancellationToken);
+        await ValidateStepsAsync(tenantId, request, cancellationToken);
         await EnsureScopeUnambiguousAsync(tenantId, request, id, cancellationToken);
         _db.ApprovalWorkflowSteps.RemoveRange(workflow.Steps);
         Apply(workflow, request, tenantId);
@@ -135,6 +159,16 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                     if (string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == "Pending");
                 }
             }
+            else if (q is "returned")
+            {
+                // W2-E — requests sent back to the caller (as requester or as the subject employee).
+                var callerEmployeeId = await ResolveCallerEmployeeIdAsync(tenantId, context.UserId, cancellationToken);
+                // Same rule as IsRequesterAsync: the requester, or the employee a leave request was taken for.
+                query = query.Where(x =>
+                    (context.UserId != null && x.RequestedByUserId == context.UserId) ||
+                    (callerEmployeeId != null && x.EntityName == nameof(LeaveRequest) && x.RequestedForEmployeeId == callerEmployeeId));
+                if (string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == ApprovalStatuses.ReturnedToRequester);
+            }
             else if (q is "overdue")
             {
                 var now = DateTime.UtcNow;
@@ -151,7 +185,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var items = new List<ApprovalRequestDto>(approvals.Count);
         foreach (var approval in approvals)
         {
-            items.Add(approval.ToDto(await CanDecideRequestAsync(approval, context, cancellationToken)));
+            var (canDecide, blocked) = await EvaluateDecisionAsync(approval, context, cancellationToken);
+            items.Add(approval.ToDto(canDecide, blocked));
         }
         return new PagedResult<ApprovalRequestDto>(items, total, page, pageSize);
     }
@@ -167,7 +202,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var request = await _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (request is null) return null;
         if (!await CanViewRequestAsync(request, context, cancellationToken)) return null;
-        return request.ToDto(await CanDecideRequestAsync(request, context, cancellationToken));
+        var (canDecide, blocked) = await EvaluateDecisionAsync(request, context, cancellationToken);
+        return request.ToDto(canDecide, blocked);
     }
 
     public async Task<ApprovalRequestDto> CreateRequestAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -207,22 +243,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             CompanyId = request.CompanyId,
             Priority = string.IsNullOrWhiteSpace(request.Priority) ? "Normal" : Clean(request.Priority)
         };
-        var firstStep = workflow.Steps.First(x => x.StepOrder == approval.CurrentStepOrder);
-        await RouteCurrentStepAsync(approval, firstStep, cancellationToken);
-        if (!string.Equals(firstStep.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
-            && approval.CurrentApproverEmployeeId is null
-            && string.Equals(approval.CurrentApproverRole, "HR Manager", StringComparison.OrdinalIgnoreCase))
-        {
-            var hrStep = workflow.Steps
-                .Where(x => x.StepOrder > firstStep.StepOrder && string.Equals(x.ApproverRole, "HR Manager", StringComparison.OrdinalIgnoreCase))
-                .OrderBy(x => x.StepOrder)
-                .FirstOrDefault();
-            if (hrStep is not null)
-            {
-                approval.CurrentStepOrder = hrStep.StepOrder;
-                await RouteCurrentStepAsync(approval, hrStep, cancellationToken);
-            }
-        }
+        await RouteFirstStepAsync(approval, workflow, cancellationToken);
         _db.ApprovalRequests.Add(approval);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("approval.request_started", nameof(ApprovalRequest), approval.Id.ToString(), context, null, cancellationToken);
@@ -246,22 +267,14 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             // LeaveRequest/LeaveApproval/balance is the aggregate of record. ApprovalRequest is
             // only its indexed routing projection, so dispatch before generic workflow lookup and
             // let LeaveService own the single relational transaction for decisions from either UI.
-            if (!await CanDecideRequestAsync(approval, context, cancellationToken))
+            if (!await IsRoutedDeciderAsync(approval, context, cancellationToken))
                 throw new InvalidOperationException($"Current step requires approver role '{approval.CurrentApproverRole}'.");
             if (context.UserId is null)
                 throw new InvalidOperationException("An authenticated approver is required.");
             if (!Guid.TryParse(approval.EntityId, out var leaveRequestId))
                 throw new InvalidOperationException("The approval request is not linked to a valid leave request.");
 
-            var approverName = await _db.Employees.AsNoTracking()
-                .Where(x => x.TenantId == tenantId && x.UserAccountId == context.UserId && !x.IsDeleted)
-                .Select(x => x.FullName)
-                .FirstOrDefaultAsync(cancellationToken)
-                ?? await _db.Users.AsNoTracking()
-                    .Where(x => x.TenantId == tenantId && x.Id == context.UserId && !x.IsDeleted)
-                    .Select(x => x.FullName)
-                    .FirstOrDefaultAsync(cancellationToken)
-                ?? context.UserId.Value.ToString();
+            var approverName = await ResolveActorNameAsync(tenantId, context.UserId.Value, cancellationToken);
 
             if (requestedDecision.Equals("Reject", StringComparison.OrdinalIgnoreCase))
             {
@@ -280,10 +293,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
         var step = await _db.ApprovalWorkflowSteps.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.WorkflowId == approval.WorkflowId && x.StepOrder == approval.CurrentStepOrder, cancellationToken)
             ?? throw new InvalidOperationException("Current approval step was not found.");
-        if (approval.Decisions.Any(x => x.StepOrder == step.StepOrder))
+        if (approval.Decisions.Any(x => x.StepOrder == step.StepOrder && x.SubmissionRound == approval.SubmissionRound))
             throw new InvalidOperationException("Current approval step has already been decided.");
         if (!await CanDecideStepAsync(approval, step, context, cancellationToken))
             throw new InvalidOperationException($"Current step requires approver role '{step.ApproverRole}'.");
+        // W2-E — tenant rule: a different person at each step. Applies to override holders too.
+        await ApprovalGovernance.EnsureDistinctApproverAsync(_db, tenantId, approval.Id, approval.SubmissionRound, step.StepOrder, context.UserId, cancellationToken);
 
         var normalizedDecision = requestedDecision.Equals("Reject", StringComparison.OrdinalIgnoreCase) ? "Rejected" : "Approved";
         var approvalDecision = new ApprovalDecision
@@ -291,6 +306,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             TenantId = tenantId,
             ApprovalRequestId = approval.Id,
             StepOrder = step.StepOrder,
+            SubmissionRound = approval.SubmissionRound,
             Decision = normalizedDecision,
             Comments = Clean(request.Comments),
             DecidedByUserId = context.UserId
@@ -347,6 +363,394 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         return (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
     }
 
+    // ── W2-E: send back and resubmission ──────────────────────────────────────────────────────────
+
+    public async Task<ApprovalRequestDto?> SendBackAsync(Guid tenantId, Guid approvalRequestId, SendBackApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
+    {
+        var comments = Clean(request.Comments);
+        if (comments.Length == 0)
+            throw new InvalidOperationException("A comment explaining what to change is required.");
+        if (comments.Length > 1000)
+            throw new InvalidOperationException("Comments must be 1000 characters or fewer.");
+
+        var approval = await _db.ApprovalRequests.Include(x => x.Decisions)
+            .FirstOrDefaultAsync(x => x.Id == approvalRequestId && x.TenantId == tenantId, cancellationToken);
+        if (approval is null) return null;
+        if (approval.Status != ApprovalStatuses.Pending)
+            throw new ApprovalStateConflictException($"Only a pending request can be sent back. This request is '{approval.Status}'.");
+        if (context.UserId is null)
+            throw new ApprovalNotPermittedException("An authenticated approver is required.");
+        if (approval.RequestedByUserId == context.UserId)
+            throw new ApprovalNotPermittedException("Maker-checker violation: the requester cannot send back their own request.");
+        // Identical to /decisions: only the routed approver (or an override holder) may act on this step.
+        if (!await IsRoutedDeciderAsync(approval, context, cancellationToken))
+            throw new ApprovalNotPermittedException(
+                $"Only the current approver can send this request back. Step {approval.CurrentStepOrder} is assigned to {OwnerLabel(approval)}.");
+        await ApprovalGovernance.EnsureDistinctApproverAsync(_db, tenantId, approval.Id, approval.SubmissionRound,
+            approval.CurrentStepOrder, context.UserId, cancellationToken);
+
+        var stepOrder = approval.CurrentStepOrder;
+        var (title, entityName, entityId, requestedBy, requestedFor) =
+            (approval.Title, approval.EntityName, approval.EntityId, approval.RequestedByUserId, approval.RequestedForEmployeeId);
+
+        if (IsLeave(approval))
+        {
+            // The leave aggregate owns the step, the decision row, the projection and the balance in ONE transaction.
+            if (!Guid.TryParse(approval.EntityId, out var leaveRequestId))
+                throw new InvalidOperationException("The approval request is not linked to a valid leave request.");
+            var approverName = await ResolveActorNameAsync(tenantId, context.UserId.Value, cancellationToken);
+            await _leaveService.SendBackRequestAsync(tenantId, leaveRequestId, context.UserId.Value, approverName, comments, cancellationToken);
+        }
+        else
+        {
+            if (approval.Decisions.Any(x => x.StepOrder == stepOrder && x.SubmissionRound == approval.SubmissionRound))
+                throw new ApprovalStateConflictException("Current approval step has already been decided.");
+            _db.Entry(new ApprovalDecision
+            {
+                TenantId = tenantId,
+                ApprovalRequestId = approval.Id,
+                StepOrder = stepOrder,
+                SubmissionRound = approval.SubmissionRound,
+                Decision = ApprovalStatuses.SentBackDecision,
+                Comments = comments,
+                DecidedByUserId = context.UserId
+            }).State = EntityState.Added;
+            approval.DecisionVersion++;
+            approval.Status = ApprovalStatuses.ReturnedToRequester;
+            approval.CompletedAtUtc = null;
+            ClearCurrentApprover(approval);
+            await SyncSourceStatusAsync(approval, "PendingApproval", ApprovalStatuses.ReturnedToRequester, cancellationToken);
+            await SaveDecisionAsync(cancellationToken);
+        }
+
+        await _audit.WriteAsync("approval.request_sent_back", nameof(ApprovalRequest), approvalRequestId.ToString(), context,
+            JsonSerializer.Serialize(new { decision = ApprovalStatuses.SentBackDecision, stepOrder, comments }), cancellationToken);
+        await NotifyRequesterSentBackAsync(tenantId, approvalRequestId, title, entityName, entityId, requestedBy, requestedFor, stepOrder, comments, cancellationToken);
+        return await GetRequestAsync(tenantId, approvalRequestId, cancellationToken);
+    }
+
+    public async Task<ApprovalRequestDto?> ResubmitAsync(Guid tenantId, Guid approvalRequestId, ResubmitApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
+    {
+        var approval = await _db.ApprovalRequests.Include(x => x.Decisions)
+            .FirstOrDefaultAsync(x => x.Id == approvalRequestId && x.TenantId == tenantId, cancellationToken);
+        if (approval is null) return null;
+        if (!await IsRequesterAsync(approval, context, cancellationToken))
+            throw new ApprovalNotPermittedException("Only the person who submitted this request can resubmit it.");
+        if (approval.Status != ApprovalStatuses.ReturnedToRequester)
+            throw new ApprovalStateConflictException($"Only a request that was sent back can be resubmitted. This request is '{approval.Status}'.");
+
+        var comments = Clean(request.Comments);
+        if (IsLeave(approval))
+        {
+            if (!Guid.TryParse(approval.EntityId, out var leaveRequestId))
+                throw new InvalidOperationException("The approval request is not linked to a valid leave request.");
+            var actor = await ResolveActorNameAsync(tenantId, context.UserId!.Value, cancellationToken);
+            await _leaveService.ResubmitRequestAsync(tenantId, leaveRequestId, actor, request.Leave, comments, cancellationToken);
+        }
+        else
+        {
+            if (request.Leave is not null)
+                throw new InvalidOperationException("Leave changes can only be sent with a leave request.");
+            // In-flight requests keep the workflow they were routed by; the chain restarts at its first step.
+            var workflow = await _db.ApprovalWorkflows.Include(x => x.Steps)
+                .FirstOrDefaultAsync(x => x.Id == approval.WorkflowId && x.TenantId == tenantId, cancellationToken)
+                ?? throw new InvalidOperationException("The workflow this request was routed by no longer exists.");
+            if (!workflow.Steps.Any()) throw new InvalidOperationException("Approval workflow has no steps.");
+            approval.SubmissionRound++;
+            approval.Status = ApprovalStatuses.Pending;
+            approval.CompletedAtUtc = null;
+            approval.DecisionVersion++;
+            await RouteFirstStepAsync(approval, workflow, cancellationToken);
+            await SyncSourceStatusAsync(approval, ApprovalStatuses.ReturnedToRequester, "PendingApproval", cancellationToken);
+            await SaveDecisionAsync(cancellationToken);
+        }
+
+        await _audit.WriteAsync("approval.request_resubmitted", nameof(ApprovalRequest), approvalRequestId.ToString(), context,
+            JsonSerializer.Serialize(new { comments }), cancellationToken);
+        return await GetRequestAsync(tenantId, approvalRequestId, cancellationToken);
+    }
+
+    private static bool IsLeave(ApprovalRequest approval)
+        => string.Equals(approval.EntityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase);
+
+    private static string OwnerLabel(ApprovalRequest approval)
+        => !string.IsNullOrWhiteSpace(approval.CurrentApproverName) ? approval.CurrentApproverName
+            : !string.IsNullOrWhiteSpace(approval.CurrentApproverRole) ? $"the {approval.CurrentApproverRole} queue"
+            : "another approver";
+
+    private static void ClearCurrentApprover(ApprovalRequest approval)
+    {
+        approval.CurrentApproverEmployeeId = null;
+        approval.CurrentApproverUserId = null;
+        approval.CurrentApproverName = string.Empty;
+        approval.CurrentQueue = string.Empty;
+        approval.DueAtUtc = null;
+    }
+
+    private async Task SaveDecisionAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // DecisionVersion compare-and-swap lost: someone else decided this step first.
+            throw new ApprovalStateConflictException("This request was changed by someone else at the same time. Reload it and try again.");
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            throw new ApprovalStateConflictException("Current approval step has already been decided.");
+        }
+    }
+
+    /// <summary>Moves the source record between its pending and returned states, for the sources the engine owns.</summary>
+    private async Task SyncSourceStatusAsync(ApprovalRequest approval, string fromStatus, string toStatus, CancellationToken cancellationToken)
+    {
+        if (!string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase)) return;
+        if (!Guid.TryParse(approval.EntityId, out var changeId)) return;
+        var change = await _db.EmployeeChangeRequests.FirstOrDefaultAsync(x => x.TenantId == approval.TenantId && x.Id == changeId, cancellationToken);
+        if (change is not null && string.Equals(change.Status, fromStatus, StringComparison.OrdinalIgnoreCase))
+            change.Status = toStatus;
+    }
+
+    private async Task<bool> IsRequesterAsync(ApprovalRequest approval, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (context.UserId is null) return false;
+        if (approval.RequestedByUserId == context.UserId) return true;
+        // A leave request belongs to its employee even when HR keyed it in for them.
+        if (!IsLeave(approval) && approval.RequestedByUserId is not null) return false;
+        var callerEmployeeId = await ResolveCallerEmployeeIdAsync(approval.TenantId, context.UserId, cancellationToken);
+        return callerEmployeeId is not null && callerEmployeeId == approval.RequestedForEmployeeId;
+    }
+
+    private async Task<string> ResolveActorNameAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
+        => await _db.Employees.AsNoTracking()
+               .Where(x => x.TenantId == tenantId && x.UserAccountId == userId && !x.IsDeleted)
+               .Select(x => x.FullName)
+               .FirstOrDefaultAsync(cancellationToken)
+           ?? await _db.Users.AsNoTracking()
+               .Where(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted)
+               .Select(x => x.FullName)
+               .FirstOrDefaultAsync(cancellationToken)
+           ?? userId.ToString();
+
+    private async Task NotifyRequesterSentBackAsync(Guid tenantId, Guid approvalRequestId, string title, string entityName, string entityId,
+        Guid? requestedByUserId, int? requestedForEmployeeId, int stepOrder, string comments, CancellationToken cancellationToken)
+    {
+        if (_notifications is null) return;
+        try
+        {
+            await _notifications.EnqueueAsync(new NotificationRequest
+            {
+                TenantId = tenantId,
+                UserId = requestedByUserId,
+                EmployeeId = requestedByUserId is null ? requestedForEmployeeId : null,
+                EventCode = ApprovalStatuses.SentBackEventCode,
+                EntityName = entityName,
+                EntityId = entityId,
+                Title = "Request sent back for changes",
+                Message = $"\"{title}\" was sent back at step {stepOrder}: {comments}",
+                Variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["title"] = title,
+                    ["comments"] = comments,
+                    ["stepOrder"] = stepOrder.ToString(),
+                    ["approvalRequestId"] = approvalRequestId.ToString(),
+                },
+            }, cancellationToken);
+        }
+        catch (Exception)
+        {
+            // Enqueue is contractually non-throwing; if an implementation does throw, the send back is
+            // already committed and must not be reported as failed.
+        }
+    }
+
+    // ── W2-E: workflow configuration ─────────────────────────────────────────────────────────────
+
+    /// <summary>Entity types the approval router can route, with who applies each today.</summary>
+    public static readonly IReadOnlyList<ApprovalEntityDescriptor> KnownEntities =
+    [
+        new(nameof(LeaveRequest), "Leave requests", true,
+            "Every leave submission is routed by the workflow that applies to the employee."),
+        new(nameof(EmployeeChangeRequest), "Sensitive employee changes", true,
+            "Uses the workflow with code EMPLOYEE-CHANGE. The People module resets it to Manager then HR Manager if it is not a two-step Manager + Role chain."),
+        new("ManpowerRequisition", "Manpower requisitions", true,
+            "Submitting a requisition starts the tenant-wide workflow when one exists. Requisitions have no employee, so department and grade scopes never apply."),
+        new("OvertimeRequest", "Overtime requests", false,
+            "Stored but not yet applied: the Overtime module still runs its own manager-then-HR approval."),
+        new("PayrollRun", "Payroll runs", false,
+            "Stored but not yet applied: the Payroll module still runs its own approval stages."),
+    ];
+
+    public async Task<IReadOnlyList<ApprovalEntityDescriptor>> GetEntitiesAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        var configured = await _db.ApprovalWorkflows.AsNoTracking()
+            .Where(x => x.TenantId == tenantId)
+            .Select(x => x.EntityName)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var result = KnownEntities.ToList();
+        foreach (var name in configured.Where(n => !string.IsNullOrWhiteSpace(n)).OrderBy(n => n))
+            if (result.All(e => !string.Equals(e.EntityName, name, StringComparison.OrdinalIgnoreCase)))
+                result.Add(new ApprovalEntityDescriptor(name, name, false,
+                    "Routed only when a module or integration starts an approval for this entity through the approvals API."));
+        return result;
+    }
+
+    public async Task<ApprovalWorkflowDto?> SetWorkflowActiveAsync(Guid tenantId, Guid id, bool active, RequestContext context, CancellationToken cancellationToken)
+    {
+        var workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (workflow is null) return null;
+        if (workflow.IsActive != active)
+        {
+            if (active)
+            {
+                // Re-activating must not create the overlap the create/update rules refuse.
+                await EnsureScopeUnambiguousAsync(tenantId, new ApprovalWorkflowRequest(workflow.Code, workflow.Name, workflow.EntityName, true,
+                    workflow.Steps.Select(x => new ApprovalWorkflowStepRequest(x.StepOrder, x.StepName, x.ApproverRole, x.ApproverType,
+                        x.SpecificEmployeeId, x.EscalationAfterHours, x.IsFinalStep)).ToList(),
+                    workflow.DepartmentId, workflow.GradeId, workflow.IsDefault), id, cancellationToken);
+            }
+            workflow.IsActive = active;
+            await _db.SaveChangesAsync(cancellationToken);
+            await _audit.WriteAsync(active ? "approval.workflow_activated" : "approval.workflow_deactivated",
+                nameof(ApprovalWorkflow), workflow.Id.ToString(), context, null, cancellationToken);
+        }
+        return (await GetWorkflowAsync(tenantId, id, cancellationToken))!;
+    }
+
+    /// <summary>
+    /// "For this employee, which workflow applies and who approves each step" — answered by the SAME
+    /// router calls a submission makes (<see cref="IApprovalRouter.TryResolveAsync"/> then
+    /// <see cref="IApprovalRouter.ResolveApproverAsync"/> per step), never a second implementation.
+    /// </summary>
+    public async Task<ApprovalRoutePreviewDto> PreviewRouteAsync(Guid tenantId, string entityName, int? employeeId, CancellationToken cancellationToken)
+    {
+        var entity = Clean(entityName);
+        if (entity.Length == 0) throw new InvalidOperationException("Choose what kind of request to preview.");
+        var employeeName = string.Empty;
+        if (employeeId.HasValue)
+        {
+            employeeName = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && e.Id == employeeId.Value && !e.IsDeleted)
+                .Select(e => e.FullName)
+                .FirstOrDefaultAsync(cancellationToken)
+                ?? throw new InvalidOperationException($"Employee {employeeId.Value} was not found.");
+        }
+        var distinct = await DistinctRuleOnAsync(tenantId, cancellationToken);
+
+        ApprovalRoute? route;
+        try
+        {
+            route = await _router.TryResolveAsync(tenantId, employeeId, entity, cancellationToken);
+        }
+        catch (ApprovalRouteInvalidException ex)
+        {
+            return new ApprovalRoutePreviewDto(entity, employeeId, employeeName, "Invalid", ex.Code, ex.Message,
+                ex.WorkflowId, null, null, null, distinct, [], []);
+        }
+        if (route is null)
+        {
+            var notConfigured = new ApprovalRouteNotConfiguredException(tenantId, entity, employeeId);
+            return new ApprovalRoutePreviewDto(entity, employeeId, employeeName, "NotConfigured", notConfigured.Code, notConfigured.Message,
+                null, null, null, null, distinct, [], []);
+        }
+
+        var steps = new List<ApprovalRoutePreviewStepDto>();
+        var warnings = new List<string>();
+        var finalReached = false;
+        foreach (var step in route.Steps)
+        {
+            var approver = await _router.ResolveApproverAsync(tenantId, employeeId, step, cancellationToken);
+            steps.Add(new ApprovalRoutePreviewStepDto(step.StepOrder, step.StepName, step.ApproverType, step.ApproverRole, step.IsFinalStep,
+                step.EscalationAfterHours, approver.QueueRole, approver.EmployeeId, approver.UserId, approver.Name, approver.Escalated));
+            if (finalReached)
+                warnings.Add($"Step {step.StepOrder} comes after the final step and will never be reached.");
+            if (approver.Escalated)
+                warnings.Add(employeeId.HasValue
+                    ? $"Step {step.StepOrder} ({step.ApproverType}) has nobody to resolve to for {employeeName}; it will go to the {approver.QueueRole} queue."
+                    : $"Step {step.StepOrder} ({step.ApproverType}) depends on the employee. Pick an employee to see who it resolves to.");
+            finalReached |= step.IsFinalStep;
+        }
+        if (distinct)
+        {
+            foreach (var group in steps.Where(x => x.ApproverEmployeeId is not null).GroupBy(x => x.ApproverEmployeeId).Where(g => g.Count() > 1))
+            {
+                var orders = group.Select(x => x.StepOrder).OrderBy(x => x).ToList();
+                warnings.Add($"Steps {string.Join(" and ", orders)} both resolve to {group.First().ApproverName}. With the different-person rule on, " +
+                             $"they can decide step {orders[0]} only; later steps will wait for another eligible approver.");
+            }
+        }
+        return new ApprovalRoutePreviewDto(entity, employeeId, employeeName, "Routed", null, null,
+            route.WorkflowId, route.Code, route.Name, route.MatchedOn, distinct, steps, warnings);
+    }
+
+    public Task<ApprovalGovernanceSettingsDto> GetGovernanceSettingsAsync(Guid tenantId, CancellationToken cancellationToken)
+        => ApprovalGovernance.GetSettingsAsync(_db, tenantId, cancellationToken);
+
+    public async Task<ApprovalGovernanceSettingsDto> SaveGovernanceSettingsAsync(Guid tenantId, ApprovalGovernanceSettingsDto settings, RequestContext context, CancellationToken cancellationToken)
+    {
+        var saved = await ApprovalGovernance.SaveSettingsAsync(_db, tenantId, settings, context.UserId, cancellationToken);
+        _distinctRuleCache.Remove(tenantId);
+        await _audit.WriteAsync("approval.settings_updated", "ApprovalSettings", tenantId.ToString(), context,
+            JsonSerializer.Serialize(new { requireDistinctApproverPerStep = settings.RequireDistinctApproverPerStep }), cancellationToken);
+        return saved;
+    }
+
+    private static readonly HashSet<string> SupportedApproverTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // The six the configuration screen offers …
+        "Manager", "Supervisor", "DepartmentHead", "SpecificEmployee", "HR", "Role",
+        // … and the other types the router already resolves, so existing API-created workflows stay valid.
+        "DirectManager", "HRBusinessPartner", "SeniorManager", "SecondLevelManager", "CompanyHead",
+    };
+
+    /// <summary>
+    /// W2-E — the chain rules the configuration screen enforces: unique step orders, exactly one final
+    /// step and it is the last, a supported approver type, a role for Role steps and a real employee for
+    /// SpecificEmployee steps. Errors carry a stable code the screen shows next to the step.
+    /// </summary>
+    private async Task ValidateStepsAsync(Guid tenantId, ApprovalWorkflowRequest request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.EntityName))
+            throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.EntityRequired, "Choose which kind of request this workflow approves.");
+        var steps = (request.Steps ?? Array.Empty<ApprovalWorkflowStepRequest>()).OrderBy(x => x.StepOrder).ToList();
+        if (steps.Count == 0)
+            throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.NoFinalStep, "A workflow needs at least one step.");
+        var duplicate = steps.GroupBy(x => x.StepOrder).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+            throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.DuplicateStepOrder, $"Two steps share position {duplicate.Key}. Each step needs its own position.");
+        var finals = steps.Where(x => x.IsFinalStep).ToList();
+        if (finals.Count == 0)
+            throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.NoFinalStep,
+                "Mark the last step as the final step. Without a final step no request could ever be approved.");
+        if (finals.Count > 1)
+            throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.MultipleFinalSteps,
+                $"Only one step can be final, but steps {string.Join(", ", finals.Select(x => x.StepOrder))} are marked final.");
+        if (finals[0].StepOrder != steps[^1].StepOrder)
+            throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.FinalStepNotLast,
+                $"The final step must be the last one. Step {finals[0].StepOrder} is marked final but step {steps[^1].StepOrder} comes after it.");
+        foreach (var step in steps)
+        {
+            var type = string.IsNullOrWhiteSpace(step.ApproverType) ? "Role" : step.ApproverType.Trim();
+            if (!SupportedApproverTypes.Contains(type))
+                throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.InvalidApproverType,
+                    $"Step {step.StepOrder} has an approver type '{type}' that cannot be routed.");
+            if (type.Equals("Role", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(step.ApproverRole))
+                throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.RoleRequired, $"Step {step.StepOrder} needs a role.");
+            if (type.Equals("SpecificEmployee", StringComparison.OrdinalIgnoreCase))
+            {
+                if (step.SpecificEmployeeId is null)
+                    throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.SpecificEmployeeRequired, $"Step {step.StepOrder} needs an employee.");
+                if (!await _db.Employees.AnyAsync(e => e.TenantId == tenantId && e.Id == step.SpecificEmployeeId.Value && !e.IsDeleted, cancellationToken))
+                    throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.SpecificEmployeeRequired,
+                        $"Step {step.StepOrder}'s employee was not found in this tenant.");
+            }
+        }
+    }
+
     private static void Apply(ApprovalWorkflow workflow, ApprovalWorkflowRequest request, Guid tenantId)
     {
         workflow.Code = Clean(request.Code).ToUpperInvariant();
@@ -373,6 +777,32 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 SpecificEmployeeId = steps[i].SpecificEmployeeId,
                 EscalationAfterHours = steps[i].EscalationAfterHours
             });
+        }
+    }
+
+    /// <summary>
+    /// Routes a request to the first step of its workflow. A person-type first step that escalated to the
+    /// HR Manager queue jumps to the chain's HR Manager step (pre-existing behaviour of the generic start,
+    /// shared with W2-E resubmission so a restarted chain starts exactly like a new one).
+    /// </summary>
+    private async Task RouteFirstStepAsync(ApprovalRequest approval, ApprovalWorkflow workflow, CancellationToken cancellationToken)
+    {
+        approval.CurrentStepOrder = workflow.Steps.Min(x => x.StepOrder);
+        var firstStep = workflow.Steps.First(x => x.StepOrder == approval.CurrentStepOrder);
+        await RouteCurrentStepAsync(approval, firstStep, cancellationToken);
+        if (!string.Equals(firstStep.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
+            && approval.CurrentApproverEmployeeId is null
+            && string.Equals(approval.CurrentApproverRole, "HR Manager", StringComparison.OrdinalIgnoreCase))
+        {
+            var hrStep = workflow.Steps
+                .Where(x => x.StepOrder > firstStep.StepOrder && string.Equals(x.ApproverRole, "HR Manager", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(x => x.StepOrder)
+                .FirstOrDefault();
+            if (hrStep is not null)
+            {
+                approval.CurrentStepOrder = hrStep.StepOrder;
+                await RouteCurrentStepAsync(approval, hrStep, cancellationToken);
+            }
         }
     }
 
@@ -483,7 +913,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     {
         var clean = Clean(code).ToUpperInvariant();
         var exists = await _db.ApprovalWorkflows.AnyAsync(x => x.TenantId == tenantId && x.Code == clean && x.Id != excludedId, cancellationToken);
-        if (exists) throw new InvalidOperationException("Approval workflow code already exists in this tenant.");
+        if (exists) throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.CodeTaken, "Approval workflow code already exists in this tenant.");
     }
 
     /// <summary>
@@ -494,9 +924,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private async Task EnsureScopeUnambiguousAsync(Guid tenantId, ApprovalWorkflowRequest request, Guid? excludedId, CancellationToken cancellationToken)
     {
         if (request.IsDefault && (request.DepartmentId.HasValue || request.GradeId.HasValue))
-            throw new InvalidOperationException("A workflow scoped to a department or grade cannot be the tenant default.");
+            throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.ScopeInvalid, "A workflow scoped to a department or grade cannot be the tenant default.");
         if (request.DepartmentId.HasValue && !await _db.Departments.AnyAsync(d => d.TenantId == tenantId && d.Id == request.DepartmentId.Value, cancellationToken))
-            throw new InvalidOperationException("The workflow's department was not found in this tenant.");
+            throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.ScopeInvalid, "The workflow's department was not found in this tenant.");
+        // W2-E — the grade had no existence check, so a mistyped id created a workflow no employee could ever match.
+        if (request.GradeId.HasValue && !await _db.Grades.AnyAsync(g => g.TenantId == tenantId && g.Id == request.GradeId.Value, cancellationToken))
+            throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.ScopeInvalid, "The workflow's grade was not found in this tenant.");
         if (!request.IsActive) return;
 
         var entity = Clean(request.EntityName);
@@ -507,16 +940,47 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             .Select(x => x.Code)
             .FirstOrDefaultAsync(cancellationToken);
         if (clash is not null)
-            throw new InvalidOperationException(
+            throw new ApprovalWorkflowValidationException(ApprovalWorkflowValidationException.ScopeOverlap,
                 $"Active approval workflow '{clash}' already covers '{entity}' for this department/grade scope. Deactivate it or change the scope.");
     }
 
     private async Task<bool> CanDecideStepAsync(ApprovalRequest approval, ApprovalWorkflowStep step, RequestContext context, CancellationToken cancellationToken)
     {
-        return await CanDecideRequestAsync(approval, context, cancellationToken);
+        // Routing eligibility only; the distinct-approver rule is raised separately as its own error.
+        return await IsRoutedDeciderAsync(approval, context, cancellationToken);
     }
 
+    /// <summary>
+    /// Whether the caller may decide the current step: routed eligibility AND (W2-E) the tenant's
+    /// distinct-approver rule. With the rule off this is exactly the pre-W2-E check.
+    /// </summary>
     private async Task<bool> CanDecideRequestAsync(ApprovalRequest approval, RequestContext? context, CancellationToken cancellationToken)
+        => (await EvaluateDecisionAsync(approval, context, cancellationToken)).CanDecide;
+
+    private async Task<(bool CanDecide, string? BlockedReason)> EvaluateDecisionAsync(ApprovalRequest approval, RequestContext? context, CancellationToken cancellationToken)
+    {
+        if (!await IsRoutedDeciderAsync(approval, context, cancellationToken)) return (false, null);
+        if (!await DistinctRuleOnAsync(approval.TenantId, cancellationToken)) return (true, null);
+        var earlier = approval.Decisions
+            .Where(d => d.SubmissionRound == approval.SubmissionRound && d.StepOrder < approval.CurrentStepOrder && d.DecidedByUserId == context!.UserId && context.UserId != null)
+            .OrderBy(d => d.StepOrder)
+            .Select(d => (int?)d.StepOrder)
+            .FirstOrDefault();
+        return earlier is null
+            ? (true, null)
+            : (false, new ApprovalDistinctApproverException(earlier.Value, approval.CurrentStepOrder).Message);
+    }
+
+    private async Task<bool> DistinctRuleOnAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        if (_distinctRuleCache.TryGetValue(tenantId, out var on)) return on;
+        on = await ApprovalGovernance.RequiresDistinctApproverAsync(_db, tenantId, cancellationToken);
+        _distinctRuleCache[tenantId] = on;
+        return on;
+    }
+
+    /// <summary>The routing check: maker-checker, then override, then the routed person / role. Unchanged from develop.</summary>
+    private async Task<bool> IsRoutedDeciderAsync(ApprovalRequest approval, RequestContext? context, CancellationToken cancellationToken)
     {
         if (context is null || approval.Status != "Pending") return false;
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId) return false;
@@ -544,7 +1008,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private async Task<bool> CanViewRequestAsync(ApprovalRequest approval, RequestContext context, CancellationToken cancellationToken)
     {
         if (CanViewAllApprovalRequests(context)) return true;
-        if (await CanDecideRequestAsync(approval, context, cancellationToken)) return true;
+        if (await IsRoutedDeciderAsync(approval, context, cancellationToken)) return true;
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId) return true;
 
         var callerEmployeeId = await ResolveCallerEmployeeIdAsync(approval.TenantId, context.UserId, cancellationToken);

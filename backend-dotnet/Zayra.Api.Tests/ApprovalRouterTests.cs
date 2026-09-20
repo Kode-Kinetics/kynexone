@@ -343,7 +343,8 @@ public class ApprovalRouterTests
 
     private static ApprovalWorkflowRequest WfRequest(string code, Guid? deptId = null, Guid? gradeId = null, bool isDefault = false) =>
         new(code, code, Leave, true,
-            new[] { new ApprovalWorkflowStepRequest(1, "Manager", "Manager", "Manager"), new ApprovalWorkflowStepRequest(2, "HR", "HR Manager", "Role") },
+            // W2-E — the configuration API now refuses a chain with no final step, so the last step is marked final.
+            new[] { new ApprovalWorkflowStepRequest(1, "Manager", "Manager", "Manager"), new ApprovalWorkflowStepRequest(2, "HR", "HR Manager", "Role", IsFinalStep: true) },
             deptId, gradeId, isDefault);
 
     [Fact]

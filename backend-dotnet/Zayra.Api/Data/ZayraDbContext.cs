@@ -1703,6 +1703,24 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.ApprovalRequestId, x.StepOrder }).IsUnique();
         });
 
+        // W2-E — send back and resubmission. A resubmitted request restarts at step 1 in a new
+        // SubmissionRound, so "one decision per step" becomes "one decision per step per round". The
+        // uniqueness guarantee (the second line of defence behind DecisionVersion) is unchanged within
+        // a round. Added as a separate block so the original configuration above stays untouched.
+        modelBuilder.Entity<ApprovalDecision>(entity =>
+        {
+            var superseded = entity.Metadata.FindIndex(new[]
+            {
+                entity.Metadata.FindProperty(nameof(ApprovalDecision.TenantId))!,
+                entity.Metadata.FindProperty(nameof(ApprovalDecision.ApprovalRequestId))!,
+                entity.Metadata.FindProperty(nameof(ApprovalDecision.StepOrder))!,
+            });
+            if (superseded is not null) entity.Metadata.RemoveIndex(superseded);
+            entity.HasIndex(x => new { x.TenantId, x.ApprovalRequestId, x.SubmissionRound, x.StepOrder })
+                .IsUnique()
+                .HasDatabaseName("IX_approval_decisions_request_round_step");
+        });
+
         modelBuilder.Entity<ReportingLine>(entity =>
         {
             entity.ToTable("reporting_lines");

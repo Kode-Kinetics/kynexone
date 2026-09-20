@@ -17,6 +17,9 @@ public interface ILeaveService
     Task<LeaveRequest> SubmitRequestAsync(Guid tenantId, LeaveRequest request, Guid? requestedByUserId, CancellationToken ct = default);
     Task<LeaveRequest> ApproveRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string? notes, CancellationToken ct = default);
     Task<LeaveRequest> RejectRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string reason, CancellationToken ct = default);
+    // W2-E — send back to the requester (releases the reservation) and resubmission (restarts at step 1, reserves again).
+    Task<LeaveRequest> SendBackRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string comments, CancellationToken ct = default);
+    Task<LeaveRequest> ResubmitRequestAsync(Guid tenantId, Guid requestId, string performedBy, Zayra.Api.Application.Approvals.LeaveResubmitChanges? changes, string? comments, CancellationToken ct = default);
     Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default);
     // Audit
     Task LogAuditAsync(Guid tenantId, string entityType, string entityId, string action, string oldValue, string newValue, string reason, string performedByName, CancellationToken ct = default);

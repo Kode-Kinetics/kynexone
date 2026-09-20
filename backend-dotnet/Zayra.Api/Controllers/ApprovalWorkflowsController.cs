@@ -39,6 +39,8 @@ public class ApprovalWorkflowsController : ControllerBase
             return Created($"/api/approval-workflows/{workflow.Id}", workflow);
         }
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        catch (ApprovalWorkflowValidationException ex) { return BadRequest(new { code = ex.Code, message = ex.Message }); }
+        catch (ApprovalDistinctApproverException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -51,8 +53,54 @@ public class ApprovalWorkflowsController : ControllerBase
             return await _approvals.UpdateWorkflowAsync(RequireTenant(), id, request, Context(), cancellationToken) is { } workflow ? Ok(workflow) : NotFound();
         }
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        catch (ApprovalWorkflowValidationException ex) { return BadRequest(new { code = ex.Code, message = ex.Message }); }
+        catch (ApprovalDistinctApproverException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    // ── W2-E: configuration screen ──────────────────────────────────────────────────────────────
+    // Gated exactly like the workflow write endpoints above: approvals.manage.
+
+    [HttpGet("entities")]
+    [HasPermission("approvals.manage")]
+    public async Task<ActionResult<IReadOnlyList<ApprovalEntityDescriptor>>> Entities(CancellationToken cancellationToken)
+        => Ok(await _approvals.GetEntitiesAsync(RequireTenant(), cancellationToken));
+
+    /// <summary>Which workflow applies to an employee and who approves each step — the router's own answer.</summary>
+    [HttpGet("preview")]
+    [HasPermission("approvals.manage")]
+    public async Task<ActionResult<ApprovalRoutePreviewDto>> Preview([FromQuery] string entityName, [FromQuery] int? employeeId, CancellationToken cancellationToken)
+    {
+        try { return Ok(await _approvals.PreviewRouteAsync(RequireTenant(), entityName, employeeId, cancellationToken)); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpPost("{id:guid}/deactivate")]
+    [HasPermission("approvals.manage")]
+    public async Task<ActionResult<ApprovalWorkflowDto>> Deactivate(Guid id, CancellationToken cancellationToken)
+        => await _approvals.SetWorkflowActiveAsync(RequireTenant(), id, false, Context(), cancellationToken) is { } workflow ? Ok(workflow) : NotFound();
+
+    [HttpPost("{id:guid}/activate")]
+    [HasPermission("approvals.manage")]
+    public async Task<ActionResult<ApprovalWorkflowDto>> Activate(Guid id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _approvals.SetWorkflowActiveAsync(RequireTenant(), id, true, Context(), cancellationToken) is { } workflow ? Ok(workflow) : NotFound();
+        }
+        catch (ApprovalWorkflowValidationException ex) { return BadRequest(new { code = ex.Code, message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpGet("settings")]
+    [HasPermission("approvals.manage")]
+    public async Task<ActionResult<ApprovalGovernanceSettingsDto>> GetSettings(CancellationToken cancellationToken)
+        => Ok(await _approvals.GetGovernanceSettingsAsync(RequireTenant(), cancellationToken));
+
+    [HttpPut("settings")]
+    [HasPermission("approvals.manage")]
+    public async Task<ActionResult<ApprovalGovernanceSettingsDto>> SaveSettings(ApprovalGovernanceSettingsDto settings, CancellationToken cancellationToken)
+        => Ok(await _approvals.SaveGovernanceSettingsAsync(RequireTenant(), settings, Context(), cancellationToken));
 
     [HttpGet("requests")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
@@ -77,6 +125,8 @@ public class ApprovalWorkflowsController : ControllerBase
             return Created($"/api/approval-workflows/requests/{approval.Id}", approval);
         }
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        catch (ApprovalWorkflowValidationException ex) { return BadRequest(new { code = ex.Code, message = ex.Message }); }
+        catch (ApprovalDistinctApproverException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -89,6 +139,8 @@ public class ApprovalWorkflowsController : ControllerBase
             return await _approvals.DecideAsync(RequireTenant(), requestId, request, Context(), cancellationToken) is { } approval ? Ok(approval) : NotFound();
         }
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        catch (ApprovalWorkflowValidationException ex) { return BadRequest(new { code = ex.Code, message = ex.Message }); }
+        catch (ApprovalDistinctApproverException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
