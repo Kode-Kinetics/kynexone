@@ -25,6 +25,7 @@ import type {
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
 import client from '../api/client';
+import { RETURNED_TO_REQUESTER, apiErrorBody, approvalsApi } from '../api/approvals';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -91,6 +92,7 @@ const STATUS_COLORS: Record<string, string> = {
   Submitted: 'bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400',
   PendingManagerApproval: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
   PendingHRApproval: 'bg-orange-50 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400',
+  ReturnedToRequester: 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400',
   Approved: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
   Rejected: 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400',
   Cancelled: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400',
@@ -643,6 +645,11 @@ function MyRequestsTab() {
   const [statusFilter, setStatusFilter] = useState('');
   const [cancelModal, setCancelModal] = useState<LeaveRequest | null>(null);
   const [cancelReason, setCancelReason] = useState('');
+  // W2-E — a request an approver sent back: the requester edits (optionally) and resubmits.
+  const [resubmitModal, setResubmitModal] = useState<LeaveRequest | null>(null);
+  const [resubmitForm, setResubmitForm] = useState({ startDate: '', endDate: '', reason: '', comments: '' });
+  const [resubmitting, setResubmitting] = useState(false);
+  const [resubmitError, setResubmitError] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -651,6 +658,32 @@ function MyRequestsTab() {
   useEffect(load, [statusFilter]);
 
   const withdraw = async (id: string) => { try { await leaveRequestsApi.withdraw(id); load(); } catch { alert('Withdrawal failed.'); } };
+  const openResubmit = (r: LeaveRequest) => {
+    setResubmitForm({ startDate: r.startDate.slice(0, 10), endDate: r.endDate.slice(0, 10), reason: r.reason ?? '', comments: '' });
+    setResubmitError('');
+    setResubmitModal(r);
+  };
+  const resubmit = async () => {
+    if (!resubmitModal) return;
+    if (resubmitForm.endDate < resubmitForm.startDate) { setResubmitError('End date must be on or after the start date.'); return; }
+    setResubmitting(true);
+    setResubmitError('');
+    try {
+      // The approval request shares the leave request's id; only changed fields are sent.
+      const leave: { startDate?: string; endDate?: string; reason?: string } = {};
+      if (resubmitForm.startDate !== resubmitModal.startDate.slice(0, 10)) leave.startDate = resubmitForm.startDate;
+      if (resubmitForm.endDate !== resubmitModal.endDate.slice(0, 10)) leave.endDate = resubmitForm.endDate;
+      if (resubmitForm.reason !== (resubmitModal.reason ?? '')) leave.reason = resubmitForm.reason;
+      await approvalsApi.resubmit(resubmitModal.id, { comments: resubmitForm.comments || undefined, leave: Object.keys(leave).length ? leave : undefined });
+      setResubmitModal(null);
+      load();
+    } catch (err) {
+      setResubmitError(apiErrorBody(err).message ?? 'Resubmission failed. Please try again.');
+    } finally {
+      setResubmitting(false);
+    }
+  };
+  const sentBackComment = (r: LeaveRequest) => r.approvals?.filter(a => a.decision === 'SentBack').slice(-1)[0];
   const cancel = async () => {
     if (!cancelModal || !cancelReason) return;
     try { await leaveRequestsApi.cancel(cancelModal.id, cancelReason); setCancelModal(null); load(); } catch { alert('Cancellation failed.'); }
@@ -661,8 +694,8 @@ function MyRequestsTab() {
       <div className="flex flex-wrap items-center gap-3">
         <select className={`${sel} w-56`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
           <option value="">All Statuses</option>
-          {['Draft', 'Submitted', 'PendingManagerApproval', 'PendingHRApproval', 'Approved', 'Rejected', 'Cancelled', 'Withdrawn', 'PayrollProcessed'].map(s => (
-            <option key={s} value={s}>{s.replace(/([A-Z])/g, ' $1').trim()}</option>
+          {['Draft', 'Submitted', 'PendingManagerApproval', 'PendingHRApproval', RETURNED_TO_REQUESTER, 'Approved', 'Rejected', 'Cancelled', 'Withdrawn', 'PayrollProcessed'].map(s => (
+            <option key={s} value={s}>{s === RETURNED_TO_REQUESTER ? 'Sent back to me' : s.replace(/([A-Z])/g, ' $1').trim()}</option>
           ))}
         </select>
         <p className="text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
@@ -693,12 +726,20 @@ function MyRequestsTab() {
                   </div>
                   <p className="mt-0.5 text-xs text-slate-400">{fmtDate(r.startDate)} – {fmtDate(r.endDate)} · {r.totalDays} day{r.totalDays !== 1 ? 's' : ''}</p>
                   {r.rejectionReason && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">Rejected: {r.rejectionReason}</p>}
+                  {r.status === RETURNED_TO_REQUESTER && (
+                    <p className="mt-1 text-xs text-blue-700 dark:text-blue-300">
+                      Sent back{sentBackComment(r)?.approverName ? ` by ${sentBackComment(r)!.approverName}` : ''}{sentBackComment(r)?.notes ? `: ${sentBackComment(r)!.notes}` : ' for changes'}. Edit and resubmit, or withdraw.
+                    </p>
+                  )}
                   {r.reason && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 line-clamp-1">{r.reason}</p>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <StatusBadge status={r.status} />
-                  {['Submitted', 'PendingManagerApproval'].includes(r.status) && (
+                  {['Submitted', 'PendingManagerApproval', RETURNED_TO_REQUESTER].includes(r.status) && (
                     <button type="button" className={btn.sm} onClick={() => withdraw(r.id)}>Withdraw</button>
+                  )}
+                  {r.status === RETURNED_TO_REQUESTER && (
+                    <button type="button" className={btn.primary} onClick={() => openResubmit(r)}>Edit &amp; resubmit</button>
                   )}
                   {r.status === 'Approved' && (
                     <button type="button" className={btn.sm} onClick={() => { setCancelModal(r); setCancelReason(''); }}>Cancel</button>
@@ -720,6 +761,38 @@ function MyRequestsTab() {
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setCancelModal(null)}>Back</button>
               <button type="button" className={btn.danger} onClick={cancel}>Request Cancellation</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {resubmitModal && (
+        <Modal title="Resubmit Leave Request" onClose={() => setResubmitModal(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              {sentBackComment(resubmitModal)?.notes
+                ? <>The approver asked: <span className="font-medium text-slate-900 dark:text-white">&ldquo;{sentBackComment(resubmitModal)!.notes}&rdquo;</span>. </>
+                : null}
+              Approval restarts from step 1 and the days are reserved again when you resubmit.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Start Date">
+                <input type="date" className={inp} value={resubmitForm.startDate} onChange={e => setResubmitForm(f => ({ ...f, startDate: e.target.value }))} />
+              </Field>
+              <Field label="End Date">
+                <input type="date" className={inp} value={resubmitForm.endDate} onChange={e => setResubmitForm(f => ({ ...f, endDate: e.target.value }))} />
+              </Field>
+            </div>
+            <Field label="Reason">
+              <textarea className={inp} rows={2} value={resubmitForm.reason} onChange={e => setResubmitForm(f => ({ ...f, reason: e.target.value }))} />
+            </Field>
+            <Field label="Note to approver (optional)">
+              <textarea className={inp} rows={2} value={resubmitForm.comments} onChange={e => setResubmitForm(f => ({ ...f, comments: e.target.value }))} placeholder="What you changed" />
+            </Field>
+            {resubmitError && <p role="alert" className="rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">{resubmitError}</p>}
+            <div className="flex justify-end gap-2">
+              <button type="button" className={btn.ghost} onClick={() => setResubmitModal(null)}>Back</button>
+              <button type="button" className={btn.primary} onClick={resubmit} disabled={resubmitting}>{resubmitting ? 'Resubmitting…' : 'Resubmit'}</button>
             </div>
           </div>
         </Modal>

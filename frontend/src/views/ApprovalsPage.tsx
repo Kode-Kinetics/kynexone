@@ -1,9 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Clock3, Inbox, ListChecks, RefreshCw, ShieldCheck, TimerReset, UserCheck, Users } from 'lucide-react';
-import { approvalsApi } from '../api/approvals';
+import Link from 'next/link';
+import { AlertTriangle, Clock3, Inbox, ListChecks, RefreshCw, Settings2, ShieldCheck, TimerReset, Undo2, UserCheck, Users } from 'lucide-react';
+import { RETURNED_TO_REQUESTER, apiErrorBody, approvalsApi } from '../api/approvals';
 import type { ApprovalRequest } from '../api/approvals';
+import { useAuth } from '../contexts/AuthContext';
 import { establishmentBlockFromError } from '../api/establishment';
 import type { EstablishmentBlockedPayload } from '../api/establishment';
 import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedModal';
@@ -22,15 +24,24 @@ type ApprovalMetric = {
   hint: string;
 };
 
-const statusTone = (s: string): { label: string; tone: 'amber' | 'emerald' | 'rose' | 'slate' } => {
+const statusTone = (s: string): { label: string; tone: 'amber' | 'emerald' | 'rose' | 'slate' | 'blue' } => {
   switch (s) {
     case 'Pending': return { label: 'Pending', tone: 'amber' };
     case 'Approved': return { label: 'Approved', tone: 'emerald' };
     case 'Rejected': return { label: 'Rejected', tone: 'rose' };
     case 'Cancelled': return { label: 'Cancelled', tone: 'slate' };
+    case RETURNED_TO_REQUESTER: return { label: 'Sent back', tone: 'blue' };
     default: return { label: s, tone: 'slate' };
   }
 };
+
+const decisionTone = (d: string) =>
+  d === 'Approved' ? 'text-emerald-600 dark:text-emerald-300'
+    : d === 'SentBack' ? 'text-blue-600 dark:text-blue-300'
+      : 'text-rose-500';
+const decisionLabel = (d: string) => (d === 'SentBack' ? 'Sent back' : d);
+const SEND_BACK_MIN = 1;
+const SEND_BACK_MAX = 1000;
 
 const fmtDateTime = (s?: string | null) => s ? new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '-';
 const fmtFullDateTime = (s?: string | null) => s ? new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
@@ -40,6 +51,8 @@ const ownerLabel = (r: ApprovalRequest) => r.currentApproverName || r.currentQue
 const ownerMeta = (r: ApprovalRequest) => [r.currentApproverType, r.currentApproverRole].filter(Boolean).join(' · ') || 'No route metadata';
 
 export function ApprovalsPage() {
+  const { hasPermission } = useAuth();
+  const canManageWorkflows = hasPermission('approvals.manage');
   const [requests, setRequests] = useState<ApprovalRequest[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -51,6 +64,7 @@ export function ApprovalsPage() {
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
   const [comments, setComments] = useState('');
   const [deciding, setDeciding] = useState(false);
+  const [actionError, setActionError] = useState('');
   // Stale-approval path: the establishment guard re-checks at apply time; a slot
   // consumed since submission returns a structured 409 rendered as the popup.
   const [establishmentBlock, setEstablishmentBlock] = useState<{ block: EstablishmentBlockedPayload; employeeName?: string } | null>(null);
@@ -116,6 +130,38 @@ export function ApprovalsPage() {
     finally { setDeciding(false); }
   };
 
+  // W2-E (spec S5) — send back to the requester. The comment is what they will read, so it is required.
+  const handleSendBack = async () => {
+    if (!selected) return;
+    const text = comments.trim();
+    if (text.length < SEND_BACK_MIN) {
+      setActionError('Tell the requester what to change before sending the request back.');
+      return;
+    }
+    if (text.length > SEND_BACK_MAX) {
+      setActionError(`Send-back comments must be ${SEND_BACK_MAX} characters or fewer.`);
+      return;
+    }
+    setDeciding(true);
+    setActionError('');
+    try {
+      await approvalsApi.sendBack(selected.id, text);
+      setSelected(null);
+      setComments('');
+      await Promise.all([load(), loadMetrics()]);
+    } catch (err: unknown) {
+      const body = apiErrorBody(err);
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      setActionError(body.message ?? (status === 409
+        ? 'This request is no longer pending, so it cannot be sent back.'
+        : status === 403
+          ? 'Only the current approver can send this request back.'
+          : 'Failed to send the request back. Please try again.'));
+      if (status === 409) await Promise.all([load(), loadMetrics()]);
+    }
+    finally { setDeciding(false); }
+  };
+
   const totalPages = Math.max(1, Math.ceil(total / 25));
 
   return (
@@ -125,10 +171,18 @@ export function ApprovalsPage() {
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Approval Center</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">Accountable queues by owner, team, SLA, and overdue risk</p>
         </div>
-        <button type="button" onClick={() => { load(); loadMetrics().catch(() => setMetrics([])); }} className="btn-secondary inline-flex h-9 items-center gap-2 px-3 text-sm">
-          <RefreshCw className="h-4 w-4" />
-          Refresh
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {canManageWorkflows && (
+            <Link href="/approvals/workflows" className="btn-secondary inline-flex h-9 items-center gap-2 px-3 text-sm">
+              <Settings2 className="h-4 w-4" />
+              Configure workflows
+            </Link>
+          )}
+          <button type="button" onClick={() => { load(); loadMetrics().catch(() => setMetrics([])); }} className="btn-secondary inline-flex h-9 items-center gap-2 px-3 text-sm">
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -170,14 +224,14 @@ export function ApprovalsPage() {
           </button>
         ))}
         <div className="mx-1 h-6 w-px bg-slate-200 dark:bg-white/10" />
-        {(['Pending', 'Approved', 'Rejected', 'Cancelled', ''] as const).map((s) => (
+        {(['Pending', RETURNED_TO_REQUESTER, 'Approved', 'Rejected', 'Cancelled', ''] as const).map((s) => (
           <button
             key={s}
             type="button"
             onClick={() => setStatusFilter(s)}
             className={`h-8 rounded-md px-3 text-sm font-semibold transition ${statusFilter === s ? 'bg-sapphire text-white' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/10'}`}
           >
-            {s || 'All'}
+            {s === RETURNED_TO_REQUESTER ? 'Sent back' : s || 'All'}
           </button>
         ))}
         <span className="ml-auto text-sm text-slate-400">{total} request{total !== 1 ? 's' : ''}</span>
@@ -245,13 +299,23 @@ export function ApprovalsPage() {
                   <td className="px-4 py-3"><StatusChip {...statusTone(r.status)} /></td>
                   <td className="px-4 py-3">
                     {r.status === 'Pending' && r.canDecide && (
-                      <button type="button" onClick={() => { setSelected(r); setComments(''); }}
+                      <button type="button" onClick={() => { setSelected(r); setComments(''); setActionError(''); }}
                         className="btn-secondary h-8 px-3 text-xs">
                         Review
                       </button>
                     )}
-                    {r.status === 'Pending' && !r.canDecide && (
+                    {r.status === 'Pending' && !r.canDecide && r.decisionBlockedReason && (
+                      <button type="button" onClick={() => { setSelected(r); setComments(''); setActionError(''); }}
+                        title={r.decisionBlockedReason}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-amber-600 hover:underline dark:text-amber-300">
+                        <ShieldCheck className="h-3.5 w-3.5" /> Needs another approver
+                      </button>
+                    )}
+                    {r.status === 'Pending' && !r.canDecide && !r.decisionBlockedReason && (
                       <span className="text-xs font-medium text-slate-400">Watching</span>
+                    )}
+                    {r.status === RETURNED_TO_REQUESTER && (
+                      <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 dark:text-blue-300"><Undo2 className="h-3.5 w-3.5" /> With requester</span>
                     )}
                   </td>
                 </tr>
@@ -278,6 +342,10 @@ export function ApprovalsPage() {
             <button type="button" onClick={() => setSelected(null)} className="btn-secondary">Cancel</button>
             {selected?.canDecide && (
               <>
+                <button type="button" onClick={handleSendBack} disabled={deciding} title="Return it to the requester for changes; they can edit and resubmit"
+                  className="btn-secondary inline-flex items-center gap-1.5 text-blue-600 hover:border-blue-300 disabled:opacity-60 dark:text-blue-300">
+                  <Undo2 className="h-3.5 w-3.5" /> Send back
+                </button>
                 <button type="button" onClick={() => handleDecide('Reject')} disabled={deciding} className="btn-secondary text-rose-500 hover:border-rose-300 disabled:opacity-60">Reject</button>
                 <button type="button" onClick={() => handleDecide('Approve')} disabled={deciding} className="btn-primary disabled:opacity-60">{deciding ? 'Saving...' : 'Approve'}</button>
               </>
@@ -319,8 +387,9 @@ export function ApprovalsPage() {
                 <div className="space-y-1">
                   {selected.decisions.map((d) => (
                     <div key={d.id} className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                      <span className={`font-semibold ${d.decision === 'Approved' ? 'text-emerald-600 dark:text-emerald-300' : 'text-rose-500'}`}>{d.decision}</span>
+                      <span className={`font-semibold ${decisionTone(d.decision)}`}>{decisionLabel(d.decision)}</span>
                       <span>Step {d.stepOrder}</span>
+                      {(selected.submissionRound ?? 1) > 1 && <span className="text-slate-400">· submission {d.submissionRound ?? 1}</span>}
                       {d.comments && <span>— {d.comments}</span>}
                     </div>
                   ))}
@@ -335,13 +404,22 @@ export function ApprovalsPage() {
             )}
             {selected.canDecide ? (
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Comments (optional)</label>
-                <textarea value={comments} onChange={(e) => setComments(e.target.value)} className="input w-full resize-none" rows={3} placeholder="Add a comment..." />
-                <p className="mt-1 text-xs text-slate-400">A rejection requires a clear reason for auditability.</p>
+                <label htmlFor="approval-comments" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Comments</label>
+                <textarea id="approval-comments" value={comments} onChange={(e) => { setComments(e.target.value); if (actionError) setActionError(''); }} className="input w-full resize-none" rows={3} maxLength={SEND_BACK_MAX} placeholder="Add a comment..." />
+                <p className="mt-1 text-xs text-slate-400">Optional for approval. A rejection needs a clear reason, and a send back needs to tell the requester what to change — they can then edit and resubmit, and the chain restarts at step 1.</p>
+              </div>
+            ) : selected.decisionBlockedReason ? (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                {selected.decisionBlockedReason}
               </div>
             ) : (
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
                 This item is visible for accountability, but the current workflow step is assigned to another owner.
+              </div>
+            )}
+            {actionError && (
+              <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+                {actionError}
               </div>
             )}
           </div>
