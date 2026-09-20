@@ -1,4 +1,6 @@
 using Zayra.Api.Application.CountryPack;
+using Zayra.Api.Infrastructure.Payroll;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.CountryPack.Ksa;
 
@@ -26,9 +28,65 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
             RuleKeys.GosiCoveredWageCeilingSar, eff, null, ct) ?? 45_000m;  // VERIFY: SAR 45,000 as of 2024
         coveredWage = Math.Min(coveredWage, ceiling);
 
-        bool isSaudi = IsSaudiNational(input.Nationality);
+        // ── S1/A4: three classifications, not two ────────────────────────────────────────────────
+        // The local IsSaudiNational matched only SAU/SA/Saudi, so a Bahraini fell through to the
+        // expat branch and received 2% occupational hazard and nothing else. Meanwhile
+        // PayrollValidationEngine derives a distinct "GCC" bucket from the SAME nationality string
+        // and raises a BLOCKING error demanding GOSI for it — a deadlock the customer cannot exit,
+        // and the only ways out were to void the run or to override the validation and file short.
+        //
+        // Under the GCC Unified Insurance Extension Scheme a GCC national employed in Saudi Arabia is
+        // insured under their HOME state's scheme at the HOME state's rates, collected by GOSI. Those
+        // rates live in Kuwait/Oman/Bahrain packs that do not exist. So the honest behaviour is to
+        // apply the home-state rates IF a tenant has configured them, and otherwise to contribute
+        // NOTHING and let the validator block with a named, actionable reason — never to silently
+        // apply expat treatment, which is a wrong answer dressed as a right one.
+        var classification = GosiCalculationService.DeriveClassification(input.Nationality);
+        bool isSaudi = classification == GosiClassifications.Saudi;
+        bool isGcc   = classification == GosiClassifications.GCC;
+
         var lines = new List<StatutoryDeductionLine>();
         decimal empTotal = 0m, erTotal = 0m;
+
+        if (isGcc)
+        {
+            var home = GosiCalculationService.DeriveGccHomeState(input.Nationality) ?? string.Empty;
+
+            decimal? gccEmp = await _rules.GetDecimalAsync(
+                CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                RuleKeys.GosiGccEmployeeRate(home), eff, null, ct);
+            decimal? gccEr = await _rules.GetDecimalAsync(
+                CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                RuleKeys.GosiGccEmployerRate(home), eff, null, ct);
+
+            if (gccEmp is null || gccEr is null)
+                // No lines at all. The run will be blocked by GOSI_GCC_SCHEME_NOT_CONFIGURED, which
+                // names the two rule keys to seed. Blocking is the right outcome: filing a Saudi
+                // payroll that under-contributes for a GCC national accrues back-contributions with a
+                // monthly surcharge and costs the establishment its GOSI compliance certificate.
+                return new(0m, 0m, lines);
+
+            decimal gccEmpAmt = Math.Round(coveredWage * gccEmp.Value, 2);
+            // The employer's share under the extension scheme is capped at what it would pay for a
+            // Saudi; any excess over that cap is borne by the employee, not the employer.
+            decimal saudiErCap = await _rules.GetDecimalAsync(
+                CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                RuleKeys.GosiSaudiEmployerRate, eff, null, ct) ?? 0.09m;
+            decimal erRateApplied = Math.Min(gccEr.Value, saudiErCap);
+            decimal gccErAmt = Math.Round(coveredWage * erRateApplied, 2);
+            decimal excessToEmployee = Math.Round(coveredWage * Math.Max(0m, gccEr.Value - saudiErCap), 2);
+
+            lines.Add(new($"GOSI-GCC-{home}-EE", $"GCC Unified Scheme — {home} (Employee)", gccEmpAmt + excessToEmployee, 0m));
+            lines.Add(new($"GOSI-GCC-{home}-ER", $"GCC Unified Scheme — {home} (Employer)", 0m, gccErAmt));
+
+            decimal gccOhRate = await _rules.GetDecimalAsync(
+                CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                RuleKeys.GosiExpOhRate, eff, null, ct) ?? 0.02m;
+            decimal gccOh = Math.Round(coveredWage * gccOhRate, 2);
+            lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, gccOh));
+
+            return new(gccEmpAmt + excessToEmployee, gccErAmt + gccOh, lines);
+        }
 
         if (isSaudi)
         {
@@ -78,10 +136,9 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
         return new(empTotal, erTotal, lines);
     }
 
-    private static bool IsSaudiNational(string nationality)
-        => string.Equals(nationality, CountryCodes.Saudi, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(nationality, "SA", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(nationality, "Saudi", StringComparison.OrdinalIgnoreCase);
+    // S1/A4 — the local IsSaudiNational is GONE. Classification is now derived exclusively by
+    // GosiCalculationService.DeriveClassification, the same function PayrollValidationEngine uses, so
+    // the calculator and the validator can never again disagree about who owes GOSI.
 }
 
 // ── KSA EOSB calculator ───────────────────────────────────────────────────────

@@ -257,7 +257,35 @@ public static class PayrollValidationEngine
                     var priorGosiEe  = ctx.PriorPeriodGosiEeByEmployee.TryGetValue(slip.EmployeeId, out var pg) ? pg : 0m;
                     var periodGosiEe = gosiEeAmount + priorGosiEe;
 
-                    if (!hasGosiEe && periodGosiEe <= 0m && paysRecurring)
+                    // ── S1/A4: a GCC national is a DIFFERENT failure with a DIFFERENT exit ─────────
+                    // GOSI_MISSING_FOR_SAUDI told the preparer to make the employee contribute to
+                    // GOSI-ANN-EE and GOSI-SANED-EE — contributions the KSA calculator structurally
+                    // could not produce for a GCC national, because those are the SAUDI branches and
+                    // a GCC national is insured under their HOME state's scheme. The instruction was
+                    // impossible to follow, so the run was stranded: Approve and Lock 422, re-Process
+                    // is refused once the run leaves Draft/Processed, and nothing ever sets IsResolved.
+                    // The customer's only exits were to void the run or to override and file short.
+                    //
+                    // It is still an Error, and deliberately so — under-contributing for a GCC national
+                    // accrues back-contributions with a monthly surcharge and costs the establishment
+                    // its GOSI compliance certificate, which gates Qiwa services and visa issuance. But
+                    // it now names the two rows that make it go away.
+                    var gccHome = GosiCalculationService.DeriveGccHomeState(emp.Nationality);
+                    if (!hasGosiEe && periodGosiEe <= 0m && paysRecurring && gccHome is not null)
+                        Err("GOSI_GCC_SCHEME_NOT_CONFIGURED",
+                            $"Employee {slip.EmployeeCode} is a {gccHome} national working in Saudi Arabia, and no " +
+                            "contribution was calculated for them. Under the GCC Unified Insurance Extension Scheme " +
+                            $"they are insured under {gccHome}'s own scheme, at {gccHome}'s rates, collected by GOSI — " +
+                            "NOT under the Saudi Annuities/SANED branches, and NOT as an expatriate on occupational " +
+                            "hazard alone, which is what this product used to do silently. This product does not ship " +
+                            $"{gccHome} rates. To clear this and complete the run, seed two effective-dated statutory " +
+                            $"rules for SAU / KSA-mainland from the current {gccHome} circular: " +
+                            $"'gosi.gcc.{gccHome}.employee_rate' and 'gosi.gcc.{gccHome}.employer_rate' (decimal " +
+                            "fractions, e.g. 0.07). The employer share is automatically capped at the Saudi employer " +
+                            "rate and the excess charged to the employee, per the scheme. [COUNSEL] confirm the " +
+                            $"{gccHome} branch rates and which branches the extension scheme covers before filing.",
+                            slip.EmployeeId);
+                    else if (!hasGosiEe && periodGosiEe <= 0m && paysRecurring)
                         Err("GOSI_MISSING_FOR_SAUDI",
                             $"Employee {slip.EmployeeCode} is classified as {classification} but has zero GOSI employee deductions. " +
                             "Saudi and GCC nationals must contribute to GOSI Annuities (GOSI-ANN-EE) and SANED (GOSI-SANED-EE).",

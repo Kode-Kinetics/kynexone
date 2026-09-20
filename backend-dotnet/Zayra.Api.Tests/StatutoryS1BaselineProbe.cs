@@ -48,4 +48,26 @@ public class StatutoryS1BaselineProbe
 
         Assert.Equal(0m, result.TotalGratuity);
     }
+
+    [Fact]
+    public async Task A4_GccNationalIsNotGivenExpatTreatment()
+    {
+        // A Bahraini engineer in Riyadh is insured under Bahrain's scheme via the GCC Unified
+        // Insurance Extension Scheme, not as an expatriate on 2% occupational hazard. Applying expat
+        // treatment is a confident wrong answer, and the validation engine simultaneously blocks the
+        // run demanding GOSI the calculator cannot produce.
+        var rules = new StubRuleReader()
+            .Set("gosi.saudi_employee_rate", 0.09m)
+            .Set("gosi.saudi_employer_rate", 0.09m)
+            .Set("gosi.saned_rate", 0.0075m)
+            .Set("gosi.expat_occupational_hazard_rate", 0.02m)
+            .Set("gosi.covered_wage_ceiling_sar", 45_000m);
+        var calc = new KsaDeductionCalculator(rules);
+
+        var result = await calc.CalculateAsync(new StatutoryDeductionInput(
+            Guid.NewGuid(), Guid.NewGuid(), new SalaryBreakdown(10_000m, 4_000m, 0m, 0m),
+            "Bahraini", "Indefinite", 2026, 1));
+
+        Assert.DoesNotContain(result.Lines, l => l.Code == "GOSI-OH-ER");
+    }
 }
