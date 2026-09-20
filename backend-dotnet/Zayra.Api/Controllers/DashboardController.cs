@@ -57,9 +57,13 @@ public class DashboardController : ControllerBase
             return Ok(EmptyFull(EmptyKpis(false)));
 
         var tid = tenantId.Value;
+        // Clamped BEFORE it reaches the key. BuildCached clamps too, so months=12 and months=999
+        // produce the same payload — but used to produce two different keys, which fragmented the
+        // cache and let any caller inflate the keyspace at will.
+        months = Math.Clamp(months, 1, 12);
 
         // ── Tenant-scoped (cached) part ───────────────────────────────────────
-        var cacheKey = $"dashboard:v2:full:{tid}:{months}";
+        var cacheKey = CacheKey("full", tid, months.ToString());
         DashboardCachedDto? cached = null;
         var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
         if (cachedBytes is not null)
@@ -102,7 +106,7 @@ public class DashboardController : ControllerBase
             return Ok(await BuildSummary(tenantId.Value, cancellationToken, population));
         }
 
-        var cacheKey = $"dashboard:summary:{tenantId}";
+        var cacheKey = CacheKey("summary", tenantId.Value);
         var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
         if (cachedBytes is not null)
             return Ok(JsonSerializer.Deserialize<DashboardSummaryDto>(cachedBytes));
@@ -119,7 +123,7 @@ public class DashboardController : ControllerBase
         months = Math.Clamp(months, 1, 12);
         if (tenantId is null) return Ok(Array.Empty<DashboardTrendDto>());
 
-        var cacheKey = $"dashboard:trends:{tenantId}:{months}";
+        var cacheKey = CacheKey("trends", tenantId.Value, months.ToString());
         var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
         if (cachedBytes is not null)
             return Ok(JsonSerializer.Deserialize<List<DashboardTrendDto>>(cachedBytes));
@@ -138,7 +142,7 @@ public class DashboardController : ControllerBase
                 Array.Empty<NamedValueDto>(), Array.Empty<NamedValueDto>(),
                 Array.Empty<NamedValueDto>(), Array.Empty<DashboardAlertDto>(), 0, 0));
 
-        var cacheKey = $"dashboard:overview:{tenantId}";
+        var cacheKey = CacheKey("overview", tenantId.Value);
         var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
         if (cachedBytes is not null)
             return Ok(JsonSerializer.Deserialize<DashboardOverviewDto>(cachedBytes));
@@ -154,6 +158,39 @@ public class DashboardController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Ok(EmptyKpis(false));
         return Ok(await BuildKpis(tenantId.Value, ct));
+    }
+
+    // ── Cache keys ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The cache key for one dashboard slice.
+    ///
+    /// <para><b>The defect this fixes.</b> These four keys used to be tenant-only
+    /// (<c>dashboard:v2:full:{tid}:{months}</c> and friends). Nothing in this controller mentions
+    /// a company, which is exactly why it was easy to miss: the company dimension enters every
+    /// query <i>silently</i>, through the <c>ICompanyScopedOperational</c> global query filters
+    /// that <see cref="ZayraDbContext"/> applies from the request's resolved entity scope. So the
+    /// PAYLOAD was company-filtered while the KEY was not. In a group tenant the first company's
+    /// headcount, payroll totals, approval queue and activity feed were served to the next caller
+    /// for 60 s — and with Redis configured (<c>Program.cs</c>, <c>REDIS_URL</c>) across pods, not
+    /// merely within one process. The most likely trigger is one user using the company switcher:
+    /// the <c>X-Company-Id</c> header narrows the query and the frontend forces a refetch, which
+    /// walks straight into the previous company's entry.</para>
+    ///
+    /// <para>The discriminator is derived from the SAME resolution the query filters use
+    /// (<c>GetRequestScope()</c> → <c>IRequestEntityScopeResolver.Resolve()</c>, memoized on
+    /// <c>HttpContext.Items</c>), so the key and the data cannot disagree. It keys on the
+    /// AUTHORIZED SET rather than <c>SelectedCompanyId</c>, because a multi-company non-group
+    /// caller with no header selection has a set of size &gt; 1 and no selection — and that set is
+    /// precisely what the filter uses.</para>
+    ///
+    /// <para>The version marker is bumped to v3 so no entry written by the leaking v2 key can be
+    /// served after deployment.</para>
+    /// </summary>
+    private string CacheKey(string slice, Guid tenantId, string? suffix = null)
+    {
+        var key = $"dashboard:v3:{slice}:{tenantId}:{this.GetRequestScope().ToCacheDiscriminator()}";
+        return suffix is null ? key : $"{key}:{suffix}";
     }
 
     // ── Private builders ─────────────────────────────────────────────────────

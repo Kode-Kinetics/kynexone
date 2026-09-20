@@ -58,7 +58,7 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         var permissionSignature = BuildSignature(permissions);
         var roleSignature = BuildSignature(roles);
         var normalizedQuery = NormalizeQuery(request.Query);
-        var cacheKey = BuildCacheKey(caller.TenantId, governance.Intent, governance.Module, request.EmployeeId, normalizedQuery, roleSignature, permissionSignature);
+        var cacheKey = BuildCacheKey(caller.TenantId, governance.Intent, governance.Module, request.EmployeeId, normalizedQuery, roleSignature, permissionSignature, caller.CompanyScopeSignature);
         var cacheLookup = new AiCacheKey(
             caller.TenantId,
             cacheKey,
@@ -272,7 +272,7 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         return cleaned.Length == 0 ? string.Empty : string.Join('|', cleaned);
     }
 
-    private string BuildCacheKey(Guid tenantId, string intent, string module, int? employeeId, string normalizedQuery, string roleSignature, string permissionSignature)
+    private string BuildCacheKey(Guid tenantId, string intent, string module, int? employeeId, string normalizedQuery, string roleSignature, string permissionSignature, string companyScopeSignature)
     {
         return _redaction.Hash(string.Join("::", new[]
         {
@@ -282,6 +282,10 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
             employeeId?.ToString() ?? string.Empty,
             roleSignature,
             permissionSignature,
+            // The company dimension. The context this key caches is company-filtered by the
+            // global query filters; without this segment a company switch served the previous
+            // company's answer. See AiUserContext.CompanyScopeSignature.
+            companyScopeSignature,
             normalizedQuery
         }));
     }
