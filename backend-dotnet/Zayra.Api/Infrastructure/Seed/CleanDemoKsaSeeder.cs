@@ -665,7 +665,11 @@ public static class CleanDemoKsaSeeder
         await db.SaveChangesAsync(ct);
 
         // ── 16. Locked payroll run — real GOSI calc ───────────────────────────
-        // Pass 1: compute per-employee figures via GosiCalculationService
+        // Pass 1: compute per-employee figures via GosiCalculationService.
+        // The MONTHLY contributory-wage bounds come from the statutory rules engine, the single
+        // source shared with the payroll run's country pack.
+        var gosiBounds = await Zayra.Api.Infrastructure.CountryPack.Ksa.KsaGosiWageBounds.ResolveAsync(
+            new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db), periodDate, null, ct);
         var perEmpData = new List<(
             Employee Emp, decimal Basic, decimal Housing, decimal Transport,
             decimal Bonus, decimal BaseGross, decimal Gross,
@@ -679,7 +683,7 @@ public static class CleanDemoKsaSeeder
             var bonus     = emp == empAbdulrahman ? BonusAmount : 0m;
             var baseGross = basic + housing + transport;
             var gross     = baseGross + bonus;
-            var gosi      = GosiCalculationService.Calculate(emp.Nationality, basic, gosiRules, periodDate, tenantId);
+            var gosi      = GosiCalculationService.Calculate(emp.Nationality, basic, gosiRules, periodDate, tenantId, gosiBounds);
             perEmpData.Add((emp, basic, housing, transport, bonus, baseGross, gross, gosi.EmployeeTotal, gosi.EmployerTotal, gosi));
         }
 

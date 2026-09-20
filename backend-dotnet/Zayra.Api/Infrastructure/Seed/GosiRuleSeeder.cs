@@ -16,7 +16,9 @@ namespace Zayra.Api.Infrastructure.Seed;
 /// GCC rates mirror the Saudi baseline but are marked as pending legal confirmation.
 /// NonSaudi nationals: Occupational Hazards employer 2% only.
 ///
-/// NOTE: Rates and wage caps must be reviewed annually against current GOSI circulars.
+/// NOTE: Rates must be reviewed annually against current GOSI circulars. The contributory-wage
+/// CAP is not seeded here at all — it is a statutory rule (gosi.covered_wage_ceiling_sar),
+/// seeded by StatutoryRuleSeeder and read through KsaGosiWageBounds.
 /// </summary>
 public static class GosiRuleSeeder
 {
@@ -118,6 +120,11 @@ public static class GosiRuleSeeder
         return rules;
     }
 
+    // MinContributoryWage / MaxContributoryWage are deliberately NOT set, and populating them would
+    // be the wrong fix. They are a second store for a statutory value; the contributory-wage bounds
+    // live in the effective-dated statutory rules engine under gosi.covered_wage_ceiling_sar and are
+    // read through KsaGosiWageBounds by every surface — payslip, GOSI preview and readiness report
+    // alike. Nothing reads these two columns any more. See GosiCalculationService.
     private static GosiContributionRule Rule(
         string  classification,
         string  branch,

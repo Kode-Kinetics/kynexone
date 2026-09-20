@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Payroll;
@@ -130,12 +131,20 @@ public static class GosiCalculationService
     /// <param name="allRules">All active rules for the tenant — preloaded once per run.</param>
     /// <param name="periodDate">The last date of the pay period (used for effective-date selection).</param>
     /// <param name="tenantId">The tenant ID for override precedence resolution.</param>
+    /// <param name="bounds">
+    /// The MONTHLY contributory-wage bounds, resolved from the effective-dated statutory rules
+    /// engine by <see cref="KsaGosiWageBounds.ResolveAsync"/> — the same call, the same rule key and
+    /// the same effective date the payroll run's country pack uses. Every caller must resolve them
+    /// that way; a caller that passes <see cref="GosiWageBounds.Unbounded"/> is asking for the
+    /// uncapped figure and will disagree with the payslip.
+    /// </param>
     public static GosiContributionResult Calculate(
         string?                             nationality,
         decimal                             contributoryWage,
         IReadOnlyList<GosiContributionRule> allRules,
         DateOnly                            periodDate,
-        Guid                                tenantId)
+        Guid                                tenantId,
+        GosiWageBounds                      bounds)
     {
         var classification = DeriveClassification(nationality);
         var rules          = SelectActiveRules(classification, allRules, periodDate, tenantId);
@@ -146,12 +155,15 @@ public static class GosiCalculationService
         {
             if (rule.Rate <= 0m) continue;
 
-            // Apply contributory wage caps if set on the rule
-            var wage = contributoryWage;
-            if (rule.MinContributoryWage.HasValue && wage < rule.MinContributoryWage.Value)
-                wage = rule.MinContributoryWage.Value;
-            if (rule.MaxContributoryWage.HasValue && wage > rule.MaxContributoryWage.Value)
-                wage = rule.MaxContributoryWage.Value;
+            // Clamp to the statutory MONTHLY contributory-wage bounds.
+            //
+            // GosiContributionRule.MinContributoryWage / MaxContributoryWage are deliberately NOT
+            // read here. They were a second, per-row store for a statutory value, and because
+            // GosiRuleSeeder never populated them the platform-default path computed uncapped while
+            // the payroll run's country pack capped at SAR 45,000 off the statutory rules engine.
+            // One number, one way: the bounds come from KsaGosiWageBounds and nowhere else.
+            // GosiCeilingSingleSourceTests pins that those two columns stay unread.
+            var wage = bounds.Clamp(contributoryWage);
 
             var amount = Math.Round(wage * rule.Rate / 100m, 2);
             if (amount <= 0m) continue;

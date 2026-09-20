@@ -388,13 +388,36 @@ public class LeaveRequestsController : ControllerBase
         if (scope.CallerEmployeeId == cancellation.EmployeeId) return Forbid();
         var leave = await _db.LeaveRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
         if (leave is null) return NotFound();
+
+        // Refusing a cancellation REVERTS the leave to the state it was in when the cancellation was
+        // asked for, and the only state that can be is "CancellationRequested" — POST /{id}/cancel
+        // moves an Approved leave into it and creates the Pending row this endpoint decides.
+        //
+        // This assignment used to be unconditional. A leave that had since been Withdrawn or
+        // Cancelled — releasing its balance back to the employee — was resurrected as Approved by a
+        // stale pending cancellation row, while the released balance stayed released. The employee
+        // then held an approved absence AND the days back in their entitlement: the same days spent
+        // twice. LeaveService.CancelRequestAsync already refuses to act on a Cancelled or Withdrawn
+        // request (see its status check); this path was the way around that guard.
+        //
+        // Refuses the way the codebase's other decision endpoints refuse: a coded 409, as
+        // ApprovalDecisionGuard's ParentStateForbidsDecision does for loans.
+        if (leave.Status != "CancellationRequested")
+            return Conflict(new
+            {
+                error = "invalid_leave_state",
+                message = $"A cancellation can only be rejected while the leave is awaiting that "
+                        + $"decision (current: {leave.Status}). This cancellation request is stale — "
+                        + $"the leave has already moved on."
+            });
+
         cancellation.Status = "Rejected";
         cancellation.ReviewedByName = User.Identity?.Name ?? "Approver";
         cancellation.ReviewNotes = req.Notes ?? string.Empty;
         cancellation.ReviewedAtUtc = DateTime.UtcNow;
         leave.Status = "Approved";
         await _db.SaveChangesAsync(ct);
-        return Ok(leave);
+        return Ok(LeaveRequestStateDto.Project(leave));
     }
 
     [HttpPost("{id:guid}/withdraw")]
@@ -703,3 +726,30 @@ public record CancellationDecisionRequest(string? Notes);
 public record WithdrawLeaveRequest(string? Reason);
 public record DelegateLeaveRequest(int DelegateEmployeeId, string? DelegationType, string? Notes);
 public record ImportLeaveRequestsRequest(string CsvContent);
+
+/// <summary>
+/// The leave-request state returned by a cancellation decision. Replaces returning the raw
+/// <c>LeaveRequest</c> entity, which serialized TenantId, CompanyId and every field later added to
+/// the model. Nothing consumed the entity shape — the endpoint has no frontend or test caller — so
+/// this projects the decision-relevant subset and nothing else.
+/// </summary>
+public record LeaveRequestStateDto(
+    Guid Id,
+    int EmployeeId,
+    string EmployeeName,
+    Guid LeaveTypeId,
+    string LeaveTypeName,
+    DateOnly StartDate,
+    DateOnly EndDate,
+    decimal TotalDays,
+    string DayType,
+    string Status,
+    string CancellationReason,
+    DateTime? DecidedAtUtc,
+    DateTime? CancelledAtUtc)
+{
+    public static LeaveRequestStateDto Project(Zayra.Api.Models.LeaveRequest r) => new(
+        r.Id, r.EmployeeId, r.EmployeeName, r.LeaveTypeId, r.LeaveTypeName,
+        r.StartDate, r.EndDate, r.TotalDays, r.DayType, r.Status,
+        r.CancellationReason, r.DecidedAtUtc, r.CancelledAtUtc);
+}

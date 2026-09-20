@@ -377,10 +377,16 @@ public static class KsaDemoTenantSeeder
         //     country pack quietly deducted the right amount from a different rate store.
         //
         // GosiRateUnitLintTests now guards the unit for every seeder in the repo.
+        // MinContributoryWage / MaxContributoryWage are deliberately not set on any row. They were
+        // set here on the two Annuities rows and on neither SANED row, so even this seeded tenant
+        // capped Annuities and left SANED uncapped. The contributory-wage bounds are a statutory
+        // value and now live once, in the effective-dated rules engine
+        // (gosi.covered_wage_ceiling_sar, read via KsaGosiWageBounds) — these columns are no
+        // longer read by any calculation. See GosiCalculationService.
         var gosiEffective = new DateOnly(2024, 1, 1);
         db.GosiContributionRules.AddRange(
-            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.Annuities, Payer = GosiPayers.Employee, Rate = 9.00m, MinContributoryWage = 400m, MaxContributoryWage = 45_000m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "GOSI Annuities employee 9% (percent units) — VERIFY against the current GOSI circular" },
-            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.Annuities, Payer = GosiPayers.Employer, Rate = 9.00m, MinContributoryWage = 400m, MaxContributoryWage = 45_000m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "GOSI Annuities employer 9% (percent units) — VERIFY against the current GOSI circular" },
+            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.Annuities, Payer = GosiPayers.Employee, Rate = 9.00m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "GOSI Annuities employee 9% (percent units) — VERIFY against the current GOSI circular" },
+            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.Annuities, Payer = GosiPayers.Employer, Rate = 9.00m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "GOSI Annuities employer 9% (percent units) — VERIFY against the current GOSI circular" },
             new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.SANED,      Payer = GosiPayers.Employee, Rate = 0.75m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "SANED employee 0.75% (percent units) — VERIFY against the current GOSI circular" },
             new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.SANED,      Payer = GosiPayers.Employer, Rate = 0.75m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "SANED employer 0.75% (percent units) — VERIFY against the current GOSI circular" },
             new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.NonSaudi, Branch = GosiBranches.OccupationalHazards, Payer = GosiPayers.Employer, Rate = 2.00m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "Occupational Hazards employer 2% (percent units) — VERIFY against the current GOSI circular" }

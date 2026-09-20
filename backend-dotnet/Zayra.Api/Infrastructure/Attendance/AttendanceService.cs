@@ -6,6 +6,7 @@ using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Localization;
@@ -29,6 +30,9 @@ public class AttendanceService : IAttendanceService
     // Per-request cache of the resolved tenant timezone so the per-employee/day loop
     // doesn't re-query localization settings on every call.
     private readonly Dictionary<Guid, TimeZoneInfo> _tzCache = new();
+    // Per-request cache of each legal entity's country code, for the same reason: the Art. 98
+    // baseline is resolved once per employee-day and the company row never changes mid-run.
+    private readonly Dictionary<Guid, string> _companyCountryCache = new();
 
     public AttendanceService(ZayraDbContext db, INotificationService notifications, IHttpClientFactory httpClientFactory)
     {
@@ -56,6 +60,45 @@ public class AttendanceService : IAttendanceService
         catch { tz = TimeZoneInfo.Utc; }
         _tzCache[tenantId] = tz;
         return tz;
+    }
+
+    /// <summary>
+    /// The EMPLOYING COMPANY's country code — the jurisdiction whose labour law governs this
+    /// employee's working hours.
+    ///
+    /// <para>KSA Art. 98 used to be gated on <c>Employee.CountryCode</c>, which is a PERSONAL field
+    /// (the employee's own country) that defaults to <see cref="string.Empty"/> and is routinely
+    /// never filled in. That gate was wrong in both directions at once: a Saudi company's employee
+    /// with a blank or foreign country code was DENIED the reduced Ramadan baseline and therefore
+    /// under-paid overtime, while an employee of a non-KSA entity who happened to carry "SA" on
+    /// their personal record was GIVEN it and over-paid. Whether Art. 98 applies is a property of
+    /// the employer's jurisdiction, exactly as it is for Art. 109 and Art. 117 — which resolve the
+    /// company through <c>LeaveService.ResolveEmployeeCountryAsync</c>. This is the same resolution,
+    /// so the three articles can no longer disagree about who is in KSA.</para>
+    /// </summary>
+    private async Task<string> ResolveCompanyCountryAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    {
+        if (companyId is not Guid id) return string.Empty;
+        if (_companyCountryCache.TryGetValue(id, out var cached)) return cached;
+
+        // The company filter must be dropped, and it goes through ScopedBypass rather than a raw
+        // .IgnoreQueryFilters() so the tenant predicate is re-applied for us and the intent is in
+        // the type system rather than in a comment.
+        var cc = await ScopedBypass.TenantWide(_db.Companies, tenantId,
+            "Resolving an employee's legal entity in order to decide whether KSA Art. 98 Ramadan "
+            + "reduced working hours apply is a SYSTEM/config read. It must succeed regardless of "
+            + "the processing user's own company claims, because the article binds on the EMPLOYER's "
+            + "jurisdiction, not on the caller's permissions — an HR user scoped to one entity must "
+            + "not cause a different entity's employee to have overtime measured against the wrong "
+            + "baseline. Only the country code is projected; no company data crosses the boundary. "
+            + "Mirrors LeaveService.ResolveEmployeeCountryAsync, which does this for Art. 109/117.")
+            .AsNoTracking()
+            .Where(c => c.Id == id)
+            .Select(c => c.CountryCode)
+            .FirstOrDefaultAsync(ct) ?? string.Empty;
+
+        _companyCountryCache[id] = cc;
+        return cc;
     }
 
     public async Task<PagedResult<AttendanceDevice>> GetDevicesAsync(Guid tenantId, int page, int pageSize, CancellationToken ct)
@@ -975,8 +1018,13 @@ public class AttendanceService : IAttendanceService
         // time become overtime at the Art. 107 rate. Ramadan is resolved through the Um al-Qura
         // calendar, never a Gregorian range — it moves ~11 days earlier each Gregorian year.
         // Non-KSA companies and non-Ramadan dates get policy.StandardWorkMinutes unchanged.
+        // Gate on the EMPLOYING COMPANY's country, not on Employee.CountryCode. The latter is a
+        // personal field that defaults empty, so gating on it both missed employees of a KSA entity
+        // and leaked the reduction to employees of a non-KSA one. Art. 109 and Art. 117 already
+        // resolve the company; Art. 98 now does the same. See ResolveCompanyCountryAsync.
+        var employerCountry = await ResolveCompanyCountryAsync(tenantId, employee.CompanyId, ct);
         var hoursBaseline = await _ksaWorkingHours.ResolveDailyAsync(
-            employee.CountryCode, date, policy.StandardWorkMinutes, ct);
+            employerCountry, date, policy.StandardWorkMinutes, ct);
         var baselineMinutes = hoursBaseline.DailyMinutes;
 
         daily.OvertimeMinutes = Math.Max(0, daily.TotalWorkedMinutes - baselineMinutes);

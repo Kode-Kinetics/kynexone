@@ -114,7 +114,7 @@ public class StatutoryRateStoreTests
         };
 
         var viaModule = GosiCalculationService.Calculate(
-            "Saudi", breakdown.GosiCoveredWage, rules, new DateOnly(2026, 1, 1), Guid.Empty);
+            "Saudi", breakdown.GosiCoveredWage, rules, new DateOnly(2026, 1, 1), Guid.Empty, new Zayra.Api.Infrastructure.CountryPack.Ksa.GosiWageBounds(null, Zayra.Api.Infrastructure.CountryPack.Ksa.KsaGosiWageBounds.DefaultMonthlyCeilingSar));
 
         Assert.Equal(Math.Round(14_000m * 0.09m, 2), viaModule.EmployeeTotal);
     }

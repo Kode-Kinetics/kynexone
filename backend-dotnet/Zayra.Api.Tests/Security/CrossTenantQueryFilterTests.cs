@@ -42,7 +42,7 @@ public class CrossTenantQueryFilterTests
     /// <summary>Wires a GosiController with TenantA's JWT claims on the controller context.</summary>
     private static GosiController GosiControllerFor(ZayraDbContext db, Guid tenantId)
     {
-        var controller = new GosiController(db, TestReconciliation.For(db));
+        var controller = new GosiController(db, TestReconciliation.For(db), new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db));
         var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
         {
             new Claim("tenant_id", tenantId.ToString()),
@@ -191,7 +191,7 @@ public class CrossTenantQueryFilterTests
         db.GosiContributionRules.Add(GosiRule(Guid.Empty));
         await db.SaveChangesAsync();
 
-        var svc    = new GosiReadinessReportService(db);
+        var svc    = new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db));
         var report = await svc.BuildAsync(tenantA, CancellationToken.None);
 
         report.TotalEmployees.Should().Be(2,

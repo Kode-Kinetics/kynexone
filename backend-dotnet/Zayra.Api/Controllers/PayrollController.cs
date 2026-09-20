@@ -6912,8 +6912,9 @@ public class PayrollController : ControllerBase
 
     // Maps free-form / domain separation strings to the canonical reason vocabulary the
     // country packs branch on: "Resignation" (Art.85 reduction), "Article80" (Art.80
-    // dismissal-for-cause forfeiture), or a pass-through employer-side reason (full award).
-    private static string NormalizeTerminationReason(string? raw)
+    // dismissal-for-cause forfeiture), "Article87" / "Article81" (the express exceptions to
+    // Art.85 — full award), or a pass-through employer-side reason (full award).
+    internal static string NormalizeTerminationReason(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "Termination"; // conservative default: employer-side, full award
         var r = raw.Trim();
@@ -6926,6 +6927,16 @@ public class PayrollController : ControllerBase
             || r.Equals("DismissalForCause", StringComparison.OrdinalIgnoreCase)
             || r.Equals("SummaryDismissal", StringComparison.OrdinalIgnoreCase))
             return "Article80";
+        // Art.87 and Art.81 are the express EXCEPTIONS to the Art.85 resignation reduction: the
+        // worker left, but the FULL Art.84 award is due. They must canonicalise to their own codes —
+        // falling through to "Resignation" would cut the award by a third or two thirds, and falling
+        // through as free text would work only by accident. See KsaEndOfServiceCalculator.
+        if (r.Equals("Article87", StringComparison.OrdinalIgnoreCase)
+            || r.Equals("Art87", StringComparison.OrdinalIgnoreCase))
+            return "Article87";
+        if (r.Equals("Article81", StringComparison.OrdinalIgnoreCase)
+            || r.Equals("Art81", StringComparison.OrdinalIgnoreCase))
+            return "Article81";
         // Termination / EndOfContract / Non-renewal / Retirement / Other / … → full award.
         return r;
     }

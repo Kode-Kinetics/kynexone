@@ -756,6 +756,18 @@ public static class SeparationTypeCatalog
         new("Resignation", "Resignation",
             "The employee resigned. KSA Art. 85 reduces the end-of-service award by length of service.",
             false, false),
+        new("Article87", "Resignation — Art. 87 exception (force majeure / marriage / childbirth)",
+            "The employee left owing to force majeure beyond their control, or is a female employee who "
+            + "terminated the contract within SIX months of her marriage or THREE months of giving birth. "
+            + "Art. 87 is an express exception to Art. 85: the FULL Art. 84 award is paid, with no "
+            + "length-of-service reduction. Record the ground and the qualifying date on the offboarding "
+            + "file — the product cannot verify the window.",
+            false, true),
+        new("Article81", "Resignation — Art. 81 (employer at fault)",
+            "The employee left without notice on one of the Art. 81 employer-fault grounds and retains "
+            + "full statutory rights. No Art. 85 reduction: the FULL Art. 84 award is paid. Record which "
+            + "Art. 81 ground is relied on.",
+            false, true),
         new("Termination", "Termination by employer",
             "Employer-initiated termination with notice. Full Art. 84 end-of-service award.",
             false, false),
