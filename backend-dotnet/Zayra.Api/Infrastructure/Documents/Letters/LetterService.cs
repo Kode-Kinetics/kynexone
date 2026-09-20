@@ -8,7 +8,10 @@ public class LetterService : ILetterService
 {
     static LetterService()
     {
-        QuestPDF.Settings.License = LicenseType.Community;
+        // Registers the embedded Arabic font and turns QuestPDF's host-font fallback OFF.
+        // Before this line the payslip's Arabic labels rendered as tofu boxes in the Linux
+        // container and looked fine on a developer Mac. See DocumentFonts.
+        DocumentFonts.EnsureRegistered();
     }
 
     public Task<byte[]> GeneratePayslipPdfAsync(PayslipData data, CancellationToken cancellationToken = default)
@@ -56,7 +59,12 @@ public class LetterService : ILetterService
             {
                 page.Size(PageSizes.A4);
                 page.Margin(35);
-                page.DefaultTextStyle(s => s.FontSize(9).FontColor(Colors.Grey.Darken3));
+                // SHARED PAYSLIP PDF — minimal change, flagged in the stream notes. The only
+                // edit is the font chain: Lato for Latin, the embedded Noto Sans Arabic for the
+                // Arabic labels a few lines above, which previously had no font that could draw
+                // them anywhere but a developer laptop.
+                page.DefaultTextStyle(s => s.FontSize(9).FontColor(Colors.Grey.Darken3)
+                    .FontFamily(DocumentFonts.LatinFamily, DocumentFonts.ArabicFamily));
 
                 page.Header().Column(col =>
                 {
@@ -412,6 +420,148 @@ public class LetterService : ILetterService
             });
         });
 
+        return Task.FromResult(doc.GeneratePdf());
+    }
+
+    /// <summary>
+    /// Renders a tenant-configured letter: letterhead, merged body in one or both languages,
+    /// the stored reference number, and a named signature block.
+    ///
+    /// <para>Three things this does that the four hard-coded letters do not: it prints a real
+    /// company identity (name, Arabic name, CR number, logo) instead of falling back to the
+    /// literal "KynexOne Technologies"; it prints the reference number that was allocated and
+    /// stored, instead of recomputing a colliding one inline; and it names the human who issued
+    /// it instead of signing "HR Department" over a row of underscores.</para>
+    /// </summary>
+    public Task<byte[]> GenerateTemplateLetterAsync(TemplateLetterData data, CancellationToken cancellationToken = default)
+    {
+        DocumentFonts.EnsureRegistered();
+
+        var head = data.Letterhead;
+        var primaryHex = head.PrimaryColorHex.TrimStart('#');
+        var primary = (string)(uint.TryParse(primaryHex, System.Globalization.NumberStyles.HexNumber, null, out _)
+            ? $"#{primaryHex}"
+            : Colors.Blue.Darken3);
+
+        var doc = Document.Create(container =>
+        {
+            container.Page(page =>
+            {
+                page.Size(PageSizes.A4);
+                page.Margin(42);
+                page.DefaultTextStyle(s => s
+                    .FontSize(10)
+                    .LineHeight(1.5f)
+                    .FontColor(Colors.Grey.Darken4)
+                    .FontFamily(DocumentFonts.LatinFamily, DocumentFonts.ArabicFamily));
+
+                // ── Letterhead ────────────────────────────────────────────────────────
+                page.Header().Column(col =>
+                {
+                    col.Item().Row(row =>
+                    {
+                        if (head.LogoBytes is { Length: > 0 })
+                            row.ConstantItem(72).Height(48).Image(head.LogoBytes).FitArea();
+
+                        row.RelativeItem().PaddingLeft(head.LogoBytes is { Length: > 0 } ? 10 : 0).Column(c =>
+                        {
+                            c.Item().Text(head.CompanyNameEn).FontSize(15).Bold().FontColor(primary);
+                            if (!string.IsNullOrWhiteSpace(head.CompanyNameAr))
+                                c.Item().Text(head.CompanyNameAr).FontSize(12).SemiBold().FontColor(primary);
+                            if (!string.IsNullOrWhiteSpace(head.RegistrationNumber))
+                                c.Item().Text($"CR / Reg. No. {head.RegistrationNumber}")
+                                    .FontSize(8).FontColor(Colors.Grey.Darken1);
+                        });
+
+                        row.ConstantItem(150).AlignRight().Column(c =>
+                        {
+                            c.Item().Text($"Ref: {data.ReferenceNumber}").FontSize(9).SemiBold();
+                            c.Item().Text($"Date: {data.IssuedOn:dd MMMM yyyy}").FontSize(9);
+                            c.Item().Text($"التاريخ: {data.IssuedOn:dd/MM/yyyy}").FontSize(8)
+                                .FontColor(Colors.Grey.Darken1);
+                        });
+                    });
+                    col.Item().PaddingTop(8).LineHorizontal(1.4f).LineColor(primary);
+                });
+
+                page.Content().PaddingVertical(14).Column(col =>
+                {
+                    if (data.English is { } en)
+                    {
+                        col.Item().AlignCenter().Text(en.Title).FontSize(13).Bold().FontColor(primary);
+                        foreach (var paragraph in en.Paragraphs)
+                            col.Item().PaddingTop(9).Text(paragraph);
+                        if (!string.IsNullOrWhiteSpace(en.Closing))
+                            col.Item().PaddingTop(9).Text(en.Closing).FontSize(9).FontColor(Colors.Grey.Darken2);
+                    }
+
+                    if (data.English is not null && data.Arabic is not null)
+                        col.Item().PaddingVertical(14).LineHorizontal(0.6f).LineColor(Colors.Grey.Lighten1);
+
+                    if (data.Arabic is { } ar)
+                    {
+                        // ContentFromRightToLeft + DirectionFromRightToLeft give HarfBuzz the bidi
+                        // base direction; without it the Arabic shapes correctly but paragraphs
+                        // align and wrap from the wrong edge, which reads as broken to an Arabic
+                        // speaker even though every glyph is right.
+                        col.Item().ContentFromRightToLeft().Column(c =>
+                        {
+                            c.Item().AlignCenter().Text(ar.Title).FontSize(13).Bold().FontColor(primary);
+                            foreach (var paragraph in ar.Paragraphs)
+                                c.Item().PaddingTop(9).Text(paragraph).DirectionFromRightToLeft();
+                            if (!string.IsNullOrWhiteSpace(ar.Closing))
+                                c.Item().PaddingTop(9).Text(ar.Closing).FontSize(9)
+                                    .FontColor(Colors.Grey.Darken2).DirectionFromRightToLeft();
+                        });
+                    }
+
+                    // ── Signature block ───────────────────────────────────────────────
+                    col.Item().PaddingTop(30).Row(row =>
+                    {
+                        row.RelativeItem().Column(c =>
+                        {
+                            c.Item().Text("Yours sincerely,").FontSize(9).FontColor(Colors.Grey.Darken2);
+                            c.Item().PaddingTop(34).Width(200).LineHorizontal(0.8f).LineColor(Colors.Grey.Darken2);
+                            c.Item().PaddingTop(3).Text(data.IssuerName).SemiBold();
+                            c.Item().Text(data.IssuerTitle).FontSize(9).FontColor(Colors.Grey.Darken2);
+                            c.Item().Text(head.CompanyNameEn).FontSize(9).FontColor(Colors.Grey.Darken2);
+                        });
+
+                        // Stamp area. An empty bordered box, deliberately: the product has no
+                        // stamp image to print and inventing one on a document a bank relies on
+                        // would be forgery. HR wet-stamps here, which is what they do today.
+                        row.ConstantItem(140).Height(96).AlignRight().Border(0.8f)
+                            .BorderColor(Colors.Grey.Lighten1).Padding(6).AlignCenter().AlignMiddle()
+                            .Text("Company stamp\nختم الشركة")
+                            .FontSize(8).FontColor(Colors.Grey.Medium).AlignCenter();
+                    });
+                });
+
+                page.Footer().Column(col =>
+                {
+                    col.Item().PaddingBottom(3).LineHorizontal(0.5f).LineColor(Colors.Grey.Lighten1);
+                    col.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text(t =>
+                        {
+                            var footer = string.IsNullOrWhiteSpace(head.FooterTextEn)
+                                ? $"{head.CompanyNameEn} — this document is valid only with an authorised signature and the company stamp."
+                                : head.FooterTextEn;
+                            t.Span(footer).FontSize(7).FontColor(Colors.Grey.Medium);
+                        });
+                        // The verifiable half of the letterhead: a third party holding the paper
+                        // can quote this back to HR and the register will find exactly one match.
+                        row.ConstantItem(150).AlignRight().Text(data.ReferenceNumber)
+                            .FontSize(7).FontColor(Colors.Grey.Medium);
+                    });
+                    if (!string.IsNullOrWhiteSpace(head.FooterTextAr))
+                        col.Item().AlignRight().Text(head.FooterTextAr).FontSize(7)
+                            .FontColor(Colors.Grey.Medium).DirectionFromRightToLeft();
+                });
+            });
+        });
+
+        cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(doc.GeneratePdf());
     }
 }
