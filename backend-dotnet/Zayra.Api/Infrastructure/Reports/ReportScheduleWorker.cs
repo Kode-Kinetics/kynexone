@@ -105,7 +105,6 @@ public sealed class ReportScheduleWorker : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
         var dataScope = scope.ServiceProvider.GetRequiredService<IDataScopeService>();
-        var nitaqat = scope.ServiceProvider.GetRequiredService<Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService>();
         var email = scope.ServiceProvider.GetRequiredService<IEmailService>();
         var now = DateTime.UtcNow;
         var due = await ScopedBypass.SystemWide(db.ReportSchedules, 20,
@@ -137,7 +136,10 @@ public sealed class ReportScheduleWorker : BackgroundService
                 var filters = string.IsNullOrWhiteSpace(schedule.FiltersJson)
                     ? null
                     : JsonSerializer.Deserialize<ReportFilters>(schedule.FiltersJson);
-                var controller = new ReportsController(db, dataScope, nitaqat);
+                // The Nitaqat service is left to the controller's own default: this worker's
+                // test harness builds a minimal service provider, and a GetRequiredService here
+                // would make the worker unconstructable in it for no gain.
+                var controller = new ReportsController(db, dataScope);
                 var data = await controller.ExecuteReportDataAsync(
                     schedule.TenantId, new RunReportRequest(schedule.ReportKey, filters), employeeIds, ct)
                     ?? throw new InvalidOperationException("The scheduled report key is no longer supported.");
