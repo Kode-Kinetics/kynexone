@@ -44,7 +44,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 10_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db)).BuildAsync(TenantA, CancellationToken.None);
 
         var emp = Assert.Single(report.Employees);
         Assert.True(emp.IsReady);
@@ -64,7 +64,7 @@ public class GosiReadinessEndpointTests
         // Verify against the official calculator to confirm no controller-level math.
         var rules = await db.GosiContributionRules.IgnoreQueryFilters().AsNoTracking().ToListAsync();
         var periodDate = DateOnly.FromDateTime(DateTime.UtcNow);
-        var expected = GosiCalculationService.Calculate("Saudi", 10_000m, rules, periodDate, TenantA);
+        var expected = GosiCalculationService.Calculate("Saudi", 10_000m, rules, periodDate, TenantA, new Zayra.Api.Infrastructure.CountryPack.Ksa.GosiWageBounds(null, Zayra.Api.Infrastructure.CountryPack.Ksa.KsaGosiWageBounds.DefaultMonthlyCeilingSar));
         Assert.Equal(expected.EmployeeTotal, emp.EmployeeContributionTotal);
         Assert.Equal(expected.EmployerTotal, emp.EmployerContributionTotal);
     }
@@ -79,12 +79,12 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 15_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db)).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         var rules = await db.GosiContributionRules.IgnoreQueryFilters().AsNoTracking().ToListAsync();
         var periodDate = DateOnly.FromDateTime(DateTime.UtcNow);
-        var expected = GosiCalculationService.Calculate("Saudi", 15_000m, rules, periodDate, TenantA);
+        var expected = GosiCalculationService.Calculate("Saudi", 15_000m, rules, periodDate, TenantA, new Zayra.Api.Infrastructure.CountryPack.Ksa.GosiWageBounds(null, Zayra.Api.Infrastructure.CountryPack.Ksa.KsaGosiWageBounds.DefaultMonthlyCeilingSar));
 
         // Every line amount must match the calculator's output for the same (branch, payer) pair.
         foreach (var expectedLine in expected.Lines)
@@ -108,7 +108,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 8_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db)).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         Assert.Equal("NonSaudi", emp.Classification);
@@ -133,7 +133,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 10_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db)).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         // Old flat math would give employerRate = 2% → 200.00.
@@ -141,7 +141,7 @@ public class GosiReadinessEndpointTests
         // but the source of truth must be the calculator, not a hard-coded rate.
         var rules = await db.GosiContributionRules.IgnoreQueryFilters().AsNoTracking().ToListAsync();
         var periodDate = DateOnly.FromDateTime(DateTime.UtcNow);
-        var expected = GosiCalculationService.Calculate("Egypt", 10_000m, rules, periodDate, TenantA);
+        var expected = GosiCalculationService.Calculate("Egypt", 10_000m, rules, periodDate, TenantA, new Zayra.Api.Infrastructure.CountryPack.Ksa.GosiWageBounds(null, Zayra.Api.Infrastructure.CountryPack.Ksa.KsaGosiWageBounds.DefaultMonthlyCeilingSar));
         Assert.Equal(expected.EmployerTotal, emp.EmployerContributionTotal);
     }
 
@@ -157,7 +157,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 9_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db)).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         Assert.Equal("GCC", emp.Classification);
@@ -175,7 +175,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 9_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db)).BuildAsync(TenantA, CancellationToken.None);
         var json = System.Text.Json.JsonSerializer.Serialize(report);
 
         Assert.DoesNotContain(sensitiveRef, json);
@@ -194,7 +194,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 10_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db)).BuildAsync(TenantA, CancellationToken.None);
         var json = System.Text.Json.JsonSerializer.Serialize(report);
 
         Assert.DoesNotContain(sensitiveGosiRef, json);
@@ -211,7 +211,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, sentinelSalary));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db)).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         // Report must not have a field named basicSalary / ContributoryWage.
@@ -240,7 +240,7 @@ public class GosiReadinessEndpointTests
         }
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db)).BuildAsync(TenantA, CancellationToken.None);
 
         Assert.Equal(1, report.TotalEmployees);
         Assert.Single(report.Employees);
@@ -261,7 +261,7 @@ public class GosiReadinessEndpointTests
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 10_000m));
         await db.SaveChangesAsync();
 
-        var report = await new GosiReadinessReportService(db).BuildAsync(TenantA, CancellationToken.None);
+        var report = await new GosiReadinessReportService(db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db)).BuildAsync(TenantA, CancellationToken.None);
         var emp = Assert.Single(report.Employees);
 
         Assert.False(emp.IsReady);

@@ -709,6 +709,11 @@ public class EmployeeManagementService : IEmployeeManagementService
         // "Abscondment" would have paid a full gratuity in exactly the case this doc-comment cites as
         // the reason the vocabulary is closed. An absconding case is recorded as "Article80".
         "ProbationFailure", "Article80", "Death",
+        // The Art.85 EXCEPTIONS. Both are resignations in fact, and both pay the FULL Art.84 award.
+        // Without them the screen could only record "Resignation", which applies the Art.85 haircut —
+        // so a woman resigning within six months of marriage, or anyone leaving under Art.81 because
+        // the employer was at fault, was under-paid with no way for the operator to say otherwise.
+        "Article87", "Article81",
     ];
 
     /// <summary>

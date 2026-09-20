@@ -547,6 +547,72 @@ public class KsaStatutoryLeaveAndHoursTests
         return (sick, emp);
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Art. 98 — WHOSE country decides. The employing company's, not the person's.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// THE DEFECT, DIRECTION ONE — MISSED. Art. 98 was gated on <c>Employee.CountryCode</c>, a
+    /// PERSONAL field that defaults to the empty string and is routinely never filled in. An
+    /// employee of a Saudi company with a blank country code was therefore denied the reduced
+    /// Ramadan baseline: eight hours worked produced ZERO overtime instead of the two hours Art. 98
+    /// makes overtime-bearing, and the employee was under-paid for them.
+    ///
+    /// Art. 109 and Art. 117 have always resolved the employing company. Art. 98 now does too.
+    /// </summary>
+    [Fact]
+    public async Task Art98_AppliesToAnEmployeeOfAKsaCompany_EvenWithNoPersonalCountryCode()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var ksaCompany = AddKsaCompany(db, tenantId);
+        // CountryCode deliberately blank — the default for every employee nobody has filled in.
+        var employee = AddEmployeeOfCompany(db, tenantId, ksaCompany.Id, "BLANK", string.Empty);
+        await db.SaveChangesAsync();
+
+        AddPunches(db, tenantId, employee.Id, RamadanWednesday);
+        await db.SaveChangesAsync();
+
+        await AttendanceSvc(db).ProcessAsync(
+            tenantId, new ProcessAttendanceRequest(RamadanWednesday, RamadanWednesday, employee.Id),
+            new RequestContext(null, null, Guid.NewGuid(), tenantId), CancellationToken.None);
+
+        var daily = await db.AttendanceDailyRecords.SingleAsync(r => r.EmployeeId == employee.Id);
+        daily.TotalWorkedMinutes.Should().Be(480);
+        daily.OvertimeMinutes.Should().Be(120,
+            "Art. 98 binds on the EMPLOYER's jurisdiction; a blank personal country code cannot "
+            + "strip a statutory entitlement from an employee of a Saudi company");
+    }
+
+    /// <summary>
+    /// THE DEFECT, DIRECTION TWO — LEAKED. The same wrong gate handed the KSA Ramadan reduction to
+    /// an employee of a NON-KSA entity who happened to carry "SA" on their personal record, making
+    /// two ordinary hours overtime-bearing under a labour law that does not govern that employer and
+    /// over-paying them. Both directions came from the same line, which is why one fix closes both.
+    /// </summary>
+    [Fact]
+    public async Task Art98_DoesNotReachAnEmployeeOfANonKsaCompany_WhateverTheirPersonalCountryCode()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var uaeCompany = new Company { TenantId = tenantId, LegalNameEn = "UAE Co", CountryCode = "AE" };
+        db.Companies.Add(uaeCompany);
+        var employee = AddEmployeeOfCompany(db, tenantId, uaeCompany.Id, "SAPERSON", "SA");
+        await db.SaveChangesAsync();
+
+        AddPunches(db, tenantId, employee.Id, RamadanWednesday);
+        await db.SaveChangesAsync();
+
+        await AttendanceSvc(db).ProcessAsync(
+            tenantId, new ProcessAttendanceRequest(RamadanWednesday, RamadanWednesday, employee.Id),
+            new RequestContext(null, null, Guid.NewGuid(), tenantId), CancellationToken.None);
+
+        var daily = await db.AttendanceDailyRecords.SingleAsync(r => r.EmployeeId == employee.Id);
+        daily.TotalWorkedMinutes.Should().Be(480);
+        daily.OvertimeMinutes.Should().Be(0,
+            "KSA Art. 98 does not govern a UAE employer, whatever country code sits on the person");
+    }
+
     private static Company AddKsaCompany(ZayraDbContext db, Guid tenantId)
     {
         var company = new Company { TenantId = tenantId, LegalNameEn = "KSA Co", CountryCode = "SA" };
@@ -566,13 +632,34 @@ public class KsaStatutoryLeaveAndHoursTests
         return employee;
     }
 
+    /// <summary>
+    /// An employee OF A KSA COMPANY. The employing entity is what puts them inside Art. 98, so the
+    /// company is what the fixture models. This helper used to set Employee.CountryCode = "SA" and
+    /// leave CompanyId null, which matched the gate Art. 98 used to use — a personal field that
+    /// defaults empty, and therefore a fixture that could not distinguish a correct implementation
+    /// from an incorrect one. Nationality is left unset on purpose: Art. 98 does not turn on it.
+    /// </summary>
     private static Employee AddKsaEmployee(ZayraDbContext db, Guid tenantId)
     {
+        var company = AddKsaCompany(db, tenantId);
         var employee = new Employee
         {
             TenantId = tenantId, EmployeeCode = $"KSA-{Guid.NewGuid():N}", EnglishName = "Ramadan Tester",
-            FullName = "Ramadan Tester", Status = "Active", CountryCode = "SA",
+            FullName = "Ramadan Tester", Status = "Active", CompanyId = company.Id,
             JoiningDate = new DateTime(2020, 1, 1),
+        };
+        db.Employees.Add(employee);
+        return employee;
+    }
+
+    private static Employee AddEmployeeOfCompany(
+        ZayraDbContext db, Guid tenantId, Guid companyId, string code, string personalCountryCode)
+    {
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = $"{code}-{Guid.NewGuid():N}", EnglishName = code,
+            FullName = code, Status = "Active", CompanyId = companyId,
+            CountryCode = personalCountryCode, JoiningDate = new DateTime(2020, 1, 1),
         };
         db.Employees.Add(employee);
         return employee;

@@ -21,12 +21,13 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
     {
         var eff = new DateOnly(input.PeriodYear, input.PeriodMonth, 1);
 
-        // Covered wage = basic + housing, capped at statutory ceiling
+        // Covered wage = basic + housing, clamped to the statutory MONTHLY bounds.
+        // Resolved through KsaGosiWageBounds — the SAME call the GOSI preview and the GOSI readiness
+        // report now make, so the payslip and the report can no longer show different numbers. The
+        // ceiling is monthly: no year-to-date accumulator, by design. See KsaGosiWageBounds.
         decimal coveredWage = input.Salary.GosiCoveredWage;
-        decimal ceiling = await _rules.GetDecimalAsync(
-            CountryCodes.Saudi, Jurisdictions.KsaMainland,
-            RuleKeys.GosiCoveredWageCeilingSar, eff, null, ct) ?? 45_000m;  // VERIFY: SAR 45,000 as of 2024
-        coveredWage = Math.Min(coveredWage, ceiling);
+        var bounds = await KsaGosiWageBounds.ResolveAsync(_rules, eff, null, ct);
+        coveredWage = bounds.Clamp(coveredWage);
 
         // ── S1/A4: three classifications, not two ────────────────────────────────────────────────
         // The local IsSaudiNational matched only SAU/SA/Saudi, so a Bahraini fell through to the
@@ -271,7 +272,7 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
         decimal tier2 = Math.Round(tier2Years * (tier2Days / 30m) * wage, 2);
         decimal totalBeforeDiscount = tier1 + tier2;
 
-        decimal total = ApplyReasonAdjustment(totalBeforeDiscount, serviceYears, input.TerminationReason);
+        decimal total = ApplyReasonAdjustment(totalBeforeDiscount, serviceYears, input.TerminationReason, notices);
         total = Math.Round(total, 2);
 
         var bd = new List<EndOfServiceBreakdown>
@@ -345,13 +346,60 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
 
     // Applies the reason-driven adjustment to the full two-tier award (Art.84 base):
     //   • Art.80 dismissal for grave fault → nil (full forfeiture).
+    //   • Art.87 / Art.81 exceptions to Art.85 → FULL award despite the worker having left.
     //   • Art.85 resignation → tenure-band reduction (nil < 2yr; ⅓ for 2–5yr inclusive;
     //     ⅔ for >5 and <10yr; full ≥ 10yr).
     //   • All other reasons (Termination / EndOfContract / Retirement / …) → full award.
-    private static decimal ApplyReasonAdjustment(decimal total, decimal years, string reason)
+    private static decimal ApplyReasonAdjustment(decimal total, decimal years, string reason, List<string> notices)
     {
         // Art.80: summary dismissal for grave fault forfeits the entire gratuity.
         if (IsDismissalForCause(reason)) return 0m;
+
+        // ── Art.87 / Art.81 — the EXCEPTIONS to the Art.85 reduction ──────────────────────────────
+        // Art.85 was applied to every resignation with no exception path at all, so a woman who
+        // resigned within six months of marrying, or within three months of giving birth, had her
+        // award cut to a third or two thirds of what Art.87 entitles her to — as did anyone who left
+        // under Art.81 because the EMPLOYER was at fault. Both articles are express carve-outs and
+        // both pay the FULL award.
+        //
+        // Art.87: "As an exception to Article 85, a worker is entitled to the full end-of-service
+        //   award if they leave work owing to force majeure beyond their control. Likewise a female
+        //   worker who terminates the contract within six months of her marriage or within three
+        //   months of giving birth."
+        // Art.81: the worker may leave without notice, RETAINING their full statutory rights, in the
+        //   enumerated employer-fault cases (breach of contractual or statutory obligations, assault,
+        //   fraud about the terms of work, a grave danger to safety or health, and the rest).
+        //
+        // This is NOT inferred. The product holds no marriage date, no date of birth of a child and
+        // no adjudication of employer fault, so guessing would be a fabricated legal conclusion in
+        // both directions. The exception applies only where a human has RECORDED it as the
+        // separation type, which is the accountable and conservative construction — and because the
+        // exception moves money towards the employee, the notice states plainly what was asserted so
+        // a reviewer can challenge it before the settlement is paid.
+        if (IsArticle87Exception(reason))
+        {
+            notices.Add("[CERT-KSA] The Art. 85 resignation reduction was NOT applied: this separation is recorded " +
+                        "as an Art. 87 exception, and Art. 87 grants the FULL end-of-service award to a worker who " +
+                        "leaves owing to force majeure beyond their control, and to a female worker who terminates " +
+                        "the contract within SIX months of her marriage or THREE months of giving birth. The full " +
+                        $"Art. 84 award of {total:N2} is payable. [COUNSEL] The product holds no marriage or " +
+                        "childbirth date, so it cannot verify the six-month or three-month window — the recorded " +
+                        "separation type is the assertion, and the supporting evidence belongs on the offboarding " +
+                        "file. Confirm the window before paying.");
+            return total;
+        }
+
+        if (IsArticle81Exception(reason))
+        {
+            notices.Add("[CERT-KSA] The Art. 85 resignation reduction was NOT applied: this separation is recorded " +
+                        "as an Art. 81 departure, where the worker leaves without notice because the EMPLOYER is at " +
+                        "fault and retains their full statutory rights. The full Art. 84 award of " +
+                        $"{total:N2} is payable. [COUNSEL] Art. 81 turns on a finding of employer fault that this " +
+                        "product does not adjudicate; the recorded separation type is the assertion. If the ground " +
+                        "is disputed, resolve it before paying — re-keying this as an ordinary Resignation would " +
+                        "reduce the award, which is the direction that gets litigated.");
+            return total;
+        }
 
         // Art.85: resignation reduction scale. Non-resignation reasons keep the full award.
         if (!string.Equals(reason, "Resignation", StringComparison.OrdinalIgnoreCase)) return total;
@@ -360,6 +408,22 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
         if (years < 10m) return Math.Round(total * 2m / 3m, 2); // > 5 and < 10 yrs → ⅔
         return total;                                        // ≥ 10 yrs → full
     }
+
+    /// <summary>
+    /// Art. 87 — force majeure, or a female worker resigning within six months of marriage or three
+    /// months of childbirth. An express exception to Art. 85: the FULL award is due.
+    /// </summary>
+    internal static bool IsArticle87Exception(string reason)
+        => string.Equals(reason, "Article87", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(reason, "Art87", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Art. 81 — the worker leaves without notice for an enumerated employer-fault reason, retaining
+    /// full statutory rights. The Art. 85 reduction does not apply.
+    /// </summary>
+    internal static bool IsArticle81Exception(string reason)
+        => string.Equals(reason, "Article81", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(reason, "Art81", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsDismissalForCause(string reason)
         => string.Equals(reason, "Article80", StringComparison.OrdinalIgnoreCase)
@@ -405,7 +469,9 @@ public sealed class KsaNationalizationTracker : INationalizationTracker
 internal static class RuleKeys
 {
     // KSA GOSI
-    public const string GosiCoveredWageCeilingSar = "gosi.covered_wage_ceiling_sar";
+    // Superseded by KsaGosiWageBounds.CeilingRuleKey, which is the single source for the
+    // contributory-wage bounds. Kept as an alias so the key appears with its siblings.
+    public const string GosiCoveredWageCeilingSar = KsaGosiWageBounds.CeilingRuleKey;
     public const string GosiSaudiEmployeeRate     = "gosi.saudi_employee_rate";
     public const string GosiSaudiEmployerRate     = "gosi.saudi_employer_rate";
     public const string GosiSanedRate             = "gosi.saned_rate";

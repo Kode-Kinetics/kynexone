@@ -42,7 +42,7 @@ public class PayrollP0CountryPackTests
     {
         // Sanity-check the legacy calculation we're matching.
         var legacyRules = GosiTests_DefaultRules();
-        var legacyResult = GosiCalculationService.Calculate("SAU", 10_000m, legacyRules, new DateOnly(2026, 1, 1), Guid.Empty);
+        var legacyResult = GosiCalculationService.Calculate("SAU", 10_000m, legacyRules, new DateOnly(2026, 1, 1), Guid.Empty, new Zayra.Api.Infrastructure.CountryPack.Ksa.GosiWageBounds(null, Zayra.Api.Infrastructure.CountryPack.Ksa.KsaGosiWageBounds.DefaultMonthlyCeilingSar));
         Assert.Equal(975m, legacyResult.EmployeeTotal);
     }
 

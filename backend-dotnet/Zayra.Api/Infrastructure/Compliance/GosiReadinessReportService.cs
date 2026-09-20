@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -15,12 +17,23 @@ namespace Zayra.Api.Infrastructure.Compliance;
 public sealed class GosiReadinessReportService
 {
     private readonly ZayraDbContext _db;
+    private readonly IStatutoryRuleReader _rules;
 
-    public GosiReadinessReportService(ZayraDbContext db) => _db = db;
+    public GosiReadinessReportService(ZayraDbContext db, IStatutoryRuleReader rules)
+    {
+        _db = db;
+        _rules = rules;
+    }
 
     public async Task<GosiReadinessReport> BuildAsync(Guid tenantId, CancellationToken ct)
     {
         var periodDate = DateOnly.FromDateTime(DateTime.UtcNow);
+
+        // The MONTHLY contributory-wage ceiling, from the same statutory rule the payroll run's
+        // country pack reads. Without this the report computed uncapped while the payslip capped,
+        // and on a SAR 60,000 covered wage this report showed SAR 5,850 against SAR 4,387.50
+        // actually deducted — in the figure a finance team reconciles against the GOSI portal.
+        var bounds = await KsaGosiWageBounds.ResolveAsync(_rules, periodDate, null, ct);
 
         var employees = await _db.Employees.AsNoTracking()
             .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.Status == "Active")
@@ -65,7 +78,7 @@ public sealed class GosiReadinessReportService
                 // is what the payroll run's country pack has always deducted on. Passing basic alone
                 // here made this report under-state every contribution against the actual payslip.
                 var calc = GosiCalculationService.Calculate(
-                    emp.Nationality, salary!.BasicSalary + salary.HousingAllowance, rules, periodDate, tenantId);
+                    emp.Nationality, salary!.BasicSalary + salary.HousingAllowance, rules, periodDate, tenantId, bounds);
 
                 employeeTotal = calc.EmployeeTotal;
                 employerTotal = calc.EmployerTotal;

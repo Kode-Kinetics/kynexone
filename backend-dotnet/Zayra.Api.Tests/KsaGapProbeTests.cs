@@ -24,10 +24,15 @@ public class KsaGapProbeTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        // The EMPLOYING COMPANY is what puts this employee inside Art. 98. This fixture used to set
+        // Employee.CountryCode instead, matching the personal-field gate the article was wrongly
+        // read from; see KsaStatutoryLeaveAndHoursTests.Art98_* for both failure directions.
+        var company = new Company { TenantId = tenantId, LegalNameEn = "KSA Co", CountryCode = "SA" };
+        db.Companies.Add(company);
         var employee = new Employee
         {
             TenantId = tenantId, EmployeeCode = "KSA-1", EnglishName = "R", FullName = "R",
-            Status = "Active", CountryCode = "SA", JoiningDate = new DateTime(2020, 1, 1),
+            Status = "Active", CompanyId = company.Id, JoiningDate = new DateTime(2020, 1, 1),
         };
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
