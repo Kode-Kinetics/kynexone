@@ -65,7 +65,8 @@ public abstract class ProviderBackedDispatcher : INotificationChannelDispatcher
         NotificationDispatchRequest request, CancellationToken ct)
     {
         var result = await Provider.SendAsync(new ProviderMessage(request.TenantId, request.Destination,
-            request.RecipientName, request.Subject, request.Body, request.IdempotencyKey, request.Platform), ct);
+            request.RecipientName, request.Subject, request.Body, request.IdempotencyKey, request.Platform,
+            request.EventCode, request.EntityName, request.EntityId), ct);
         return (result, null);
     }
 
@@ -218,7 +219,8 @@ public sealed class PushChannelDispatcher : ProviderBackedDispatcher
             var result = await Provider.SendAsync(new ProviderMessage(request.TenantId, target.Token,
                 request.RecipientName, request.Subject, request.Body,
                 // Per-device idempotency: the same notification to two devices is two distinct sends.
-                $"{request.IdempotencyKey}:{target.DeviceId:N}", target.Platform), ct);
+                $"{request.IdempotencyKey}:{target.DeviceId:N}", target.Platform,
+                request.EventCode, request.EntityName, request.EntityId), ct);
 
             if (result.Status is ProviderSendStatus.Sent or ProviderSendStatus.Queued)
             {

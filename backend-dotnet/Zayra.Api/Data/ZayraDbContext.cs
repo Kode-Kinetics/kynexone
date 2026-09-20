@@ -1056,6 +1056,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<UserEntityAccess> UserEntityAccesses => Set<UserEntityAccess>();
     // ── HR Workflow Configuration ──────────────────────────────────────────────
     public DbSet<TenantHrConfig> TenantHrConfigs => Set<TenantHrConfig>();
+    // ── W2-D: per-category notification preferences (S4) ───────────────────────
+    public DbSet<EmployeeNotificationCategoryPreference> EmployeeNotificationCategoryPreferences => Set<EmployeeNotificationCategoryPreference>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -3860,6 +3862,17 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.UserId, x.CompanyId, x.Role }).IsUnique();
             entity.HasOne(x => x.User).WithMany(x => x.EntityAccesses).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // W2-D (S4) — per-category notification preferences. The spec's working name
+        // employee_notification_preferences is already the channel-master table.
+        modelBuilder.Entity<EmployeeNotificationCategoryPreference>(entity =>
+        {
+            entity.ToTable("employee_notification_category_preferences");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Channel).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Category).HasMaxLength(32).IsRequired();
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Channel, x.Category }).IsUnique();
         });
 
         ApplyTenantQueryFilters(modelBuilder);

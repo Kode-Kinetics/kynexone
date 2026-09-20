@@ -81,6 +81,17 @@ public class DashboardController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Ok(new DashboardSummaryDto(0, 0, 0, 0, 0, 0m, 0));
 
+        // W2-D (S8): a data-scoped caller (a manager, a team lead, an employee) sees THEIR population,
+        // not tenant-wide headcount. A manager's summary is their team WITHOUT themselves; someone with
+        // no team sees their own record. Scoped results are per-caller, so they bypass the tenant cache.
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, cancellationToken);
+        if (!scope.IsUnrestricted)
+        {
+            var population = scope.AllowedEmployeeIds!.ToHashSet();
+            if (scope.CallerEmployeeId is { } self && population.Count > 1) population.Remove(self);
+            return Ok(await BuildSummary(tenantId.Value, cancellationToken, population));
+        }
+
         var cacheKey = $"dashboard:summary:{tenantId}";
         var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
         if (cachedBytes is not null)
@@ -154,19 +165,22 @@ public class DashboardController : ControllerBase
         return new DashboardCachedDto(summary, trends, overview, payrollTrends, activityFeed);
     }
 
-    private async Task<DashboardSummaryDto> BuildSummary(Guid tenantId, CancellationToken ct)
+    private async Task<DashboardSummaryDto> BuildSummary(Guid tenantId, CancellationToken ct,
+        IReadOnlyCollection<int>? population = null)
     {
         var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var monthStart = new DateOnly(today.Year, today.Month, 1);
+        // null = the whole tenant (unchanged behaviour); otherwise only these employee ids.
+        var ids = population?.ToList();
 
         var empCounts = await _db.Employees
-            .Where(e => e.TenantId == tenantId)
+            .Where(e => e.TenantId == tenantId && (ids == null || ids.Contains(e.Id)))
             .GroupBy(_ => 1)
             .Select(g => new { Total = g.Count(), Active = g.Count(e => e.Status == "Active") })
             .FirstOrDefaultAsync(ct);
 
         var todayBuckets = await _db.AttendanceRecords
-            .Where(a => a.TenantId == tenantId && a.WorkDate == today)
+            .Where(a => a.TenantId == tenantId && a.WorkDate == today && (ids == null || ids.Contains(a.EmployeeId)))
             .GroupBy(a => a.Status)
             .Select(g => new { Status = g.Key, Count = g.Count() })
             .ToListAsync(ct);
@@ -176,12 +190,13 @@ public class DashboardController : ControllerBase
         var absent  = todayBuckets.Where(b => b.Status == "Absent").Sum(b => b.Count);
 
         var overtimeHours = await _db.AttendanceRecords
-            .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today)
+            .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today && (ids == null || ids.Contains(a.EmployeeId)))
             .SumAsync(a => (decimal?)a.OvertimeHours, ct) ?? 0m;
 
         var churnRisk = await _db.AttendanceRecords
             .Where(a => a.TenantId == tenantId && a.WorkDate >= today.AddDays(-30)
-                && (a.Status == "Absent" || a.OvertimeHours >= 4))
+                && (a.Status == "Absent" || a.OvertimeHours >= 4)
+                && (ids == null || ids.Contains(a.EmployeeId)))
             .Select(a => a.EmployeeId)
             .Distinct()
             .CountAsync(ct);
