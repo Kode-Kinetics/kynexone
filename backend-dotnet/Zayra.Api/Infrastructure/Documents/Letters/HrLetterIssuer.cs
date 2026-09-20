@@ -98,6 +98,9 @@ public class HrLetterIssuer : IHrLetterIssuer
 
     public async Task<int> EnsureDefaultTemplatesAsync(Guid tenantId, CancellationToken cancellationToken)
     {
+        // IgnoreQueryFilters is intentional: seeding must see templates belonging to EVERY company
+        // in the tenant, not only the ones the caller's entity scope covers, or a company-scoped
+        // admin would re-seed duplicates that then trip the unique index.
         var existing = await _db.HrLetterTemplates
             .IgnoreQueryFilters()
             .Where(x => x.TenantId == tenantId && x.CompanyId == null && !x.IsDeleted)
@@ -310,6 +313,10 @@ public class HrLetterIssuer : IHrLetterIssuer
         var year = DateTime.UtcNow.Year;
         var prefix = HrLetterTypes.Prefixes[letterType];
 
+        // IgnoreQueryFilters is intentional and load-bearing: the reference series is per TENANT,
+        // so the highest ordinal must be read across every company. Reading it through the
+        // company-scope filter would restart the series at 1 for each legal entity and hand two
+        // employees the same reference number — the exact defect this table exists to prevent.
         var highest = await _db.IssuedLetters.IgnoreQueryFilters()
             .Where(x => x.TenantId == tenantId && x.LetterType == letterType && x.SequenceYear == year)
             .Select(x => (int?)x.SequenceNumber)
@@ -397,6 +404,9 @@ public class HrLetterIssuer : IHrLetterIssuer
     private async Task<LetterheadData> BuildLetterheadAsync(
         Guid tenantId, Guid? companyId, Dictionary<string, string> values, CancellationToken cancellationToken)
     {
+        // IgnoreQueryFilters is intentional: the letterhead names the EMPLOYING legal entity,
+        // which for a group-company HR user issuing on another entity's behalf may sit outside
+        // their own entity scope. The explicit tenant + id predicate below is the boundary.
         var company = companyId is Guid cid
             ? await _db.Companies.AsNoTracking().IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == cid && !x.IsDeleted, cancellationToken)
