@@ -11,10 +11,12 @@ namespace Zayra.Api.Infrastructure.Timesheets;
 /// <summary>
 /// Timesheet entry, submission and the attendance reconciliation the hours feed.
 ///
-/// <para><b>No transactions are opened here, deliberately.</b> Production runs under
-/// <c>NpgsqlRetryingExecutionStrategy</c>, where a bare <c>BeginTransactionAsync</c> throws. Every
-/// unit of work below is a single <c>SaveChangesAsync</c>, which EF already wraps in one
-/// relational transaction the strategy can retry whole.</para>
+/// <para><b>Transactions.</b> Production runs under <c>NpgsqlRetryingExecutionStrategy</c>, where
+/// a bare <c>BeginTransactionAsync</c> throws and the endpoint is dead 100% of the time. Every
+/// unit of work here but one is a single <c>SaveChangesAsync</c>, which EF already wraps in one
+/// relational transaction the strategy can retry whole. The exception is
+/// <see cref="SubmitOwnAsync"/>, which has two writes to land together and therefore opens its
+/// transaction <i>inside</i> <c>CreateExecutionStrategy().ExecuteAsync</c>.</para>
 /// </summary>
 public sealed class TimesheetService : ITimesheetService
 {
