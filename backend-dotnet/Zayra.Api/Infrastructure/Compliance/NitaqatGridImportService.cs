@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Models;
@@ -67,6 +68,24 @@ public sealed record NitaqatGridImportResult(
     int RowsSuperseded,
     int RowsUpdatedInPlace,
     IReadOnlyList<string> Rejections);
+
+/// <summary>One band's curve coefficients for an activity: y = m·ln(x) + c.</summary>
+public sealed record NitaqatCurveBandInput(string Band, decimal Gradient, decimal Intercept);
+
+/// <summary>
+/// A curve load for one activity, effective from a date, with its source. This is the CURRENT
+/// regime's shape (Nitaqat Mutawar) and the one a customer should normally load — unlike a grid
+/// row, a curve keeps answering correctly as the establishment's headcount changes.
+/// </summary>
+public sealed record NitaqatCurveImportRequest(
+    string ActivityCode,
+    DateOnly EffectiveFrom,
+    // Superseded-at date, if the customer knows the annex is replaced from a given date. Leaving
+    // it null means "until further notice", which is right for the current annex.
+    DateOnly? EffectiveTo,
+    string SourceNote,
+    bool IsVerified,
+    IReadOnlyList<NitaqatCurveBandInput> Bands);
 
 /// <summary>Coverage of one activity: does it have a usable grid, and how much of one.</summary>
 public sealed record NitaqatActivityCoverage(
@@ -439,6 +458,209 @@ public sealed class NitaqatGridImportService
 
     private static NitaqatGridImportResult Fail(string error, string message) =>
         new(false, error, message, 0, 0, 0, Array.Empty<string>());
+
+    // ── Curve import (the current regime) ─────────────────────────────────────
+
+    /// <summary>
+    /// Loads one activity's Nitaqat Mutawar curve constants for this tenant.
+    ///
+    /// <para><b>WHY THIS EXISTS SEPARATELY FROM StatutoryRulesController.</b> That controller is
+    /// the right bounded-override surface for statutory scalars and is deliberately strict: "No
+    /// inventing statutory keys — the key must resolve to an existing platform/tenant rule." Only
+    /// the one verified Manufacturing curve is seeded, so a customer could not create
+    /// <c>nitaqat.curve.RETAIL.LOWGREEN.m</c> through it at all — the exact thing the Saudization
+    /// screen tells them to do. That guard is correct and is NOT weakened here; instead this
+    /// method loads a BOUNDED, WELL-KNOWN key family
+    /// (<c>nitaqat.curve.{ACTIVITY}.{BAND}.{m|c}</c>) whose shape the product defines, which is
+    /// the same thing the grid loader already does for threshold rows.</para>
+    ///
+    /// <para>It keeps the same doctrine as the statutory surface it sits beside: tenant-scoped
+    /// rows only, a mandatory reason, append-only supersede rather than in-place mutation, and
+    /// all-or-nothing validation.</para>
+    /// </summary>
+    public async Task<NitaqatGridImportResult> ImportCurveAsync(
+        Guid tenantId, NitaqatCurveImportRequest request, Guid? userId, CancellationToken ct = default)
+    {
+        var rejections = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(request.ActivityCode))
+            return Fail("activity_code_required", "An economic activity code is required.");
+
+        var source = (request.SourceNote ?? string.Empty).Trim();
+        if (source.Length < MinSourceNoteLength)
+            return Fail("source_note_required",
+                "A source citation of at least " + MinSourceNoteLength + " characters is required — "
+                + "state which MHRSD annex these constants came from and when it was read (for "
+                + "example: \"MHRSD Nitaqat Mutawar procedural guide 2026, Annex 1, row 11 "
+                + "(wholesale & retail), C-2026 column, read 2026-09-20\").");
+
+        if (string.Equals(request.ActivityCode, IllustrativeActivityCode, StringComparison.OrdinalIgnoreCase))
+            return Fail("activity_is_illustrative",
+                $"'{IllustrativeActivityCode}' is the built-in illustrative activity and is not an "
+                + "MHRSD activity.");
+
+        var activities = await ReferenceAsync(_db.NitaqatActivities, tenantId, ct);
+        var activity = activities.FirstOrDefault(a => a.IsActive
+            && string.Equals(a.Code, request.ActivityCode, StringComparison.OrdinalIgnoreCase));
+        if (activity is null)
+            return Fail("activity_code_unknown",
+                $"'{request.ActivityCode}' is not in the Nitaqat activity catalogue for this tenant.");
+
+        // All four non-Red bands or none. A partial curve bands an establishment off an
+        // incomplete ladder, which is a wrong answer rather than a missing one.
+        var required = new[]
+        {
+            NitaqatBands.LowGreen, NitaqatBands.MediumGreen,
+            NitaqatBands.HighGreen, NitaqatBands.Platinum,
+        };
+
+        var supplied = (request.Bands ?? Array.Empty<NitaqatCurveBandInput>())
+            .Where(b => !string.IsNullOrWhiteSpace(b.Band))
+            .GroupBy(b => b.Band.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var band in required)
+            if (!supplied.ContainsKey(band))
+                rejections.Add($"No coefficients supplied for {band}. All four non-Red bands are "
+                             + "required; Red is the residual below the Low Green floor.");
+
+        foreach (var extra in supplied.Keys.Where(k => NitaqatBands.RankOf(k) < 1))
+            rejections.Add($"'{extra}' is not a non-Red Nitaqat band. Expected: "
+                         + string.Join(", ", required));
+
+        if (rejections.Count == 0)
+        {
+            // MONOTONICITY, CHECKED ACROSS THE PRACTICAL RANGE. Unlike a flat grid, a curve's
+            // ladder can cross: a steeper gradient on a lower band overtakes a higher band at
+            // some headcount. MHRSD's published curves do not cross, so a crossing means a
+            // transcription error — most often m and c swapped, or two rows interchanged.
+            // Checked at both ends of the range the Ministry's own calculator accepts
+            // (6 workers and up) plus a large establishment.
+            foreach (var x in new[] { 6m, 50m, 500m, 3_000m, 20_000m })
+            {
+                decimal? previous = null;
+                string? previousBand = null;
+
+                foreach (var band in required)
+                {
+                    var b = supplied[band];
+                    var y = NitaqatCurve.MinimumSaudization(b.Gradient, b.Intercept, x);
+
+                    if (y < 0m || y > 100m)
+                    {
+                        rejections.Add($"{band} evaluates to {y:0.##}% at {x:0} workers, which is "
+                                     + "not a percentage between 0 and 100. Check m and c.");
+                    }
+                    else if (previous is not null && y < previous.Value)
+                    {
+                        rejections.Add($"At {x:0} workers, {band} ({y:0.##}%) requires LESS "
+                                     + $"Saudization than {previousBand} ({previous.Value:0.##}%). "
+                                     + "The band ladder must not cross — check for swapped m/c or "
+                                     + "transposed rows.");
+                    }
+
+                    previous = y;
+                    previousBand = band;
+                }
+            }
+
+            rejections = rejections.Distinct().ToList();
+        }
+
+        if (rejections.Count > 0)
+            return new NitaqatGridImportResult(false, "curve_rejected",
+                "The curve was not loaded. Nothing was written — a partially or inconsistently "
+                + "loaded curve bands an establishment off a broken ladder, which is a wrong "
+                + "answer rather than a missing one.", 0, 0, 0, rejections);
+
+        if (source.Length > 500) source = source[..500];
+
+        var effFrom = request.EffectiveFrom.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var effTo = request.EffectiveTo?.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var verifiedPrefix = request.IsVerified ? "VERIFIED. " : "UNVERIFIED — not checked against the published MHRSD annex. ";
+
+        var keys = new List<(string Key, decimal Value, string What)>();
+        foreach (var band in required)
+        {
+            var b = supplied[band];
+            keys.Add((NitaqatCurve.GradientKey(activity.Code, band), b.Gradient, $"curve gradient m for {activity.Code} / {band}"));
+            keys.Add((NitaqatCurve.InterceptKey(activity.Code, band), b.Intercept, $"curve intercept c for {activity.Code} / {band}"));
+        }
+
+        // Existing TENANT rows for these keys. Platform rows are never touched.
+        var keyNames = keys.Select(k => k.Key).ToList();
+        var existing = await _db.StatutoryRules
+            .Where(r => r.TenantId == tenantId
+                     && r.CountryCode == CountryCodes.Saudi
+                     && r.Jurisdiction == Jurisdictions.KsaMainland
+                     && keyNames.Contains(r.RuleKey))
+            .ToListAsync(ct);
+
+        var now = DateTime.UtcNow;
+        int inserted = 0, superseded = 0, updated = 0;
+
+        foreach (var (key, value, what) in keys)
+        {
+            var text = value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var description = $"{verifiedPrefix}Nitaqat Mutawar {what}. Source: {source}";
+            if (description.Length > 1000) description = description[..1000];
+
+            var sameDate = existing.FirstOrDefault(r => r.RuleKey == key && r.EffectiveFrom == effFrom);
+            if (sameDate is not null)
+            {
+                // A correction to this load, not a new regime.
+                sameDate.RuleValue = text;
+                sameDate.Description = description;
+                sameDate.EffectiveTo = effTo;
+                updated++;
+                continue;
+            }
+
+            // Append-only supersede: close any row still in force on the new date. The old value
+            // is retained so a band computed under it stays explicable.
+            foreach (var prior in existing.Where(r => r.RuleKey == key
+                                                   && r.EffectiveFrom < effFrom
+                                                   && (r.EffectiveTo == null || r.EffectiveTo > effFrom)))
+            {
+                prior.EffectiveTo = effFrom;
+                superseded++;
+            }
+
+            _db.StatutoryRules.Add(new StatutoryRule
+            {
+                TenantId = tenantId,
+                CountryCode = CountryCodes.Saudi,
+                Jurisdiction = Jurisdictions.KsaMainland,
+                RuleKey = key,
+                RuleValue = text,
+                DataType = "decimal",
+                Description = description,
+                EffectiveFrom = effFrom,
+                EffectiveTo = effTo,
+                CreatedBy = userId,
+                CreatedAtUtc = now,
+            });
+            inserted++;
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        // Show the customer what their curve actually says, at a headcount they recognise — the
+        // fastest way to catch a transcription error that passed the monotonicity check.
+        var sample = string.Join(", ", required.Select(band =>
+        {
+            var b = supplied[band];
+            return $"{band} {NitaqatCurve.MinimumSaudization(b.Gradient, b.Intercept, 100m):0.##}%";
+        }));
+
+        return new NitaqatGridImportResult(
+            true, null,
+            $"Loaded the Nitaqat Mutawar curve for '{activity.NameEn}' effective "
+            + $"{request.EffectiveFrom:yyyy-MM-dd}"
+            + (request.IsVerified ? "." : ", marked UNVERIFIED — bands computed from it are labelled provisional.")
+            + $" At 100 total workers this curve gives: {sample}.",
+            inserted, superseded, updated, Array.Empty<string>());
+    }
 
     // ── Reference reads ───────────────────────────────────────────────────────
 

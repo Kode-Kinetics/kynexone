@@ -150,11 +150,16 @@ function Refused({ refusal, coverage, onConfigure }: {
               </a>{' '}
               (hrsd.gov.sa, free, no login).
             </li>
-            <li>Find your establishment&apos;s economic activity in Annex&nbsp;1.</li>
+            <li>Find your establishment&apos;s economic activity in Annex&nbsp;1 and note its
+              four <em>m</em> and <em>c</em> values.</li>
             <li>
-              Load its figures under <strong>Saudi Compliance → Saudization → Nitaqat grid</strong>,
-              or ask your implementation consultant to. Every load records where the numbers came
-              from and who checked them.
+              Ask your administrator or implementation consultant to load them — there is a
+              configuration endpoint for exactly this
+              (<code className="rounded bg-amber-100/70 px-1 py-0.5 text-[11px] dark:bg-amber-500/15">
+                PUT /api/saudi-compliance/nitaqat/curve
+              </code>), and it requires the compliance-write permission. Every load records where
+              the numbers came from, who loaded them, and whether they have been checked. There is
+              no self-service screen for this yet.
             </li>
           </ol>
           <p className="text-sm text-amber-900/90 dark:text-amber-100/90">

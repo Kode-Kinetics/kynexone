@@ -327,6 +327,144 @@ public class KsaComplianceTruthTests
             .Should().BeEquivalentTo(new[] { "MANUFACTURING" });
     }
 
+    // ── The curve loader — the path the UI actually points a customer at ─────
+
+    /// <summary>
+    /// End to end on the current regime: a customer loads their activity's curve constants from
+    /// the MHRSD annex and the establishment is banded by the curve, not the obsolete grid.
+    /// Uses MHRSD's own Manufacturing constants so the expected floors are the Ministry's.
+    /// </summary>
+    [Fact]
+    public async Task CurveImport_LoadedByACustomer_BandsTheEstablishmentOffTheCurve()
+    {
+        await using var db = NewDb();
+        SeedNitaqatReference(db);
+        SeedCompany(db, TenantA, CompanyA, "SA");
+        db.NitaqatEstablishmentProfiles.Add(new NitaqatEstablishmentProfile
+        {
+            TenantId = TenantA, CompanyId = CompanyA, ActivityCode = "CONSTRUCTION", IsActive = true,
+        });
+        for (var i = 0; i < 140; i++) AddEmployee(db, TenantA, CompanyA, "Saudi",  "FullTime", 9_000m);
+        for (var i = 0; i < 260; i++) AddEmployee(db, TenantA, CompanyA, "Indian", "FullTime", 4_500m);
+        await db.SaveChangesAsync();
+
+        var r = await Grid(db).ImportCurveAsync(TenantA, CurveRequest("CONSTRUCTION"), null);
+
+        r.Ok.Should().BeTrue(r.Error + " " + string.Join("; ", r.Rejections));
+        r.RowsInserted.Should().Be(8, "four bands × (m, c)");
+        // The result echoes the curve at a recognisable headcount, so a transcription error that
+        // passed validation is still visible to the person who loaded it.
+        r.Message.Should().Contain("At 100 total workers");
+
+        // Written tenant-scoped, never as a platform default.
+        var written = await db.StatutoryRules.Where(x => x.RuleKey.StartsWith("nitaqat.curve.")).ToListAsync();
+        written.Should().HaveCount(8);
+        written.Should().OnlyContain(x => x.TenantId == TenantA);
+        written.Should().OnlyContain(x => x.Description.Contains("VERIFIED."));
+
+        // And the band now comes from the curve. 400 workers, 35.00% Saudi, MHRSD's Manufacturing
+        // C-2023 constants ⇒ High Green (floor 34.93%), exactly as the guideline's example.
+        var svc = new NitaqatCalculationService(db, new DbStatutoryRuleReader(db));
+        var s = (await svc.GetStandingAsync(TenantA, CompanyA, new DateOnly(2023, 6, 1))).Standing!;
+
+        s.AchievedPercent.Should().Be(35.00m);
+        s.Band.Should().Be(NitaqatBands.HighGreen);
+        s.CurrentBandFloorPercent.Should().Be(34.93m);
+        s.BandingMethod.Should().Be(NitaqatBandingMethods.Curve);
+    }
+
+    [Fact]
+    public async Task CurveImport_RefusesAnUnsourcedLoad()
+    {
+        await using var db = NewDb();
+        SeedNitaqatReference(db);
+        await db.SaveChangesAsync();
+
+        var r = await Grid(db).ImportCurveAsync(TenantA, CurveRequest("CONSTRUCTION", source: "MHRSD"), null);
+
+        r.Ok.Should().BeFalse();
+        r.Error.Should().Be("source_note_required");
+        (await db.StatutoryRules.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CurveImport_RefusesAPartialLadder()
+    {
+        await using var db = NewDb();
+        SeedNitaqatReference(db);
+        await db.SaveChangesAsync();
+
+        var r = await Grid(db).ImportCurveAsync(TenantA, CurveRequest("CONSTRUCTION", bands: new[]
+        {
+            new NitaqatCurveBandInput(NitaqatBands.LowGreen, 1.68m, 12.08m),
+            new NitaqatCurveBandInput(NitaqatBands.MediumGreen, 1.87m, 18.87m),
+            // HighGreen and Platinum missing.
+        }), null);
+
+        r.Ok.Should().BeFalse();
+        r.Error.Should().Be("curve_rejected");
+        r.Rejections.Should().HaveCount(2);
+        r.Rejections.Should().Contain(x => x.Contains("HighGreen"));
+        r.Rejections.Should().Contain(x => x.Contains("Platinum"));
+        (await db.StatutoryRules.CountAsync()).Should().Be(0);
+    }
+
+    /// <summary>
+    /// A curve ladder can CROSS even when each row looks sane in isolation: a steeper gradient on
+    /// a lower band overtakes a higher band at some headcount. MHRSD's published curves do not
+    /// cross, so a crossing means a transcription slip — most often m and c swapped. The grid
+    /// loader's flat monotonicity check cannot catch this, which is why the curve gets its own.
+    /// </summary>
+    [Fact]
+    public async Task CurveImport_RefusesALadderThatCrossesAtSomeHeadcount()
+    {
+        await using var db = NewDb();
+        SeedNitaqatReference(db);
+        await db.SaveChangesAsync();
+
+        // At 6 workers Low Green = 0.5·ln6 + 20 = 20.90 and Medium Green = 5·ln6 + 8 = 16.96 —
+        // Medium Green is BELOW Low Green. They only cross higher up. Sane-looking rows, broken
+        // ladder.
+        var r = await Grid(db).ImportCurveAsync(TenantA, CurveRequest("CONSTRUCTION", bands: new[]
+        {
+            new NitaqatCurveBandInput(NitaqatBands.LowGreen,    0.50m, 20m),
+            new NitaqatCurveBandInput(NitaqatBands.MediumGreen, 5.00m,  8m),
+            new NitaqatCurveBandInput(NitaqatBands.HighGreen,   5.00m, 20m),
+            new NitaqatCurveBandInput(NitaqatBands.Platinum,    5.00m, 30m),
+        }), null);
+
+        r.Ok.Should().BeFalse();
+        r.Error.Should().Be("curve_rejected");
+        r.Rejections.Should().Contain(x => x.Contains("must not cross"));
+        (await db.StatutoryRules.CountAsync()).Should().Be(0);
+    }
+
+    /// <summary>A reissue closes the prior rows rather than rewriting them.</summary>
+    [Fact]
+    public async Task CurveImport_SupersedesRatherThanRewritingHistory()
+    {
+        await using var db = NewDb();
+        SeedNitaqatReference(db);
+        await db.SaveChangesAsync();
+
+        await Grid(db).ImportCurveAsync(TenantA,
+            CurveRequest("CONSTRUCTION", from: new DateOnly(2024, 1, 1)), null);
+        var reissue = await Grid(db).ImportCurveAsync(TenantA,
+            CurveRequest("CONSTRUCTION", from: new DateOnly(2026, 1, 1)), null);
+
+        reissue.Ok.Should().BeTrue();
+        reissue.RowsInserted.Should().Be(8);
+        reissue.RowsSuperseded.Should().Be(8);
+
+        var lowGreenM = await db.StatutoryRules
+            .Where(x => x.RuleKey == NitaqatCurve.GradientKey("CONSTRUCTION", NitaqatBands.LowGreen))
+            .OrderBy(x => x.EffectiveFrom).ToListAsync();
+
+        lowGreenM.Should().HaveCount(2, "the old row is retained, closed — not overwritten");
+        lowGreenM[0].EffectiveTo.Should().Be(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        lowGreenM[1].EffectiveTo.Should().BeNull();
+    }
+
     [Fact]
     public async Task GridImport_RefusesAnUnsourcedLoad()
     {
@@ -893,6 +1031,66 @@ public class KsaComplianceTruthTests
             => Task.FromResult(new QiwaApiResult(true, null, null, "{}"));
         public Task<string?> AcquireAccessTokenAsync(string c, string s, string e, CancellationToken ct)
             => Task.FromResult<string?>("tok");
+    }
+
+    /// <summary>
+    /// A curve load carrying MHRSD's own Manufacturing constants (C-2023), so a test that loads a
+    /// curve and then asserts a band is asserting the Ministry's numbers.
+    /// </summary>
+    private static NitaqatCurveImportRequest CurveRequest(
+        string activity,
+        string? source = null,
+        DateOnly? from = null,
+        DateOnly? to = null,
+        bool verified = true,
+        IReadOnlyList<NitaqatCurveBandInput>? bands = null) =>
+        new(activity,
+            from ?? new DateOnly(2023, 1, 1),
+            to,
+            source ?? "MHRSD Nitaqat Mutawar procedural guide, Annex 1, read from hrsd.gov.sa on 2026-09-20.",
+            verified,
+            bands ?? new[]
+            {
+                new NitaqatCurveBandInput(NitaqatBands.LowGreen,    1.68m, 12.08m),
+                new NitaqatCurveBandInput(NitaqatBands.MediumGreen, 1.87m, 18.87m),
+                new NitaqatCurveBandInput(NitaqatBands.HighGreen,   2.08m, 22.47m),
+                new NitaqatCurveBandInput(NitaqatBands.Platinum,    2.08m, 28.37m),
+            });
+
+    /// <summary>
+    /// Reads statutory rules out of the test database the way production does — tenant row first,
+    /// then platform default — so a curve written by the loader is read back by the calculator
+    /// through the real path rather than a stub.
+    /// </summary>
+    private sealed class DbStatutoryRuleReader : IStatutoryRuleReader
+    {
+        private readonly ZayraDbContext _db;
+        public DbStatutoryRuleReader(ZayraDbContext db) => _db = db;
+
+        public async Task<decimal?> GetDecimalAsync(
+            string cc, string j, string key, DateOnly asOf, Guid? tenantId = null, CancellationToken ct = default)
+        {
+            // The Nitaqat wage floors are not seeded in these fixtures; the calculator's own
+            // defaults (4,000 / 3,000) apply when this returns null, which matches production.
+            var d = asOf.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            var rows = await _db.StatutoryRules.IgnoreQueryFilters()
+                .Where(r => r.CountryCode == cc && r.Jurisdiction == j && r.RuleKey == key
+                         && (r.TenantId == null || r.TenantId == tenantId)
+                         && r.EffectiveFrom <= d && (r.EffectiveTo == null || r.EffectiveTo > d))
+                .ToListAsync(ct);
+
+            var row = rows.OrderByDescending(r => r.TenantId != null)
+                          .ThenByDescending(r => r.EffectiveFrom)
+                          .FirstOrDefault();
+
+            return row is null
+                ? null
+                : decimal.Parse(row.RuleValue, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        public Task<string?> GetStringAsync(
+            string cc, string j, string key, DateOnly asOf, Guid? tenantId = null, CancellationToken ct = default)
+            => Task.FromResult<string?>(null);
     }
 
     /// <summary>Four floors as threshold rows, for driving ResolveBand directly.</summary>

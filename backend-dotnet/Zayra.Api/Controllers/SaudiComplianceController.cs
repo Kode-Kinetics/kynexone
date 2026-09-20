@@ -354,6 +354,38 @@ public class SaudiComplianceController : ControllerBase
         return result.Ok ? Ok(result) : BadRequest(result);
     }
 
+    /// <summary>
+    /// Loads this tenant's MHRSD Nitaqat Mutawar curve constants (m and c per band) for one
+    /// economic activity — the regime in force since 1 December 2021, and the loader the
+    /// Saudization screen points a customer at.
+    ///
+    /// <para>Preferred over the grid endpoint: a curve keeps answering correctly as the
+    /// establishment's headcount changes, whereas a loaded grid row is a snapshot at one size and
+    /// silently goes stale as the workforce grows.</para>
+    ///
+    /// <para>Same doctrine as <c>StatutoryRulesController</c>, which this sits beside: tenant-scoped
+    /// rows only, a mandatory source citation, append-only supersede rather than in-place
+    /// mutation, and all-or-nothing validation including a ladder-crossing check across the
+    /// practical headcount range.</para>
+    /// </summary>
+    [HttpPut("nitaqat/curve")]
+    public async Task<IActionResult> PutNitaqatCurve(
+        [FromBody] NitaqatCurveImportRequest body, CancellationToken cancellationToken)
+    {
+        // Loading statutory band constants is a compliance-configuration act, not a read.
+        if (!HasPermission("compliance.write")) return Forbid();
+
+        var tenantId = RequireTenant();
+        if (!await HasAnyGatingFeatureAsync(tenantId, cancellationToken))
+            return StatusCode(403, new { error = "feature_not_enabled" });
+
+        if (body is null)
+            return BadRequest(new { error = "body_required", message = "A curve payload is required." });
+
+        var result = await _grid.ImportCurveAsync(tenantId, body, this.GetUserId(), cancellationToken);
+        return result.Ok ? Ok(result) : BadRequest(result);
+    }
+
     private sealed record ResolvedCompany(Guid CompanyId, IActionResult? Error);
 
     /// <summary>
