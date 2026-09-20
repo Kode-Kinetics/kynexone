@@ -3890,7 +3890,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("report_schedules");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.FiltersJson).HasColumnType("json");
+            entity.Property(x => x.LastFailureReason).HasMaxLength(1000);
             entity.HasIndex(x => new { x.TenantId, x.IsActive });
+            // Backs the "which of my schedules are broken?" filter the UI now shows.
+            entity.HasIndex(x => new { x.TenantId, x.ConsecutiveFailureCount })
+                .HasDatabaseName("ix_report_schedules_tenant_failures");
         });
 
         modelBuilder.Entity<ReportExecutionLog>(entity =>

@@ -9,6 +9,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Email;
+using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Operations;
 using Zayra.Api.Models;
 
@@ -32,10 +33,12 @@ public static class ReportSchedulePolicy
         if (string.IsNullOrWhiteSpace(request.ReportName)) { error = "Report name is required."; return false; }
         if (!new[] { "Daily", "Weekly", "Monthly", "Quarterly" }.Contains(request.Frequency, StringComparer.OrdinalIgnoreCase))
         { error = "Frequency must be Daily, Weekly, Monthly, or Quarterly."; return false; }
+        // Email only, and it always was: the UI's SFTP and Portal options have been removed
+        // rather than left to 400 after the user has filled the form in.
         if (!request.DeliveryMethod.Equals("Email", StringComparison.OrdinalIgnoreCase))
-        { error = "Scheduled delivery currently supports Email only."; return false; }
-        if (!new[] { "JSON", "CSV", "Excel" }.Contains(request.ExportFormat, StringComparer.OrdinalIgnoreCase))
-        { error = "Scheduled export format must be JSON, CSV, or Excel."; return false; }
+        { error = "Scheduled delivery supports Email only."; return false; }
+        if (ReportExportFormats.NormalizeSchedulable(request.ExportFormat) is null)
+        { error = $"Scheduled export format must be one of: {string.Join(", ", ReportExportFormats.Schedulable)}."; return false; }
         var recipients = ParseRecipients(request.Recipients);
         if (recipients.Count == 0) { error = "At least one valid email recipient is required."; return false; }
         error = string.Empty;
@@ -106,6 +109,7 @@ public sealed class ReportScheduleWorker : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
         var dataScope = scope.ServiceProvider.GetRequiredService<IDataScopeService>();
         var email = scope.ServiceProvider.GetRequiredService<IEmailService>();
+        var notifications = scope.ServiceProvider.GetRequiredService<INotificationService>();
         var now = DateTime.UtcNow;
         var due = await ScopedBypass.SystemWide(db.ReportSchedules, 20,
                 "Scheduled report worker scans a bounded cross-tenant due queue.",
@@ -155,11 +159,19 @@ public sealed class ReportScheduleWorker : BackgroundService
 
                 execution.Status = "Success";
                 execution.RowCount = json.ValueKind == JsonValueKind.Array ? json.GetArrayLength() : 1;
+                await ClearFailureAsync(db, schedule, ct);
             }
             catch (Exception ex)
             {
                 execution.ErrorMessage = ex.Message.Length <= 1000 ? ex.Message : ex.Message[..1000];
                 _log.LogError(ex, "Scheduled report {ScheduleId} failed for tenant {TenantId}.", schedule.Id, schedule.TenantId);
+                // Make the failure visible to a human. Wrapped because an alerting problem must
+                // never lose the execution log below, which is the record of record.
+                try { await RecordFailureAsync(db, notifications, schedule, ex, ct); }
+                catch (Exception alertEx)
+                {
+                    _log.LogWarning(alertEx, "Could not surface the failure of scheduled report {ScheduleId}.", schedule.Id);
+                }
             }
 
             sw.Stop();
@@ -168,6 +180,18 @@ public sealed class ReportScheduleWorker : BackgroundService
             await db.SaveChangesAsync(ct);
             db.ChangeTracker.Clear();
         }
+    }
+
+    /// <summary>A delivered run clears the failure state, so the UI badge disappears by itself.</summary>
+    private static async Task ClearFailureAsync(ZayraDbContext db, ReportSchedule schedule, CancellationToken ct)
+    {
+        if (schedule.ConsecutiveFailureCount == 0 && schedule.OwnerInvalidatedAtUtc is null) return;
+        var tracked = await db.ReportSchedules
+            .FirstOrDefaultAsync(x => x.Id == schedule.Id && x.TenantId == schedule.TenantId, ct);
+        if (tracked is null) return;
+        tracked.ConsecutiveFailureCount = 0;
+        tracked.LastFailureReason = string.Empty;
+        tracked.OwnerInvalidatedAtUtc = null;
     }
 
     private static async Task<IReadOnlyCollection<int>?> ResolveCurrentScopeAsync(
@@ -233,39 +257,105 @@ public sealed class ReportScheduleWorker : BackgroundService
         return true;
     }
 
-    private static EmailAttachment BuildArtifact(ReportSchedule schedule, JsonElement data)
+    /// <summary>
+    /// Builds the attachment. Rewritten: this method used to produce CSV bytes for every
+    /// format, naming the file <c>.csv</c> and labelling it <c>application/vnd.ms-excel</c>
+    /// when the user had chosen Excel — and delivering a <c>.csv</c> when they had chosen PDF.
+    /// It now shares <see cref="ReportTabulator"/> and <see cref="ReportWorkbookWriter"/> with
+    /// the synchronous export endpoint, so a scheduled Excel and a downloaded Excel are the
+    /// same bytes, and "Excel" means a workbook.
+    /// </summary>
+    internal static EmailAttachment BuildArtifact(ReportSchedule schedule, JsonElement data)
     {
         var safeName = string.Concat(schedule.ReportName.Select(c => char.IsLetterOrDigit(c) ? c : '_')).Trim('_');
         if (safeName.Length == 0) safeName = "report";
-        if (schedule.ExportFormat.Equals("JSON", StringComparison.OrdinalIgnoreCase))
-            return new EmailAttachment($"{safeName}.json", Encoding.UTF8.GetBytes(JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true })), "application/json");
 
-        var (headers, rows) = Flatten(data);
-        var csv = new StringBuilder();
-        csv.AppendLine(string.Join(',', headers.Select(Csv)));
-        foreach (var row in rows) csv.AppendLine(string.Join(',', headers.Select(h => Csv(row.GetValueOrDefault(h, string.Empty)))));
-        var bytes = new UTF8Encoding(true).GetBytes(csv.ToString());
-        return schedule.ExportFormat.Equals("Excel", StringComparison.OrdinalIgnoreCase)
-            ? new EmailAttachment($"{safeName}.csv", bytes, "application/vnd.ms-excel")
-            : new EmailAttachment($"{safeName}.csv", bytes, "text/csv");
+        // Unknown values fall back to CSV rather than throwing: a schedule created before the
+        // vocabulary was tightened must still deliver something a human can open.
+        var format = ReportExportFormats.NormalizeSchedulable(schedule.ExportFormat) ?? ReportExportFormats.Csv;
+
+        if (format == ReportExportFormats.Json)
+            return new EmailAttachment($"{safeName}.json",
+                Encoding.UTF8.GetBytes(JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true })),
+                "application/json");
+
+        var tables = ReportTabulator.Tabulate(data, ReportTabulator.Humanise(schedule.ReportName));
+        var bytes = format == ReportExportFormats.Xlsx
+            ? ReportWorkbookWriter.ToXlsx(tables)
+            : ReportTabulator.ToCsv(tables);
+
+        return new EmailAttachment(
+            $"{safeName}.{ReportExportFormats.ExtensionFor(format)}",
+            bytes,
+            ReportExportFormats.ContentTypeFor(format));
     }
 
-    private static (List<string> Headers, List<Dictionary<string, string>> Rows) Flatten(JsonElement data)
+    /// <summary>
+    /// Records a failed run against the schedule itself and, the first time a run fails,
+    /// tells a human.
+    ///
+    /// <para>The specific case the review called out: <see cref="ResolveCurrentScopeAsync"/>
+    /// throws when the creator is deactivated or has lost <c>reports.schedule</c>. That is not
+    /// transient — the monthly pack will fail every month until somebody takes it over — and
+    /// nothing surfaced it. The only trace was a <c>ReportExecutionLogs</c> row.</para>
+    ///
+    /// <para>Notification is sent once, on the transition into failure, not on every period:
+    /// a monthly report that has been broken for a year should not produce twelve identical
+    /// alerts, and an alert channel that repeats is an alert channel people filter.</para>
+    /// </summary>
+    private static async Task RecordFailureAsync(
+        ZayraDbContext db, INotificationService notifications, ReportSchedule schedule,
+        Exception error, CancellationToken ct)
     {
-        var items = data.ValueKind == JsonValueKind.Array ? data.EnumerateArray().ToList() : new List<JsonElement> { data };
-        var headers = items.Where(x => x.ValueKind == JsonValueKind.Object)
-            .SelectMany(x => x.EnumerateObject().Select(p => p.Name)).Distinct().ToList();
-        var rows = items.Select(x => x.ValueKind == JsonValueKind.Object
-                ? x.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.ToString())
-                : new Dictionary<string, string> { ["Value"] = x.ToString() })
+        var ownerProblem = error is UnauthorizedAccessException;
+        var reason = error.Message.Length <= 1000 ? error.Message : error.Message[..1000];
+        var wasHealthy = schedule.ConsecutiveFailureCount == 0;
+
+        var tracked = await db.ReportSchedules
+            .FirstOrDefaultAsync(x => x.Id == schedule.Id && x.TenantId == schedule.TenantId, ct);
+        if (tracked is null) return;
+
+        tracked.ConsecutiveFailureCount++;
+        tracked.LastFailureAtUtc = DateTime.UtcNow;
+        tracked.LastFailureReason = reason;
+        if (ownerProblem) tracked.OwnerInvalidatedAtUtc ??= DateTime.UtcNow;
+
+        if (!wasHealthy) return;
+
+        // Who to tell. The creator is the wrong answer when the creator is the problem, so the
+        // notification goes to everyone in the tenant who could actually fix it — the holders of
+        // reports.schedule — and to the creator as well when they are still active.
+        var candidates = await ScopedBypass.TenantWide(db.Users, schedule.TenantId,
+                "A failing scheduled report must reach somebody who can repair it inside its own tenant.")
+            .AsNoTracking()
+            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+            .Include(x => x.PermissionOverrides)
+            .Where(x => x.IsActive && !x.IsDeleted)
+            .ToListAsync(ct);
+
+        var recipients = candidates
+            .Where(u => AuthService.GetPermissions(u).Contains("reports.schedule", StringComparer.OrdinalIgnoreCase))
+            .Select(u => u.Id)
+            .Distinct()
+            .Take(20)
             .ToList();
-        if (headers.Count == 0 && rows.Count > 0) headers.Add("Value");
-        return (headers, rows);
-    }
 
-    private static string Csv(string value)
-    {
-        var safe = value.Length > 0 && "=+-@".Contains(value[0]) ? "'" + value : value;
-        return $"\"{safe.Replace("\"", "\"\"")}\"";
+        var title = ownerProblem
+            ? $"Scheduled report stopped: {schedule.ReportName}"
+            : $"Scheduled report failed: {schedule.ReportName}";
+        var message = ownerProblem
+            ? $"\"{schedule.ReportName}\" can no longer run: {reason} It will keep failing until somebody with reports.schedule recreates or takes over the schedule."
+            : $"\"{schedule.ReportName}\" did not deliver: {reason}";
+
+        foreach (var userId in recipients)
+            await notifications.NotifyAsync(schedule.TenantId, userId, title, message,
+                nameof(ReportSchedule), schedule.Id.ToString(), ct);
+
+        // Nobody in the tenant holds reports.schedule any more — which is itself the finding.
+        // The row on the schedule is then the only surface, and the UI renders it.
+        if (recipients.Count == 0)
+            await notifications.NotifyAsync(schedule.TenantId, null, title,
+                message + " No user in this tenant currently holds reports.schedule.",
+                nameof(ReportSchedule), schedule.Id.ToString(), ct);
     }
 }
