@@ -1,6 +1,7 @@
 import {
   Building2,
   BarChart3,
+  DatabaseBackup,
   MessageSquareText,
   BriefcaseBusiness,
   CalendarCheck,
@@ -75,6 +76,9 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
       { label: 'Tenant Admin', icon: Settings2, path: '/tenant-admin', requiredPermissions: ['security.manage'] },
       { label: 'Setup', icon: UserRoundCog, path: '/setup', requiredPermissions: ['organization.write'] },
+      // Implementation-time screen: the consultant-facing front end for the opening-balance engine,
+      // which until now had no caller at all and was driven from Postman.
+      { label: 'Opening Balances', icon: DatabaseBackup, path: '/opening-balances', requiredPermissions: ['employees.write', 'payroll.write'] },
     ],
   },
 ];
