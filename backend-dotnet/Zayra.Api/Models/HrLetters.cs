@@ -196,6 +196,14 @@ public class IssuedLetter : ITenantOwned, ICompanyScopedOperational
     /// </summary>
     public string MergedValuesJson { get; set; } = "{}";
 
+    /// <summary>
+    /// The rendered title/paragraphs/closing per language, exactly as they went onto the page.
+    /// Kept so HR can reprint the document a bank has lost without the reprint silently picking
+    /// up a template edit made since — a reprint that says something different from the original
+    /// under the same reference number is worse than no reprint.
+    /// </summary>
+    public string RenderedContentJson { get; set; } = "{}";
+
     /// <summary>Set when the issuance answered an ESS request rather than starting with HR.</summary>
     public Guid? DocumentRequestId { get; set; }
 

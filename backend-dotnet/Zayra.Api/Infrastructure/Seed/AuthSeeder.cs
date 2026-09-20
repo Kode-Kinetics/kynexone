@@ -4,6 +4,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Seed;
@@ -1135,12 +1136,35 @@ public class AuthSeeder : IAuthSeeder
             await _db.SaveChangesAsync(ct);
         }
 
+        // ── B6: bilingual HR letter templates ────────────────────────────────────
+        // Seeded as rows, not compiled into C#. A tenant that wants "was employed with" to read
+        // "served with" edits the template; previously that needed a release.
+        var seededLetterTypes = await _db.HrLetterTemplates
+            .Where(x => x.TenantId == tenantId && x.CompanyId == null && !x.IsDeleted)
+            .Select(x => x.LetterType)
+            .ToListAsync(ct);
+        var newTemplates = HrLetterTemplateDefaults.Build()
+            .Where(t => !seededLetterTypes.Contains(t.LetterType))
+            .ToList();
+        if (newTemplates.Count > 0)
+        {
+            foreach (var template in newTemplates) template.TenantId = tenantId;
+            _db.HrLetterTemplates.AddRange(newTemplates);
+            await _db.SaveChangesAsync(ct);
+        }
+
         // ── HR Request Center: categories + requests ─────────────────────────────
         if (!await _db.HRRequestCategories.AnyAsync(x => x.TenantId == tenantId, ct))
         {
             var categories = new[]
             {
                 new HRRequestCategory { TenantId = tenantId, Code = "SAL-CERT", Name = "Salary Certificate",   DefaultSlaHours = 24 },
+                // B6: these three codes are HrLetterTypes.Prefixes values. ESS raises its document
+                // request against the matching category so a letter request lands in the HR queue
+                // HR already works, not in a second inbox beside it.
+                new HRRequestCategory { TenantId = tenantId, Code = "BANK-LTR", Name = "Salary Transfer Letter", DefaultSlaHours = 24 },
+                new HRRequestCategory { TenantId = tenantId, Code = "EMP-VER",  Name = "Employment Verification", DefaultSlaHours = 24 },
+                new HRRequestCategory { TenantId = tenantId, Code = "EXP",      Name = "Experience Certificate", DefaultSlaHours = 48 },
                 new HRRequestCategory { TenantId = tenantId, Code = "NOC",      Name = "NOC Letter",           DefaultSlaHours = 48 },
                 new HRRequestCategory { TenantId = tenantId, Code = "PAY-INQ",  Name = "Payroll Inquiry",      DefaultSlaHours = 48 },
                 new HRRequestCategory { TenantId = tenantId, Code = "DOC-REQ",  Name = "Document Request",     DefaultSlaHours = 72 },

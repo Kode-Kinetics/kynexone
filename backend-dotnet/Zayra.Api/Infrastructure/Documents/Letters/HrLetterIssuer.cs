@@ -42,6 +42,20 @@ public record LetterIssueResult(
         new(false, null, null, code, message, tokens);
 }
 
+/// <summary>
+/// The rendered document, frozen at issuance, so a reprint is the same document.
+/// Logo bytes are intentionally NOT stored (they live in document storage and are re-fetched);
+/// everything that carries meaning is.
+/// </summary>
+public record StoredLetterContent(
+    LetterSection? English,
+    LetterSection? Arabic,
+    string CompanyNameEn,
+    string CompanyNameAr,
+    string RegistrationNumber,
+    string PrimaryColorHex
+);
+
 public interface IHrLetterIssuer
 {
     /// <summary>
@@ -55,6 +69,12 @@ public interface IHrLetterIssuer
     /// Seeds or repairs the tenant-default templates. Idempotent; never overwrites a tenant's edits.
     /// </summary>
     Task<int> EnsureDefaultTemplatesAsync(Guid tenantId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Re-renders an already-issued letter from its frozen content. Same reference, same words,
+    /// current logo. Does NOT allocate a new reference and does NOT write a new register row.
+    /// </summary>
+    Task<byte[]?> ReprintAsync(Guid tenantId, Guid issuedLetterId, CancellationToken cancellationToken);
 }
 
 public class HrLetterIssuer : IHrLetterIssuer
@@ -96,6 +116,44 @@ public class HrLetterIssuer : IHrLetterIssuer
         }
         if (added > 0) await _db.SaveChangesAsync(cancellationToken);
         return added;
+    }
+
+    public async Task<byte[]?> ReprintAsync(Guid tenantId, Guid issuedLetterId, CancellationToken cancellationToken)
+    {
+        var record = await _db.IssuedLetters.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == issuedLetterId && !x.IsDeleted, cancellationToken);
+        if (record is null) return null;
+
+        StoredLetterContent? content;
+        try { content = JsonSerializer.Deserialize<StoredLetterContent>(record.RenderedContentJson); }
+        catch (JsonException) { content = null; }
+        if (content is null || (content.English is null && content.Arabic is null)) return null;
+
+        byte[]? logo = null;
+        var branding = await _db.TenantBrandings.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(branding?.LogoUrl))
+        {
+            try { logo = await _storage.GetBytesAsync(tenantId, branding!.LogoUrl, cancellationToken); }
+            catch (Exception ex) { _log?.LogWarning(ex, "Reprint logo unavailable for tenant {TenantId}.", tenantId); }
+        }
+
+        return await _letters.GenerateTemplateLetterAsync(new TemplateLetterData(
+            LetterType: record.LetterType,
+            ReferenceNumber: record.ReferenceNumber,
+            Language: record.Language,
+            English: content.English,
+            Arabic: content.Arabic,
+            Letterhead: new LetterheadData(
+                CompanyNameEn: content.CompanyNameEn,
+                CompanyNameAr: content.CompanyNameAr,
+                RegistrationNumber: content.RegistrationNumber,
+                LogoBytes: logo,
+                PrimaryColorHex: content.PrimaryColorHex),
+            IssuerName: record.IssuedByName,
+            IssuerTitle: record.IssuedByTitle,
+            // The original issue date, not today: a reprint is a copy, not a new document.
+            IssuedOn: record.IssuedAtUtc), cancellationToken);
     }
 
     public async Task<LetterIssueResult> IssueAsync(IssueLetterCommand command, CancellationToken cancellationToken)
@@ -188,6 +246,7 @@ public class HrLetterIssuer : IHrLetterIssuer
             FileHash = Convert.ToHexString(SHA256.HashData(pdf)).ToLowerInvariant(),
             FileSizeBytes = pdf.Length,
             MergedValuesJson = JsonSerializer.Serialize(values),
+            RenderedContentJson = JsonSerializer.Serialize(new StoredLetterContent(english, arabic, letterhead.CompanyNameEn, letterhead.CompanyNameAr, letterhead.RegistrationNumber, letterhead.PrimaryColorHex)),
             DocumentRequestId = command.DocumentRequestId,
             HrRequestId = command.HrRequestId,
         };

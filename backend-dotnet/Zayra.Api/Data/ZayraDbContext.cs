@@ -1369,6 +1369,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.IssuedByTitle).HasMaxLength(200);
             entity.Property(x => x.FileHash).HasMaxLength(64);
             entity.Property(x => x.MergedValuesJson).HasColumnType("jsonb");
+            entity.Property(x => x.RenderedContentJson).HasColumnType("jsonb");
 
             // THE point of the table. Two experience letters for one person in one month used to
             // share the string EXP-{code}-{yyyyMM} because it was recomputed inline and stored

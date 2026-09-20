@@ -19,8 +19,16 @@ public interface ILetterService
     /// Render a tenant-configured HR letter: merged template body, real letterhead, a stored
     /// reference number and a named signatory. This is the path every new letter type uses; the
     /// four methods above are the pre-existing hard-coded documents.
+    ///
+    /// <para>Declared as a C# 8 default interface method for the same reason
+    /// <c>INotificationService.EnqueueAsync</c> is: roughly twenty test doubles across the suite
+    /// implement <see cref="ILetterService"/>, and none of them renders a letter. The default
+    /// throws rather than returning empty bytes — a double that IS asked for a letter should say
+    /// so loudly, not hand back a zero-byte "PDF".</para>
     /// </summary>
-    Task<byte[]> GenerateTemplateLetterAsync(TemplateLetterData data, CancellationToken cancellationToken = default);
+    Task<byte[]> GenerateTemplateLetterAsync(TemplateLetterData data, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException(
+            $"{GetType().Name} does not render template letters. Use LetterService, or override this method in the double.");
 }
 
 /// <summary>
