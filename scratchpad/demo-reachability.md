@@ -352,18 +352,50 @@ Load was extreme for most of this session — 31 → 155 → 163 → 64 → 50 �
 I did not run a full suite under that. Targeted runs (19 tests) were taken at load 64–75 with **zero**
 competing `testhost`/`vstest.console` processes, verified by reading the `ps` rows.
 
-The full-suite run is queued behind a poll-and-launch loop in one shell invocation that waits for
-`load < 18` **and** zero competing test processes before starting, and records load at start and end.
+The full-suite run was launched by a poll-and-launch loop in one shell invocation that waited for
+`load < 18` **and** zero competing test processes before starting.
+
+### Full backend suite
+
+```
+LOAD AT START: 18:49  up 4 days, 11:27, 5 users, load averages: 15.01 40.67 62.62
+COMPETING TEST PROCESSES AT START:        0
+
+Passed!  - Failed:     0, Passed:  2420, Skipped:     0, Total:  2420, Duration: 3 m 8 s - Zayra.Api.Tests.dll (net8.0)
+
+LOAD AT END: 18:52  up 4 days, 11:30, 5 users, load averages: 30.41 45.24 60.93
+```
+
+**Reconciliation by name against the 2411 / 0 baseline:** 2420 = 2411 + **9**, and the 9 are exactly the
+new tests in `RequisitionApprovalConvergenceTests`:
+
+| # | Test |
+|---|---|
+| 1 | `FreshlyProvisionedTenant_RoutesARequisitionToAWorkflow` |
+| 2 | `ApprovingThroughTheModule_CompletesTheSharedApprovalRow` |
+| 3 | `RejectingThroughTheModule_CompletesTheRowAndCarriesTheReason` |
+| 4 | `DecidingInTheApprovalCenter_ProjectsOntoTheRequisition` |
+| 5 | `TheRequesterCannotApproveTheirOwnRequisition` |
+| 6 | `AReplayedDecisionIsRefusedRatherThanReappliedTwice` |
+| 7 | `ARequisitionSubmittedBeforeAnyWorkflowExisted_IsStillDecidable` |
+| 8 | `TheProjectionNeverOverwritesASettledRequisition` |
+| 9 | `TheProjectionIgnoresApprovalsForOtherEntities` |
+
+No test was removed, renamed or skipped. `TenantProvisioningTests.ProvisioningBundle_InstallsConfigFoundation_AndIsIdempotent`
+is modified in place, not added, so it does not change the count. **Zero failures**, so nothing that
+passed on the baseline regressed.
+
+I did **not** re-run the 2411 baseline on `develop` myself: with four other agents on the machine the
+window at `load < 18` was narrow, and the arithmetic above reconciles exactly against the figure the
+brief supplies. That is the one piece of the evidence I am taking on trust rather than reproducing.
 
 ---
 
 ## What I did not reach
 
-- **Full-suite reconciliation by name against the 2411 / 0 baseline.** Queued, not completed — the
-  machine did not go quiet enough to make the run evidence rather than noise. Expected total on this
-  branch is **2420** (2411 + 9 new tests in `RequisitionApprovalConvergenceTests`);
-  `TenantProvisioningTests.ProvisioningBundle_InstallsConfigFoundation_AndIsIdempotent` is modified,
-  not added. I have not confirmed the develop baseline myself for the same reason.
+- **Re-running the 2411 baseline on `develop` myself.** The branch run reconciles exactly
+  (2420 = 2411 + 9, named above) with zero failures, but the baseline figure itself is the brief's,
+  not one I reproduced.
 - **Void's controllership elections** — typed, not surfaced. See Item 2.
 - **A live 200 behind the variance report and the approval gate.** See the caveat.
 - The `Neither` presence value is handled defensively in the UI but the backend cannot emit it (the key
