@@ -692,7 +692,16 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// it entirely. Failing closed here means an unrecognised value is refused at the door instead of
     /// becoming a wrong payment months later.</para>
     /// </summary>
-    private static readonly string[] AllowedSeparationTypes =
+    /// <remarks>
+    /// S2-B3 — this is now PUBLIC. It used to be private, and the only caller was the
+    /// <c>PATCH /employees/{id}/status</c> terminate command. <c>OffboardingController.Initiate</c> — the
+    /// endpoint the offboarding SCREEN posts to — wrote <c>req.SeparationType</c> verbatim, so the closed
+    /// vocabulary this comment defends was bypassed by the product's own UI, which offered
+    /// "End of Contract" and "Other" (neither of which is in the set) and could not offer
+    /// <c>Article80</c>, <c>Death</c>, <c>ProbationFailure</c> or <c>Redundancy</c> at all. Publishing the
+    /// vocabulary lets the initiate path and the screen read the SAME list instead of drifting from it.
+    /// </remarks>
+    public static readonly string[] AllowedSeparationTypes =
     [
         "Termination", "Resignation", "Retirement", "EndOfContract", "Redundancy",
         // NOTE: no "Abscondment". PayrollController.NormalizeTerminationReason recognises only
@@ -702,7 +711,35 @@ public class EmployeeManagementService : IEmployeeManagementService
         "ProbationFailure", "Article80", "Death",
     ];
 
-    internal static string NormalizeSeparationType(string? requested)
+    /// <summary>
+    /// S2-B3 — the separation types that FORFEIT the end-of-service award outright.
+    /// <c>PayrollController.NormalizeTerminationReason</c> maps only "Article80" (and its aliases) to the
+    /// Art. 80 forfeiture branch; everything else is paid. Keying a summary dismissal as "Termination"
+    /// therefore pays a FULL Art. 84 award — which is exactly what happened while the screen could not
+    /// offer Article80. Callers use this to make the consequence explicit before the record is written.
+    /// </summary>
+    public static bool ForfeitsEndOfServiceAward(string? separationType) =>
+        string.Equals(separationType?.Trim(), "Article80", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// S2-B3 — non-throwing form of <see cref="NormalizeSeparationType"/> for the HTTP paths, which must
+    /// answer with a 400 naming the allowed values rather than a 500.
+    /// </summary>
+    public static bool TryNormalizeSeparationType(string? requested, out string normalized)
+    {
+        try
+        {
+            normalized = NormalizeSeparationType(requested);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            normalized = string.Empty;
+            return false;
+        }
+    }
+
+    public static string NormalizeSeparationType(string? requested)
     {
         // Conservative default for an employer-initiated command with nothing stated.
         if (string.IsNullOrWhiteSpace(requested)) return "Termination";
