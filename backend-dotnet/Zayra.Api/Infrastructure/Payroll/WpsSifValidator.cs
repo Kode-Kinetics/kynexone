@@ -102,7 +102,7 @@ public static class WpsSifValidator
                     $"Employee {empCode} has no IBAN on their payroll profile. Add bank details before exporting."));
             else if (!IbanValidator.IsValid(iban))
                 errors.Add(EmpError("INVALID_IBAN", empId, empCode,
-                    $"Employee {empCode} has an invalid IBAN (fails ISO 13616 mod-97 check)."));
+                    $"Employee {empCode} has an invalid IBAN (country format/length or ISO 13616 mod-97 check failed)."));
             else if (!IbanValidator.IsSaudiIban(iban))
                 warnings.Add(EmpWarning("NON_SAUDI_IBAN", empId, empCode,
                     $"Employee {empCode} IBAN does not start with 'SA'. Confirm the bank account is in Saudi Arabia."));

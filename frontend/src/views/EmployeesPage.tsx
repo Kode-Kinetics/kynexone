@@ -309,6 +309,10 @@ export function EmployeesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
+    // Never leave stale employee rows or counts visible while the new server
+    // result is pending (or after it fails).
+    setEmployees([]);
+    setTotal(0);
     try {
       const res = await employeesApi.list({
         search,
@@ -360,6 +364,10 @@ export function EmployeesPage() {
       });
   }, []);
   useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter]);
+  useEffect(() => {
+    setSelectedId(null);
+    setDetail(null);
+  }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, view]);
 
   // ── Bulk selection: derived state + handlers ────────────────────────────────────────────────
   const clearSelection = useCallback(() => {
@@ -1146,7 +1154,9 @@ export function EmployeesPage() {
         <div>
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Employee Management</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-            {view === 'current' ? `${total} employee records` : 'Former employees — retained for statutory audit'}
+            {view === 'current'
+              ? loading ? 'Loading employee records…' : error ? 'Employee records unavailable' : `${total} employee records`
+              : 'Former employees — retained for statutory audit'}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1207,8 +1217,8 @@ export function EmployeesPage() {
         </div>
       </div>
 
-      {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
-      {actionNotice && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">{actionNotice}</p>}
+      {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
+      {actionNotice && <p role="status" aria-live="polite" className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">{actionNotice}</p>}
       {advisoryWarning && (
         <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
           <span>{advisoryWarning}</span>
@@ -1224,7 +1234,8 @@ export function EmployeesPage() {
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <input value={search} onChange={(e) => setSearch(e.target.value)} className="input w-full pl-9" placeholder="Search employee code, name, email" />
+              <label htmlFor="employee-search" className="sr-only">Search employees</label>
+              <input id="employee-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} className="input w-full pl-9" placeholder="Search employee code, name, email" />
             </div>
             <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className="select sm:w-56" aria-label="Status filter">
               {activeStatusFilterOptions.map((item) => <option key={item || 'all'} value={item}>{item || 'All statuses'}</option>)}
@@ -1236,7 +1247,7 @@ export function EmployeesPage() {
               <option value="NeedsAttention">Needs attention</option>
               <option value="Ready">Ready</option>
             </select>
-            <button type="button" onClick={refreshAll} className="btn-secondary">
+            <button type="button" onClick={refreshAll} className="btn-secondary" disabled={loading} aria-busy={loading}>
               <RefreshCw className="h-4 w-4" />
               Refresh
             </button>
@@ -1341,11 +1352,25 @@ export function EmployeesPage() {
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                   {loading && <EmptyRow label="Loading live employees..." />}
-                  {!loading && employees.length === 0 && <EmptyRow label={(readinessFilter || importFilterActive) ? 'No employees match this filter.' : 'No employees found'} />}
+                  {!loading && !error && employees.length === 0 && (
+                    <tr><td colSpan={7} className="px-4 py-14 text-center">
+                      <p className="font-semibold text-slate-700 dark:text-slate-200">{(search || status || readinessFilter || importFilterActive) ? 'No employees match this filter.' : 'No employees yet'}</p>
+                      <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive) ? 'Adjust or clear the filters to see other records.' : 'Create the first employee to begin onboarding.'}</p>
+                      {(search || status || readinessFilter || importFilterActive) ? (
+                        <button type="button" className="btn-secondary mt-4" onClick={() => { setSearch(''); setStatus(''); clearImportFilter(); }}>Clear filters</button>
+                      ) : (
+                        <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit}><Plus className="h-4 w-4" />Add Employee</button>
+                      )}
+                    </td></tr>
+                  )}
                   {!loading && employees.map((employee) => {
                     const rowSelected = selectAllMatching || selectedIds.has(employee.id);
                     return (
-                    <tr key={employee.id} onClick={() => openDetail(employee.id)} className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}>
+                    <tr
+                      key={employee.id}
+                      onClick={() => openDetail(employee.id)}
+                      className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}
+                    >
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
@@ -1359,7 +1384,14 @@ export function EmployeesPage() {
                         <div className="flex items-center gap-3">
                           <Avatar name={employee.fullName} size="sm" />
                           <div>
-                            <p className="font-semibold text-slate-900 dark:text-white">{employee.fullName}</p>
+                            <button
+                              type="button"
+                              aria-label={`Open profile for ${employee.fullName}`}
+                              onClick={(event) => { event.stopPropagation(); openDetail(employee.id); }}
+                              className="rounded-sm text-left font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
+                            >
+                              {employee.fullName}
+                            </button>
                             <p className="text-xs text-slate-400">{employee.employeeCode}</p>
                           </div>
                         </div>
@@ -1416,6 +1448,9 @@ export function EmployeesPage() {
                   <button type="button" onClick={openEdit} className="btn-secondary h-8 shrink-0 px-3 text-xs">
                     <Pencil className="h-3.5 w-3.5" />
                     Edit
+                  </button>
+                  <button type="button" onClick={() => { setSelectedId(null); setDetail(null); }} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10" aria-label="Close employee profile" title="Close profile">
+                    <X className="h-4 w-4" />
                   </button>
                 </div>
                 <div className="mt-4 flex gap-1 overflow-x-auto">

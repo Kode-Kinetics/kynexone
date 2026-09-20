@@ -3850,10 +3850,13 @@ public class PayrollController : ControllerBase
                 overrides       = overriddenErrors,
             });
 
-        // Maker-checker: the user who processed the run cannot approve it.
+        // Maker-checker: neither the user who created the run nor the user who processed it may
+        // approve it. Checking only ProcessedByUserId let a creator hand processing to a colleague
+        // and then approve their own payroll proposal.
         var approverId = GetUserId();
-        if (run.ProcessedByUserId.HasValue && run.ProcessedByUserId == approverId)
-            return StatusCode(403, new { error = "maker_checker_violation", message = "The user who processed this run cannot approve it. A different approver is required (maker-checker policy)." });
+        if (approverId.HasValue
+            && (run.CreatedByUserId == approverId || run.ProcessedByUserId == approverId))
+            return StatusCode(403, new { error = "maker_checker_violation", message = "The user who created or processed this run cannot approve it. A different approver is required (maker-checker policy)." });
 
         var isAdmin = User.IsInRole("Admin");
         var isHROrPayroll = User.IsInRole("HR Manager") || User.IsInRole("Payroll Manager");
@@ -3866,7 +3869,8 @@ public class PayrollController : ControllerBase
             run.Status = "Approved";
             await PayrollAudit("payroll.run.approved", "PayrollRun", id.ToString(), new { notes = req.Notes, level = "Finance" }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
-            await _notifications.NotifyAsync(tenantId, GetUserId(), $"Payroll Run Approved — {run.Year}/{run.Month:D2}", $"Payroll run for {run.Year}/{run.Month:D2} has been approved by Finance. Total net: {run.TotalNetSalary:N2} AED.", "PayrollRun", id.ToString(), cancellationToken);
+            var runCurrency = await ResolveRunCurrencyAsync(tenantId, run.CompanyId, cancellationToken);
+            await _notifications.NotifyAsync(tenantId, GetUserId(), $"Payroll Run Approved — {run.Year}/{run.Month:D2}", $"Payroll run for {run.Year}/{run.Month:D2} has been approved by Finance. Total net: {run.TotalNetSalary:N2} {runCurrency}.", "PayrollRun", id.ToString(), cancellationToken);
             return Ok(run);
         }
 
@@ -8899,6 +8903,21 @@ public class PayrollController : ControllerBase
 
     private Task<string> ResolveCurrencyAsync(Guid tenantId, CancellationToken ct)
         => _db.ResolveTenantCurrencyAsync(tenantId, ct);
+
+    private async Task<string> ResolveRunCurrencyAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    {
+        if (companyId.HasValue)
+        {
+            var companyCurrency = await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.Id == companyId.Value && !c.IsDeleted)
+                .Select(c => c.DefaultCurrency)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrWhiteSpace(companyCurrency))
+                return companyCurrency.Trim().ToUpperInvariant();
+        }
+
+        return (await _db.ResolveTenantCurrencyAsync(tenantId, ct)).Trim().ToUpperInvariant();
+    }
 
     // ── Payroll Command Center ────────────────────────────────────────────────────
 

@@ -21,7 +21,7 @@ public class ApprovalRequestsController : ControllerBase
     }
 
     [HttpGet]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
+    [HasPermission("approvals.read")]
     public async Task<ActionResult<PagedResult<ApprovalRequestDto>>> Search([FromQuery] string? status, [FromQuery] string? entityName, [FromQuery] string? queue, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
         var tenantId = this.GetTenantId();
@@ -30,7 +30,7 @@ public class ApprovalRequestsController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
+    [HasPermission("approvals.read")]
     public async Task<ActionResult<ApprovalRequestDto>> Get(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = this.GetTenantId();

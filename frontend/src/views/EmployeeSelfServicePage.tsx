@@ -408,6 +408,11 @@ export function EmployeeSelfServicePage() {
                 <img
                   src={dashboard.profile.profilePhotoUrl}
                   alt={dashboard.profile.fullName}
+                  width={64}
+                  height={64}
+                  /* Above the fold: eager on purpose. Intrinsic size reserves the box so the
+                     header does not shift when the photo resolves. */
+                  decoding="async"
                   className="h-16 w-16 rounded-2xl object-cover ring-2 ring-white/60 dark:ring-white/10"
                 />
               ) : (

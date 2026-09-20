@@ -802,6 +802,7 @@ app.MapGet("/health", async (ZayraDbContext db, ILoggerFactory loggerFactory) =>
 // for local dev convenience (it defaults false in Production).
 var isMigrateMode = args.Contains("--migrate");
 var isPurgeDemoMode = args.Contains("--purge-demo");
+var isSundayDemoFixtureMode = args.Contains("--seed-sunday-demo-fixture");
 var runMigrationsOnStartup = app.Configuration.GetValue<bool>("Database:RunMigrationsOnStartup");
 
 using (var scope = app.Services.CreateScope())
@@ -833,6 +834,22 @@ using (var scope = app.Services.CreateScope())
     {
         logger.LogInformation("--migrate mode complete. Exiting.");
         return; // exit 0 — Render one-off job succeeds
+    }
+
+    // Explicit one-off, disposable fixture for the 20-Sep-2026 client-demo gate. The seeder owns
+    // additional fail-closed Production/dedicated/client, exact-confirmation, password and database
+    // transaction guards. It exits before the normal startup seed chain so no unrelated tenant is
+    // created or changed as a side effect of preparing this isolated fixture.
+    if (isSundayDemoFixtureMode)
+    {
+        await SundayKsaDemoFixtureSeeder.RunAsync(
+            dbContext,
+            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
+            scope.ServiceProvider.GetRequiredService<IAuthSeeder>(),
+            app.Environment,
+            logger);
+        logger.LogInformation("--seed-sunday-demo-fixture mode complete. Exiting.");
+        return;
     }
 
     // Phase 1B default-company backfill — idempotent (only touches null CompanyId rows),

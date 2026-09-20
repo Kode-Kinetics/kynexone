@@ -59,8 +59,9 @@ export default function SecurityPage() {
           <p className="mb-2 text-xs font-bold uppercase tracking-widest text-blue-600">Security</p>
           <h1 className="text-4xl font-black tracking-tight text-slate-900">How we protect your data</h1>
           <p className="mt-3 max-w-2xl text-base text-slate-500">
-            Every claim on this page maps to a control that exists in the current platform. We do not publish
-            aspirational certifications. This page is updated when controls are added or changed.
+            This page describes controls evidenced in the current application repository and deployment
+            configuration. It is not an independent assurance report, and provider or tenant configuration
+            can differ by environment.
           </p>
         </div>
 
@@ -68,17 +69,17 @@ export default function SecurityPage() {
 
           <Section title="Data Protection">
             <Claim
-              label="AES-256 encryption at rest"
-              detail="All data is stored in Neon (PostgreSQL on AWS) which encrypts volumes at rest using AES-256. MFA secrets are additionally encrypted at the application layer before persisting to the database column mfa_secret_encrypted."
+              label="Provider-managed encryption at rest"
+              detail="The hosted PostgreSQL and durable object-storage providers supply encryption at rest for their managed storage. Selected application secrets, including MFA and configured integration credentials, are additionally protected at the application layer; this is not a claim that every HR or payroll field has separate field-level encryption."
               code="ZayraDbContext → users.mfa_secret_encrypted"
             />
             <Claim
-              label="TLS 1.2+ in transit"
-              detail="All client-to-server traffic is served over HTTPS via Render.com (TLS 1.2 minimum enforced). Database connections from the API to Neon PostgreSQL use mandatory TLS (sslmode=require)."
+              label="Encrypted transport"
+              detail="Browser-to-service traffic is served over HTTPS through the hosting provider. Database connections from the API to Neon PostgreSQL are configured to require TLS (sslmode=require). Negotiated protocol versions remain subject to the active provider configuration."
             />
             <Claim
               label="Multi-tenant data isolation"
-              detail="Every table that holds tenant-owned data implements ITenantOwned. An EF Core global query filter automatically scopes every query to the authenticated tenant's ID. This isolation is enforced at the ORM layer, not only at the application layer, and is covered by automated regression tests (Testcontainers, real PostgreSQL)."
+              detail="Entities designated as tenant-owned implement ITenantOwned and receive an EF Core global query filter scoped to the authenticated tenant ID. Startup assertions and regression tests guard that model contract. Selected PostgreSQL integration suites use Testcontainers when Docker is available; this is application-layer isolation and is not a claim of database row-level security."
               code="ZayraDbContext.OnModelCreating → HasQueryFilter(e => e.TenantId == _tenantId)"
             />
           </Section>
@@ -86,7 +87,7 @@ export default function SecurityPage() {
           <Section title="Access Control">
             <Claim
               label="Role-based access control (RBAC)"
-              detail="Every protected action checks HasPermission() against the caller's JWT claims before executing. The frontend enforces the same boundaries through PermissionGate. Actions such as payroll export, GL journal access, and WPS file generation each require explicit permission grants."
+              detail="Protected payroll, finance, and administrative actions use permission checks against the caller's JWT claims, with matching frontend visibility boundaries through PermissionGate. Payroll export, GL journal access, and WPS file generation require explicit permission grants."
               code={'PayrollController.HasPermission("payroll.export")'}
             />
             <Claim
@@ -106,7 +107,7 @@ export default function SecurityPage() {
 
           <Section title="Auditability">
             <Claim
-              label="Comprehensive audit logging"
+              label="Workflow audit logging"
               detail="Payroll, attendance, leave, overtime, and performance events each write to dedicated audit-log tables with actor ID, timestamp, and before/after context. Payroll-specific events (run processed, locked, WPS exported) are recorded in PayrollAuditLog and are tenant-scoped."
               code="ZayraDbContext → PayrollAuditLogs, LeaveAuditLogs, AttendanceAuditLogs, OvertimeAuditLogs, PerformanceAuditLogs"
             />
@@ -148,7 +149,7 @@ export default function SecurityPage() {
             />
             <Claim
               label="Automated deployments with integrity checks"
-              detail="Every push to main triggers a Docker build and deploy via Render's pipeline. Pre-commit hooks and CI enforce linting and type-checking before code reaches production."
+              detail="Pushes and pull requests targeting main start repository CI checks. Render auto-deploy is disabled; the production backend deploy hook is configured behind required test, security, and migration jobs. A completed deployment still depends on configured secrets, environment approvals, and provider availability."
             />
           </Section>
 
@@ -167,7 +168,7 @@ export default function SecurityPage() {
 
         <footer className="mt-16 border-t border-slate-200 pt-8 text-sm text-slate-400">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <span>Last updated: June 2026</span>
+            <span>Last updated: September 2026</span>
             <div className="flex gap-6">
               <Link href="/privacy" className="hover:text-slate-600 transition-colors">Privacy Policy</Link>
               <Link href="/terms" className="hover:text-slate-600 transition-colors">Terms of Service</Link>

@@ -454,7 +454,10 @@ export function DashboardPage() {
     const tasks: Promise<void>[] = [
       dashboardApi.full(6)
         .then(setData)
-        .catch(() => setError('Dashboard data could not be loaded. Check the API and cache service, then retry.')),
+        .catch(() => {
+          setData(null);
+          setError('Dashboard data could not be loaded. Metrics are unavailable; retry after checking the API and cache service.');
+        }),
     ];
     if (isFeatureEnabled('ai_assistant')) {
       tasks.push(
@@ -476,6 +479,7 @@ export function DashboardPage() {
   const o = data?.overview;
   const kpis = data?.kpis;
   const payroll = o?.payrollSummary ?? null;
+  const dataAvailable = data !== null;
 
   // Time-aware attendance: before 08:00 local, don't colour-code 0 present as danger.
   const localHour = new Date().getHours();
@@ -498,21 +502,21 @@ export function DashboardPage() {
   // ── Attention bar items ────────────────────────────────────────────────────
 
   const attentionItems: AttentionItem[] = [];
-  if (criticalAlerts.length > 0) attentionItems.push({
+  if (dataAvailable && criticalAlerts.length > 0) attentionItems.push({
     id: 'compliance',
     label: `${criticalAlerts.length} critical compliance alert${criticalAlerts.length !== 1 ? 's' : ''}`,
     severity: 'critical',
     to: '/compliance',
     ctaLabel: 'View Compliance',
   });
-  if ((o?.pendingApprovals ?? 0) >= 5) attentionItems.push({
+  if (dataAvailable && (o?.pendingApprovals ?? 0) >= 5) attentionItems.push({
     id: 'approvals',
     label: `${o!.pendingApprovals} approvals waiting`,
     severity: 'warning',
     to: '/approvals',
     ctaLabel: 'Review Approvals',
   });
-  if ((kpis?.expiredDocuments ?? 0) > 0) attentionItems.push({
+  if (dataAvailable && (kpis?.expiredDocuments ?? 0) > 0) attentionItems.push({
     id: 'docs',
     label: `${kpis!.expiredDocuments} expired document${kpis!.expiredDocuments !== 1 ? 's' : ''}`,
     severity: 'critical',
@@ -526,10 +530,10 @@ export function DashboardPage() {
     {
       label: 'Net Payroll',
       icon: BadgeDollarSign,
-      value: payroll ? fmtMoney(payroll.totalNet) : (loading ? '—' : 'No run'),
+      value: payroll ? fmtMoney(payroll.totalNet) : (loading ? '—' : dataAvailable ? 'No run' : 'Unavailable'),
       sub: payroll
         ? `${payroll.periodLabel} · ${payroll.employeeCount} employees · ${payroll.status}`
-        : 'No processed payroll run yet',
+        : dataAvailable ? 'No processed payroll run yet' : 'Dashboard request failed',
       tone: 'neutral',
       trend: payroll ? 'up' : 'flat',
       to: '/payroll',
@@ -538,50 +542,50 @@ export function DashboardPage() {
     {
       label: 'Active Headcount',
       icon: Users,
-      value: loading ? '—' : (s?.activeEmployees ?? 0).toLocaleString(),
-      sub: loading ? 'Loading…' : `${s?.totalEmployees ?? 0} total · ${o?.newJoinersThisMonth ?? 0} joined this month`,
-      tone: 'blue',
+      value: loading ? '—' : dataAvailable ? (s?.activeEmployees ?? 0).toLocaleString() : 'Unavailable',
+      sub: loading ? 'Loading…' : dataAvailable ? `${s?.totalEmployees ?? 0} total · ${o?.newJoinersThisMonth ?? 0} joined this month` : 'Dashboard request failed',
+      tone: dataAvailable ? 'blue' : 'neutral',
       trend: 'up',
       to: '/people',
     },
     {
       label: 'Present Today',
       icon: CalendarCheck,
-      value: loading ? '—' : (s?.presentToday ?? 0).toLocaleString(),
-      sub: loading ? 'Loading…' : (isEarlyMorning ? 'Pre-shift window' : `${attendanceRate}% attendance rate`),
-      tone: attendanceTone,
+      value: loading ? '—' : dataAvailable ? (s?.presentToday ?? 0).toLocaleString() : 'Unavailable',
+      sub: loading ? 'Loading…' : !dataAvailable ? 'Dashboard request failed' : (isEarlyMorning ? 'Pre-shift window' : `${attendanceRate}% attendance rate`),
+      tone: dataAvailable ? attendanceTone : 'neutral',
       trend: attendanceTone === 'green' ? 'up' : 'flat',
       to: '/attendance',
     },
     {
       label: 'On Leave',
       icon: CalendarPlus,
-      value: loading ? '—' : (s?.onLeave ?? 0).toLocaleString(),
-      sub: loading ? 'Loading…' : `${s?.absent ?? 0} absent · ${(s?.overtimeHours ?? 0).toFixed(0)}h OT this month`,
-      tone: 'cyan',
+      value: loading ? '—' : dataAvailable ? (s?.onLeave ?? 0).toLocaleString() : 'Unavailable',
+      sub: loading ? 'Loading…' : dataAvailable ? `${s?.absent ?? 0} absent · ${(s?.overtimeHours ?? 0).toFixed(0)}h OT this month` : 'Dashboard request failed',
+      tone: dataAvailable ? 'cyan' : 'neutral',
       to: '/leave',
     },
     {
       label: 'Pending Approvals',
       icon: Clock,
-      value: loading ? '—' : (o?.pendingApprovals ?? 0).toLocaleString(),
-      sub: loading ? 'Loading…' : `${o?.openLeaveRequests ?? 0} open leave requests`,
-      tone: !loading && (o?.pendingApprovals ?? 0) > 0 ? 'amber' : 'green',
+      value: loading ? '—' : dataAvailable ? (o?.pendingApprovals ?? 0).toLocaleString() : 'Unavailable',
+      sub: loading ? 'Loading…' : dataAvailable ? `${o?.openLeaveRequests ?? 0} open leave requests` : 'Dashboard request failed',
+      tone: !dataAvailable ? 'neutral' : !loading && (o?.pendingApprovals ?? 0) > 0 ? 'amber' : 'green',
       trend: 'flat',
       to: '/approvals',
     },
     {
       label: 'Compliance',
       icon: ShieldAlert,
-      value: loading ? '—' : alerts.length.toLocaleString(),
-      sub: loading ? 'Loading…' : (
+      value: loading ? '—' : dataAvailable ? alerts.length.toLocaleString() : 'Unavailable',
+      sub: loading ? 'Loading…' : !dataAvailable ? 'Dashboard request failed' : (
         criticalAlerts.length > 0
           ? `${criticalAlerts.length} critical need action`
           : kpis?.expiringDocuments ?? 0 > 0
           ? `${kpis?.expiringDocuments} expiring soon`
           : 'All clear'
       ),
-      tone: !loading && criticalAlerts.length > 0 ? 'rose' : !loading && alerts.length > 0 ? 'amber' : 'green',
+      tone: !dataAvailable ? 'neutral' : !loading && criticalAlerts.length > 0 ? 'rose' : !loading && alerts.length > 0 ? 'amber' : 'green',
       trend: criticalAlerts.length > 0 ? 'down' : 'flat',
       to: '/compliance',
     },
@@ -608,10 +612,12 @@ export function DashboardPage() {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+              {!loading && dataAvailable && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />}
+              <span className={`relative inline-flex h-2 w-2 rounded-full ${loading ? 'bg-amber-400' : dataAvailable ? 'bg-emerald-500' : 'bg-rose-500'}`} />
             </span>
-            <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400">Live</span>
+            <span className={`text-[10px] font-bold uppercase tracking-[0.18em] ${dataAvailable ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {loading ? 'Refreshing' : dataAvailable ? 'Live' : 'Data unavailable'}
+            </span>
             <span className="text-slate-300 dark:text-slate-600" aria-hidden>·</span>
             <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-400 dark:text-slate-500">Workforce Command Center</span>
           </div>

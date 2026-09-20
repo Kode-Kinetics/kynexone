@@ -51,6 +51,7 @@ export function ApprovalsPage() {
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
   const [comments, setComments] = useState('');
   const [deciding, setDeciding] = useState(false);
+  const [decisionError, setDecisionError] = useState('');
   // Stale-approval path: the establishment guard re-checks at apply time; a slot
   // consumed since submission returns a structured 409 rendered as the popup.
   const [establishmentBlock, setEstablishmentBlock] = useState<{ block: EstablishmentBlockedPayload; employeeName?: string } | null>(null);
@@ -71,46 +72,100 @@ export function ApprovalsPage() {
     ]);
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError('');
+  /**
+   * Fetches the queue. `silent` reconciles in the background WITHOUT raising the spinner: the
+   * table body swaps its rows for a spinner whenever `loading` is true, so a non-silent reload
+   * after an optimistic update would flash the very rows the update just settled. A silent
+   * reload also leaves existing rows in place if it fails, rather than blanking the table on a
+   * transient error — the optimistic state stays until an explicit reload contradicts it.
+   */
+  const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (!silent) {
+      setLoading(true);
+      setError('');
+    }
     try {
       const res = await approvalsApi.list({ status: statusFilter || undefined, queue: queueFilter || undefined, page, pageSize: PAGE_SIZE });
       setRequests(res.items);
       setTotal(res.total);
     } catch {
-      setError('Could not load approval requests from the API.');
-      setRequests([]);
-      setTotal(0);
+      if (!silent) {
+        setError('Could not load approval requests from the API.');
+        setRequests([]);
+        setTotal(0);
+      }
     }
-    finally { setLoading(false); }
+    finally { if (!silent) setLoading(false); }
   }, [statusFilter, queueFilter, page]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { void load(); }, [load]);
   useEffect(() => { loadMetrics().catch(() => setMetrics([])); }, [loadMetrics]);
   useEffect(() => { setPage(1); }, [statusFilter, queueFilter]);
 
+  /**
+   * Applies a decision optimistically.
+   *
+   * The server round-trip used to gate the whole UI: decide -> reload list -> reload four metric
+   * queries, so a row only left the queue after three sequential network waves. The decided row is
+   * now removed and the counters decremented immediately, and the authoritative reload runs in the
+   * background purely to reconcile. Any failure restores the exact pre-decision snapshot.
+   */
   const handleDecide = async (decision: 'Approve' | 'Reject') => {
     if (!selected) return;
     if (decision === 'Reject' && comments.trim().length < 5) {
-      alert('Please add a clear rejection reason before rejecting.');
+      setDecisionError('Add a clear rejection reason of at least 5 characters before rejecting.');
       return;
     }
+    setDecisionError('');
+
+    // Snapshot everything the optimistic update touches so a failure can rewind exactly.
+    const decided = selected;
+    const prevRequests = requests;
+    const prevTotal = total;
+    const prevMetrics = metrics;
+    const prevComments = comments;
+
+    // The decided row only leaves the visible list while the list is showing pending work; on a
+    // "Approved"/"Rejected"/all-status view the row legitimately stays, with its new status.
+    const leavesCurrentList = statusFilter === 'Pending';
+    const decidedStatus = decision === 'Approve' ? 'Approved' : 'Rejected';
+
     setDeciding(true);
+    setSelected(null);
+    setComments('');
+    setRequests(rs => leavesCurrentList
+      ? rs.filter(r => r.id !== decided.id)
+      : rs.map(r => (r.id === decided.id ? { ...r, status: decidedStatus } : r)));
+    if (leavesCurrentList) setTotal(t => Math.max(0, t - 1));
+    // Every counter is a count of PENDING work, so each one this request belonged to drops by one.
+    // "All Pending" always contained it; the queue-specific tiles only if it sat in that queue.
+    setMetrics(ms => ms.map(m => (
+      m.key === '' || m.key === decided.currentQueue
+        ? { ...m, value: Math.max(0, m.value - 1) }
+        : m
+    )));
+
     try {
-      await approvalsApi.decide(selected.id, decision, comments);
-      setSelected(null);
-      setComments('');
-      await Promise.all([load(), loadMetrics()]);
+      await approvalsApi.decide(decided.id, decision, comments);
+      // Reconcile against the server; the user is already looking at the post-decision state.
+      await Promise.all([load({ silent: true }), loadMetrics()]);
     } catch (err: unknown) {
+      // Roll back to the pre-decision snapshot before surfacing anything.
+      setRequests(prevRequests);
+      setTotal(prevTotal);
+      setMetrics(prevMetrics);
+
       const block = establishmentBlockFromError(err);
       if (block) {
         // The approval stays pending — it can be re-approved after a budget raise.
-        setEstablishmentBlock({ block, employeeName: selected.entityName || undefined });
+        setEstablishmentBlock({ block, employeeName: decided.entityName || undefined });
         await Promise.all([load(), loadMetrics()]);
       } else {
+        // Reopen the decision so the reviewer keeps their typed justification and can retry.
+        setSelected(decided);
+        setComments(prevComments);
         const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-        alert(msg ?? 'Failed to submit decision. Please try again.');
+        setDecisionError(msg ?? 'Failed to submit decision. Please try again.');
       }
     }
     finally { setDeciding(false); }
@@ -139,6 +194,8 @@ export function ApprovalsPage() {
               key={m.label}
               type="button"
               onClick={() => { setStatusFilter('Pending'); setQueueFilter(m.key); }}
+              aria-pressed={queueFilter === m.key && statusFilter === 'Pending'}
+              aria-label={`Show ${m.label}: ${m.value} pending`}
               className={`rounded-lg border p-4 text-left transition ${queueFilter === m.key && statusFilter === 'Pending' ? 'border-sapphire bg-blue-50/70 dark:border-blue-400 dark:bg-blue-500/10' : 'border-slate-200 bg-white hover:border-slate-300 dark:border-white/10 dark:bg-white/[0.03] dark:hover:border-white/20'}`}
             >
               <div className="flex items-center justify-between gap-3">
@@ -152,7 +209,7 @@ export function ApprovalsPage() {
         })}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 dark:border-white/10 dark:bg-white/[0.03]">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 dark:border-white/10 dark:bg-white/[0.03]" role="group" aria-label="Approval filters">
         {([
           ['mine', 'My Queue', UserCheck],
           ['team', 'Team Queue', Users],
@@ -163,6 +220,8 @@ export function ApprovalsPage() {
             key={key || 'all-queues'}
             type="button"
             onClick={() => setQueueFilter(key)}
+            aria-pressed={queueFilter === key}
+            aria-label={`Filter by ${label}`}
             className={`inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-sm font-semibold transition ${queueFilter === key ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/10'}`}
           >
             <Icon className="h-3.5 w-3.5" />
@@ -175,6 +234,8 @@ export function ApprovalsPage() {
             key={s}
             type="button"
             onClick={() => setStatusFilter(s)}
+            aria-pressed={statusFilter === s}
+            aria-label={`Filter by status ${s || 'All'}`}
             className={`h-8 rounded-md px-3 text-sm font-semibold transition ${statusFilter === s ? 'bg-sapphire text-white' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/10'}`}
           >
             {s || 'All'}
@@ -184,7 +245,7 @@ export function ApprovalsPage() {
       </div>
 
       {error && (
-        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+        <div role="alert" aria-live="assertive" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
           {error}
         </div>
       )}
@@ -245,7 +306,7 @@ export function ApprovalsPage() {
                   <td className="px-4 py-3"><StatusChip {...statusTone(r.status)} /></td>
                   <td className="px-4 py-3">
                     {r.status === 'Pending' && r.canDecide && (
-                      <button type="button" onClick={() => { setSelected(r); setComments(''); }}
+                      <button type="button" onClick={() => { setSelected(r); setComments(''); setDecisionError(''); }}
                         className="btn-secondary h-8 px-3 text-xs">
                         Review
                       </button>
@@ -272,10 +333,10 @@ export function ApprovalsPage() {
       </div>
 
       {/* Review Modal */}
-      <Modal isOpen={!!selected} title="Review Approval" onClose={() => setSelected(null)}
+      <Modal isOpen={!!selected} title="Review Approval" onClose={() => { setSelected(null); setDecisionError(''); }}
         footer={
           <>
-            <button type="button" onClick={() => setSelected(null)} className="btn-secondary">Cancel</button>
+            <button type="button" onClick={() => { setSelected(null); setDecisionError(''); }} className="btn-secondary">Cancel</button>
             {selected?.canDecide && (
               <>
                 <button type="button" onClick={() => handleDecide('Reject')} disabled={deciding} className="btn-secondary text-rose-500 hover:border-rose-300 disabled:opacity-60">Reject</button>
@@ -335,9 +396,10 @@ export function ApprovalsPage() {
             )}
             {selected.canDecide ? (
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Comments (optional)</label>
-                <textarea value={comments} onChange={(e) => setComments(e.target.value)} className="input w-full resize-none" rows={3} placeholder="Add a comment..." />
-                <p className="mt-1 text-xs text-slate-400">A rejection requires a clear reason for auditability.</p>
+                <label htmlFor="approval-comments" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Comments (required for rejection)</label>
+                <textarea id="approval-comments" value={comments} onChange={(e) => { setComments(e.target.value); if (decisionError) setDecisionError(''); }} className="input w-full resize-none" rows={3} placeholder="Add a comment..." aria-describedby="approval-comments-help approval-decision-error" />
+                <p id="approval-comments-help" className="mt-1 text-xs text-slate-400">A rejection requires a clear reason for auditability.</p>
+                {decisionError && <p id="approval-decision-error" role="alert" className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">{decisionError}</p>}
               </div>
             ) : (
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">

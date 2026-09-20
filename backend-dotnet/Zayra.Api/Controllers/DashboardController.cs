@@ -25,6 +25,16 @@ public class DashboardController : ControllerBase
 
     private static readonly string[] QiwaRequiredDocs = ["Iqama", "Work Permit", "National ID", "Passport"];
 
+    /// <summary>
+    /// Lower-cased mirror of <see cref="QiwaRequiredDocs"/>, DERIVED from it so the two cannot
+    /// drift when a required document type is added. The coverage check runs in SQL, and
+    /// PostgreSQL string comparison is case-sensitive by default, so it compares
+    /// lower(document_type) to preserve the OrdinalIgnoreCase semantics the previous in-memory
+    /// HashSet had.
+    /// </summary>
+    private static readonly string[] QiwaRequiredDocsLower =
+        QiwaRequiredDocs.Select(d => d.ToLowerInvariant()).ToArray();
+
     public DashboardController(ZayraDbContext db, IDistributedCache cache, IDataScopeService scopeService)
     {
         _db = db;
@@ -159,37 +169,40 @@ public class DashboardController : ControllerBase
         var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var monthStart = new DateOnly(today.Year, today.Month, 1);
 
-        var empCounts = await _db.Employees
-            .Where(e => e.TenantId == tenantId)
-            .GroupBy(_ => 1)
-            .Select(g => new { Total = g.Count(), Active = g.Count(e => e.Status == "Active") })
+        // Keep the cold dashboard to one database round-trip. These used to be four sequential
+        // queries; on a hosted Postgres connection the network latency dwarfed the aggregate work.
+        var aggregate = await _db.Tenants
+            .Where(t => t.Id == tenantId)
+            .Select(_ => new
+            {
+                Total = _db.Employees.Count(e => e.TenantId == tenantId),
+                Active = _db.Employees.Count(e => e.TenantId == tenantId && e.Status == "Active"),
+                Present = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today && a.Status == "Present"),
+                OnLeave = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today
+                    && (a.Status == "Leave" || a.Status == "On Leave")),
+                Absent = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today && a.Status == "Absent"),
+                // Hours are safe to aggregate as REAL as well as NUMERIC; this keeps the query
+                // portable to the SQLite regression harness without changing the decimal API.
+                OvertimeHours = _db.AttendanceRecords
+                    .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today)
+                    .Sum(a => (double?)a.OvertimeHours) ?? 0d,
+                ChurnRisk = _db.AttendanceRecords
+                    .Where(a => a.TenantId == tenantId && a.WorkDate >= today.AddDays(-30)
+                        && (a.Status == "Absent" || a.OvertimeHours >= 4))
+                    .Select(a => a.EmployeeId)
+                    .Distinct()
+                    .Count(),
+            })
             .FirstOrDefaultAsync(ct);
 
-        var todayBuckets = await _db.AttendanceRecords
-            .Where(a => a.TenantId == tenantId && a.WorkDate == today)
-            .GroupBy(a => a.Status)
-            .Select(g => new { Status = g.Key, Count = g.Count() })
-            .ToListAsync(ct);
-
-        var present = todayBuckets.Where(b => b.Status == "Present").Sum(b => b.Count);
-        var onLeave = todayBuckets.Where(b => b.Status == "Leave" || b.Status == "On Leave").Sum(b => b.Count);
-        var absent  = todayBuckets.Where(b => b.Status == "Absent").Sum(b => b.Count);
-
-        var overtimeHours = await _db.AttendanceRecords
-            .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today)
-            .SumAsync(a => (decimal?)a.OvertimeHours, ct) ?? 0m;
-
-        var churnRisk = await _db.AttendanceRecords
-            .Where(a => a.TenantId == tenantId && a.WorkDate >= today.AddDays(-30)
-                && (a.Status == "Absent" || a.OvertimeHours >= 4))
-            .Select(a => a.EmployeeId)
-            .Distinct()
-            .CountAsync(ct);
-
         return new DashboardSummaryDto(
-            empCounts?.Total ?? 0,
-            empCounts?.Active ?? 0,
-            present, onLeave, absent, overtimeHours, churnRisk);
+            aggregate?.Total ?? 0,
+            aggregate?.Active ?? 0,
+            aggregate?.Present ?? 0,
+            aggregate?.OnLeave ?? 0,
+            aggregate?.Absent ?? 0,
+            aggregate is null ? 0m : Convert.ToDecimal(aggregate.OvertimeHours),
+            aggregate?.ChurnRisk ?? 0);
     }
 
     private async Task<IReadOnlyList<DashboardTrendDto>> BuildTrends(Guid tenantId, int months, CancellationToken ct)
@@ -225,8 +238,18 @@ public class DashboardController : ControllerBase
         // Use DateTimeKind.Utc to satisfy Npgsql's strict timestamptz mode.
         var monthStartUtc = monthStart.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
 
-        var pendingApprovals = await _db.ApprovalRequests
-            .CountAsync(a => a.TenantId == tenantId && a.Status == "Pending", ct);
+        // Independent scalar counts share one command instead of three serial round-trips.
+        var counts = await _db.Tenants
+            .Where(t => t.Id == tenantId)
+            .Select(_ => new
+            {
+                PendingApprovals = _db.ApprovalRequests.Count(a => a.TenantId == tenantId && a.Status == "Pending"),
+                OpenLeave = _db.LeaveRequests.Count(l => l.TenantId == tenantId
+                    && l.Status != "Approved" && l.Status != "Rejected"
+                    && l.Status != "Cancelled" && l.Status != "Withdrawn" && l.Status != "Draft"),
+                NewJoiners = _db.Employees.Count(e => e.TenantId == tenantId && e.JoiningDate >= monthStartUtc),
+            })
+            .FirstOrDefaultAsync(ct);
 
         var approvalQueue = await _db.ApprovalRequests
             .Where(a => a.TenantId == tenantId && a.Status == "Pending")
@@ -248,19 +271,16 @@ public class DashboardController : ControllerBase
             .OrderByDescending(p => p.Year).ThenByDescending(p => p.Month)
             .FirstOrDefaultAsync(ct);
 
-        var workforceMixRaw = await _db.Employees
+        // Both charts read the same active-employee slice. UNION ALL keeps them to one command.
+        var workforceGroups = await _db.Employees
             .Where(e => e.TenantId == tenantId && e.Status == "Active")
             .GroupBy(e => e.EmploymentType)
-            .Select(g => new { Key = g.Key, Count = g.Count() })
-            .OrderByDescending(x => x.Count)
-            .ToListAsync(ct);
-
-        var headcountRaw = await _db.Employees
-            .Where(e => e.TenantId == tenantId && e.Status == "Active")
-            .GroupBy(e => e.Department)
-            .Select(g => new { Key = g.Key, Count = g.Count() })
-            .OrderByDescending(x => x.Count)
-            .Take(6)
+            .Select(g => new { Kind = "mix", Key = g.Key, Count = g.Count() })
+            .Concat(
+                _db.Employees
+                    .Where(e => e.TenantId == tenantId && e.Status == "Active")
+                    .GroupBy(e => e.Department)
+                    .Select(g => new { Kind = "department", Key = g.Key, Count = g.Count() }))
             .ToListAsync(ct);
 
         var expiringRaw = await _db.EmployeeComplianceRecords
@@ -270,15 +290,6 @@ public class DashboardController : ControllerBase
             .Take(8)
             .Select(c => new { c.FieldLabel, c.ExpiryDate })
             .ToListAsync(ct);
-
-        var openLeave = await _db.LeaveRequests
-            .CountAsync(l => l.TenantId == tenantId
-                && l.Status != "Approved" && l.Status != "Rejected"
-                && l.Status != "Cancelled" && l.Status != "Withdrawn" && l.Status != "Draft", ct);
-
-        // Fixed: DateTimeKind.Utc prevents Npgsql strict-mode timestamp rejection.
-        var newJoiners = await _db.Employees
-            .CountAsync(e => e.TenantId == tenantId && e.JoiningDate >= monthStartUtc, ct);
 
         PayrollSummaryDto? payrollSummary = null;
         IReadOnlyList<NamedValueDto> payrollByEntity = Array.Empty<NamedValueDto>();
@@ -305,11 +316,16 @@ public class DashboardController : ControllerBase
                 .ToList();
         }
 
-        var workforceMix = workforceMixRaw
+        var workforceMix = workforceGroups
+            .Where(x => x.Kind == "mix")
+            .OrderByDescending(x => x.Count)
             .Select(x => new NamedValueDto(string.IsNullOrWhiteSpace(x.Key) ? "Unspecified" : x.Key, x.Count))
             .ToList();
 
-        var headcount = headcountRaw
+        var headcount = workforceGroups
+            .Where(x => x.Kind == "department")
+            .OrderByDescending(x => x.Count)
+            .Take(6)
             .Select(x => new NamedValueDto(string.IsNullOrWhiteSpace(x.Key) ? "Unassigned" : x.Key, x.Count))
             .ToList();
 
@@ -323,8 +339,9 @@ public class DashboardController : ControllerBase
         }).ToList();
 
         return new DashboardOverviewDto(
-            pendingApprovals, approvalQueue, payrollSummary,
-            payrollByEntity, workforceMix, headcount, alerts, openLeave, newJoiners);
+            counts?.PendingApprovals ?? 0, approvalQueue, payrollSummary,
+            payrollByEntity, workforceMix, headcount, alerts,
+            counts?.OpenLeave ?? 0, counts?.NewJoiners ?? 0);
     }
 
     private async Task<IReadOnlyList<PayrollTrendDto>> BuildPayrollTrends(Guid tenantId, int months, CancellationToken ct)
@@ -357,35 +374,34 @@ public class DashboardController : ControllerBase
 
     private async Task<IReadOnlyList<ActivityFeedItemDto>> BuildActivityFeed(Guid tenantId, CancellationToken ct)
     {
-        // Sequential queries — same DbContext, cannot run concurrently.
         var cutoff = DateTime.UtcNow.AddDays(-7);
 
-        var payroll = await _db.PayrollAuditLogs
+        var payroll = _db.PayrollAuditLogs
             .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff)
             .OrderByDescending(l => l.CreatedAtUtc)
             .Take(8)
-            .Select(l => new { Module = "Payroll", l.Action, Actor = "System", l.CreatedAtUtc })
-            .ToListAsync(ct);
+            .Select(l => new { Module = "Payroll", l.Action, Actor = "System", l.CreatedAtUtc });
 
-        var leave = await _db.LeaveAuditLogs
+        var leave = _db.LeaveAuditLogs
             .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff)
             .OrderByDescending(l => l.CreatedAtUtc)
             .Take(5)
-            .Select(l => new { Module = "Leave", l.Action, Actor = l.PerformedByName ?? "System", l.CreatedAtUtc })
-            .ToListAsync(ct);
+            .Select(l => new { Module = "Leave", l.Action, Actor = l.PerformedByName ?? "System", l.CreatedAtUtc });
 
-        var attendance = await _db.AttendanceAuditLogs
+        var attendance = _db.AttendanceAuditLogs
             .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff)
             .OrderByDescending(l => l.CreatedAtUtc)
             .Take(5)
-            .Select(l => new { Module = "Attendance", l.Action, Actor = "System", l.CreatedAtUtc })
-            .ToListAsync(ct);
+            .Select(l => new { Module = "Attendance", l.Action, Actor = "System", l.CreatedAtUtc });
 
-        return payroll
+        var rows = await payroll
             .Concat(leave)
             .Concat(attendance)
             .OrderByDescending(x => x.CreatedAtUtc)
             .Take(15)
+            .ToListAsync(ct);
+
+        return rows
             .Select(x => new ActivityFeedItemDto(x.Module, x.Action, x.Actor, x.CreatedAtUtc))
             .ToList();
     }
@@ -394,55 +410,61 @@ public class DashboardController : ControllerBase
     {
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-        IReadOnlyCollection<int>? scopeIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds;
-
-        var leaveQ = _db.LeaveRequests.Where(x => x.TenantId == tenantId && (x.Status == "Submitted" || x.Status == "Pending"));
-        if (scopeIds is not null) leaveQ = leaveQ.Where(x => scopeIds.Contains(x.EmployeeId));
-        var pendingLeave = await leaveQ.CountAsync(ct);
-
-        var corrQ = _db.AttendanceRegularizationRequests.Where(x => x.TenantId == tenantId && x.Status == "Submitted");
-        if (scopeIds is not null) corrQ = corrQ.Where(x => scopeIds.Contains(x.EmployeeId));
-        var pendingCorrections = await corrQ.CountAsync(ct);
-
-        var exceptQ = _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && x.WorkDate == today
-            && (x.Status == "Late" || x.Status == "Absent" || x.LateMinutes > 0));
-        if (scopeIds is not null) exceptQ = exceptQ.Where(x => scopeIds.Contains(x.EmployeeId));
-        var attendanceExceptions = await exceptQ.CountAsync(ct);
-
+        var isUnrestricted = scope.IsUnrestricted;
+        var scopeIds = scope.AllowedEmployeeIds?.ToArray() ?? Array.Empty<int>();
         var expiringSoon = today.AddDays(60);
-        var expiringQ = _db.EmployeeDocuments.Where(x => x.TenantId == tenantId && !x.IsDeleted
-            && x.ExpiryDate != null && x.ExpiryDate > today && x.ExpiryDate <= expiringSoon);
-        if (scopeIds is not null) expiringQ = expiringQ.Where(x => x.EmployeeId != null && scopeIds.Contains(x.EmployeeId.Value));
-        var expiringDocuments = await expiringQ.CountAsync(ct);
-
-        var expiredQ = _db.EmployeeDocuments.Where(x => x.TenantId == tenantId && !x.IsDeleted
-            && x.ExpiryDate != null && x.ExpiryDate < today);
-        if (scopeIds is not null) expiredQ = expiredQ.Where(x => x.EmployeeId != null && scopeIds.Contains(x.EmployeeId.Value));
-        var expiredDocuments = await expiredQ.CountAsync(ct);
+        // Five role-scoped counters plus the feature flag are independent scalar subqueries. One
+        // command avoids a network round-trip per card while retaining the exact scope predicates.
+        var counters = await _db.Tenants
+            .Where(t => t.Id == tenantId)
+            .Select(_ => new
+            {
+                PendingLeave = _db.LeaveRequests.Count(x => x.TenantId == tenantId
+                    && (x.Status == "Submitted" || x.Status == "Pending")
+                    && (isUnrestricted || scopeIds.Contains(x.EmployeeId))),
+                PendingCorrections = _db.AttendanceRegularizationRequests.Count(x => x.TenantId == tenantId
+                    && x.Status == "Submitted"
+                    && (isUnrestricted || scopeIds.Contains(x.EmployeeId))),
+                AttendanceExceptions = _db.AttendanceDailyRecords.Count(x => x.TenantId == tenantId
+                    && x.WorkDate == today
+                    && (x.Status == "Late" || x.Status == "Absent" || x.LateMinutes > 0)
+                    && (isUnrestricted || scopeIds.Contains(x.EmployeeId))),
+                ExpiringDocuments = _db.EmployeeDocuments.Count(x => x.TenantId == tenantId && !x.IsDeleted
+                    && x.ExpiryDate != null && x.ExpiryDate > today && x.ExpiryDate <= expiringSoon
+                    && (isUnrestricted || (x.EmployeeId != null && scopeIds.Contains(x.EmployeeId.Value)))),
+                ExpiredDocuments = _db.EmployeeDocuments.Count(x => x.TenantId == tenantId && !x.IsDeleted
+                    && x.ExpiryDate != null && x.ExpiryDate < today
+                    && (isUnrestricted || (x.EmployeeId != null && scopeIds.Contains(x.EmployeeId.Value)))),
+                QiwaEnabled = _db.TenantFeatureFlags.Any(x => x.TenantId == tenantId
+                    && x.FeatureKey == Zayra.Api.Models.FeatureKeys.QiwaIntegration && x.IsEnabled),
+            })
+            .FirstOrDefaultAsync(ct);
 
         var empQ = _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted && x.Status == "Active");
-        if (scopeIds is not null) empQ = empQ.Where(x => scopeIds.Contains(x.Id));
-        var activeEmployeeIds = await empQ.Select(x => x.Id).ToListAsync(ct);
+        if (!isUnrestricted) empQ = empQ.Where(x => scopeIds.Contains(x.Id));
+        // Required-document coverage is aggregated in SQL rather than in memory. The previous
+        // implementation pulled EVERY active employee id and EVERY one of their document rows
+        // across the wire on each request -- and this method is deliberately uncached, so a
+        // tenant with 5k employees paid an O(employees x documents) transfer on every dashboard
+        // load. The correlated COUNT(DISTINCT ...) below returns a single integer instead.
+        var missingDocuments = await empQ
+            .CountAsync(e => _db.EmployeeDocuments
+                .Where(d => d.TenantId == tenantId
+                    && !d.IsDeleted
+                    && d.EmployeeId == e.Id
+                    && QiwaRequiredDocsLower.Contains(d.DocumentType.ToLower()))
+                .Select(d => d.DocumentType.ToLower())
+                .Distinct()
+                .Count() < QiwaRequiredDocsLower.Length, ct);
 
-        int missingDocuments = 0;
-        if (activeEmployeeIds.Count > 0)
-        {
-            var uploadedDocs = await _db.EmployeeDocuments
-                .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.EmployeeId != null && activeEmployeeIds.Contains(x.EmployeeId!.Value))
-                .Select(x => new { x.EmployeeId, x.DocumentType })
-                .ToListAsync(ct);
-            var byEmployee = uploadedDocs.GroupBy(x => x.EmployeeId!.Value)
-                .ToDictionary(g => g.Key, g => g.Select(d => d.DocumentType).ToHashSet(StringComparer.OrdinalIgnoreCase));
-            missingDocuments = activeEmployeeIds.Count(id =>
-                !byEmployee.TryGetValue(id, out var docs) ||
-                QiwaRequiredDocs.Any(req => !docs.Contains(req)));
-        }
-
-        var qiwaEnabled = await _db.TenantFeatureFlags.AnyAsync(
-            x => x.TenantId == tenantId && x.FeatureKey == Zayra.Api.Models.FeatureKeys.QiwaIntegration && x.IsEnabled, ct);
-
-        return new DashboardKpisDto(pendingLeave, pendingCorrections, attendanceExceptions,
-            expiringDocuments, expiredDocuments, missingDocuments, qiwaEnabled);
+        return new DashboardKpisDto(
+            counters?.PendingLeave ?? 0,
+            counters?.PendingCorrections ?? 0,
+            counters?.AttendanceExceptions ?? 0,
+            counters?.ExpiringDocuments ?? 0,
+            counters?.ExpiredDocuments ?? 0,
+            missingDocuments,
+            counters?.QiwaEnabled ?? false);
     }
 
     private static DashboardFullDto EmptyFull(DashboardKpisDto kpis) => new(

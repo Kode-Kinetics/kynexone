@@ -220,7 +220,7 @@ public class AuthSeeder : IAuthSeeder
         // Level 6 — Payroll Officer: payroll processing
         await EnsureRole(tenantId, "Payroll Officer", "Payroll and WPS specialist", Ps(new[] {
             "dashboard.read", "employees.read", "employees.sensitive", "attendance.read",
-            "payroll.read", "payroll.write", "loans.read", "notifications.read", "reports.read"
+            "payroll.read", "payroll.write", "loans.read", "approvals.read", "notifications.read", "reports.read"
         }), 6, true, cancellationToken);
 
         // Level 7 — Finance Approver: finance approvals

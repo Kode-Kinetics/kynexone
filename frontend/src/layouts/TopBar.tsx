@@ -79,39 +79,50 @@ function NotificationPanel({ onClose, onCountChange }: { onClose: () => void; on
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [markingAll, setMarkingAll] = useState(false);
+  const [error, setError] = useState('');
 
   const refresh = () => {
+    setError('');
     notificationsApi.list()
       .then((data) => { setItems(data); onCountChange(data.filter(n => n.status === 'Unread').length); })
-      .catch(() => {})
+      .catch(() => { setItems([]); setError('Notifications could not be loaded.'); })
       .finally(() => setLoading(false));
   };
 
   useEffect(() => { refresh(); }, []);
 
   const markRead = async (id: string) => {
-    await notificationsApi.markRead(id).catch(() => {});
-    setItems((prev) => {
-      const next = prev.map((n) => n.id === id ? { ...n, status: 'Read' } : n);
-      onCountChange(next.filter(n => n.status === 'Unread').length);
-      return next;
-    });
+    setError('');
+    try {
+      await notificationsApi.markRead(id);
+      setItems((prev) => {
+        const next = prev.map((n) => n.id === id ? { ...n, status: 'Read' } : n);
+        onCountChange(next.filter(n => n.status === 'Unread').length);
+        return next;
+      });
+    } catch { setError('Could not mark the notification as read. No local status was changed.'); }
   };
 
   const dismiss = async (id: string) => {
-    await notificationsApi.dismiss(id).catch(() => {});
-    setItems((prev) => {
-      const next = prev.filter((n) => n.id !== id);
-      onCountChange(next.filter(n => n.status === 'Unread').length);
-      return next;
-    });
+    setError('');
+    try {
+      await notificationsApi.dismiss(id);
+      setItems((prev) => {
+        const next = prev.filter((n) => n.id !== id);
+        onCountChange(next.filter(n => n.status === 'Unread').length);
+        return next;
+      });
+    } catch { setError('Could not dismiss the notification. It remains in the list.'); }
   };
 
   const markAllRead = async () => {
     setMarkingAll(true);
-    await notificationsApi.markAllRead().catch(() => {});
-    setItems((prev) => prev.map((n) => ({ ...n, status: 'Read' })));
-    onCountChange(0);
+    setError('');
+    try {
+      await notificationsApi.markAllRead();
+      setItems((prev) => prev.map((n) => ({ ...n, status: 'Read' })));
+      onCountChange(0);
+    } catch { setError('Could not mark all notifications as read. No local status was changed.'); }
     setMarkingAll(false);
   };
 
@@ -149,12 +160,13 @@ function NotificationPanel({ onClose, onCountChange }: { onClose: () => void; on
 
       {/* Body */}
       <div className="max-h-[360px] overflow-y-auto">
+        {error && <div role="alert" className="m-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">{error}</div>}
         {loading && (
           <div className="flex justify-center py-10">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" />
           </div>
         )}
-        {!loading && items.length === 0 && (
+        {!loading && !error && items.length === 0 && (
           <div className="flex flex-col items-center py-10 text-center">
             <BellOff className="mb-3 h-8 w-8 text-slate-200 dark:text-slate-700" />
             <p className="text-sm font-medium text-slate-400 dark:text-slate-500">{t('All caught up')}</p>
@@ -181,7 +193,7 @@ function NotificationPanel({ onClose, onCountChange }: { onClose: () => void; on
               <p className="mt-1 text-[10px] text-slate-300 dark:text-slate-600">{timeAgo(n.createdAtUtc)}</p>
             </div>
             {/* Actions */}
-            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
               {n.status === 'Unread' && (
                 <button type="button" onClick={() => markRead(n.id)} title="Mark as read" aria-label="Mark as read" className="grid h-6 w-6 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-sapphire dark:hover:bg-white/10 dark:hover:text-cyanAccent">
                   <CheckCheck className="h-3.5 w-3.5" />

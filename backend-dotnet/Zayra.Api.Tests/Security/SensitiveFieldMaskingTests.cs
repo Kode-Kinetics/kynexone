@@ -528,6 +528,43 @@ public class SensitiveFieldMaskingTests
             "EssEmployeeProfileDto must not include termination reason");
     }
 
+    [Fact]
+    public async Task EmployeeExport_UsesEffectiveSensitivePermission_AndNeverCrossesTenant()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAsync(db);
+        var otherTenantId = await SeedTenantAsync(db);
+        var employee = SeedEmployee(db, tenantId);
+        employee.DateOfBirth = new DateOnly(1990, 4, 12);
+        employee.PassportNumber = "SECRET-PASSPORT";
+        var other = SeedEmployee(db, otherTenantId);
+        other.EmployeeCode = "OTHER-TENANT-CODE";
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
+        {
+            TenantId = tenantId,
+            EmployeeId = employee.Id,
+            Iban = "SA0380000000608010167519",
+            AccountNumber = "SECRET-ACCOUNT",
+            BankName = "Secret Bank"
+        });
+        await db.SaveChangesAsync();
+
+        var maskedResult = Assert.IsType<FileContentResult>(await CreateController(db, tenantId, "HR Officer").Export(CancellationToken.None));
+        var maskedCsv = System.Text.Encoding.UTF8.GetString(maskedResult.FileContents);
+        maskedCsv.Should().Contain(employee.EmployeeCode);
+        maskedCsv.Should().NotContain("SECRET-PASSPORT");
+        maskedCsv.Should().NotContain("SA0380000000608010167519");
+        maskedCsv.Should().NotContain("SECRET-ACCOUNT");
+        maskedCsv.Should().NotContain("1990-04-12");
+        maskedCsv.Should().NotContain("OTHER-TENANT-CODE", "tenant scope is applied before export projection");
+
+        var privilegedResult = Assert.IsType<FileContentResult>(await CreateController(db, tenantId, "Payroll Officer").Export(CancellationToken.None));
+        var privilegedCsv = System.Text.Encoding.UTF8.GetString(privilegedResult.FileContents);
+        privilegedCsv.Should().Contain("SECRET-PASSPORT");
+        privilegedCsv.Should().Contain("SA0380000000608010167519");
+        privilegedCsv.Should().NotContain("OTHER-TENANT-CODE");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────────
 
     private static async Task<Guid> SeedTenantAsync(ZayraDbContext db)

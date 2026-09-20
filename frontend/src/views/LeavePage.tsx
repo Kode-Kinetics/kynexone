@@ -30,6 +30,7 @@ import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { payrollApi } from '../api/payroll';
 import type { PayrollRun } from '../api/payroll';
+import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
@@ -2016,18 +2017,15 @@ export function LeavePage() {
         />
       )}
 
-      <div className="overflow-x-auto pb-1">
-        <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]" style={{ width: 'max-content' }}>
-          {visibleTabs.map(tb => (
-            <button key={tb.id} type="button" onClick={() => setTab(tb.id)}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition ${tab === tb.id ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>
-              <tb.icon className="h-3.5 w-3.5" />
-              {t(tb.label)}
-            </button>
-          ))}
-        </div>
-      </div>
+      <RovingTabList
+        items={visibleTabs.map(({ id, label, icon }) => ({ id, label: t(label), icon }))}
+        activeId={tab}
+        onChange={setTab}
+        idPrefix="leave"
+        label="Leave and absence sections"
+      />
 
+      <TabPanel idPrefix="leave" tabId={tab}>
       {tab === 'dashboard'  && <DashboardTab onNavigate={setTab} groupFilter={groupFilter} />}
       {tab === 'balance'    && <BalanceTab selfEmployeeId={isEmployee ? selfEmployeeId : undefined} groupFilter={groupFilter} />}
       {tab === 'apply'      && <ApplyLeaveTab selfEmployeeId={isEmployee ? selfEmployeeId : undefined} isEmployee={isEmployee} />}
@@ -2042,6 +2040,7 @@ export function LeavePage() {
       {tab === 'absences'   && <AbsencesTab groupFilter={groupFilter} />}
       {tab === 'reports'    && <ReportsTab groupFilter={groupFilter} />}
       {tab === 'ai-insights'&& <AIInsightsTab />}
+      </TabPanel>
     </div>
   );
 }

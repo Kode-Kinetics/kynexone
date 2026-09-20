@@ -8,6 +8,7 @@ using System.Security.Claims;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
@@ -83,6 +84,12 @@ public class DashboardControllerTests
 
     private static void SeedEmployees(ZayraDbContext db, Guid tenantId)
     {
+        db.Tenants.Add(new Tenant
+        {
+            Id = tenantId,
+            Name = "Dashboard Test Tenant",
+            Slug = $"dashboard-{tenantId:N}",
+        });
         db.Employees.AddRange(
             new Employee { Id = 1, TenantId = tenantId, EmployeeCode = "E001", FullName = "Aisha Khan", Status = "Active" },
             new Employee { Id = 2, TenantId = tenantId, EmployeeCode = "E002", FullName = "Omar Ali", Status = "Active" },

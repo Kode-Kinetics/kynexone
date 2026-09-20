@@ -129,8 +129,11 @@ test.describe('Tenant isolation (API-level)', () => {
   // Same inversion as the leave test above: `test.fail()` meant a real cross-tenant attendance leak
   // would have been recorded as the expected outcome. Removed.
   test('IntelliFlow attendance records not visible to Ras Al-Manar token', async ({ request }) => {
-    const myIds    = idsOf(await fetchRows(request, '/api/attendance', intelliflowToken, 'IntelliFlow'), '/api/attendance');
-    const theirIds = idsOf(await fetchRows(request, '/api/attendance', rasAlManarToken,  'Ras Al-Manar'), '/api/attendance');
+    // Fixed, intentionally broad window keeps the isolation witness deterministic as the demo
+    // clock moves. Both tenants must query the identical range.
+    const range = '?from=2025-01-01&to=2030-12-31&pageSize=100';
+    const myIds    = idsOf(await fetchRows(request, `/api/attendance${range}`, intelliflowToken, 'IntelliFlow'), '/api/attendance');
+    const theirIds = idsOf(await fetchRows(request, `/api/attendance${range}`, rasAlManarToken,  'Ras Al-Manar'), '/api/attendance');
 
     expect(myIds.length, 'IntelliFlow must have visible attendance records for this isolation check to mean anything').toBeGreaterThan(0);
     expect(theirIds.length, 'Ras Al-Manar must have visible attendance records for this isolation check to mean anything').toBeGreaterThan(0);

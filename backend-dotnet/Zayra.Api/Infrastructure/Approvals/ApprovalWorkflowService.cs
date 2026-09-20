@@ -139,6 +139,27 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             {
                 var now = DateTime.UtcNow;
                 query = query.Where(x => x.Status == "Pending" && x.DueAtUtc != null && x.DueAtUtc < now);
+                if (!CanViewAllApprovalRequests(context))
+                {
+                    var callerEmployeeId = await ResolveCallerEmployeeIdAsync(tenantId, context.UserId, cancellationToken);
+                    var roles = (context.Roles ?? Array.Empty<string>())
+                        .Select(Clean)
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Select(x => x.ToLower())
+                        .ToArray();
+                    query = query.Where(x =>
+                        (context.UserId != null && x.CurrentApproverUserId == context.UserId) ||
+                        (callerEmployeeId != null && x.CurrentApproverEmployeeId == callerEmployeeId) ||
+                        ((x.CurrentApproverType ?? string.Empty).ToLower() == "role" &&
+                         roles.Contains((x.CurrentApproverRole ?? string.Empty).ToLower())));
+                }
+            }
+            else
+            {
+                // `all` and unknown queue names used to fall through with no predicate, allowing a
+                // scoped caller to enumerate the tenant queue. Only tenant-wide viewers may request it.
+                if (!CanViewAllApprovalRequests(context))
+                    query = query.Where(x => false);
             }
         }
         var total = await query.CountAsync(cancellationToken);

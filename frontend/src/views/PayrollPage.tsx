@@ -23,6 +23,8 @@ import { ImportExportToolbar, downloadCsv } from '../components/ImportExportTool
 import { InfoTip } from '../components/InfoTip';
 import { useAuth } from '../contexts/AuthContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
+import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 
 // ── Payroll import/export helpers ───────────────────────────────────────────────
 
@@ -289,11 +291,12 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
 function AiInsightsPanel() {
   const [insights, setInsights] = useState<AIInsight[]>([]);
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     client.get<{ items: AIInsight[] }>('/api/ai/insights', { params: { acknowledged: false, pageSize: 5 } })
       .then(r => setInsights(r.data.items))
-      .catch(() => {})
+      .catch(() => { setInsights([]); setFailed(true); })
       .finally(() => setLoading(false));
   }, []);
 
@@ -308,11 +311,12 @@ function AiInsightsPanel() {
     Info: 'text-blue-600 dark:text-blue-400',
   };
 
-  if (loading) return null;
-  if (insights.length === 0) return (
-    <div className="surface flex items-center gap-3 p-5">
-      <Lightbulb className="h-4 w-4 shrink-0 text-emerald-500" />
-      <p className="text-sm text-slate-500 dark:text-slate-400">No active alerts — all payroll and HR signals look normal.</p>
+  const state = payrollInsightState(loading, failed, insights.length);
+  if (state === 'loading') return <div className="surface h-16 animate-pulse" aria-label="Loading payroll insights" />;
+  if (state === 'empty' || state === 'unavailable') return (
+    <div role={state === 'unavailable' ? 'alert' : 'status'} className={`surface flex items-center gap-3 p-5 ${state === 'unavailable' ? 'border-amber-300 dark:border-amber-500/30' : ''}`}>
+      {state === 'unavailable' ? <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" /> : <Lightbulb className="h-4 w-4 shrink-0 text-slate-400" />}
+      <p className="text-sm text-slate-500 dark:text-slate-400">{payrollInsightEmptyCopy(state)}</p>
     </div>
   );
 
@@ -358,9 +362,14 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   const [drillDown, setDrillDown] = useState<PayrollCompanySummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
+  const [overviewFailed, setOverviewFailed] = useState(false);
 
   const load = () => {
     setLoading(true);
+    setOverview(null);
+    setReadiness(null);
+    setSummary(null);
+    setOverviewFailed(false);
     const params = {
       companyId: selectedCompanyId !== 'all' ? selectedCompanyId : undefined,
       year: selectedYear,
@@ -368,7 +377,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
     };
     Promise.all([
       payrollApi.listCompanies().then(setCompanies).catch(() => {}),
-      payrollApi.getOverview(params).then(setOverview).catch(() => {}),
+      payrollApi.getOverview(params).then(setOverview).catch(() => setOverviewFailed(true)),
       payrollApi.getReadiness(params).then(setReadiness).catch(() => {}),
       payrollApi.reportSummary().then(setSummary).catch(() => {}),
     ]).finally(() => setLoading(false));
@@ -377,6 +386,8 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   useEffect(load, [selectedCompanyId, selectedYear, selectedMonth]);
 
   const isNotConfigured = !loading && readiness && readiness.completionPercent < 30;
+  const hasPayrollRun = overview?.companies.some((company) => company.hasPayrollRun) ?? false;
+  const periodState = payrollPeriodState(hasPayrollRun, overview !== null);
 
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
@@ -416,6 +427,16 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       </div>
 
       {/* ── Setup Wizard (when payroll not yet configured) ── */}
+      {!loading && overviewFailed && (
+        <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+          Payroll overview is unavailable. Totals and period status are not shown because the request failed.
+        </div>
+      )}
+      {!loading && periodState === 'no-run' && (
+        <div role="status" className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
+          No payroll run exists for {MONTHS[selectedMonth - 1]} {selectedYear}. Empty totals do not indicate a completed or healthy payroll.
+        </div>
+      )}
       {isNotConfigured && readiness && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 dark:border-amber-500/20 dark:bg-amber-500/5">
           <div className="mb-3 flex items-center gap-2">
@@ -433,8 +454,8 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       {!loading && overview && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <KpiCard label="Active Employees" value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="Gross Payroll" value={overview.totalGrossPayroll > 0 ? fmtAmt(overview.totalGrossPayroll, currencyCode) : '—'} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label="Net Payroll" value={overview.totalNetPayroll > 0 ? fmtAmt(overview.totalNetPayroll, currencyCode) : '—'} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label="Gross Payroll" value={periodState === 'no-run' ? 'No run' : fmtAmt(overview.totalGrossPayroll, currencyCode)} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Net Payroll" value={periodState === 'no-run' ? 'No run' : fmtAmt(overview.totalNetPayroll, currencyCode)} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
           <KpiCard label="Locked Runs YTD" value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
         </div>
       )}
@@ -2640,21 +2661,16 @@ export function PayrollPage() {
         {roleBadge && <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-xs font-semibold ${roleBadge.cls}`}>{roleBadge.label}</span>}
       </div>
 
-      <div className="scrollbar-hide flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/5">
-        {visibleTabs.map(t => (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => setActiveTab(t.key)}
-            className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${activeTab === t.key ? 'bg-white shadow-sm text-sapphire dark:bg-slate-800 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'}`}
-          >
-            <t.icon className="h-3.5 w-3.5 shrink-0" />
-            <span className="whitespace-nowrap">{t.label}</span>
-          </button>
-        ))}
-      </div>
+      <RovingTabList
+        items={visibleTabs.map(({ key, label, icon }) => ({ id: key, label, icon }))}
+        activeId={activeTab}
+        onChange={setActiveTab}
+        idPrefix="payroll"
+        label="Payroll workspace sections"
+        compact
+      />
 
-      <div>{renderTab()}</div>
+      <TabPanel idPrefix="payroll" tabId={activeTab}>{renderTab()}</TabPanel>
     </div>
   );
 }
