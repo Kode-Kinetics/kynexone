@@ -8,9 +8,14 @@ using Zayra.Api.Models;
 namespace Zayra.Api.Infrastructure.Jobs;
 
 /// <summary>A job as seen by the worker that just claimed it. <see cref="LeaseToken"/> is the fence.</summary>
+/// <param name="TerminalOnly">W2-A — null for a normal claim. <c>Cancelled</c> / <c>Failed</c> when the job is
+/// being ENDED and was claimed only so its <see cref="IBackgroundJobTerminalHook"/> can run first (a started
+/// job cancelled while queued for a retry, or one whose attempts ran out through lease expiry). The runner
+/// does not execute the handler for such a claim.</param>
+/// <param name="TerminalError">The failure message that goes with <c>TerminalOnly = Failed</c>.</param>
 public sealed record ClaimedBackgroundJob(
     Guid Id, Guid TenantId, string JobType, string PayloadJson, int Attempt, int MaxAttempts,
-    Guid LeaseToken, Guid? CreatedByUserId);
+    Guid LeaseToken, Guid? CreatedByUserId, string? TerminalOnly = null, string? TerminalError = null);
 
 public sealed record BackgroundJobEnqueueResult(BackgroundJob Job, bool Created);
 
@@ -133,6 +138,24 @@ public sealed class BackgroundJobStore
     public async Task<BackgroundJobCancelOutcome> RequestCancelAsync(Guid tenantId, Guid jobId, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
+        // W2-A — a Queued job that has ALREADY RUN (it is waiting out a retry back-off, or was handed back by
+        // a stopping worker) may have committed domain state, and if its type has a terminal hook that state
+        // must be repaired before the job is recorded Cancelled. Flag it and make it due now; a worker claims
+        // it to run the hook only (TryClaimAsync), then marks it Cancelled. A job that never started has
+        // nothing to undo and is cancelled on the spot, exactly as before.
+        var hooked = _registry.HookedJobTypes.ToList();
+        if (hooked.Count > 0)
+        {
+            var flaggedStarted = await _db.BackgroundJobs
+                .Where(j => j.TenantId == tenantId && j.Id == jobId && j.Status == BackgroundJobStatuses.Queued
+                            && j.StartedAtUtc != null && hooked.Contains(j.JobType))
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(j => j.CancelRequestedAtUtc, j => j.CancelRequestedAtUtc ?? now)
+                    .SetProperty(j => j.RunAfterUtc, now)
+                    .SetProperty(j => j.UpdatedAtUtc, now), ct);
+            if (flaggedStarted == 1) return BackgroundJobCancelOutcome.CancelRequested;
+        }
+
         var cancelledQueued = await _db.BackgroundJobs
             .Where(j => j.TenantId == tenantId && j.Id == jobId && j.Status == BackgroundJobStatuses.Queued)
             .ExecuteUpdateAsync(s => s
@@ -181,12 +204,17 @@ public sealed class BackgroundJobStore
     /// <para>A fresh lease token is minted on every claim; the previous holder's token stops matching,
     /// which is what fences a reclaimed zombie out of every later write.</para>
     /// </summary>
+    /// <param name="hookedTypes">W2-A — types with an <see cref="IBackgroundJobTerminalHook"/>. A started job of
+    /// such a type that must END (cancel requested, or attempts exhausted) is claimed with
+    /// <see cref="ClaimedBackgroundJob.TerminalOnly"/> set, so its hook runs before the terminal status is
+    /// written. Null or empty keeps F3's original behaviour: the status is written directly.</param>
     public static async Task<ClaimedBackgroundJob?> TryClaimAsync(
         ZayraDbContext db, IReadOnlyCollection<string> jobTypes, string leaseOwner, TimeSpan leaseDuration,
-        CancellationToken ct)
+        CancellationToken ct, IReadOnlyCollection<string>? hookedTypes = null)
     {
         if (jobTypes.Count == 0) return null;
         var types = jobTypes.ToList();
+        var hooked = hookedTypes is null ? new HashSet<string>(StringComparer.Ordinal) : new HashSet<string>(hookedTypes, StringComparer.Ordinal);
         var owner = Truncate(leaseOwner, 300);
         // A reclaimed job that has exhausted its attempts is failed here and the scan continues, so a
         // poison job cannot block the head of the queue. A lost CAS race also continues. Bounded.
@@ -219,6 +247,38 @@ public sealed class BackgroundJobStore
                 var cas = ScopedBypass.TenantWide(db.BackgroundJobs, candidate.TenantId, FenceJustification)
                     .Where(j => j.Id == candidate.Id && j.Status == observedStatus && j.LeaseToken == observedToken
                                 && (observedStatus == BackgroundJobStatuses.Queued || j.LeaseExpiresAtUtc < now));
+
+                // W2-A — a started job of a hooked type is never ended behind its handler's back: claim it so
+                // the runner can run the terminal hook, THEN record the outcome. (Queued + cancel flag is the
+                // state RequestCancelAsync leaves a started hooked job in.)
+                var mustEnd = candidate.CancelRequestedAtUtc is not null
+                    ? BackgroundJobStatuses.Cancelled
+                    : reclaim && candidate.AttemptCount >= candidate.MaxAttempts ? BackgroundJobStatuses.Failed : null;
+                if (mustEnd is not null && hooked.Contains(candidate.JobType) && candidate.StartedAtUtc is not null)
+                {
+                    var hookToken = Guid.NewGuid();
+                    var hookLease = now + leaseDuration;
+                    var terminalError = mustEnd == BackgroundJobStatuses.Failed
+                        ? Truncate($"Lease expired after {candidate.AttemptCount} attempt(s) without the job completing; " +
+                                   "the worker most likely crashed while running it." +
+                                   (candidate.LastError is null ? "" : " Last error: " + candidate.LastError), 4000)
+                        : null;
+                    var took = await cas.ExecuteUpdateAsync(s => s
+                        .SetProperty(j => j.Status, BackgroundJobStatuses.Running)
+                        .SetProperty(j => j.LeaseOwner, owner)
+                        .SetProperty(j => j.LeaseToken, hookToken)
+                        .SetProperty(j => j.LeaseExpiresAtUtc, hookLease)
+                        .SetProperty(j => j.HeartbeatAtUtc, now)
+                        .SetProperty(j => j.ProgressMessage, mustEnd == BackgroundJobStatuses.Cancelled
+                            ? "Cancelling: undoing the work of earlier attempts."
+                            : "Failing: undoing the work of earlier attempts.")
+                        .SetProperty(j => j.UpdatedAtUtc, now), ct);
+                    await tx.CommitAsync(ct);
+                    if (took != 1) return (Claimed: (ClaimedBackgroundJob?)null, Continue: true);
+                    return (Claimed: new ClaimedBackgroundJob(candidate.Id, candidate.TenantId, candidate.JobType,
+                        candidate.PayloadJson, candidate.AttemptCount, candidate.MaxAttempts, hookToken,
+                        candidate.CreatedByUserId, mustEnd, terminalError), Continue: false);
+                }
 
                 if (reclaim && candidate.CancelRequestedAtUtc is not null)
                 {
@@ -308,6 +368,10 @@ public sealed class BackgroundJobStore
 
     public static Task<bool> MarkCancelledAsync(ZayraDbContext db, ClaimedBackgroundJob job, CancellationToken ct) =>
         TerminateAsync(db, job, BackgroundJobStatuses.Cancelled, null, null, ct);
+
+    /// <summary>W2-A — Cancelled, with a note (a terminal hook that failed) recorded in LastError.</summary>
+    public static Task<bool> MarkCancelledAsync(ZayraDbContext db, ClaimedBackgroundJob job, CancellationToken ct, string note) =>
+        TerminateAsync(db, job, BackgroundJobStatuses.Cancelled, note, null, ct);
 
     public static Task<bool> FailPermanentlyAsync(ZayraDbContext db, ClaimedBackgroundJob job, string error, CancellationToken ct) =>
         TerminateAsync(db, job, BackgroundJobStatuses.Failed, error, null, ct);

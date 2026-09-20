@@ -98,13 +98,39 @@ public sealed class JobExecutionContext
     /// <param name="itemResult">Optional small result stored on the checkpoint row.</param>
     /// <param name="countsTowardProgress">False for bookkeeping steps (a final audit entry, say) that must
     /// also happen exactly once but are not part of <c>ProgressTotal</c>.</param>
-    public async Task<bool> RunItemAsync(string itemKey, Func<CancellationToken, Task> apply, Func<object?>? itemResult = null,
-        bool countsTowardProgress = true)
+    public Task<bool> RunItemAsync(string itemKey, Func<CancellationToken, Task> apply, Func<object?>? itemResult = null,
+        bool countsTowardProgress = true) =>
+        RunItemCoreAsync(itemKey, apply, itemResult, countsTowardProgress, terminal: false);
+
+    /// <summary>
+    /// W2-A — the item a <see cref="IBackgroundJobTerminalHook"/> runs in. Identical to
+    /// <see cref="RunItemAsync"/> (one transaction: fence, apply, checkpoint) except that the fence checks the
+    /// lease ONLY — a cancel request is exactly when a cancel hook must run — and a graceful shutdown does not
+    /// stop it: it is the last write of a job that is ending anyway, and yielding here would strand the
+    /// domain state the hook exists to repair.
+    /// </summary>
+    internal Task<bool> RunTerminalItemAsync(string itemKey, Func<CancellationToken, Task> apply) =>
+        RunItemCoreAsync(itemKey, apply, null, countsTowardProgress: false, terminal: true);
+
+    /// <summary>Item results committed by earlier items of this job, keyed by item key (W2-A: pinned inputs).</summary>
+    public async Task<IReadOnlyDictionary<string, string?>> LoadItemResultsAsync(string? keyPrefix = null)
+    {
+        var q = ScopedBypass.TenantWide(Db.BackgroundJobItems, _job.TenantId,
+                "Job worker reads the checkpoints of a job it holds the lease on; tenant from the claimed row.")
+            .AsNoTracking()
+            .Where(i => i.JobId == _job.Id);
+        if (keyPrefix is not null) q = q.Where(i => i.ItemKey.StartsWith(keyPrefix));
+        return (await q.Select(i => new { i.ItemKey, i.ResultJson }).ToListAsync(AbortToken))
+            .ToDictionary(i => i.ItemKey, i => i.ResultJson, StringComparer.Ordinal);
+    }
+
+    private async Task<bool> RunItemCoreAsync(string itemKey, Func<CancellationToken, Task> apply, Func<object?>? itemResult,
+        bool countsTowardProgress, bool terminal)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(itemKey);
         if (itemKey.Length > 200) throw new ArgumentException("Item keys are limited to 200 characters.", nameof(itemKey));
         if (_completed.Contains(itemKey)) return false;
-        if (_shutdown.IsCancellationRequested) throw new BackgroundJobYieldException();
+        if (!terminal && _shutdown.IsCancellationRequested) throw new BackgroundJobYieldException();
         AbortToken.ThrowIfCancellationRequested();
 
         var strategy = Db.Database.CreateExecutionStrategy();
@@ -117,8 +143,9 @@ public sealed class JobExecutionContext
                 var now = DateTime.UtcNow;
                 var leaseUntil = now + _leaseDuration;
                 var increment = countsTowardProgress ? 1 : 0;
-                var fenced = await BackgroundJobStore.Leased(Db, _job)
-                    .Where(j => j.CancelRequestedAtUtc == null)
+                var fence = BackgroundJobStore.Leased(Db, _job);
+                if (!terminal) fence = fence.Where(j => j.CancelRequestedAtUtc == null);
+                var fenced = await fence
                     .ExecuteUpdateAsync(s => s
                         .SetProperty(j => j.ProgressCompleted, j => j.ProgressCompleted + increment)
                         .SetProperty(j => j.LeaseExpiresAtUtc, leaseUntil)
@@ -127,6 +154,7 @@ public sealed class JobExecutionContext
                 if (fenced != 1)
                 {
                     await tx.RollbackAsync(AbortToken);
+                    if (terminal) throw new BackgroundJobLeaseLostException(_job.Id);
                     await ThrowForFailedFenceAsync();
                 }
 

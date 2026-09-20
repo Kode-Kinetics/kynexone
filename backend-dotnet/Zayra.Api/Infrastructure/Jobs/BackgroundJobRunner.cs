@@ -1,4 +1,5 @@
 using Zayra.Api.Data;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Jobs;
 
@@ -61,7 +62,8 @@ public sealed class BackgroundJobRunner
         {
             var db = claimScope.ServiceProvider.GetRequiredService<ZayraDbContext>();
             job = await BackgroundJobStore.TryClaimAsync(
-                db, onlyTypes ?? _registry.JobTypes, workerId, _options.LeaseDuration, shutdown);
+                db, onlyTypes ?? _registry.JobTypes, workerId, _options.LeaseDuration, shutdown,
+                _registry.HookedJobTypes);
         }
         if (job is null) return false;
         await ExecuteClaimedAsync(job, shutdown, abort);
@@ -79,67 +81,140 @@ public sealed class BackgroundJobRunner
         // mistake our own terminal write for a lost lease.
         Func<ZayraDbContext, CancellationToken, Task<bool>>? write = null;
         string label;
+        // W2-A — the job's scope now outlives the handler call: a terminal hook runs in the SAME scope (same
+        // DbContext, same handler instance, same JobExecutionContext) after the handler has stopped.
+        var scope = _scopes.CreateAsyncScope();
+        JobExecutionContext? ctx = null;
+        IBackgroundJobHandler? handler = null;
+        string? terminal = null;      // Cancelled | Failed — an outcome the terminal hook must see first
+        string? terminalError = null;
         try
         {
-            await using var scope = _scopes.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
-            var descriptor = _registry.Get(job.JobType);
-            var completed = await BackgroundJobStore.LoadCompletedItemKeysAsync(db, job, jobAbort.Token);
-            var handler = (IBackgroundJobHandler)scope.ServiceProvider.GetRequiredService(descriptor.HandlerType);
-            var ctx = new JobExecutionContext(job, db, scope.ServiceProvider, completed, _options.LeaseDuration,
-                shutdown, jobAbort.Token);
-
-            _log.LogInformation("Job {JobId} ({JobType}) attempt {Attempt} starting; {Done} item(s) already checkpointed.",
-                job.Id, job.JobType, job.Attempt, completed.Count);
-            await handler.ExecuteAsync(ctx);
-            var resultJson = ctx.ResultJson;
-            write = (db2, ct) => BackgroundJobStore.CompleteAsync(db2, job, resultJson, ct);
-            label = "succeeded";
-        }
-        catch (BackgroundJobCancelledException)
-        {
-            write = (db2, ct) => BackgroundJobStore.MarkCancelledAsync(db2, job, ct);
-            label = "cancelled";
-        }
-        catch (BackgroundJobYieldException)
-        {
-            write = (db2, ct) => BackgroundJobStore.ReleaseAsync(db2, job, ct);
-            label = "released (graceful shutdown)";
-        }
-        catch (BackgroundJobLeaseLostException)
-        {
-            label = "lease lost — abandoned without writing";
-        }
-        catch (OperationCanceledException) when (jobAbort.IsCancellationRequested)
-        {
-            if (leaseLost)
-                label = "lease lost — abandoned without writing";
-            else
+            try
             {
-                // Hard stop (shutdown grace expired). The in-flight item rolled back; hand the job back
-                // so another instance can resume it now instead of after lease expiry.
+                var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+                var descriptor = _registry.Get(job.JobType);
+                var completed = await BackgroundJobStore.LoadCompletedItemKeysAsync(db, job, jobAbort.Token);
+                handler = (IBackgroundJobHandler)scope.ServiceProvider.GetRequiredService(descriptor.HandlerType);
+                ctx = new JobExecutionContext(job, db, scope.ServiceProvider, completed, _options.LeaseDuration,
+                    shutdown, jobAbort.Token);
+
+                if (job.TerminalOnly is not null)
+                {
+                    // Claimed only to END it (see ClaimedBackgroundJob.TerminalOnly): the handler does not run.
+                    _log.LogInformation("Job {JobId} ({JobType}) claimed to record '{Outcome}' after running its terminal hook.",
+                        job.Id, job.JobType, job.TerminalOnly);
+                    terminal = job.TerminalOnly;
+                    terminalError = job.TerminalError;
+                    label = terminal == BackgroundJobStatuses.Cancelled ? "cancelled" : "failed (permanent)";
+                }
+                else
+                {
+                    _log.LogInformation("Job {JobId} ({JobType}) attempt {Attempt} starting; {Done} item(s) already checkpointed.",
+                        job.Id, job.JobType, job.Attempt, completed.Count);
+                    await handler.ExecuteAsync(ctx);
+                    var resultJson = ctx.ResultJson;
+                    write = (db2, ct) => BackgroundJobStore.CompleteAsync(db2, job, resultJson, ct);
+                    label = "succeeded";
+                }
+            }
+            catch (BackgroundJobCancelledException)
+            {
+                terminal = BackgroundJobStatuses.Cancelled;
+                label = "cancelled";
+            }
+            catch (BackgroundJobYieldException)
+            {
                 write = (db2, ct) => BackgroundJobStore.ReleaseAsync(db2, job, ct);
-                label = "released (hard stop)";
+                label = "released (graceful shutdown)";
+            }
+            catch (BackgroundJobLeaseLostException)
+            {
+                label = "lease lost — abandoned without writing";
+            }
+            catch (OperationCanceledException) when (jobAbort.IsCancellationRequested)
+            {
+                if (leaseLost)
+                    label = "lease lost — abandoned without writing";
+                else
+                {
+                    // Hard stop (shutdown grace expired). The in-flight item rolled back; hand the job back
+                    // so another instance can resume it now instead of after lease expiry.
+                    write = (db2, ct) => BackgroundJobStore.ReleaseAsync(db2, job, ct);
+                    label = "released (hard stop)";
+                }
+            }
+            catch (BackgroundJobPermanentFailureException ex)
+            {
+                terminal = BackgroundJobStatuses.Failed;
+                terminalError = ex.Message;
+                label = "failed (permanent)";
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "Job {JobId} ({JobType}) attempt {Attempt} threw.", job.Id, job.JobType, job.Attempt);
+                var message = $"{ex.GetType().Name}: {ex.Message}";
+                if (job.Attempt >= job.MaxAttempts)
+                {
+                    // Out of attempts: this is a permanent failure, so it goes through the terminal hook too.
+                    // (Same message FailAttemptAsync writes on this branch.)
+                    terminal = BackgroundJobStatuses.Failed;
+                    terminalError = $"Failed after {job.Attempt} attempt(s). Last error: {message}";
+                    label = "failed (permanent)";
+                }
+                else
+                {
+                    write = (db2, ct) => BackgroundJobStore.FailAttemptAsync(db2, job, message, ct);
+                    label = "failed attempt";
+                }
+            }
+
+            if (terminal is not null && !leaseLost)
+            {
+                var hookNote = await RunTerminalHookAsync(job, ctx, handler, terminal, terminalError ?? "");
+                if (hookNote is not null) label += " — " + hookNote;
+                var error = terminalError is null && hookNote is null ? null
+                    : string.Join(" ", new[] { terminalError, hookNote is null ? null : "[" + hookNote + "]" }.Where(x => x is not null));
+                write = terminal == BackgroundJobStatuses.Cancelled
+                    ? (error is null
+                        ? (db2, ct) => BackgroundJobStore.MarkCancelledAsync(db2, job, ct)
+                        : (db2, ct) => BackgroundJobStore.MarkCancelledAsync(db2, job, ct, error))
+                    : (db2, ct) => BackgroundJobStore.FailPermanentlyAsync(db2, job, error ?? "Failed.", ct);
             }
         }
-        catch (BackgroundJobPermanentFailureException ex)
+        finally
         {
-            var message = ex.Message;
-            write = (db2, ct) => BackgroundJobStore.FailPermanentlyAsync(db2, job, message, ct);
-            label = "failed (permanent)";
-        }
-        catch (Exception ex)
-        {
-            _log.LogError(ex, "Job {JobId} ({JobType}) attempt {Attempt} threw.", job.Id, job.JobType, job.Attempt);
-            var message = $"{ex.GetType().Name}: {ex.Message}";
-            write = (db2, ct) => BackgroundJobStore.FailAttemptAsync(db2, job, message, ct);
-            label = "failed attempt";
+            await scope.DisposeAsync();
         }
 
         heartbeatStop.Cancel();
         try { await heartbeat; } catch (OperationCanceledException) { }
         var outcome = write is null || leaseLost ? label : await FinishAsync(job, write, label);
         _log.LogInformation("Job {JobId} ({JobType}) attempt {Attempt}: {Outcome}.", job.Id, job.JobType, job.Attempt, outcome);
+    }
+
+    /// <summary>
+    /// W2-A — runs the handler's <see cref="IBackgroundJobTerminalHook"/> (if it has one) as a lease-fenced,
+    /// checkpointed item. Returns null on success or when there is no hook, otherwise a short note that is
+    /// appended to the job's LastError: a failing hook never prevents the terminal status being written.
+    /// </summary>
+    private async Task<string?> RunTerminalHookAsync(
+        ClaimedBackgroundJob job, JobExecutionContext? ctx, IBackgroundJobHandler? handler, string terminal, string error)
+    {
+        if (ctx is null || handler is not IBackgroundJobTerminalHook hook) return null;
+        try
+        {
+            if (terminal == BackgroundJobStatuses.Cancelled)
+                await ctx.RunTerminalItemAsync("terminal:cancelled", _ => hook.OnCancelledAsync(ctx));
+            else
+                await ctx.RunTerminalItemAsync("terminal:failed", _ => hook.OnFailedAsync(ctx, error));
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Job {JobId} ({JobType}): terminal hook for '{Outcome}' failed.", job.Id, job.JobType, terminal);
+            return $"terminal hook failed: {ex.GetType().Name}: {ex.Message}";
+        }
     }
 
     /// <summary>

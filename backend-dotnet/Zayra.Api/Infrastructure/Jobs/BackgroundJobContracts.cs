@@ -42,6 +42,18 @@ public sealed class BackgroundJobTypeRegistry
 
     public IReadOnlyCollection<string> JobTypes => _types.Keys;
     public IReadOnlyCollection<BackgroundJobTypeDescriptor> All => _types.Values;
+
+    /// <summary>
+    /// W2-A — job types whose handler implements <see cref="IBackgroundJobTerminalHook"/>. The claim path
+    /// and cancel path need to know them without constructing a handler: a started job of such a type is
+    /// never marked Cancelled/Failed behind its handler's back — a worker claims it to run the hook first.
+    /// </summary>
+    public IReadOnlyCollection<string> HookedJobTypes => _types.Values
+        .Where(d => typeof(IBackgroundJobTerminalHook).IsAssignableFrom(d.HandlerType))
+        .Select(d => d.JobType).ToList();
+
+    public bool HasTerminalHook(string jobType) =>
+        Find(jobType) is { } d && typeof(IBackgroundJobTerminalHook).IsAssignableFrom(d.HandlerType);
     public BackgroundJobTypeDescriptor? Find(string jobType) => _types.GetValueOrDefault(jobType);
     public BackgroundJobTypeDescriptor Get(string jobType) =>
         Find(jobType) ?? throw new InvalidOperationException($"Unknown background job type '{jobType}'.");
@@ -70,6 +82,36 @@ public sealed class BackgroundJobTypeRegistry
 public interface IBackgroundJobHandler
 {
     Task ExecuteAsync(JobExecutionContext context);
+}
+
+/// <summary>
+/// W2-A — optional second interface for a handler whose job leaves DOMAIN state that must be put right
+/// when the job ends without succeeding. Payroll Process is the reason it exists: its first item flips a
+/// run to <c>Processing</c> and each later item commits one employee's payslip and loan consumption, so a
+/// cancelled or permanently failed job would otherwise strand the run half-processed.
+///
+/// <para>THE CONTRACT.</para>
+/// <list type="bullet">
+///   <item>The runner calls exactly one of these, AFTER the handler has stopped and BEFORE it writes the
+///     terminal status, as one more checkpointed item (<c>terminal:cancelled</c> / <c>terminal:failed</c>):
+///     fenced by the lease (so a zombie cannot run it) but not by the cancel flag (a cancel is precisely
+///     when it must run). Its writes, the checkpoint and the lease check commit together, so the hook is
+///     applied at most once even if the worker dies right after it.</item>
+///   <item>It stages writes on <see cref="JobExecutionContext.Db"/> only, opens no transaction and must be
+///     safe to re-execute from scratch (a transient fault retries it).</item>
+///   <item>It also runs when a job is ended WITHOUT its handler running: a job cancelled while queued for a
+///     retry, or one whose worker kept dying until its attempts ran out. A worker claims such a job only
+///     to run the hook (<see cref="ClaimedBackgroundJob.TerminalOnly"/>), then records the outcome. A job
+///     that never started has nothing to undo and is still cancelled directly.</item>
+///   <item>If the hook itself throws, the terminal status is still written (with the hook's error appended
+///     to <c>LastError</c>) — a hook must never wedge the queue. The handler's own recovery path (payroll:
+///     re-enqueueing Process replays the unwind) is the backstop.</item>
+/// </list>
+/// </summary>
+public interface IBackgroundJobTerminalHook
+{
+    Task OnCancelledAsync(JobExecutionContext context);
+    Task OnFailedAsync(JobExecutionContext context, string error);
 }
 
 /// <summary>A failure that retrying cannot fix — the job goes straight to Failed.</summary>
