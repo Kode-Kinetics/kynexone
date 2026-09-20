@@ -237,8 +237,15 @@ public sealed class ParallelRunController : ControllerBase
         // Carried-in position, straight off the provenance ledger. This is the answer to "how much of
         // what is in this system came from somewhere else" and it is a single grouped read because the
         // provenance is a first-class table rather than a flag scattered over five others.
-        var origins = await _db.OpeningBalanceOrigins.AsNoTracking()
+        // Grouped in memory rather than in SQL. The row set is one per carried-in entity for the
+        // entities asked about, and SQLite — which the test suite runs the payroll engine on — cannot
+        // translate SUM over a decimal, so a server-side aggregate here would work in production and
+        // throw in every test that touches this endpoint.
+        var originRows = await _db.OpeningBalanceOrigins.AsNoTracking()
             .Where(x => x.TenantId == tenantId && (companyId == null || x.CompanyId == companyId))
+            .Select(x => new { x.CompanyId, x.EntityType, x.EmployeeId, x.CarriedAmount })
+            .ToListAsync(ct);
+        var origins = originRows
             .GroupBy(x => new { x.CompanyId, x.EntityType })
             .Select(g => new
             {
@@ -248,7 +255,7 @@ public sealed class ParallelRunController : ControllerBase
                 Employees = g.Select(x => x.EmployeeId).Distinct().Count(),
                 CarriedTotal = g.Sum(x => x.CarriedAmount)
             })
-            .ToListAsync(ct);
+            .ToList();
 
         return Ok(new
         {

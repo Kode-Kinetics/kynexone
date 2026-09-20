@@ -61,21 +61,37 @@ public sealed partial class MigrationImportController
     }
 
     /// <summary>
-    /// Every opening balance must sit under a declared, Active cutover for the employee's own legal
-    /// entity. This is the gate that makes "a cutover date per legal entity, not per tenant" real
-    /// rather than decorative: an employee in an entity that has not declared its wave is refused, by
-    /// name, even if a sister entity in the same tenant went live months ago.
+    /// The cutover governing this employee's balance — the gate that makes "a cutover date per legal
+    /// entity, not per tenant" real rather than decorative. An employee in an entity that has not
+    /// declared its wave is refused by name, even if a sister entity in the same tenant went live
+    /// months ago.
+    ///
+    /// <para>MANDATORY for <c>loans</c>, <c>advances</c> and <c>eosbOpeningProvision</c>. Those are new
+    /// sections with no prior behaviour to preserve, and an outstanding balance or a provision with no
+    /// date it is "as at" is not a fact — it is a number.</para>
+    ///
+    /// <para>CONDITIONAL for <c>leaveBalances</c> and <c>payrollOpeningBalances</c>, which shipped long
+    /// before cutovers existed. A tenant that has declared no cutover at all is not doing a mid-year
+    /// migration — it is doing a greenfield or 1-January load, which is the case those sections were
+    /// written for and which must keep working unchanged. The moment ANY entity in the tenant declares
+    /// a cutover, the tenant is doing a governed migration and every balance must name its wave.</para>
     /// </summary>
-    private static DateOnly RequireCutoverFor(Employee employee, CutoverContext cutover)
+    private static DateOnly? ResolveCutoverFor(Employee employee, CutoverContext cutover, bool mandatory)
     {
+        if (!mandatory && cutover.CutoverByCompany.Count == 0) return null;
+
         if (employee.CompanyId is null)
             throw new InvalidOperationException(
                 $"Employee '{employee.EmployeeCode}' has no legal entity, so no cutover date governs it. Assign the employee to a company before importing opening balances.");
         if (!cutover.CutoverByCompany.TryGetValue(employee.CompanyId.Value, out var date))
             throw new InvalidOperationException(
-                $"No Active cutover is declared for the legal entity that owns employee '{employee.EmployeeCode}'. Import a companyCutover row for it first — opening balances are meaningless without the date they are 'as at'.");
+                $"No Active cutover is declared for the legal entity that owns employee '{employee.EmployeeCode}'. Import a companyCutover row for it first — an opening balance is meaningless without the date it is 'as at'.");
         return date;
     }
+
+    /// <summary>The mandatory form, for the sections where a cutover is not optional.</summary>
+    private static DateOnly RequireCutoverFor(Employee employee, CutoverContext cutover)
+        => ResolveCutoverFor(employee, cutover, mandatory: true)!.Value;
 
     private async Task<Company> ResolveCutoverCompanyAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
     {
@@ -214,9 +230,14 @@ public sealed partial class MigrationImportController
     /// carried in on 2026-09-01" — that is the whole point of the table.</para>
     /// </summary>
     private async Task StampOriginAsync(
-        string entityType, Guid entityId, Employee employee, DateOnly cutoverDate, decimal carriedAmount,
+        string entityType, Guid entityId, Employee employee, DateOnly? cutoverDate, decimal carriedAmount,
         string currency, string sourceSystem, string sourceRecordId, CutoverContext cutover, CancellationToken ct)
     {
+        // No cutover means an ungoverned legacy load (see ResolveCutoverFor). There is no wave to
+        // attribute the row to, so no provenance claim is made — an origin row asserting a cutover
+        // date that was never declared would be a worse answer than none.
+        if (cutoverDate is null) return;
+
         var existing = await _db.OpeningBalanceOrigins.FirstOrDefaultAsync(
             x => x.TenantId == cutover.TenantId && x.EntityType == entityType && x.EntityId == entityId, ct);
         var created = existing is null;
@@ -230,7 +251,7 @@ public sealed partial class MigrationImportController
         existing.CompanyId = employee.CompanyId;
         existing.EmployeeId = employee.Id;
         existing.EmployeeCode = employee.EmployeeCode;
-        existing.CutoverDate = cutoverDate;
+        existing.CutoverDate = cutoverDate.Value;
         existing.CarriedAmount = carriedAmount;
         existing.Currency = currency;
         existing.SourceSystem = sourceSystem;
@@ -371,7 +392,6 @@ public sealed partial class MigrationImportController
         Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, SectionResult result, CancellationToken ct)
     {
         var plan = await PlanLoanAsync(row, tenantId, cutover, ct);
-        result.AmountTotal += plan.OutstandingBalance;
 
         var loanType = await ResolveLoanTypeAsync(plan, tenantId, ct);
 
@@ -549,7 +569,6 @@ public sealed partial class MigrationImportController
         Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, SectionResult result, CancellationToken ct)
     {
         var plan = await PlanAdvanceAsync(row, tenantId, cutover, ct);
-        result.AmountTotal += plan.OutstandingBalance;
 
         var advance = await _db.SalaryAdvances.FirstOrDefaultAsync(
             x => x.TenantId == tenantId && x.AdvanceNumber == plan.AdvanceNumber && !x.IsDeleted, ct);
@@ -605,7 +624,6 @@ public sealed partial class MigrationImportController
             throw new InvalidOperationException(
                 $"PriorServiceStartDate ({priorServiceStart:yyyy-MM-dd}) is after AsAtDate ({asAt:yyyy-MM-dd}).");
 
-        result.AmountTotal += accruedAmount;
         var currency = await ResolveCurrencyAsync(row, employee, tenantId, ct);
 
         var item = await _db.EmployeeEosbOpeningBalances.FirstOrDefaultAsync(

@@ -325,7 +325,7 @@ public sealed partial class MigrationImportController : ControllerBase
     private async Task<SectionResult> ValidateSectionAsync(string section, string csv, Guid tenantId, CutoverContext cutover, CancellationToken ct)
     {
         var rows = Csv.Parse(csv);
-        var result = new SectionResult { Received = rows.Count };
+        var result = new SectionResult { Received = rows.Count, AmountTotal = SectionControlTotal(section, rows) };
         foreach (var (row, index) in rows.Select((r, i) => (r, i + 2)))
         {
             try
@@ -333,9 +333,6 @@ public sealed partial class MigrationImportController : ControllerBase
                 var action = await ValidateRowAsync(section, row, tenantId, cutover, ct);
                 if (action == "updated") result.WouldUpdate++;
                 else result.WouldCreate++;
-                // Control total is accumulated on the PREVIEW path too, so the figure the consultant
-                // ties to their source system is the one they see before committing, not after.
-                result.AmountTotal += RowControlTotal(section, row);
             }
             catch (Exception ex) { result.WouldSkip++; result.Errors.Add($"{section} row {index}: {ex.Message}"); }
         }
@@ -344,9 +341,10 @@ public sealed partial class MigrationImportController : ControllerBase
 
     private async Task<SectionResult> ApplySectionAsync(string section, string csv, Guid tenantId, bool dryRun, CutoverContext cutover, CancellationToken ct)
     {
-        var result = new SectionResult { Received = Csv.Parse(csv).Count };
+        var parsedRows = Csv.Parse(csv);
+        var result = new SectionResult { Received = parsedRows.Count, AmountTotal = SectionControlTotal(section, parsedRows) };
         if (dryRun) return (await ValidateSectionAsync(section, csv, tenantId, cutover, ct)).ToApplyResult();
-        foreach (var (row, index) in Csv.Parse(csv).Select((r, i) => (r, i + 2)))
+        foreach (var (row, index) in parsedRows.Select((r, i) => (r, i + 2)))
         {
             try
             {
@@ -434,7 +432,7 @@ public sealed partial class MigrationImportController : ControllerBase
                     ? "updated" : "created";
             case "payrollOpeningBalances":
                 var payrollEmployee = await Employee(row, tenantId, ct);
-                RequireCutoverFor(payrollEmployee, cutover);
+                ResolveCutoverFor(payrollEmployee, cutover, mandatory: false);
                 var payrollYear = IntRequired(row, "Year");
                 var balanceType = RequireBalanceType(row);
                 var componentCode = Require(row, "ComponentCode").Trim();
@@ -524,7 +522,7 @@ public sealed partial class MigrationImportController : ControllerBase
     private async Task<string> UpsertLeaveBalanceAsync(Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, CancellationToken ct)
     {
         var employee = await Employee(row, tenantId, ct); var leave = await LeaveType(row, tenantId, ct); var year = IntRequired(row, "Year");
-        var cutoverDate = RequireCutoverFor(employee, cutover);
+        var cutoverDate = ResolveCutoverFor(employee, cutover, mandatory: false);
         var item = await _db.EmployeeLeaveBalances.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.LeaveTypeId == leave.Id && x.Year == year, ct);
         var created = item is null; item ??= new EmployeeLeaveBalance { TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName, LeaveTypeId = leave.Id, LeaveTypeName = leave.NameEn, Year = year };
         // Entitled/Accrued/Used are the three a consultant always has and always gets wrong if blank is
@@ -575,7 +573,7 @@ public sealed partial class MigrationImportController : ControllerBase
     private async Task<string> UpsertPayrollOpeningBalanceAsync(Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, SectionResult result, CancellationToken ct)
     {
         var employee = await Employee(row, tenantId, ct);
-        var cutoverDate = RequireCutoverFor(employee, cutover);
+        var cutoverDate = ResolveCutoverFor(employee, cutover, mandatory: false);
         var year = IntRequired(row, "Year");
         var balanceType = RequireBalanceType(row);
         var componentCode = Require(row, "ComponentCode").Trim();
@@ -586,7 +584,6 @@ public sealed partial class MigrationImportController : ControllerBase
         var currency = await ResolveCurrencyAsync(row, employee, tenantId, ct);
         var sourceSystem = Val(row, "SourceSystem");
         var sourceRecordId = Val(row, "SourceRecordId");
-        result.AmountTotal += amount;
         result.PayrollOpeningBalances.Add(new PayrollOpeningBalanceLedgerRow(employee.EmployeeCode, year, balanceType, componentCode, amount, currency, sourceSystem, sourceRecordId));
 
         var item = await _db.PayrollOpeningBalances.FirstOrDefaultAsync(x =>
@@ -632,7 +629,6 @@ public sealed partial class MigrationImportController : ControllerBase
         var currency = Val(row, "Currency", "AED");
         var employeeContribution = Dec(row, "EmployeeContribution");
         var employerContribution = Dec(row, "EmployerContribution");
-        result.AmountTotal += employeeContribution + employerContribution;
         result.BenefitsEnrollmentHistory.Add(new BenefitEnrollmentHistoryLedgerRow(Require(row, "EmployeeCode"), planCode, Require(row, "PlanName"), Require(row, "CoverageTier"), effectiveDate, endDate, employeeContribution, employerContribution, currency, Val(row, "Status", "Active"), Val(row, "SourceSystem"), Val(row, "SourceRecordId")));
 
         var plan = await _db.BenefitPlans.FirstOrDefaultAsync(x =>
@@ -879,9 +875,26 @@ public sealed partial class MigrationImportController : ControllerBase
     private PackageValidation ValidatePackage(MigrationPackageRequest request) { var errors = request.Sections.Keys.Except(SupportedSections, StringComparer.OrdinalIgnoreCase).Select(x => $"Unsupported migration section '{x}'.").ToList(); if (request.Sections.Count == 0) errors.Add("At least one migration section is required."); return new(errors); }
     private static string PackageChecksum(MigrationPackageRequest request) { using var sha = SHA256.Create(); var canonical = string.Join("\n", request.Sections.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(x => x.Key.ToLowerInvariant() + "\n" + x.Value.Replace("\r\n", "\n").Replace('\r', '\n'))); return Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant(); }
     /// <summary>
-    /// The money one row carries, for the per-section control total. Only the sections whose figures a
-    /// consultant reconciles against a source-system report contribute; a role or a user has no amount
-    /// and contributes nothing rather than a misleading zero.
+    /// The control total for a whole section: the money the FILE claims, over every row received,
+    /// whether or not each row will survive validation.
+    ///
+    /// <para>That is deliberate and it is the only version a consultant can use. The number exists to
+    /// be tied to the bottom line of a report printed out of the outgoing system; if it silently
+    /// excluded the rows that are going to be rejected, it would never match that report and the
+    /// consultant would be reconciling two figures that were never meant to agree. The rejected rows
+    /// are named separately in <c>Errors</c>, so "the file says 26,000, 9,000 of it will not land, and
+    /// here is which row and why" is readable off one response.</para>
+    ///
+    /// <para>It is also computed identically on preview and on commit, so the figure signed off before
+    /// the import is the figure recorded in the batch ledger after it.</para>
+    /// </summary>
+    private static decimal SectionControlTotal(string section, List<Dictionary<string, string>> rows)
+        => Math.Round(rows.Sum(r => RowControlTotal(section, r)), 2);
+
+    /// <summary>
+    /// The money one row carries. Only the sections whose figures a consultant reconciles against a
+    /// source-system report contribute; a role or a user has no amount and contributes nothing rather
+    /// than a misleading zero.
     /// </summary>
     private static decimal RowControlTotal(string section, Dictionary<string, string> row)
     {
