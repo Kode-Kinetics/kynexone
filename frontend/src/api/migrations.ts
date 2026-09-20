@@ -130,3 +130,83 @@ export const migrationsApi = {
       )
       .then((r) => r.data),
 };
+
+// ── Parallel-run variance ─────────────────────────────────────────────────────
+//
+// `POST /api/payroll/parallel-run/{runId}/variance` has existed, unit-proven, with no caller:
+// the reconciliation of a KynexOne run against the register the OUTGOING system produced for
+// the same month. It is the artefact a customer's CFO signs at go-live, and until now the only
+// way to see it was Postman. See `ParallelRunVariancePage`.
+
+/** Presence of a (employee, component) pair across the two registers. */
+export type VariancePresence = 'Both' | 'OnlyInKynexOne' | 'OnlyInRegister' | 'Neither';
+
+export type VarianceToleranceType = 'Absolute' | 'Percentage';
+
+export interface VarianceRequest {
+  registerCsv: string;
+  tolerance: number;
+  toleranceType: VarianceToleranceType;
+}
+
+export interface VarianceLine {
+  employeeCode: string;
+  employeeName: string;
+  componentCode: string;
+  kynexOneAmount: number;
+  externalAmount: number;
+  variance: number;
+  variancePct: number;
+  isOutsideTolerance: boolean;
+  presence: VariancePresence;
+}
+
+export interface VarianceReport {
+  runId: string;
+  period: string;
+  tolerance: number;
+  toleranceType: VarianceToleranceType;
+  employeesInRun: number;
+  employeesInRegister: number;
+  matchedEmployees: number;
+  employeesOnlyInRun: number;
+  employeesOnlyInRegister: number;
+  linesCompared: number;
+  linesOutsideTolerance: number;
+  totalAbsoluteVariance: number;
+  kynexOneNetTotal: number;
+  externalNetTotal: number;
+  lines: VarianceLine[];
+  /** Per-row complaints from the CSV parser. Rows that errored were NOT compared. */
+  registerErrors: string[];
+}
+
+/**
+ * The three reserved component codes the engine maps onto the payslip's own totals. A legacy
+ * register that carries nothing else still reconciles at the level a finance reviewer cares about.
+ */
+export const VARIANCE_TOTAL_CODES = ['GROSS', 'DEDUCTIONS', 'NET'] as const;
+
+/**
+ * The long-form shape `ParseRegister` reads. Long rather than wide because "per component" is the
+ * requirement and no wide sheet can carry an arbitrary component catalogue.
+ */
+export const VARIANCE_REGISTER_TEMPLATE = [
+  'EmployeeCode,ComponentCode,Amount',
+  'EMP-0001,GROSS,12000.00',
+  'EMP-0001,DEDUCTIONS,1400.00',
+  'EMP-0001,NET,10600.00',
+  'EMP-0001,BASIC,8000.00',
+  'EMP-0001,HOUSING,4000.00',
+  'EMP-0002,GROSS,7500.00',
+  'EMP-0002,DEDUCTIONS,750.00',
+  'EMP-0002,NET,6750.00',
+  '',
+].join('\n');
+
+export const parallelRunApi = {
+  variance: (runId: string, payload: VarianceRequest) =>
+    client
+      .post<VarianceReport>(`/api/payroll/parallel-run/${runId}/variance`, payload)
+      .then((r) => r.data),
+};

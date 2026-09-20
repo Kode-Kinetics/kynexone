@@ -1,4 +1,7 @@
 import client from './client';
+import type { AuditIntegrityReport } from './payroll';
+
+export type { AuditIntegrityReport } from './payroll';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -304,4 +307,12 @@ export const securitySettingsApi = {
 export const identityAuditApi = {
   list: (params: { limit?: number } = {}) =>
     client.get<AuditLogItem[]>('/api/audit-logs', { params }).then(r => r.data),
+
+  /**
+   * The tenant-wide tamper-evident audit chain, verified end to end (Admin only). The sibling
+   * verifier for the payroll chain is `payrollApi.auditIntegrity`. Both existed with no caller:
+   * the product could prove its own audit trail had not been altered and no human could ask it to.
+   */
+  integrity: () =>
+    client.get<AuditIntegrityReport>('/api/audit-logs/integrity').then(r => r.data),
 };

@@ -14,6 +14,7 @@ import {
   Layers3,
   FileSignature,
   Network,
+  Scale,
   Settings2,
   ShieldCheck,
   TimerReset,
@@ -88,6 +89,9 @@ export const navigationGroups: NavGroup[] = [
       // Implementation-time screen: the consultant-facing front end for the opening-balance engine,
       // which until now had no caller at all and was driven from Postman.
       { label: 'Opening Balances', icon: DatabaseBackup, path: '/opening-balances', requiredPermissions: ['employees.write', 'payroll.write'] },
+      // The other half of a go-live: reconciling a run against the register the OUTGOING system
+      // produced for the same month. The engine was built and unit-proven with no caller.
+      { label: 'Parallel Run Variance', icon: Scale, path: '/payroll/variance', requiredPermissions: ['payroll.read'] },
     ],
   },
 ];
