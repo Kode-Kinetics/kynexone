@@ -69,15 +69,18 @@ public static class FinalSettlementGlLedger
               && x.EventType == GlEventTypes.SettlementAccrual && !x.IsReversed, ct);
 
     /// <summary>Has a payroll run already CONSUMED this settlement's payable (and not had it voided)?
-    /// A settlement can therefore never be disbursed twice.</summary>
+    /// A settlement can therefore never be disbursed twice.
+    /// <para>S2-B2: an OUT-OF-PAYROLL discharge (<see cref="GlEventTypes.SettlementExternalPayment"/>)
+    /// retires the same payable, so it counts here too. Without this a settlement paid by bank transfer
+    /// could still be cancelled in isolation — contra'ing an accrual whose cash has already left.</para></summary>
     public static Task<bool> HasLiveClearingAsync(
         ZayraDbContext db, Guid tenantId, Guid settlementId, CancellationToken ct)
     {
         var settlementRef = FinalSettlementGlDescriptions.SettlementRef(settlementId);
         return db.FinanceGlEntries.AnyAsync(
-            x => x.TenantId == tenantId
-              && x.EventType == GlEventTypes.SettlementPayrollClearing
-              && x.SourceEntityRef == settlementRef && !x.IsReversed, ct);
+            x => x.TenantId == tenantId && !x.IsReversed
+              && ((x.EventType == GlEventTypes.SettlementPayrollClearing && x.SourceEntityRef == settlementRef)
+               || (x.EventType == GlEventTypes.SettlementExternalPayment && x.SourceEntityId == settlementId)), ct);
     }
 
     /// <summary>
@@ -202,9 +205,12 @@ public static class FinalSettlementGlLedger
         // IgnoreQueryFilters is intentional: company filter only — cleared rows must net against their
         // accrual. Tenant re-applied.
         var clearedRows = await db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
+            // S2-B2: SettlementExternalPayment joins the two originals here — it DEBITS the same payable
+            // (paid by bank transfer instead of through a run), so a run must never clear it a second time.
             .Where(x => x.TenantId == tenantId && !x.IsReversed
                      && ((x.EventType == GlEventTypes.SettlementPayrollClearing && refs.Contains(x.SourceEntityRef))
-                      || (x.EventType == GlEventTypes.SettlementAccrualReversal && ids.Contains(x.SourceEntityId)))
+                      || ((x.EventType == GlEventTypes.SettlementAccrualReversal
+                        || x.EventType == GlEventTypes.SettlementExternalPayment) && ids.Contains(x.SourceEntityId)))
                      && x.DebitAccount != "")
             .Select(x => new { x.SourceEntityId, x.SourceEntityRef, x.EventType, x.DebitAccount, x.Amount })
             .ToListAsync(ct);
