@@ -27,6 +27,11 @@ public static class StatutoryRateGuard
         "wps.", "sif.", "mudad.",
         "nitaqat.", "emiratisation.", "qatarization.", "saudization.", "omanization.", "bahrainization.",
         "ot.", "lop.", "eosb.",
+        // KSA Art.98/109/117 — the Ramadan working-hours baseline, the Art.109 annual-leave tier and
+        // the Art.117 sick-leave pay scale. Bounded-override only: these are statutory FLOORS in the
+        // same sense as eosb/ot/lop, so a tenant may enhance above them through its own leave policy
+        // but may not edit the statutory parameter itself through Surface-A free CRUD.
+        "workhours.", "leave.",
     };
 
     public static bool IsStatutoryKey(string? rateKey)

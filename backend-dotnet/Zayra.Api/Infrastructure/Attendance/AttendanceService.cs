@@ -6,6 +6,9 @@ using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
+using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
@@ -18,6 +21,11 @@ public class AttendanceService : IAttendanceService
     private readonly INotificationService _notifications;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly WorkWeekService _workWeek;
+    // KSA Labour Law Art. 98 — the Ramadan working-hours baseline. Constructed here rather than
+    // injected for the same reason WorkWeekService is: this service is resolved in several places
+    // with a hand-rolled constructor call, and widening the signature would break all of them.
+    // StatutoryRuleReader memoizes per instance, so one instance per AttendanceService is correct.
+    private readonly KsaWorkingHoursBaselineService _ksaWorkingHours;
     // Per-request cache of the resolved tenant timezone so the per-employee/day loop
     // doesn't re-query localization settings on every call.
     private readonly Dictionary<Guid, TimeZoneInfo> _tzCache = new();
@@ -28,6 +36,8 @@ public class AttendanceService : IAttendanceService
         _notifications = notifications;
         _httpClientFactory = httpClientFactory;
         _workWeek = new WorkWeekService(db);
+        _ksaWorkingHours = new KsaWorkingHoursBaselineService(
+            new StatutoryRuleReader(db), new HijriDateService());
     }
 
     /// <summary>
@@ -958,8 +968,19 @@ public class AttendanceService : IAttendanceService
 
         daily.LateMinutes = daily.FirstInUtc is null ? 0 : Math.Max(0, (int)(daily.FirstInUtc.Value - shiftStart).TotalMinutes - policy.GraceMinutes);
         daily.EarlyExitMinutes = daily.LastOutUtc is null ? 0 : Math.Max(0, (int)(shiftEnd - daily.LastOutUtc.Value).TotalMinutes - policy.EarlyExitThresholdMinutes);
-        daily.OvertimeMinutes = Math.Max(0, daily.TotalWorkedMinutes - policy.StandardWorkMinutes);
-        daily.UndertimeMinutes = Math.Max(0, policy.StandardWorkMinutes - daily.TotalWorkedMinutes);
+
+        // KSA Labour Law Art. 98 — during Ramadan the actual working hours for Muslims are reduced to
+        // 6 hours a day, and Art. 98 cuts HOURS, not wages: the monthly salary is unchanged. So the
+        // overtime threshold for a Ramadan day is 6 hours, and the two hours that used to be ordinary
+        // time become overtime at the Art. 107 rate. Ramadan is resolved through the Um al-Qura
+        // calendar, never a Gregorian range — it moves ~11 days earlier each Gregorian year.
+        // Non-KSA companies and non-Ramadan dates get policy.StandardWorkMinutes unchanged.
+        var hoursBaseline = await _ksaWorkingHours.ResolveDailyAsync(
+            employee.CountryCode, date, policy.StandardWorkMinutes, ct);
+        var baselineMinutes = hoursBaseline.DailyMinutes;
+
+        daily.OvertimeMinutes = Math.Max(0, daily.TotalWorkedMinutes - baselineMinutes);
+        daily.UndertimeMinutes = Math.Max(0, baselineMinutes - daily.TotalWorkedMinutes);
         if (daily.FirstInUtc is null && daily.TotalWorkedMinutes == 0 && !string.IsNullOrWhiteSpace(approvedLeave))
         {
             daily.Status = "On leave";
@@ -989,7 +1010,13 @@ public class AttendanceService : IAttendanceService
         daily.UpdatedAtUtc = DateTime.UtcNow;
         foreach (var raw in events) raw.IsProcessed = true;
         await UpsertLegacyRecord(tenantId, employee.CompanyId, daily, ct);
-        await UpsertImpacts(tenantId, daily, ct);
+        // An absent day costs a day's hours. The literal 480 below is DELIBERATELY retained for every
+        // ordinary day, including for a tenant whose AttendancePolicy is not 480: making the absence
+        // deduction follow the policy generally is a defensible fix, but it would move money for
+        // non-KSA tenants — upward, for anyone configured above 8 hours — and that is outside this
+        // change's remit. Only the Ramadan case is corrected here, and only downward.
+        var absenceMinutes = hoursBaseline.IsRamadan ? Math.Min(baselineMinutes, 480) : 480;
+        await UpsertImpacts(tenantId, daily, absenceMinutes, ct);
         await UpsertExceptions(tenantId, daily, ct);
     }
 
@@ -1051,13 +1078,16 @@ public class AttendanceService : IAttendanceService
         record.Notes = daily.MissingPunch ? "Missing punch" : "";
     }
 
-    private Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)
+    /// <param name="absenceMinutes">What one absent day costs in minutes: 480 on an ordinary day, or the
+    /// reduced KSA Art. 98 Ramadan baseline (360) on a Ramadan day. Deducting a full 480 for a 6-hour
+    /// Ramadan day over-deducts by a third. See the call site for why the ordinary-day literal stays.</param>
+    private Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, int absenceMinutes, CancellationToken ct)
     {
         var existing = _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate);
         _db.AttendancePayrollImpacts.RemoveRange(existing);
         if (daily.LateMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Late deduction", Minutes = daily.LateMinutes, DailyRecordId = daily.Id });
         if (daily.EarlyExitMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Early exit deduction", Minutes = daily.EarlyExitMinutes, DailyRecordId = daily.Id });
-        if (daily.Status == "Absent") _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Absence deduction", Minutes = 480, DailyRecordId = daily.Id });
+        if (daily.Status == "Absent") _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Absence deduction", Minutes = absenceMinutes > 0 ? absenceMinutes : 480, DailyRecordId = daily.Id });
         if (daily.OvertimeMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Overtime payable", Minutes = daily.OvertimeMinutes, DailyRecordId = daily.Id });
         return Task.CompletedTask;
     }
