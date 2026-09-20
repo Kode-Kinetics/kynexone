@@ -358,6 +358,13 @@ public class HrLetterIssuer : IHrLetterIssuer
             ["passport_number"] = employee.PassportNumber,
             ["joining_date"] = employee.JoiningDate.ToString("dd MMMM yyyy", CultureInfo.InvariantCulture),
             ["leaving_date"] = leaving?.ToString("dd MMMM yyyy", CultureInfo.InvariantCulture) ?? string.Empty,
+            // Numeric dates for the Arabic body. An English month name is a left-to-right run
+            // inside a right-to-left paragraph: the bidi algorithm handles it correctly, and the
+            // correct handling is "14 March" on one line and ".2021" on the next, which reads as
+            // broken. dd/MM/yyyy is also what GCC Arabic correspondence uses.
+            ["joining_date_ar"] = employee.JoiningDate.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture),
+            ["leaving_date_ar"] = leaving?.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture) ?? string.Empty,
+            ["issue_date_ar"] = DateTime.UtcNow.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture),
             ["service_duration"] = DescribeService(employee.JoiningDate, serviceEnd),
             ["basic_salary"] = basic.ToString("N2", CultureInfo.InvariantCulture),
             ["allowances"] = allowances.ToString("N2", CultureInfo.InvariantCulture),
@@ -379,7 +386,10 @@ public class HrLetterIssuer : IHrLetterIssuer
         // still serving, use today — "to date" is what an experience letter for a current employee
         // means, and leaving the token unresolved would refuse an issuance that is perfectly valid.
         if (letterType == HrLetterTypes.ExperienceCertificate && string.IsNullOrWhiteSpace(values["leaving_date"]))
+        {
             values["leaving_date"] = DateTime.UtcNow.ToString("dd MMMM yyyy", CultureInfo.InvariantCulture);
+            values["leaving_date_ar"] = DateTime.UtcNow.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
+        }
 
         return values;
     }

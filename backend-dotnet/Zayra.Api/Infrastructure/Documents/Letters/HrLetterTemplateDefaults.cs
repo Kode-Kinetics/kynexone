@@ -28,7 +28,8 @@ public static class HrLetterTemplateDefaults
     public static readonly IReadOnlyList<string> KnownTokens =
     [
         "employee_name", "employee_name_ar", "employee_code", "designation", "department",
-        "nationality", "national_id", "passport_number", "joining_date", "leaving_date",
+        "nationality", "national_id", "passport_number",
+        "joining_date", "leaving_date", "joining_date_ar", "leaving_date_ar", "issue_date_ar",
         "service_duration", "basic_salary", "allowances", "gross_salary", "net_salary",
         "currency", "currency_ar", "bank_name", "bank_iban",
         "company_name", "company_name_ar", "company_registration_number",
@@ -55,14 +56,14 @@ public static class HrLetterTemplateDefaults
                      This certificate is issued at the employee's request for the purpose of {{purpose}} and is addressed to {{addressee}}. It carries no financial obligation or liability on the part of {{company_name}}.
                      """,
             BodyAr = """
-                     نشهد نحن {{company_name_ar}} بأن السيد/السيدة {{employee_name_ar}} (الرقم الوظيفي {{employee_code}}، رقم الهوية/الإقامة {{national_id}}) يعمل لدينا بوظيفة {{designation}} في إدارة {{department}}، وعلى رأس العمل بشكل متصل منذ تاريخ {{joining_date}}.
+                     نشهد نحن {{company_name_ar}} بأن السيد/السيدة {{employee_name_ar}} (الرقم الوظيفي {{employee_code}}، رقم الهوية/الإقامة {{national_id}}) يعمل لدينا بوظيفة {{designation}} في إدارة {{department}}، وعلى رأس العمل بشكل متصل منذ تاريخ {{joining_date_ar}}.
 
                      ويبلغ إجمالي الراتب الشهري {{gross_salary}} {{currency_ar}}، ويشمل راتباً أساسياً قدره {{basic_salary}} {{currency_ar}} وبدلات قدرها {{allowances}} {{currency_ar}}.
 
                      وقد أُعطيت له هذه الشهادة بناءً على طلبه لغرض {{purpose}} وموجهة إلى {{addressee}}، دون أدنى مسؤولية مالية على {{company_name_ar}}.
                      """,
             ClosingEn = "Issued on {{issue_date}} under reference {{reference_number}}.",
-            ClosingAr = "صدرت بتاريخ {{issue_date}} تحت الرقم المرجعي {{reference_number}}.",
+            ClosingAr = "صدرت بتاريخ {{issue_date_ar}} تحت الرقم المرجعي {{reference_number}}.",
         },
         new()
         {
@@ -85,14 +86,14 @@ public static class HrLetterTemplateDefaults
             BodyAr = """
                      السادة/ {{addressee}} المحترمين
 
-                     نفيدكم بأن السيد/السيدة {{employee_name_ar}} (الرقم الوظيفي {{employee_code}}، رقم الهوية/الإقامة {{national_id}}) يعمل لدى {{company_name_ar}} بوظيفة {{designation}}، وعلى رأس العمل بشكل متصل منذ تاريخ {{joining_date}}.
+                     نفيدكم بأن السيد/السيدة {{employee_name_ar}} (الرقم الوظيفي {{employee_code}}، رقم الهوية/الإقامة {{national_id}}) يعمل لدى {{company_name_ar}} بوظيفة {{designation}}، وعلى رأس العمل بشكل متصل منذ تاريخ {{joining_date_ar}}.
 
                      ويبلغ صافي راتبه الشهري {{net_salary}} {{currency_ar}}، ويتم تحويله شهرياً إلى الحساب رقم الآيبان {{bank_iban}} لدى {{bank_name}}. ونتعهد بإشعاركم في حال تغيّر ترتيب تحويل الراتب.
 
                      وقد صدر هذا الخطاب بناءً على طلب الموظف لغرض {{purpose}}.
                      """,
             ClosingEn = "Issued on {{issue_date}} under reference {{reference_number}}.",
-            ClosingAr = "صدر بتاريخ {{issue_date}} تحت الرقم المرجعي {{reference_number}}.",
+            ClosingAr = "صدر بتاريخ {{issue_date_ar}} تحت الرقم المرجعي {{reference_number}}.",
         },
         new()
         {
@@ -117,12 +118,12 @@ public static class HrLetterTemplateDefaults
 
                      نفيد بأن السيد/السيدة {{employee_name_ar}} (الرقم الوظيفي {{employee_code}}، الجنسية {{nationality}}، رقم الهوية/الإقامة {{national_id}}) يعمل حالياً لدى {{company_name_ar}} بوظيفة {{designation}} في إدارة {{department}}.
 
-                     وقد التحق بالعمل بتاريخ {{joining_date}} وما زال على رأس العمل حتى تاريخه، بمدة خدمة إجمالية قدرها {{service_duration}}.
+                     وقد التحق بالعمل بتاريخ {{joining_date_ar}} وما زال على رأس العمل حتى تاريخه، بمدة خدمة إجمالية قدرها {{service_duration}}.
 
                      وقد صدر هذا الخطاب بناءً على طلبه لغرض {{purpose}}، ويؤكد حالة التوظيف فقط دون ذكر أي مبالغ مالية ودون أدنى مسؤولية على {{company_name_ar}}.
                      """,
             ClosingEn = "Issued on {{issue_date}} under reference {{reference_number}}.",
-            ClosingAr = "صدر بتاريخ {{issue_date}} تحت الرقم المرجعي {{reference_number}}.",
+            ClosingAr = "صدر بتاريخ {{issue_date_ar}} تحت الرقم المرجعي {{reference_number}}.",
         },
         new()
         {
@@ -145,14 +146,14 @@ public static class HrLetterTemplateDefaults
             BodyAr = """
                      عزيزي/عزيزتي {{employee_name_ar}},
 
-                     يسرنا تأكيد تعيينك لدى {{company_name_ar}} بوظيفة {{designation}} في إدارة {{department}}، اعتباراً من تاريخ {{joining_date}}. رقمك الوظيفي هو {{employee_code}}.
+                     يسرنا تأكيد تعيينك لدى {{company_name_ar}} بوظيفة {{designation}} في إدارة {{department}}، اعتباراً من تاريخ {{joining_date_ar}}. رقمك الوظيفي هو {{employee_code}}.
 
                      ويبلغ إجمالي راتبك الشهري {{gross_salary}} {{currency_ar}}، ويشمل راتباً أساسياً قدره {{basic_salary}} {{currency_ar}} وبدلات قدرها {{allowances}} {{currency_ar}}، تُصرف وفقاً لجدول الرواتب المعتمد لدى الشركة.
 
                      ويتوجب عليك الالتزام بكافة سياسات وإجراءات الشركة وبأحكام نظام العمل المعمول به. نرحب بك ضمن فريق العمل ونتمنى لك التوفيق.
                      """,
             ClosingEn = "Issued on {{issue_date}} under reference {{reference_number}}.",
-            ClosingAr = "صدر بتاريخ {{issue_date}} تحت الرقم المرجعي {{reference_number}}.",
+            ClosingAr = "صدر بتاريخ {{issue_date_ar}} تحت الرقم المرجعي {{reference_number}}.",
         },
         new()
         {
@@ -173,12 +174,12 @@ public static class HrLetterTemplateDefaults
             BodyAr = """
                      إلى من يهمه الأمر
 
-                     نشهد نحن {{company_name_ar}} بأن السيد/السيدة {{employee_name_ar}} (الرقم الوظيفي {{employee_code}}) قد عمل لدينا بوظيفة {{designation}} في إدارة {{department}} خلال الفترة من {{joining_date}} إلى {{leaving_date}}، بمدة خدمة إجمالية قدرها {{service_duration}}.
+                     نشهد نحن {{company_name_ar}} بأن السيد/السيدة {{employee_name_ar}} (الرقم الوظيفي {{employee_code}}) قد عمل لدينا بوظيفة {{designation}} في إدارة {{department}} خلال الفترة من {{joining_date_ar}} إلى {{leaving_date_ar}}، بمدة خدمة إجمالية قدرها {{service_duration}}.
 
                      وقد أدى خلال هذه الفترة مهام وظيفته بمهنية والتزام. ونتمنى له دوام التوفيق والنجاح في مستقبله المهني.
                      """,
             ClosingEn = "Issued on {{issue_date}} under reference {{reference_number}}.",
-            ClosingAr = "صدرت بتاريخ {{issue_date}} تحت الرقم المرجعي {{reference_number}}.",
+            ClosingAr = "صدرت بتاريخ {{issue_date_ar}} تحت الرقم المرجعي {{reference_number}}.",
         },
     ];
 }

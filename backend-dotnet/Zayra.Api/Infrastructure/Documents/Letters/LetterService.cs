@@ -530,33 +530,34 @@ public class LetterService : ILetterService
                         // Stamp area. An empty bordered box, deliberately: the product has no
                         // stamp image to print and inventing one on a document a bank relies on
                         // would be forgery. HR wet-stamps here, which is what they do today.
-                        row.ConstantItem(140).Height(96).AlignRight().Border(0.8f)
-                            .BorderColor(Colors.Grey.Lighten1).Padding(6).AlignCenter().AlignMiddle()
-                            .Text("Company stamp\nختم الشركة")
-                            .FontSize(8).FontColor(Colors.Grey.Medium).AlignCenter();
+                        row.ConstantItem(150).Height(96).Border(0.8f)
+                            .BorderColor(Colors.Grey.Lighten1).Padding(8).AlignCenter().AlignMiddle()
+                            .Column(c =>
+                            {
+                                c.Item().AlignCenter().Text("Company stamp").FontSize(8).FontColor(Colors.Grey.Medium);
+                                c.Item().AlignCenter().Text("ختم الشركة").FontSize(8).FontColor(Colors.Grey.Medium);
+                            });
                     });
                 });
 
+                // Footer laid out as stacked lines rather than a Row: a long disclaimer and a
+                // 19-character reference competing for one row clipped the reference, and a
+                // half-printed reference is worse than none — it is the one string a bank reads
+                // back over the phone.
                 page.Footer().Column(col =>
                 {
                     col.Item().PaddingBottom(3).LineHorizontal(0.5f).LineColor(Colors.Grey.Lighten1);
-                    col.Item().Row(row =>
-                    {
-                        row.RelativeItem().Text(t =>
-                        {
-                            var footer = string.IsNullOrWhiteSpace(head.FooterTextEn)
-                                ? $"{head.CompanyNameEn} — this document is valid only with an authorised signature and the company stamp."
-                                : head.FooterTextEn;
-                            t.Span(footer).FontSize(7).FontColor(Colors.Grey.Medium);
-                        });
-                        // The verifiable half of the letterhead: a third party holding the paper
-                        // can quote this back to HR and the register will find exactly one match.
-                        row.ConstantItem(150).AlignRight().Text(data.ReferenceNumber)
-                            .FontSize(7).FontColor(Colors.Grey.Medium);
-                    });
+                    var footer = string.IsNullOrWhiteSpace(head.FooterTextEn)
+                        ? $"{head.CompanyNameEn} — this document is valid only with an authorised signature and the company stamp."
+                        : head.FooterTextEn;
+                    col.Item().Text(footer).FontSize(7).FontColor(Colors.Grey.Medium);
                     if (!string.IsNullOrWhiteSpace(head.FooterTextAr))
                         col.Item().AlignRight().Text(head.FooterTextAr).FontSize(7)
                             .FontColor(Colors.Grey.Medium).DirectionFromRightToLeft();
+                    // The verifiable half of the letterhead: a third party holding the paper can
+                    // quote this back to HR and the register will find exactly one match.
+                    col.Item().Text($"Reference {data.ReferenceNumber}")
+                        .FontSize(7).FontColor(Colors.Grey.Medium);
                 });
             });
         });
