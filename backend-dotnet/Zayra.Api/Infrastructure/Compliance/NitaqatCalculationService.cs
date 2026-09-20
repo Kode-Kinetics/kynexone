@@ -659,19 +659,19 @@ public sealed class NitaqatCalculationService
         var unverified = new List<string>();
         if (!ctx.Activity.IsVerified) unverified.Add($"Economic activity '{ctx.Activity.Code}'");
 
-        // Being banded off the pre-2021 grid IS an unverified input, and the most consequential
-        // one on the screen: it is the previous regime's answer. Say so where the customer looks.
+        // Under the CURVE the size tier is reported as context and does not touch the answer, so
+        // it is not an input to flag. Under the GRID it selects the row, so both the regime and
+        // the tier boundaries bear on the band — and being banded off the pre-2021 grid at all is
+        // the most consequential caveat on the screen, because it is the previous regime's answer.
         if (!string.Equals(ctx.BandingMethod, NitaqatBandingMethods.Curve, StringComparison.Ordinal))
+        {
             unverified.Add(
                 "Band floors came from a size-tier table, not the MHRSD curve in force since "
                 + "1 December 2021");
-        // Tier boundaries only bear on the answer under the grid regime; under the curve the tier
-        // is reported as context only, so flagging it there would be noise.
-        else if (!ctx.Tier.IsVerified)
-            unverified.Add($"Size tier '{ctx.Tier.Code}' boundaries (reported as context only)");
-        if (!string.Equals(ctx.BandingMethod, NitaqatBandingMethods.Curve, StringComparison.Ordinal)
-            && !ctx.Tier.IsVerified)
-            unverified.Add($"Size tier '{ctx.Tier.Code}' boundaries");
+
+            if (!ctx.Tier.IsVerified)
+                unverified.Add($"Size tier '{ctx.Tier.Code}' boundaries");
+        }
         foreach (var t in ctx.Thresholds.Where(t => !t.IsVerified))
             unverified.Add($"{t.Band} threshold ({t.MinSaudizationPercent:0.##}%)");
         foreach (var l in ctx.Breakdown.Where(l => !l.IsVerified).DistinctBy(l => l.Category))
