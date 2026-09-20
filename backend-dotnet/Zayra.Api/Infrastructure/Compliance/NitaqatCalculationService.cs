@@ -793,12 +793,30 @@ public sealed class NitaqatCalculationService
         if (profile is null) return null;
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-        var latestTier = await _db.NitaqatStandingSnapshots
+        var latest = await _db.NitaqatStandingSnapshots
             .Where(s => s.TenantId == tenantId && s.CompanyId == companyId)
             .OrderByDescending(s => s.AsOfDate)
-            .Select(s => s.SizeTierCode)
+            .Select(s => new { s.SizeTierCode, s.TotalWeighted })
             .FirstOrDefaultAsync(ct);
-        if (string.IsNullOrEmpty(latestTier)) return null;
+        if (latest is null || string.IsNullOrEmpty(latest.SizeTierCode)) return null;
+
+        // Same order of authority as the standing read. Without this the "you are heading for a
+        // downgrade" warning would go quiet for every establishment banded off a curve — a silent
+        // loss of the one thing the trend chart is for.
+        var curve = await NitaqatCurve.ResolveAsync(
+            _rules, profile.ActivityCode, latest.TotalWeighted, today, tenantId, ct);
+
+        if (curve is not null)
+            return band switch
+            {
+                NitaqatBands.LowGreen    => curve.LowGreen,
+                NitaqatBands.MediumGreen => curve.MediumGreen,
+                NitaqatBands.HighGreen   => curve.HighGreen,
+                NitaqatBands.Platinum    => curve.Platinum,
+                _ => null,   // Red has no floor; nothing can push you out of it.
+            };
+
+        var latestTier = latest.SizeTierCode;
 
         return Effective(await ReferenceAsync(_db.NitaqatBandThresholds, tenantId, ct), today)
             .Where(t => t.ActivityCode == profile.ActivityCode

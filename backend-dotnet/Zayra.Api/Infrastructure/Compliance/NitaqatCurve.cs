@@ -118,10 +118,25 @@ public static class NitaqatCurve
     /// y = m · ln(x) + c, rounded to two decimal places — the precision MHRSD's own worked
     /// example reports ("1.68 * ln(400) + 12.08" → "22.15").
     ///
-    /// <para><paramref name="totalWorkforce"/> is the establishment's TOTAL worker count. Note
-    /// Decision 61706 clause Twenty-one: special-category workers "shall be calculated as one
-    /// worker in all cases for the purpose of calculating the volume of the Establishment", so the
-    /// weighting that moves the Saudization RATIO must not also move x.</para>
+    /// <para><paramref name="totalWorkforce"/> is the establishment's TOTAL worker count — the
+    /// guideline says only "the total workforce in the entity".</para>
+    ///
+    /// <para><b>[COUNSEL] WHAT EXACTLY IS x.</b> Decision 61706 clause Twenty-one settles part of
+    /// it: special-category workers (disability, students, released prisoners) "shall be
+    /// calculated as ONE worker in all cases for the purpose of calculating the volume of the
+    /// Establishment", so the ×4 that moves the Saudization RATIO must not also move x — and it
+    /// does not here, because those categories carry a denominator weight of 1.</para>
+    ///
+    /// <para>It does NOT settle part-time. Clause Eighth counts a part-time worker as half a
+    /// worker in the localization PERCENTAGE, and clause Twenty-one's "special categories" are
+    /// defined by clause Nineteenth as disability + students + released prisoners, which does not
+    /// include part-time. So whether a part-timer contributes 1 or 0.5 to the establishment's
+    /// VOLUME is not answered by either document obtained. The caller passes the weighted
+    /// denominator, which treats a part-timer as 0.5 — consistent with how the size tier has
+    /// always been derived in this system. Because the curve is increasing in x for almost every
+    /// published activity (m &gt; 0), understating x understates the required floor, which is the
+    /// OPTIMISTIC direction. VERIFY with MHRSD before an establishment with a material part-time
+    /// population relies on a band.</para>
     /// </summary>
     public static decimal MinimumSaudization(decimal gradient, decimal intercept, decimal totalWorkforce)
     {
