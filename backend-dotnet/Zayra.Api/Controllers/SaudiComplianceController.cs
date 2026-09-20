@@ -319,12 +319,19 @@ public class SaudiComplianceController : ControllerBase
             return new ResolvedCompany(saudiCompanies[0], null);
 
         if (saudiCompanies.Count == 0)
-            return new ResolvedCompany(Guid.Empty, Ok(new NitaqatStandingResponse(false, null,
-                new NitaqatRefusal(
+            // Shape-neutral: this helper serves the standing, trend and hire-impact
+            // endpoints, which have three different response records. Returning a
+            // standing-shaped body from the trend endpoint would be a lie about the
+            // contract, so the shared refusal is returned on its own.
+            return new ResolvedCompany(Guid.Empty, Ok(new
+            {
+                ok = false,
+                refusal = new NitaqatRefusal(
                     NitaqatRefusalReasons.NotKsa,
                     "No active Saudi company is configured for this tenant. Nitaqat applies only to "
                     + "establishments registered with MHRSD in the Kingdom.",
-                    "Add a company with country SA, or set the country on an existing company."))));
+                    "Add a company with country SA, or set the country on an existing company."),
+            }));
 
         return new ResolvedCompany(Guid.Empty, BadRequest(new
         {
