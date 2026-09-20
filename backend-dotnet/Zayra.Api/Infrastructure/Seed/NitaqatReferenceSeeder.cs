@@ -169,12 +169,18 @@ public static class NitaqatReferenceSeeder
         // The consequential default. See the long note in the accompanying analysis.
         new("GCC_STANDARD", GosiClassifications.GCC, NitaqatCountBasis.Any,
             NitaqatWeightCategories.Standard, 0m, 1m, 10, false,
-            "GCC nationals working in the Kingdom need no work permit, and it is genuinely unclear " +
-            "without a circular whether Nitaqat counts them in the total workforce or excludes them " +
-            "from both sides. SEEDED CONSERVATIVELY as denominator-only (identical to a non-Saudi): " +
+            // 491 chars. SourceNote is varchar(500) (ZayraDbContext.cs ~3042) and EF does not
+            // client-side validate MaxLength, so an over-length note here does not fail this row
+            // — it throws 22001 inside the single SaveChangesAsync in SeedAsync and rolls back
+            // EVERY Nitaqat reference row: size tiers, weight rules, activities and the
+            // illustrative grid. The visible symptom is an empty economic-activity dropdown and a
+            // Nitaqat panel permanently stuck on nitaqat_activity_not_configured. Keep it under 500.
+            "GCC nationals in the Kingdom need no work permit, and it is unclear without a " +
+            "circular whether Nitaqat counts them in the total workforce or excludes them from " +
+            "both sides. SEEDED CONSERVATIVELY as denominator-only (identical to a non-Saudi): " +
             "that UNDER-states the establishment's Saudization rather than over-stating it. " +
-            "Over-stating is the dangerous direction — it produces a confident green against a real " +
-            "Red and the customer discovers it when their visa quota freezes. VERIFY with MHRSD."),
+            "Over-stating is the dangerous direction — it produces a confident green against a " +
+            "real Red and the customer discovers it when their visa quota freezes. VERIFY with MHRSD."),
 
         new("EXPAT_PREMIUM_RESIDENCY", GosiClassifications.NonSaudi, NitaqatCountBasis.Any,
             NitaqatWeightCategories.PremiumResidency, 0m, 0m, 40, false,
