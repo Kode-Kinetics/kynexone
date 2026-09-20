@@ -711,15 +711,16 @@ function RosterTab({ definitions }: RosterTabProps) {
                     <td key={ds} className="px-2 py-2 text-center">
                       {a ? (
                         <div
-                          className="group/cell relative inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-white"
-                          style={{ backgroundColor: a.shiftColor }}
+                          className="group/cell relative inline-flex items-center gap-1 overflow-hidden rounded-lg py-1 pl-2.5 pr-2 text-[11px] font-semibold text-slate-800 dark:text-slate-100"
+                          style={{ backgroundColor: `${a.shiftColor}1A` }}
                         >
+                          <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ backgroundColor: a.shiftColor }} />
                           {a.shiftCode}
                           <button
                             type="button"
                             aria-label="Remove shift assignment"
                             onClick={() => removeAssignment(a.id)}
-                            className="ml-0.5 hidden rounded-full bg-white/20 p-0.5 hover:bg-white/40 group-hover/cell:inline-flex"
+                            className="ml-0.5 hidden rounded-full bg-slate-900/10 p-0.5 text-slate-600 hover:bg-slate-900/20 group-hover/cell:inline-flex dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white/20"
                           >
                             <X className="h-2.5 w-2.5" />
                           </button>

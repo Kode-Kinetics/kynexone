@@ -133,7 +133,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
             </p>
             <p className="text-[10px] text-slate-500 truncate leading-none mt-0.5">Control Plane</p>
           </div>
-          <span className="shrink-0 text-[9px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 px-1.5 py-0.5 rounded uppercase tracking-wider">
+          <span className="shrink-0 text-[10px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 px-1.5 py-0.5 rounded uppercase tracking-wider">
             PROD
           </span>
         </div>
@@ -182,7 +182,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
           {/* User row */}
           <div className="flex items-center gap-2.5 px-2">
             <div className="h-6 w-6 rounded-full bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0">
-              <span className="text-[9px] font-bold text-blue-400">{initials}</span>
+              <span className="text-[10px] font-bold text-blue-400">{initials}</span>
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-[11px] font-medium text-slate-300 truncate">{email}</p>
@@ -280,7 +280,7 @@ function CommandBar({ onMenuOpen }: { onMenuOpen: () => void }) {
                 }}
               >
                 <div className="h-6 w-6 rounded-md bg-slate-800 border border-white/10 flex items-center justify-center shrink-0">
-                  <span className="text-[9px] font-bold text-slate-400">{t.name.slice(0, 2).toUpperCase()}</span>
+                  <span className="text-[10px] font-bold text-slate-400">{t.name.slice(0, 2).toUpperCase()}</span>
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm text-white font-medium truncate">{t.name}</p>

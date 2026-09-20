@@ -626,7 +626,7 @@ function SectionCard({
           <span className="text-sm font-medium text-slate-800 dark:text-white">{def.labelEn}</span>
           {def.labelAr && <span className="ml-2 text-xs text-slate-400">{def.labelAr}</span>}
           {!def.canDisable && (
-            <span className="ml-2 rounded bg-rose-50 px-1 py-0.5 text-[9px] font-bold text-rose-500 dark:bg-rose-500/10">
+            <span className="ml-2 rounded bg-rose-50 px-1 py-0.5 text-[10px] font-bold text-rose-500 dark:bg-rose-500/10">
               required
             </span>
           )}
@@ -654,7 +654,7 @@ function SectionCard({
                 />
                 <span className="text-slate-700 dark:text-slate-300">{f.labelEn}</span>
                 {f.isComplianceLocked && (
-                  <span className="rounded bg-rose-50 px-1 text-[9px] font-bold text-rose-500 dark:bg-rose-500/10">locked</span>
+                  <span className="rounded bg-rose-50 px-1 text-[10px] font-bold text-rose-500 dark:bg-rose-500/10">locked</span>
                 )}
               </label>
             ))}
