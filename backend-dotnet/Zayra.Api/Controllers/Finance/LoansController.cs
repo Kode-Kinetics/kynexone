@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
@@ -218,8 +219,14 @@ public class LoansController : ControllerBase
         var uid = GetUserId();
 
         // ── The state guard ──────────────────────────────────────────────────────────────────
-        // This endpoint used to act on a loan in ANY status and on an approval step that had
-        // already been decided. Concretely, before this guard:
+        // The checklist itself now lives in ApprovalDecisionGuard, shared with AdvancesController
+        // and OffersController. It used to be copied into each of them, which is how
+        // AdvancesController.Reject came to be missing its status check entirely. The order of the
+        // checks and every response body below are unchanged from the hand-rolled version;
+        // ApprovalDecisionCharacterisationTests pins them.
+        //
+        // What the guard protects here: this endpoint used to act on a loan in ANY status and on an
+        // approval step that had already been decided. Concretely, before it:
         //   • Approving an already-Active loan re-ran the whole disbursement block below — it
         //     reset ApprovedAmount and OutstandingBalance while TotalRepaid stayed put, breaking
         //     the ApprovedAmount − TotalRepaid − OutstandingBalance == 0 invariant AuditReport
@@ -230,37 +237,37 @@ public class LoansController : ControllerBase
         //   • A replayed request simply re-decided the same step, overwriting the decider and
         //     the decision itself.
         // Only the GL posting was idempotent (POD-B1b, below), which was a band-aid over this
-        // missing guard rather than the guard. The shape and the error codes mirror
-        // OffersController.DecideApproval — the same route on the same kind of two-row aggregate.
-        if (req.Decision is not ("Approved" or "Rejected"))
-            return BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." });
-
+        // missing guard rather than the guard.
+        //
+        // Both records are resolved before the guard runs so the checklist can be evaluated in one
+        // place; they are side-effect-free reads, and the guard reports them in the same order the
+        // inline checks did (a decided step still outranks a missing loan).
         var approval = await _db.LoanApprovals.FirstOrDefaultAsync(x => x.Id == approvalId && x.LoanId == id && x.TenantId == tid, ct);
-        if (approval == null) return NotFound();
-        if (approval.Status != "Pending")
-            return Conflict(new
-            {
-                error = "approval_already_decided",
-                message = $"This approval step is already in '{approval.Status}' status."
-            });
-
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-        if (loan == null) return NotFound();
-        if (loan.Status != "Pending")
-            return Conflict(new
-            {
-                error = "invalid_loan_state",
-                message = $"Loan approval decisions require Pending status (current: {loan.Status})."
-            });
-        if (loan.IsLockedByPayroll)
-            return Conflict(new
-            {
-                error = "locked_by_payroll",
-                message = "This loan is locked by an in-flight payroll run and cannot be decided."
-            });
 
-        if (req.Decision == "Approved" && loan.CreatedBy.HasValue && uid.HasValue && loan.CreatedBy == uid)
-            return BadRequest("Maker-checker control: requester cannot approve their own loan.");
+        var verdict = ApprovalDecisionGuard.Evaluate(new ApprovalDecisionSpec
+        {
+            Decision = req.Decision,
+            AllowedDecisions = ApprovalDecisionGuard.ApprovedOrRejected,
+            Step = new ApprovalStepState(approval is not null, approval?.Status ?? string.Empty),
+            ParentLabel = "loan",
+            ParentExists = loan is not null,
+            ParentStatus = loan?.Status ?? string.Empty,
+            ParentStatusesAllowingDecision = new[] { "Pending" },
+            Lock = new ApprovalLock(
+                loan?.IsLockedByPayroll == true,
+                "This loan is locked by an in-flight payroll run and cannot be decided."),
+            // Approval only: a requester may still reject (withdraw) their own loan.
+            MakerChecker = new MakerCheckerRule(
+                loan?.CreatedBy is { } maker && uid.HasValue && maker == uid,
+                new[] { "Approved" },
+                "Maker-checker control: requester cannot approve their own loan."),
+        });
+        if (!verdict.Passed) return LoanDecisionRefusal(verdict, loan?.Status);
+
+        // Guard postcondition: a passing verdict means both records were found.
+        ArgumentNullException.ThrowIfNull(approval);
+        ArgumentNullException.ThrowIfNull(loan);
 
         var oldStatus = approval.Status;
         approval.Status = req.Decision; approval.Comments = req.Comments ?? string.Empty;
@@ -492,6 +499,32 @@ public class LoansController : ControllerBase
         _db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
             .AnyAsync(x => x.TenantId == tid && x.SourceModule == "Loan"
                         && x.SourceEntityId == loanId && x.EventType == "Disbursement" && !x.IsReversed, ct);
+
+    /// <summary>
+    /// Maps a shared-guard refusal to the exact response this endpoint has always returned.
+    /// The shapes are deliberately NOT unified across the converged modules — Advances answers the
+    /// same conditions with different codes and even different status classes, and changing that
+    /// would be an API break wearing a refactor's clothes. The guard owns the checklist; each
+    /// module keeps its own contract.
+    /// </summary>
+    private IActionResult LoanDecisionRefusal(ApprovalGuardVerdict verdict, string? loanStatus) => verdict.Outcome switch
+    {
+        ApprovalGuardOutcome.DecisionOutsideVocabulary =>
+            BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." }),
+        ApprovalGuardOutcome.StepNotFound or ApprovalGuardOutcome.ParentNotFound => NotFound(),
+        ApprovalGuardOutcome.StepAlreadyDecided =>
+            Conflict(new { error = "approval_already_decided", message = verdict.Message }),
+        ApprovalGuardOutcome.ParentStateForbidsDecision =>
+            Conflict(new
+            {
+                error = "invalid_loan_state",
+                message = $"Loan approval decisions require Pending status (current: {loanStatus})."
+            }),
+        ApprovalGuardOutcome.ParentLocked =>
+            Conflict(new { error = "locked_by_payroll", message = verdict.Message }),
+        ApprovalGuardOutcome.MakerIsChecker => BadRequest(verdict.Message),
+        _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
+    };
 
     private async Task WriteLoanAudit(Guid tid, Guid? uid, Guid loanId, string action, string? oldVal, string newVal, CancellationToken ct)
     {
