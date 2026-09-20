@@ -329,6 +329,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             approval.CompletedAtUtc = DateTime.UtcNow;
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
             await TimesheetApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else if (step.IsFinalStep)
         {
@@ -339,6 +340,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             // attendance reconciliation its hours feed — in THIS SaveChanges, so a decision taken
             // in the Approval Center and one taken on the timesheet screen are the same write.
             await TimesheetApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // Requisitions: the shared row and the requisition's own status are now one write. Before
+            // this the module stamped its status and left this row Pending for ever.
+            await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else
         {
