@@ -77,7 +77,7 @@ export default function TaxPoliciesPage() {
         </div>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-slate-200/80 bg-white shadow-sm dark:border-white/[0.06] dark:bg-white/[0.03]">
-          <table className="w-full min-w-[640px] text-left text-sm">
+          <table className="w-full min-w-[640px] text-start text-sm">
             <thead>
               <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wide text-slate-400 dark:border-white/[0.06]">
                 <th className="px-4 py-3 font-semibold">Scope</th>

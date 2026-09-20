@@ -143,7 +143,9 @@ function Toggle({ id, checked, onChange }: { id: string; checked: boolean; onCha
       }`}
     >
       <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-        checked ? 'translate-x-6' : 'translate-x-1'
+        // Knob travel is a transform, which does not mirror on its own — a switch that
+        // slides off the track in Arabic is worse than one that does not mirror at all.
+        checked ? 'translate-x-6 rtl:-translate-x-6' : 'translate-x-1 rtl:-translate-x-1'
       }`} />
     </button>
   );
@@ -662,12 +664,12 @@ export default function TenantAdminPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-100 text-xs text-gray-500">
-                      <th className="py-2 text-left font-medium">Invoice #</th>
-                      <th className="py-2 text-left font-medium">Period</th>
-                      <th className="py-2 text-right font-medium">Amount</th>
-                      <th className="py-2 text-left font-medium">Status</th>
-                      <th className="py-2 text-left font-medium">Due</th>
-                      <th className="py-2 text-left font-medium">Paid</th>
+                      <th className="py-2 text-start font-medium">Invoice #</th>
+                      <th className="py-2 text-start font-medium">Period</th>
+                      <th className="py-2 text-end font-medium">Amount</th>
+                      <th className="py-2 text-start font-medium">Status</th>
+                      <th className="py-2 text-start font-medium">Due</th>
+                      <th className="py-2 text-start font-medium">Paid</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
@@ -675,7 +677,7 @@ export default function TenantAdminPage() {
                       <tr key={inv.id} className="hover:bg-gray-50 transition-colors">
                         <td className="py-2.5 font-mono text-xs text-gray-700">{inv.invoiceNumber}</td>
                         <td className="py-2.5 text-gray-600">{inv.periodDescription ?? '—'}</td>
-                        <td className="py-2.5 text-right font-medium text-gray-900">
+                        <td className="py-2.5 text-end font-medium text-gray-900">
                           {inv.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} {inv.currencyCode}
                         </td>
                         <td className="py-2.5">
@@ -1082,14 +1084,14 @@ export default function TenantAdminPage() {
                 <div key={code} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
                   <div className="px-5 py-3 bg-gray-50 border-b border-gray-100">
                     <p className="text-sm font-semibold text-gray-800">
-                      {getCountryName(code)} <span className="text-gray-400 font-normal ml-1">({code})</span>
+                      {getCountryName(code)} <span className="text-gray-400 font-normal ms-1">({code})</span>
                     </p>
                   </div>
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-100">
                         {['Rule Key', 'Rule Value', 'Type', 'Override', 'Eff. From', 'Eff. To', 'Actions'].map(col => (
-                          <th key={col} className="text-left text-xs font-medium text-gray-500 px-4 py-2">{col}</th>
+                          <th key={col} className="text-start text-xs font-medium text-gray-500 px-4 py-2">{col}</th>
                         ))}
                       </tr>
                     </thead>
@@ -1264,7 +1266,7 @@ export default function TenantAdminPage() {
                 <thead>
                   <tr className="border-b border-gray-100 bg-gray-50">
                     {['Country', 'Jurisdiction', 'Rule Key', 'Value', 'Effective From', 'Source / Note', 'Override', 'Actions'].map(col => (
-                      <th key={col} className="text-left text-xs font-medium text-gray-500 px-4 py-2">{col}</th>
+                      <th key={col} className="text-start text-xs font-medium text-gray-500 px-4 py-2">{col}</th>
                     ))}
                   </tr>
                 </thead>

@@ -79,7 +79,9 @@ function BandRail({ standing }: { standing: NitaqatStanding }) {
         <div className={`h-2.5 rounded-full ${s.bar}`} style={{ width: `${pos}%` }} />
         <div
           className="absolute -top-1 w-0.5 bg-slate-700 dark:bg-slate-200"
-          style={{ left: `${pos}%`, height: '1.125rem' }}
+          // insetInlineStart, not left: the fill beside it is a `width`, which already grows from
+          // the inline start, so a physical `left` marker detaches from its own bar in Arabic.
+          style={{ insetInlineStart: `${pos}%`, height: '1.125rem' }}
           aria-hidden
         />
       </div>
@@ -427,15 +429,15 @@ function BreakdownCard({ standing }: { standing: NitaqatStanding }) {
       </p>
 
       <div className="-mx-2 overflow-x-auto">
-        <table className="w-full min-w-[34rem] text-left text-sm">
+        <table className="w-full min-w-[34rem] text-start text-sm">
           <thead>
             <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wide text-slate-500 dark:border-white/[0.07] dark:text-slate-400">
               <th scope="col" className="px-2 py-1.5 font-medium">Group</th>
-              <th scope="col" className="px-2 py-1.5 text-right font-medium">Heads</th>
-              <th scope="col" className="px-2 py-1.5 text-right font-medium">Saudi ea.</th>
-              <th scope="col" className="px-2 py-1.5 text-right font-medium">Total ea.</th>
-              <th scope="col" className="px-2 py-1.5 text-right font-medium">Saudi units</th>
-              <th scope="col" className="px-2 py-1.5 text-right font-medium">Total units</th>
+              <th scope="col" className="px-2 py-1.5 text-end font-medium">Heads</th>
+              <th scope="col" className="px-2 py-1.5 text-end font-medium">Saudi ea.</th>
+              <th scope="col" className="px-2 py-1.5 text-end font-medium">Total ea.</th>
+              <th scope="col" className="px-2 py-1.5 text-end font-medium">Saudi units</th>
+              <th scope="col" className="px-2 py-1.5 text-end font-medium">Total units</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
@@ -444,34 +446,34 @@ function BreakdownCard({ standing }: { standing: NitaqatStanding }) {
                 <td className="px-2 py-1.5 text-slate-700 dark:text-slate-200">
                   {b.classification} · {b.countBasis}
                   {b.category !== 'Standard' && (
-                    <span className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">
+                    <span className="ms-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">
                       {b.category}
                     </span>
                   )}
                   {!b.isVerified && (
                     <span
                       title={b.sourceNote}
-                      className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"
+                      className="ms-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"
                     >
                       unverified
                     </span>
                   )}
                 </td>
-                <td className="px-2 py-1.5 text-right tabular-nums text-slate-600 dark:text-slate-300">{b.heads}</td>
-                <td className="px-2 py-1.5 text-right tabular-nums text-slate-500 dark:text-slate-400">{b.numeratorWeightEach}</td>
-                <td className="px-2 py-1.5 text-right tabular-nums text-slate-500 dark:text-slate-400">{b.denominatorWeightEach}</td>
-                <td className="px-2 py-1.5 text-right tabular-nums font-medium text-slate-700 dark:text-slate-200">{b.numeratorTotal}</td>
-                <td className="px-2 py-1.5 text-right tabular-nums font-medium text-slate-700 dark:text-slate-200">{b.denominatorTotal}</td>
+                <td className="px-2 py-1.5 text-end tabular-nums text-slate-600 dark:text-slate-300">{b.heads}</td>
+                <td className="px-2 py-1.5 text-end tabular-nums text-slate-500 dark:text-slate-400">{b.numeratorWeightEach}</td>
+                <td className="px-2 py-1.5 text-end tabular-nums text-slate-500 dark:text-slate-400">{b.denominatorWeightEach}</td>
+                <td className="px-2 py-1.5 text-end tabular-nums font-medium text-slate-700 dark:text-slate-200">{b.numeratorTotal}</td>
+                <td className="px-2 py-1.5 text-end tabular-nums font-medium text-slate-700 dark:text-slate-200">{b.denominatorTotal}</td>
               </tr>
             ))}
           </tbody>
           <tfoot>
             <tr className="border-t border-slate-200 text-sm font-semibold dark:border-white/[0.1]">
               <td className="px-2 py-2 text-slate-700 dark:text-slate-200">Total</td>
-              <td className="px-2 py-2 text-right tabular-nums text-slate-700 dark:text-slate-200">{standing.rawTotalHeadcount}</td>
+              <td className="px-2 py-2 text-end tabular-nums text-slate-700 dark:text-slate-200">{standing.rawTotalHeadcount}</td>
               <td colSpan={2} />
-              <td className="px-2 py-2 text-right tabular-nums text-slate-800 dark:text-slate-100">{standing.saudiWeighted}</td>
-              <td className="px-2 py-2 text-right tabular-nums text-slate-800 dark:text-slate-100">{standing.totalWeighted}</td>
+              <td className="px-2 py-2 text-end tabular-nums text-slate-800 dark:text-slate-100">{standing.saudiWeighted}</td>
+              <td className="px-2 py-2 text-end tabular-nums text-slate-800 dark:text-slate-100">{standing.totalWeighted}</td>
             </tr>
           </tfoot>
         </table>
@@ -650,7 +652,7 @@ export function NitaqatPanel() {
                   {standing.companyName} · {standing.activityNameEn} · {standing.sizeTierNameEn}
                 </p>
               </div>
-              <div className="text-right text-xs text-slate-500 dark:text-slate-400">
+              <div className="text-end text-xs text-slate-500 dark:text-slate-400">
                 <p>As of {standing.asOf}</p>
                 <p className="mt-0.5 tabular-nums">
                   {standing.saudiWeighted} / {standing.totalWeighted} weighted units
@@ -690,7 +692,7 @@ export function NitaqatPanel() {
             {!standing.allInputsVerified && (
               <details className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-300">
                 <summary className="cursor-pointer font-medium">
-                  <Info className="mr-1 inline h-4 w-4" />
+                  <Info className="me-1 inline h-4 w-4" />
                   {standing.unverifiedInputs.length} input
                   {standing.unverifiedInputs.length === 1 ? '' : 's'} not yet verified against MHRSD
                 </summary>

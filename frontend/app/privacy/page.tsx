@@ -72,7 +72,7 @@ export default function PrivacyPolicyPage() {
           {/* How we use it */}
           <Section title="3. How We Use Your Data">
             <p className="mb-3">We use personal data to:</p>
-            <ul className="ml-5 list-disc space-y-1.5">
+            <ul className="ms-5 list-disc space-y-1.5">
               <li>Provide, operate, and maintain the KynexOne platform.</li>
               <li>Process payroll, calculate deductions, and generate payslips.</li>
               <li>Track attendance, calculate working hours, and support regularisations.</li>
@@ -103,7 +103,7 @@ export default function PrivacyPolicyPage() {
             <p className="mb-3">
               We do <strong>not</strong> sell personal data. We share data only:
             </p>
-            <ul className="ml-5 list-disc space-y-1.5">
+            <ul className="ms-5 list-disc space-y-1.5">
               <li>
                 <strong>With your employer (the Customer)</strong> — your organisation controls your HR data
                 through the platform. Kode Kinetics acts as a data processor on their behalf.
@@ -140,7 +140,7 @@ export default function PrivacyPolicyPage() {
               The current platform implements the following technical controls. Exact provider and tenant
               configuration should be confirmed for the deployment in use:
             </p>
-            <ul className="ml-5 list-disc space-y-1.5">
+            <ul className="ms-5 list-disc space-y-1.5">
               <li>Provider-managed encryption at rest for hosted database and durable object storage.</li>
               <li>Application-layer protection for selected secrets, including MFA and configured integration credentials.</li>
               <li>HTTPS for browser-to-service traffic and a TLS-required API-to-database connection.</li>
@@ -179,7 +179,7 @@ export default function PrivacyPolicyPage() {
             <p className="mb-3">
               Depending on your jurisdiction, you may have the right to:
             </p>
-            <ul className="ml-5 list-disc space-y-1.5">
+            <ul className="ms-5 list-disc space-y-1.5">
               <li><strong>Access</strong> — request a copy of the personal data we hold about you.</li>
               <li><strong>Rectification</strong> — correct inaccurate or incomplete data.</li>
               <li><strong>Erasure</strong> — request deletion where no legal obligation requires retention.</li>
@@ -269,7 +269,7 @@ function Table({ rows }: { rows: [string, string][] }) {
         <tbody>
           {rows.map(([label, desc], i) => (
             <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
-              <td className="w-48 border-r border-slate-100 px-4 py-3 font-semibold text-slate-800 align-top">{label}</td>
+              <td className="w-48 border-e border-slate-100 px-4 py-3 font-semibold text-slate-800 align-top">{label}</td>
               <td className="px-4 py-3 text-slate-600">{desc}</td>
             </tr>
           ))}

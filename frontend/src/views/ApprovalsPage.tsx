@@ -196,7 +196,7 @@ export function ApprovalsPage() {
               onClick={() => { setStatusFilter('Pending'); setQueueFilter(m.key); }}
               aria-pressed={queueFilter === m.key && statusFilter === 'Pending'}
               aria-label={`Show ${m.label}: ${m.value} pending`}
-              className={`rounded-lg border p-4 text-left transition ${queueFilter === m.key && statusFilter === 'Pending' ? 'border-sapphire bg-blue-50/70 dark:border-blue-400 dark:bg-blue-500/10' : 'border-slate-200 bg-white hover:border-slate-300 dark:border-white/10 dark:bg-white/[0.03] dark:hover:border-white/20'}`}
+              className={`rounded-lg border p-4 text-start transition ${queueFilter === m.key && statusFilter === 'Pending' ? 'border-sapphire bg-blue-50/70 dark:border-blue-400 dark:bg-blue-500/10' : 'border-slate-200 bg-white hover:border-slate-300 dark:border-white/10 dark:bg-white/[0.03] dark:hover:border-white/20'}`}
             >
               <div className="flex items-center justify-between gap-3">
                 <span className={`inline-flex h-9 w-9 items-center justify-center rounded-md ${m.tone}`}><Icon className="h-4 w-4" /></span>
@@ -241,7 +241,7 @@ export function ApprovalsPage() {
             {s || 'All'}
           </button>
         ))}
-        <span className="ml-auto text-sm text-slate-400">{total} request{total !== 1 ? 's' : ''}</span>
+        <span className="ms-auto text-sm text-slate-400">{total} request{total !== 1 ? 's' : ''}</span>
       </div>
 
       {error && (
@@ -256,7 +256,7 @@ export function ApprovalsPage() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Request', 'Current owner', 'SLA accountability', 'Workflow', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
                 ))}
               </tr>
             </thead>

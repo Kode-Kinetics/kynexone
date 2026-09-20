@@ -112,7 +112,7 @@ function KpiCard({
 
   if (onClick) {
     return (
-      <button type="button" onClick={onClick} className={`${cls} text-left group hover:shadow-md hover:-translate-y-0.5 transition-all w-full`}>
+      <button type="button" onClick={onClick} className={`${cls} text-start group hover:shadow-md hover:-translate-y-0.5 transition-all w-full`}>
         {inner}
       </button>
     );
@@ -133,7 +133,7 @@ function StarRating({ rating }: { rating: number }) {
           className={`h-3.5 w-3.5 ${i <= full ? 'fill-amber-400 text-amber-400' : i === full + 1 && half ? 'fill-amber-200 text-amber-400' : 'text-slate-200 dark:text-slate-700'}`}
         />
       ))}
-      <span className="ml-1 text-xs font-semibold text-slate-700 dark:text-slate-200">{rating.toFixed(1)}</span>
+      <span className="ms-1 text-xs font-semibold text-slate-700 dark:text-slate-200">{rating.toFixed(1)}</span>
     </span>
   );
 }
@@ -186,7 +186,7 @@ function MyShiftsCard() {
               <li key={s.id} className="flex items-center gap-3 rounded-lg border border-slate-100 px-3 py-2 dark:border-white/[0.06]">
                 <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: s.shiftColor || '#2F6BFF' }} />
                 <span className="text-sm font-medium text-slate-800 dark:text-slate-200">{s.shiftName}</span>
-                <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">
+                <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">
                   {new Date(s.date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
                 </span>
               </li>
@@ -586,7 +586,7 @@ export function EmployeeSelfServicePage() {
                 </div>
               )}
               {/* Online indicator */}
-              <span className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full border-2 border-white bg-emerald-400 dark:border-[#0f1729]" />
+              <span className="absolute -bottom-0.5 -end-0.5 h-3.5 w-3.5 rounded-full border-2 border-white bg-emerald-400 dark:border-[#0f1729]" />
             </div>
 
             <div className="min-w-0">
@@ -726,7 +726,7 @@ export function EmployeeSelfServicePage() {
                     <p className="mt-0.5 text-sm font-semibold text-slate-900 dark:text-white">{perf.cycleName}</p>
                   </div>
                   {perf.lastRating !== null && (
-                    <div className="text-right">
+                    <div className="text-end">
                       <p className="text-xs text-slate-400 dark:text-slate-500">Last rating</p>
                       <StarRating rating={Number(perf.lastRating)} />
                     </div>
@@ -1003,7 +1003,7 @@ export function EmployeeSelfServicePage() {
                           : 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400';
                     return (
                       <button key={r.id} type="button" onClick={() => openTicket(r.id)}
-                        className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-left hover:bg-slate-50 dark:border-white/[0.07] dark:hover:bg-white/[0.03]">
+                        className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-start hover:bg-slate-50 dark:border-white/[0.07] dark:hover:bg-white/[0.03]">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.subject}</p>
                           <p className="truncate text-xs text-slate-400">{new Date(r.createdAtUtc).toLocaleDateString()}</p>
@@ -1029,13 +1029,13 @@ export function EmployeeSelfServicePage() {
                 key={label}
                 type="button"
                 onClick={() => router.push(path)}
-                className={`flex items-center gap-2 rounded-xl border p-3 text-left hover:shadow-sm transition ${border} bg-white dark:bg-white/[0.02]`}
+                className={`flex items-center gap-2 rounded-xl border p-3 text-start hover:shadow-sm transition ${border} bg-white dark:bg-white/[0.02]`}
               >
                 <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${bg}`}>
                   <Icon className="h-3.5 w-3.5" />
                 </div>
                 <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{label}</span>
-                <ChevronRight className="ml-auto h-3.5 w-3.5 text-slate-300 dark:text-slate-600" />
+                <ChevronRight className="ms-auto h-3.5 w-3.5 text-slate-300 dark:text-slate-600" />
               </button>
             ))}
           </div>

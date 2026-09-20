@@ -258,7 +258,7 @@ function PlanList({ plans, selectedId, onSelect, companyName, enrolledCount }: {
     <div className={`${CARD} divide-y divide-slate-100 dark:divide-white/[0.04]`} data-testid="benefit-plan-list">
       {plans.map((p) => (
         <button key={p.id} type="button" onClick={() => onSelect(p.id)} aria-pressed={selectedId === p.id}
-          className={`flex w-full items-start justify-between gap-3 px-4 py-3 text-left transition first:rounded-t-2xl last:rounded-b-2xl ${selectedId === p.id
+          className={`flex w-full items-start justify-between gap-3 px-4 py-3 text-start transition first:rounded-t-2xl last:rounded-b-2xl ${selectedId === p.id
             ? 'bg-sapphire/[0.06] dark:bg-sapphire/[0.12]'
             : 'hover:bg-slate-50 dark:hover:bg-white/[0.02]'}`}>
           <div className="min-w-0">
@@ -605,16 +605,16 @@ function EnrollModal({ plans, initialPlanId, onClose, onEnrolled }: {
             </div>
           ) : (
             <div className="relative mt-1">
-              <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+              <Search className="pointer-events-none absolute start-3 top-2.5 h-4 w-4 text-slate-400" />
               <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name or employee code"
-                aria-label="Search employee" className={`${INPUT} mt-0 pl-9`} />
+                aria-label="Search employee" className={`${INPUT} mt-0 ps-9`} />
               {(results.length > 0 || searching) && (
                 <ul className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg dark:border-white/[0.08] dark:bg-[#0c1120]" role="listbox">
                   {searching && <li className="px-3 py-2 text-xs text-slate-400">Searching…</li>}
                   {results.map((r) => (
                     <li key={r.id}>
                       <button type="button" role="option" aria-selected={false} onClick={() => { setEmployee(r); setResults([]); }}
-                        className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-white/[0.04]">
+                        className="flex w-full items-center justify-between px-3 py-2 text-start text-sm hover:bg-slate-50 dark:hover:bg-white/[0.04]">
                         <span className="text-slate-800 dark:text-slate-100">{r.fullName}</span>
                         <span className="font-mono text-xs text-slate-400">{r.employeeCode} · {r.department}</span>
                       </button>
@@ -728,9 +728,9 @@ function EnrollmentList({ enrollments, plans, companies, companyName, canEnroll,
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+          <Search className="pointer-events-none absolute start-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Employee name" aria-label="Filter by employee"
-            className="rounded-lg border border-slate-200 bg-white py-1.5 pl-8 pr-3 text-xs text-slate-700 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-200" />
+            className="rounded-lg border border-slate-200 bg-white py-1.5 ps-8 pe-3 text-xs text-slate-700 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-200" />
         </div>
         <select className={sel} value={planId} onChange={(e) => setPlanId(e.target.value)} aria-label="Filter by plan">
           <option value="">All plans</option>
@@ -749,7 +749,7 @@ function EnrollmentList({ enrollments, plans, companies, companyName, canEnroll,
         <span className="text-xs text-slate-500 dark:text-slate-400">{rows.length} of {enrollments.length}</span>
       </div>
       <div className={`${CARD} overflow-x-auto`}>
-        <table className="w-full min-w-[720px] text-left text-sm" data-testid="enrollments-table">
+        <table className="w-full min-w-[720px] text-start text-sm" data-testid="enrollments-table">
           <thead>
             <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wide text-slate-500 dark:border-white/[0.06] dark:text-slate-400">
               <th className="px-4 py-2.5 font-semibold">Employee</th>
@@ -840,7 +840,7 @@ function EnrollmentDrawer({ enrollmentId, plans, canRecord, onClose }: {
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true" aria-label="Enrolment detail">
-      <div className="h-full w-full max-w-xl overflow-y-auto border-l border-slate-200 bg-white p-5 shadow-2xl dark:border-white/[0.08] dark:bg-[#0c1120]">
+      <div className="h-full w-full max-w-xl overflow-y-auto border-s border-slate-200 bg-white p-5 shadow-2xl dark:border-white/[0.08] dark:bg-[#0c1120]">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100">Enrolment</h2>
           <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]"><X className="h-4 w-4" /></button>
@@ -862,15 +862,15 @@ function EnrollmentDrawer({ enrollmentId, plans, canRecord, onClose }: {
               {detail.contributions.length === 0 ? (
                 <p className="rounded-xl border border-dashed border-slate-200 px-4 py-3 text-xs text-slate-500 dark:border-white/[0.08] dark:text-slate-400">No contributions recorded. Record the employee and employer share below.</p>
               ) : (
-                <table className="w-full text-left text-xs" data-testid="contributions-table">
+                <table className="w-full text-start text-xs" data-testid="contributions-table">
                   <thead><tr className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                    <th className="py-1 font-semibold">From</th><th className="py-1 text-right font-semibold">Employee</th><th className="py-1 text-right font-semibold">Employer</th><th className="py-1 font-semibold">Frequency</th><th className="py-1 font-semibold">Pay code</th>
+                    <th className="py-1 font-semibold">From</th><th className="py-1 text-end font-semibold">Employee</th><th className="py-1 text-end font-semibold">Employer</th><th className="py-1 font-semibold">Frequency</th><th className="py-1 font-semibold">Pay code</th>
                   </tr></thead>
                   <tbody>{detail.contributions.map((c) => (
                     <tr key={c.id} className="border-t border-slate-100 dark:border-white/[0.04]">
                       <td className="py-1.5 text-slate-600 dark:text-slate-300">{c.effectiveFrom}</td>
-                      <td className="py-1.5 text-right font-mono text-slate-800 dark:text-slate-100">{money(c.employeeAmount)} {currency}</td>
-                      <td className="py-1.5 text-right font-mono text-slate-800 dark:text-slate-100">{money(c.employerAmount)} {currency}</td>
+                      <td className="py-1.5 text-end font-mono text-slate-800 dark:text-slate-100">{money(c.employeeAmount)} {currency}</td>
+                      <td className="py-1.5 text-end font-mono text-slate-800 dark:text-slate-100">{money(c.employerAmount)} {currency}</td>
                       <td className="py-1.5 text-slate-600 dark:text-slate-300">{c.frequency}</td>
                       <td className="py-1.5 font-mono text-slate-500 dark:text-slate-400">{c.payrollComponentCode || '—'}</td>
                     </tr>))}

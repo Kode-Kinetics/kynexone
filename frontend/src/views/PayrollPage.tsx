@@ -173,7 +173,7 @@ function PayrollSetupWizard({ readiness, onNavigate }: { readiness: PayrollReadi
             <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Payroll Setup Wizard</h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">Complete these steps before running payroll · {readiness.completionPercent}% done</p>
           </div>
-          <div className="ml-auto">
+          <div className="ms-auto">
             <div className="h-2 w-32 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
               <div
                 className="h-full rounded-full bg-sapphire transition-all dark:bg-cyanAccent [width:var(--progress-w)]"
@@ -223,7 +223,7 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
           <thead>
             <tr className="border-b border-slate-100 bg-slate-50 dark:border-white/5 dark:bg-white/3">
               {['Company', 'Employees', 'Salary Coverage', 'Gross Payroll', 'Net Payroll', 'Errors', 'Pending Approvals', 'Status', ''].map(h => (
-                <th key={h} className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">{h}</th>
+                <th key={h} className="px-4 py-2.5 text-start font-medium text-slate-500 dark:text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
@@ -325,7 +325,7 @@ function AiInsightsPanel() {
       <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
         <Lightbulb className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Insights</h3>
-        <span className="ml-auto rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">{insights.length} active</span>
+        <span className="ms-auto rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">{insights.length} active</span>
       </div>
       <div className="divide-y divide-slate-100 dark:divide-white/5">
         {insights.map(ins => (
@@ -421,7 +421,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         >
           {years.map(y => <option key={y}>{y}</option>)}
         </select>
-        <button type="button" onClick={load} className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5">
+        <button type="button" onClick={load} className="ms-auto inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5">
           <RefreshCw className="h-3.5 w-3.5" /> Refresh
         </button>
       </div>
@@ -536,7 +536,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
             ['Anomaly Checks', 'ai-validation', ShieldCheck],
           ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, t, Icon]) => (
             <button key={t} type="button" onClick={() => onNavigate(t)}
-              className="flex items-center gap-3 rounded-xl border border-slate-200 p-3 text-left hover:border-sapphire/40 hover:bg-sapphire/3 dark:border-white/10 dark:hover:border-cyanAccent/30 dark:hover:bg-cyanAccent/5">
+              className="flex items-center gap-3 rounded-xl border border-slate-200 p-3 text-start hover:border-sapphire/40 hover:bg-sapphire/3 dark:border-white/10 dark:hover:border-cyanAccent/30 dark:hover:bg-cyanAccent/5">
               <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-sapphire/10 dark:bg-cyanAccent/10">
                 <Icon className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
               </div>
@@ -914,7 +914,7 @@ function EmployeeSalaryTab() {
       <div className="flex items-center gap-3">
         <input type="number" aria-label="Employee ID filter" placeholder="Filter by Employee ID" className={`${inp} w-52`} value={empIdFilter} onChange={e => setEmpIdFilter(e.target.value)} />
         <button type="button" className={btn.ghost} onClick={load}>Search</button>
-        <button type="button" className={`ml-auto ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4" /> Assign Salary</button>
+        <button type="button" className={`ms-auto ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4" /> Assign Salary</button>
       </div>
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : assignments.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
@@ -927,7 +927,7 @@ function EmployeeSalaryTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Employee', 'Structure', 'Basic', 'Housing', 'Transport', 'Gross', 'Deduction', 'Effective', 'Status'].map(h => (
-                  <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                  <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -938,11 +938,11 @@ function EmployeeSalaryTab() {
                   <tr key={a.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                     <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">Emp #{a.employeeId}</td>
                     <td className="px-3 py-2 text-slate-500">{structName(a.salaryStructureId)}</td>
-                    <td className="px-3 py-2 text-right text-slate-700 dark:text-slate-300">{a.basicSalary.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-right text-slate-700 dark:text-slate-300">{a.housingAllowance.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-right text-slate-700 dark:text-slate-300">{a.transportAllowance.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-right font-semibold text-slate-900 dark:text-white">{gross.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-right text-rose-500">{a.fixedDeduction > 0 ? `(${a.fixedDeduction.toLocaleString()})` : '—'}</td>
+                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.basicSalary.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.housingAllowance.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.transportAllowance.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-end font-semibold text-slate-900 dark:text-white">{gross.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-end text-rose-500">{a.fixedDeduction > 0 ? `(${a.fixedDeduction.toLocaleString()})` : '—'}</td>
                     <td className="px-3 py-2 text-xs text-slate-400">{fmtDate(a.effectiveDate)}</td>
                     <td className="px-3 py-2"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${a.isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500'}`}>{a.isActive ? 'Active' : 'Inactive'}</span></td>
                   </tr>
@@ -1080,7 +1080,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
             {runs.map(run => (
               <div key={run.id} role="button" tabIndex={0} onClick={() => openSlips(run)}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSlips(run); } }}
-                className={`w-full cursor-pointer px-4 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-white/[0.03] ${selectedRun?.id === run.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}>
+                className={`w-full cursor-pointer px-4 py-3 text-start transition hover:bg-slate-50 dark:hover:bg-white/[0.03] ${selectedRun?.id === run.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}>
                 <div className="flex items-center justify-between">
                   <p className="font-semibold text-slate-900 dark:text-white">{MONTHS[run.month - 1]} {run.year}</p>
                   <StatusBadge status={run.status} />
@@ -1139,7 +1139,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                     <thead>
                       <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                         {['Employee', 'Dept', 'Basic', 'Gross', 'Loans', 'Deductions', 'Net', 'YTD Gross', 'YTD Net'].map(h => (
-                          <th key={h} className="px-3 py-3 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                          <th key={h} className="px-3 py-3 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                         ))}
                       </tr>
                     </thead>
@@ -1152,7 +1152,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                             <p className="text-xs text-slate-400">{s.employeeCode}</p>
                           </td>
                           <td className="px-3 py-2.5 text-xs text-slate-500">{s.department || '—'}</td>
-                          <td className="px-3 py-2.5 text-right text-slate-700 dark:text-slate-300">
+                          <td className="px-3 py-2.5 text-end text-slate-700 dark:text-slate-300">
                             {fmt(s.basicSalary)}
                             {/* POD-C3 — a prorated wage must never look like an unexplained halving. */}
                             {s.prorationFactor != null && s.prorationFactor !== 1 && (
@@ -1162,7 +1162,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                               </p>
                             )}
                           </td>
-                          <td className="px-3 py-2.5 text-right font-semibold text-slate-900 dark:text-white">
+                          <td className="px-3 py-2.5 text-end font-semibold text-slate-900 dark:text-white">
                             {fmt(s.grossSalary)}
                             {s.arrearsAmount != null && s.arrearsAmount > 0 && (
                               <p className="text-[10px] font-normal leading-tight text-violet-600 dark:text-violet-400">
@@ -1170,16 +1170,16 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                               </p>
                             )}
                           </td>
-                          <td className="px-3 py-2.5 text-right text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? `(${fmt(s.loanDeductions)})` : '—'}</td>
-                          <td className="px-3 py-2.5 text-right text-rose-500">
+                          <td className="px-3 py-2.5 text-end text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? `(${fmt(s.loanDeductions)})` : '—'}</td>
+                          <td className="px-3 py-2.5 text-end text-rose-500">
                             ({fmt(s.deductions)})
                             {s.employeeStatutoryTotal > 0 && (
                               <p className="text-[10px] text-rose-400 leading-tight">GOSI {fmt(s.employeeStatutoryTotal)}</p>
                             )}
                           </td>
-                          <td className="px-3 py-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400">{fmt(s.netSalary)}</td>
-                          <td className="px-3 py-2.5 text-right text-xs text-slate-500">{fmt(s.ytdGross)}</td>
-                          <td className="px-3 py-2.5 text-right text-xs font-semibold text-slate-700 dark:text-slate-300">{fmt(s.ytdNet)}</td>
+                          <td className="px-3 py-2.5 text-end font-bold text-emerald-600 dark:text-emerald-400">{fmt(s.netSalary)}</td>
+                          <td className="px-3 py-2.5 text-end text-xs text-slate-500">{fmt(s.ytdGross)}</td>
+                          <td className="px-3 py-2.5 text-end text-xs font-semibold text-slate-700 dark:text-slate-300">{fmt(s.ytdNet)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1301,7 +1301,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
                 </div>
                 <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{r.message}</p>
               </div>
-              {r.isResolved && <span className="ml-auto shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">Resolved</span>}
+              {r.isResolved && <span className="ms-auto shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">Resolved</span>}
             </div>
           ))}
         </div>
@@ -1390,7 +1390,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
           ) : (
             <div key={i} className={`rounded-lg px-2 py-1 text-xs font-medium ${step.color}`}>
               {step.label}
-              {step.badge && <span className="ml-1 opacity-60">({step.badge})</span>}
+              {step.badge && <span className="ms-1 opacity-60">({step.badge})</span>}
             </div>
           ))}
         </div>
@@ -1564,7 +1564,7 @@ function PayslipsTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Employee', 'Payslip #', 'Language', 'ESS Published', 'Published At', 'Generated', ''].map(h => (
-                  <th key={h} className="px-4 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -1704,7 +1704,7 @@ function BankWpsTab() {
               {batches.map(b => (
                 <div key={b.id} role="button" tabIndex={0} onClick={() => openBatch(b)}
                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBatch(b); } }}
-                  className={`w-full cursor-pointer px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-white/5 ${selectedBatch?.id === b.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}>
+                  className={`w-full cursor-pointer px-4 py-3 text-start hover:bg-slate-50 dark:hover:bg-white/5 ${selectedBatch?.id === b.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}>
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-medium text-slate-800 dark:text-white">{b.batchNumber}</p>
                     <StatusBadge status={b.status} />
@@ -1736,7 +1736,7 @@ function BankWpsTab() {
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {['Employee', 'Amount', 'IBAN', 'WPS Reference', 'Status'].map(h => (
-                      <th key={h} className="px-4 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                      <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1855,7 +1855,7 @@ function PaymentTrackingTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Batch', 'Method', 'Total Amount', 'Currency', 'Status', 'WPS Lifecycle', 'Created', 'Action'].map(h => (
-                  <th key={h} className="px-4 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -1996,7 +1996,7 @@ function ReportsTab() {
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {['Code', 'Employee', 'Department', 'Basic', 'Housing', 'Transport', 'Other', 'Gross', 'Loans', 'Deductions', 'Net', 'YTD Gross', 'YTD Net'].map(h => (
-                      <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                      <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -2006,21 +2006,21 @@ function ReportsTab() {
                       <td className="px-3 py-2 font-mono text-xs text-slate-500">{s.employeeCode}</td>
                       <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{s.employeeName}</td>
                       <td className="px-3 py-2 text-xs text-slate-500">{s.department || '—'}</td>
-                      <td className="px-3 py-2 text-right text-slate-700 dark:text-slate-300">{fmt(s.basicSalary)}</td>
-                      <td className="px-3 py-2 text-right text-slate-700 dark:text-slate-300">{fmt(s.housingAllowance)}</td>
-                      <td className="px-3 py-2 text-right text-slate-700 dark:text-slate-300">{fmt(s.transportAllowance)}</td>
-                      <td className="px-3 py-2 text-right text-slate-700 dark:text-slate-300">{fmt(s.otherAllowances)}</td>
-                      <td className="px-3 py-2 text-right font-semibold text-slate-900 dark:text-white">{fmt(s.grossSalary)}</td>
-                      <td className="px-3 py-2 text-right text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? `(${fmt(s.loanDeductions)})` : '—'}</td>
-                      <td className="px-3 py-2 text-right text-rose-500">
+                      <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{fmt(s.basicSalary)}</td>
+                      <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{fmt(s.housingAllowance)}</td>
+                      <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{fmt(s.transportAllowance)}</td>
+                      <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{fmt(s.otherAllowances)}</td>
+                      <td className="px-3 py-2 text-end font-semibold text-slate-900 dark:text-white">{fmt(s.grossSalary)}</td>
+                      <td className="px-3 py-2 text-end text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? `(${fmt(s.loanDeductions)})` : '—'}</td>
+                      <td className="px-3 py-2 text-end text-rose-500">
                         ({fmt(s.deductions)})
                         {s.employeeStatutoryTotal > 0 && (
                           <p className="text-[10px] text-rose-400 leading-tight">GOSI {fmt(s.employeeStatutoryTotal)}</p>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right font-bold text-emerald-600 dark:text-emerald-400">{fmt(s.netSalary)}</td>
-                      <td className="px-3 py-2 text-right text-xs text-slate-500">{fmt(s.ytdGross)}</td>
-                      <td className="px-3 py-2 text-right text-xs font-semibold text-slate-700 dark:text-slate-300">{fmt(s.ytdNet)}</td>
+                      <td className="px-3 py-2 text-end font-bold text-emerald-600 dark:text-emerald-400">{fmt(s.netSalary)}</td>
+                      <td className="px-3 py-2 text-end text-xs text-slate-500">{fmt(s.ytdGross)}</td>
+                      <td className="px-3 py-2 text-end text-xs font-semibold text-slate-700 dark:text-slate-300">{fmt(s.ytdNet)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2188,7 +2188,7 @@ function EOSBTab() {
           </div>
           <table className="min-w-full text-sm">
             <thead><tr className="border-b border-slate-100 dark:border-white/10">
-              {['Date', 'Eligible Salary', 'EOSB Amount', 'Status'].map(h => <th key={h} className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}
+              {['Date', 'Eligible Salary', 'EOSB Amount', 'Status'].map(h => <th key={h} className="px-4 py-2.5 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}
             </tr></thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {(history as Array<Record<string, unknown>>).map((h, i) => (
@@ -2282,7 +2282,7 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/5">
-                      {['GL Account', 'Description', 'Amount'].map(h => <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>)}
+                      {['GL Account', 'Description', 'Amount'].map(h => <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>)}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
@@ -2290,12 +2290,12 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
                       <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                         <td className="px-3 py-2 font-mono text-xs text-slate-500">{e.glAccount}</td>
                         <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{e.glAccountName}</td>
-                        <td className={`px-3 py-2 text-right font-semibold tabular-nums ${side.color}`}>{fmtAmt(e.amount, journal.currency)}</td>
+                        <td className={`px-3 py-2 text-end font-semibold tabular-nums ${side.color}`}>{fmtAmt(e.amount, journal.currency)}</td>
                       </tr>
                     ))}
                     <tr className="border-t-2 border-slate-200 dark:border-white/10">
                       <td colSpan={2} className="px-3 py-2 text-xs font-bold text-slate-600 dark:text-slate-300">Total</td>
-                      <td className={`px-3 py-2 text-right text-sm font-extrabold tabular-nums ${side.color}`}>{fmtAmt(side.entries.reduce((s, e) => s + e.amount, 0), journal.currency)}</td>
+                      <td className={`px-3 py-2 text-end text-sm font-extrabold tabular-nums ${side.color}`}>{fmtAmt(side.entries.reduce((s, e) => s + e.amount, 0), journal.currency)}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -2356,7 +2356,7 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
           </div>
 
           <div className="surface overflow-hidden">
-            <div className="grid grid-cols-2 divide-x divide-slate-100 dark:divide-white/5">
+            <div className="grid grid-cols-2 divide-x rtl:divide-x-reverse divide-slate-100 dark:divide-white/5">
               {[{ label: 'Gross', prior: report.priorTotalGross, current: report.currentTotalGross }, { label: 'Net', prior: report.priorTotalNet, current: report.currentTotalNet }].map(m => (
                 <div key={m.label} className="p-4">
                   <p className="text-xs text-slate-400">Total {m.label}</p>
@@ -2379,7 +2379,7 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                       {['Employee', 'Prior Gross', 'Current Gross', 'Δ Gross', 'Var %', 'Prior Net', 'Current Net', 'Flag'].map(h => (
-                        <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                        <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -2390,12 +2390,12 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
                           <p className="font-medium text-slate-900 dark:text-white">{v.employeeName}</p>
                           <p className="text-xs text-slate-400">{v.employeeCode}</p>
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums text-slate-600 dark:text-slate-300">{fmt(v.priorGross)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-semibold text-slate-900 dark:text-white">{fmt(v.currentGross)}</td>
-                        <td className={`px-3 py-2 text-right tabular-nums ${v.grossDelta >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>{v.grossDelta >= 0 ? '+' : ''}{fmt(v.grossDelta)}</td>
-                        <td className={`px-3 py-2 text-right tabular-nums font-semibold ${Math.abs(v.grossVariancePct) > 5 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500'}`}>{v.grossVariancePct >= 0 ? '+' : ''}{v.grossVariancePct.toFixed(1)}%</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-slate-500">{fmt(v.priorNet)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-slate-700 dark:text-slate-300">{fmt(v.currentNet)}</td>
+                        <td className="px-3 py-2 text-end tabular-nums text-slate-600 dark:text-slate-300">{fmt(v.priorGross)}</td>
+                        <td className="px-3 py-2 text-end tabular-nums font-semibold text-slate-900 dark:text-white">{fmt(v.currentGross)}</td>
+                        <td className={`px-3 py-2 text-end tabular-nums ${v.grossDelta >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>{v.grossDelta >= 0 ? '+' : ''}{fmt(v.grossDelta)}</td>
+                        <td className={`px-3 py-2 text-end tabular-nums font-semibold ${Math.abs(v.grossVariancePct) > 5 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500'}`}>{v.grossVariancePct >= 0 ? '+' : ''}{v.grossVariancePct.toFixed(1)}%</td>
+                        <td className="px-3 py-2 text-end tabular-nums text-slate-500">{fmt(v.priorNet)}</td>
+                        <td className="px-3 py-2 text-end tabular-nums text-slate-700 dark:text-slate-300">{fmt(v.currentNet)}</td>
                         <td className="px-3 py-2">{v.isVarianceFlag && <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"><AlertTriangle className="h-3 w-3" />Flag</span>}</td>
                       </tr>
                     ))}
@@ -2527,10 +2527,10 @@ function FinalSettlementTab() {
           </div>
 
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <div className="text-slate-500">Basic Salary</div><div className="font-medium text-right">{result.currency} {result.basicSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-            <div className="text-slate-500">Gross Salary</div><div className="font-medium text-right">{result.currency} {result.grossSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-            <div className="text-slate-500">Days Worked in Month</div><div className="font-medium text-right">{result.daysWorkedInMonth} / {result.daysInMonth}</div>
-            <div className="text-slate-500">Leave Balance</div><div className="font-medium text-right">{result.leaveBalanceDays.toFixed(2)} days</div>
+            <div className="text-slate-500">Basic Salary</div><div className="font-medium text-end">{result.currency} {result.basicSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+            <div className="text-slate-500">Gross Salary</div><div className="font-medium text-end">{result.currency} {result.grossSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+            <div className="text-slate-500">Days Worked in Month</div><div className="font-medium text-end">{result.daysWorkedInMonth} / {result.daysInMonth}</div>
+            <div className="text-slate-500">Leave Balance</div><div className="font-medium text-end">{result.leaveBalanceDays.toFixed(2)} days</div>
           </div>
 
           <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 dark:divide-white/5 dark:border-white/10">
@@ -2560,7 +2560,7 @@ function FinalSettlementTab() {
         </div>
         <table className="w-full min-w-[1100px] text-sm">
           <thead><tr className="border-b border-slate-100 dark:border-white/10">
-            {['Employee', 'Last day', 'Due', 'Net payable', 'Status', 'Workflow controls'].map(h => <th key={h} className="px-4 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>)}
+            {['Employee', 'Last day', 'Due', 'Net payable', 'Status', 'Workflow controls'].map(h => <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>)}
           </tr></thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/5">
             {settlements.length === 0 && <tr><td colSpan={6} className="py-8 text-center text-slate-400">No final settlements.</td></tr>}

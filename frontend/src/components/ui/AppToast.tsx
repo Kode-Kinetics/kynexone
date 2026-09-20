@@ -74,7 +74,7 @@ function ToastItem({ t, onClose }: { t: Toast; onClose: (id: string) => void }) 
       style={{ animation: 'slideInRight 0.22s ease-out' }}
     >
       {/* progress bar */}
-      <div className={`absolute bottom-0 left-0 h-0.5 transition-[width] ${cls.bar}`} style={{ width: `${progress}%` }} />
+      <div className={`absolute bottom-0 start-0 h-0.5 transition-[width] ${cls.bar}`} style={{ width: `${progress}%` }} />
       <Icon className={`h-5 w-5 shrink-0 mt-0.5 ${cls.icon}`} />
       <div className="flex-1 min-w-0">
         {t.title && <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-tight">{t.title}</p>}
@@ -136,7 +136,7 @@ export function AppToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <Ctx.Provider value={ctx}>
       {children}
-      <div className="fixed bottom-5 right-5 z-[9999] flex flex-col gap-2 items-end pointer-events-none">
+      <div className="fixed bottom-5 end-5 z-[9999] flex flex-col gap-2 items-end pointer-events-none">
         {toasts.map(t => (
           <div key={t.id} className="pointer-events-auto">
             <ToastItem t={t} onClose={dismiss} />

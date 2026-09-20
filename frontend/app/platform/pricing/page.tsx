@@ -375,7 +375,7 @@ export default function PlatformPricingPage() {
                             type="number"
                             value={editVal}
                             onChange={e => setEditVal(parseFloat(e.target.value) || 0)}
-                            className="w-24 bg-white/[0.05] border border-white/20 rounded-lg px-2 py-1 text-sm text-white text-right focus:outline-none"
+                            className="w-24 bg-white/[0.05] border border-white/20 rounded-lg px-2 py-1 text-sm text-white text-end focus:outline-none"
                             autoFocus
                           />
                           <button type="button" onClick={() => saveConfig(c.key)} disabled={saving} className="text-emerald-400 hover:text-emerald-300 disabled:opacity-40">
@@ -422,7 +422,7 @@ export default function PlatformPricingPage() {
                       <button
                         type="button"
                         onClick={() => setExpandedQuote(isOpen ? null : q.id)}
-                        className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-white/[0.02] transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-white/[0.02] transition-colors text-start"
                       >
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">

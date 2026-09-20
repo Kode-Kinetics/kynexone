@@ -74,7 +74,7 @@ function ToastItem({ t, onClose }: { t: Toast; onClose: (id: string) => void }) 
 
   return (
     <div className={`relative flex items-start gap-3 rounded-xl border px-4 py-3 shadow-2xl shadow-black/60 backdrop-blur-sm min-w-[280px] max-w-[380px] ${cls.wrap} animate-slide-in-right overflow-hidden`}>
-      <div className={`absolute bottom-0 left-0 h-0.5 transition-[width] ${barCls[t.kind]}`} style={{ width: `${progress}%` }} />
+      <div className={`absolute bottom-0 start-0 h-0.5 transition-[width] ${barCls[t.kind]}`} style={{ width: `${progress}%` }} />
       <Icon className={`h-4 w-4 shrink-0 mt-0.5 ${cls.icon}`} />
       <p className="flex-1 text-sm text-white leading-relaxed">{t.message}</p>
       <button type="button" onClick={() => onClose(t.id)} aria-label="Dismiss notification"
@@ -108,7 +108,7 @@ export function PlatformToastProvider({ children }: { children: React.ReactNode 
   return (
     <Ctx.Provider value={ctx}>
       {children}
-      <div className="fixed bottom-5 right-5 z-[9999] flex flex-col gap-2 items-end">
+      <div className="fixed bottom-5 end-5 z-[9999] flex flex-col gap-2 items-end">
         {toasts.map(t => (
           <ToastItem key={t.id} t={t} onClose={dismiss} />
         ))}

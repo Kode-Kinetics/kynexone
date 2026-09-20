@@ -88,7 +88,7 @@ function Field({ label, hint, required, children }: { label: string; hint?: stri
   return (
     <div>
       <label className="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-300">
-        {label}{required && <span className="ml-0.5 text-red-500">*</span>}
+        {label}{required && <span className="ms-0.5 text-red-500">*</span>}
       </label>
       {children}
       {hint && <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{hint}</p>}
@@ -257,7 +257,7 @@ function QiwaPanel() {
           )}
           <div className="mt-3 flex items-center gap-3">
             <SaveBanner message={connMsg} isError={connErr} />
-            <button type="button" onClick={saveConn} disabled={savingConn} className="ml-auto btn-primary disabled:opacity-60">
+            <button type="button" onClick={saveConn} disabled={savingConn} className="ms-auto btn-primary disabled:opacity-60">
               {savingConn ? <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Saving…</> : <><Save className="h-3.5 w-3.5" /> Save Connection</>}
             </button>
           </div>
@@ -287,11 +287,11 @@ function QiwaPanel() {
                   type={showSecret ? 'text' : 'password'}
                   value={credForm.clientSecret}
                   onChange={e => setCredForm(x => ({ ...x, clientSecret: e.target.value }))}
-                  className="input w-full pr-10 font-mono"
+                  className="input w-full pe-10 font-mono"
                   placeholder="Enter new secret to update"
                   title="Qiwa Client Secret"
                 />
-                <button type="button" onClick={() => setShowSecret(s => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300" title={showSecret ? 'Hide' : 'Show'}>
+                <button type="button" onClick={() => setShowSecret(s => !s)} className="absolute end-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300" title={showSecret ? 'Hide' : 'Show'}>
                   {showSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
@@ -313,7 +313,7 @@ function QiwaPanel() {
           </div>
           <div className="mt-3 flex items-center gap-3">
             <SaveBanner message={credMsg} isError={credErr} />
-            <button type="button" onClick={saveCred} disabled={savingCred || !credForm.clientSecret} className="ml-auto btn-primary disabled:opacity-60">
+            <button type="button" onClick={saveCred} disabled={savingCred || !credForm.clientSecret} className="ms-auto btn-primary disabled:opacity-60">
               {savingCred ? <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Saving…</> : <><ShieldCheck className="h-3.5 w-3.5" /> Save Credentials</>}
             </button>
           </div>
@@ -387,7 +387,7 @@ function GosiPanel({ company, onCompanyUpdate }: { company: CompanyDto | null; o
 
         <div className="flex items-center gap-3">
           <SaveBanner message={msg} isError={isErr} />
-          <button type="button" onClick={save} disabled={saving || !company} className="ml-auto btn-primary disabled:opacity-60">
+          <button type="button" onClick={save} disabled={saving || !company} className="ms-auto btn-primary disabled:opacity-60">
             {saving ? <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Saving…</> : <><Save className="h-3.5 w-3.5" /> Save GOSI Settings</>}
           </button>
         </div>
@@ -527,7 +527,7 @@ function WpsPanel({ company, onCompanyUpdate, gcc, onGccUpdate }: {
 
         <div className="flex items-center gap-3">
           <SaveBanner message={msg} isError={isErr} />
-          <button type="button" onClick={save} disabled={saving || !company} className="ml-auto btn-primary disabled:opacity-60">
+          <button type="button" onClick={save} disabled={saving || !company} className="ms-auto btn-primary disabled:opacity-60">
             {saving ? <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Saving…</> : <><Save className="h-3.5 w-3.5" /> Save WPS Settings</>}
           </button>
         </div>
@@ -660,7 +660,7 @@ function LaborPanel({ gcc, onGccUpdate }: { gcc: GCCComplianceSetting | null; on
 
         <div className="flex items-center gap-3">
           <SaveBanner message={msg} isError={isErr} />
-          <button type="button" onClick={save} disabled={saving} className="ml-auto btn-primary disabled:opacity-60">
+          <button type="button" onClick={save} disabled={saving} className="ms-auto btn-primary disabled:opacity-60">
             {saving ? <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Saving…</> : <><Save className="h-3.5 w-3.5" /> Save Labor Settings</>}
           </button>
         </div>
@@ -768,7 +768,7 @@ function DocumentTrackingPanel({ gcc, onGccUpdate }: { gcc: GCCComplianceSetting
 
         <div className="flex items-center gap-3">
           <SaveBanner message={msg} isError={isErr} />
-          <button type="button" onClick={save} disabled={saving} className="ml-auto btn-primary disabled:opacity-60">
+          <button type="button" onClick={save} disabled={saving} className="ms-auto btn-primary disabled:opacity-60">
             {saving ? <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Saving…</> : <><Save className="h-3.5 w-3.5" /> Save Tracking Settings</>}
           </button>
         </div>
@@ -816,13 +816,13 @@ export function SaudiComplianceConfig() {
             key={id}
             type="button"
             onClick={() => setActive(id)}
-            className={`w-full rounded-xl px-3 py-2.5 text-left transition ${active === id ? 'bg-sapphire/[0.08] dark:bg-cyanAccent/[0.08]' : 'hover:bg-slate-50 dark:hover:bg-white/[0.04]'}`}
+            className={`w-full rounded-xl px-3 py-2.5 text-start transition ${active === id ? 'bg-sapphire/[0.08] dark:bg-cyanAccent/[0.08]' : 'hover:bg-slate-50 dark:hover:bg-white/[0.04]'}`}
           >
             <div className="flex items-center gap-2">
               <Icon className={`h-4 w-4 shrink-0 ${active === id ? 'text-sapphire dark:text-cyanAccent' : 'text-slate-400'}`} />
               <span className={`text-sm font-semibold ${active === id ? 'text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}>{label}</span>
             </div>
-            <p className="mt-0.5 pl-6 text-[11px] text-slate-400 leading-tight">{desc}</p>
+            <p className="mt-0.5 ps-6 text-[11px] text-slate-400 leading-tight">{desc}</p>
           </button>
         ))}
 

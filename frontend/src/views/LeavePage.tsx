@@ -229,13 +229,13 @@ function GroupContextBar({
       {(companyId || branchId) && (
         <button
           type="button"
-          className="ml-1 text-xs text-slate-400 underline hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+          className="ms-1 text-xs text-slate-400 underline hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
           onClick={() => { onCompanyChange(''); onBranchChange(''); }}
         >
           Clear
         </button>
       )}
-      <span className="ml-auto text-[11px] text-slate-400 dark:text-slate-500">
+      <span className="ms-auto text-[11px] text-slate-400 dark:text-slate-500">
         {companyId
           ? (branchId
             ? branches.find(b => b.id === branchId)?.nameEn ?? 'Branch'
@@ -328,10 +328,10 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
               ['Leave Insights', 'ai-insights', Zap],
             ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, t, Icon]) => (
               <button key={t} type="button" onClick={() => onNavigate(t)}
-                className="flex w-full items-center gap-3 rounded-lg p-2.5 text-left hover:bg-slate-50 dark:hover:bg-white/5">
+                className="flex w-full items-center gap-3 rounded-lg p-2.5 text-start hover:bg-slate-50 dark:hover:bg-white/5">
                 <Icon className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" />
                 <span className="text-sm text-slate-700 dark:text-slate-300">{label}</span>
-                <ChevronRight className="ml-auto h-3.5 w-3.5 text-slate-300" />
+                <ChevronRight className="ms-auto h-3.5 w-3.5 text-slate-300" />
               </button>
             ))}
           </div>
@@ -384,7 +384,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
           {[year - 1, year, year + 1].map(y => <option key={y} value={y}>{y}</option>)}
         </select>
         {!selfEmployeeId && <button type="button" className={btn.primary} onClick={load}>Search</button>}
-        <p className="ml-auto text-sm text-slate-400">{balances.length} balance{balances.length !== 1 ? 's' : ''}</p>
+        <p className="ms-auto text-sm text-slate-400">{balances.length} balance{balances.length !== 1 ? 's' : ''}</p>
       </div>
 
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : balances.length === 0 ? (
@@ -667,7 +667,7 @@ function MyRequestsTab() {
           ))}
         </select>
         <p className="text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
-        <div className="ml-auto">
+        <div className="ms-auto">
           <ImportExportToolbar
             entityName="Leave Requests"
             onExport={leaveRequestsImportExport.export}
@@ -851,7 +851,7 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
             const isToday = day !== null && day === today.getDate() && month === today.getMonth() && calYear === today.getFullYear();
             const dayEntries = day !== null ? entriesForDay(day) : [];
             return (
-              <div key={i} className={`min-h-[80px] border-b border-r border-slate-100 p-1.5 dark:border-white/5 ${!day ? 'bg-slate-50/50 dark:bg-white/[0.02]' : ''}`}>
+              <div key={i} className={`min-h-[80px] border-b border-e border-slate-100 p-1.5 dark:border-white/5 ${!day ? 'bg-slate-50/50 dark:bg-white/[0.02]' : ''}`}>
                 {day && (
                   <>
                     <span className={`text-xs font-medium ${isToday ? 'flex h-5 w-5 items-center justify-center rounded-full bg-sapphire text-white' : 'text-slate-600 dark:text-slate-400'}`}>{day}</span>
@@ -1351,11 +1351,11 @@ function HolidayCalendarTab() {
               {calendars.map(c => (
                 <div key={c.id}
                   className={`group flex items-start justify-between rounded-lg p-3 transition ${selected?.id === c.id ? 'bg-sapphire/10 dark:bg-sapphire/20' : 'hover:bg-slate-50 dark:hover:bg-white/5'}`}>
-                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setSelected(c)}>
+                  <button type="button" className="min-w-0 flex-1 text-start" onClick={() => setSelected(c)}>
                     <p className={`text-sm font-medium truncate ${selected?.id === c.id ? 'text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}>{c.name}</p>
                     <p className="text-xs text-slate-400">{c.countryCode} · {c.calendarYear}</p>
                   </button>
-                  <div className="ml-1 flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="ms-1 flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button type="button" title="Edit calendar" className="rounded p-1 text-slate-400 hover:text-sapphire dark:hover:text-cyanAccent" onClick={() => { setSelected(c); openEditCal(c); }}>
                       <Settings className="h-3 w-3" />
                     </button>
@@ -1820,7 +1820,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                 <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{r.employeeName}</p>
                 <p className="text-xs text-slate-400">{r.departmentName} · {r.leaveTypeName}</p>
               </div>
-              <div className="text-right">
+              <div className="text-end">
                 <p className="text-xs text-slate-500">{fmtDate(r.startDate)} – {fmtDate(r.endDate)}</p>
                 <p className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{r.totalDays}d</p>
               </div>
@@ -1840,7 +1840,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                   <div className="flex-1 rounded-full bg-slate-100 dark:bg-white/10">
                     <div className="h-2 rounded-full bg-amber-400" style={{ width: `${Math.min(100, (m.totalDays / Math.max(...sickTrend.map(x => x.totalDays), 1)) * 100)}%` }} />
                   </div>
-                  <span className="w-20 text-right text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{m.totalDays}d / {m.count}</span>
+                  <span className="w-20 text-end text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{m.totalDays}d / {m.count}</span>
                 </div>
               ))}
             </div>

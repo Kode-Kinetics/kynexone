@@ -60,7 +60,7 @@ function FormField({ label, required, children }: { label: string; required?: bo
   return (
     <div>
       <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
-        {label}{required && <span className="ml-0.5 text-red-500">*</span>}
+        {label}{required && <span className="ms-0.5 text-red-500">*</span>}
       </label>
       {children}
     </div>
@@ -283,7 +283,7 @@ function ReportLibrary() {
             key={r.key}
             type="button"
             onClick={() => { setSelectedReport(r); setFilters({}); setResult(null); setRunError(''); }}
-            className={`surface p-4 text-left transition hover:border-sapphire/40 ${selectedReport?.key === r.key ? 'border border-sapphire bg-sapphire/5' : ''}`}
+            className={`surface p-4 text-start transition hover:border-sapphire/40 ${selectedReport?.key === r.key ? 'border border-sapphire bg-sapphire/5' : ''}`}
           >
             <div className="mb-1 flex items-center justify-between">
               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-400">{r.category}</span>
@@ -364,7 +364,7 @@ function ReportLibrary() {
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/10 sticky top-0 bg-white dark:bg-slate-900">
                       {columns.map((c) => (
-                        <th key={c} className="px-3 py-2 text-left font-bold uppercase tracking-wide text-slate-400 whitespace-nowrap">{c}</th>
+                        <th key={c} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400 whitespace-nowrap">{c}</th>
                       ))}
                     </tr>
                   </thead>
@@ -439,7 +439,7 @@ function SavedReportsTab() {
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/[0.07]">
               {['Name', 'Category', 'Report', 'Created By', 'Shared', ''].map((h) => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
@@ -482,7 +482,7 @@ function SavedReportsTab() {
           </div>
           <div className="overflow-x-auto max-h-64 surface">
             <table className="w-full text-xs">
-              <thead><tr className="border-b border-slate-100 dark:border-white/10">{columns.map((c) => <th key={c} className="px-3 py-2 text-left font-bold uppercase tracking-wide text-slate-400 whitespace-nowrap">{c}</th>)}</tr></thead>
+              <thead><tr className="border-b border-slate-100 dark:border-white/10">{columns.map((c) => <th key={c} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400 whitespace-nowrap">{c}</th>)}</tr></thead>
               <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                 {result.data.data.slice(0, 100).map((row, i) => (
                   <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -557,7 +557,7 @@ function ScheduledReportsTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Report', 'Frequency', 'Delivery', 'Recipients', 'Format', 'Next Run', 'Health', 'Active', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -676,7 +676,7 @@ function ExecutionHistoryTab() {
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/[0.07]">
               {['Report', 'Format', 'Rows', 'Duration', 'Run By', 'Time', 'Status'].map((h) => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>

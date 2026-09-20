@@ -363,7 +363,7 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
 
             {qiwa.blockedEmployees.length > 0 && (
               <div className="max-h-40 overflow-auto rounded-lg border border-slate-100 dark:border-white/[0.07]">
-                <table className="w-full text-left text-xs">
+                <table className="w-full text-start text-xs">
                   <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-800">
                     <tr>
                       <th className="px-2 py-1.5">Code</th>
@@ -506,7 +506,7 @@ function GosiCard({ gosi }: { gosi: GosiSection }) {
 
         {gosi.blockedEmployees.length > 0 && (
           <div className="max-h-36 overflow-auto rounded-lg border border-slate-100 dark:border-white/[0.07]">
-            <table className="w-full text-left text-xs">
+            <table className="w-full text-start text-xs">
               <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-800">
                 <tr>
                   <th className="px-2 py-1.5">Code</th>

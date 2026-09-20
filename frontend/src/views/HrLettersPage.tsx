@@ -57,7 +57,7 @@ function ErrorNote({ message, fields }: { message: string; fields?: string[] }) 
         <span>{message}</span>
       </p>
       {fields && fields.length > 0 && (
-        <ul className="mt-1 list-inside list-disc pl-6 font-mono text-xs">
+        <ul className="mt-1 list-inside list-disc ps-6 font-mono text-xs">
           {fields.map((f) => <li key={f}>{f}</li>)}
         </ul>
       )}
@@ -174,7 +174,7 @@ function RequestsTab({ types, onIssued }: { types: LetterTypeInfo[]; onIssued: (
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Employee', 'Document', 'Purpose', 'Addressed to', 'Language', 'Raised', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -332,7 +332,7 @@ function IssueTab({ types, onIssued }: { types: LetterTypeInfo[]; onIssued: () =
               key={e.id}
               type="button"
               onClick={() => setEmployeeId(e.id)}
-              className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition hover:bg-slate-50 dark:hover:bg-white/[0.04] ${
+              className={`flex w-full items-center justify-between px-3 py-2 text-start text-sm transition hover:bg-slate-50 dark:hover:bg-white/[0.04] ${
                 employeeId === e.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}
             >
               <span className="text-slate-900 dark:text-white">{e.fullName}</span>
@@ -454,7 +454,7 @@ function RegisterTab({ types, refreshKey }: { types: LetterTypeInfo[]; refreshKe
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Reference', 'Document', 'Employee', 'Purpose', 'Issued by', 'Issued', 'Source', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -564,7 +564,7 @@ function TemplatesTab({ onChanged }: { onChanged: () => void }) {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Document', 'Languages', 'Version', 'Active', 'Updated', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
                 ))}
               </tr>
             </thead>

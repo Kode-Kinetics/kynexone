@@ -9,7 +9,7 @@ import { platformApi, type TenantSecurityPosture } from '@/src/api/platform';
 const RISK_CLS: Record<string, { dot: string; text: string; row: string }> = {
   Low:    { dot: 'bg-emerald-500', text: 'text-emerald-400', row: '' },
   Medium: { dot: 'bg-amber-400',   text: 'text-amber-400',   row: 'bg-amber-950/10' },
-  High:   { dot: 'bg-rose-500',    text: 'text-rose-400',    row: 'bg-rose-950/15 border-l-2 border-l-rose-700' },
+  High:   { dot: 'bg-rose-500',    text: 'text-rose-400',    row: 'bg-rose-950/15 border-s-2 border-s-rose-700' },
 };
 
 export default function SecurityCenterPage() {
@@ -91,7 +91,7 @@ export default function SecurityCenterPage() {
                   <thead>
                     <tr className="border-b border-white/[0.06]">
                       {['Tenant', 'MFA', 'Security Policy', 'Risk Level', 'Last Event', ''].map(h => (
-                        <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                        <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                       ))}
                     </tr>
                   </thead>

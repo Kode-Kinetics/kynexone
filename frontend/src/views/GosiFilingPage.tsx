@@ -453,13 +453,13 @@ function ComponentBreakdown({ rows }: { rows: GosiComponentBreakdown[] }) {
   return (
     <section className="overflow-x-auto rounded-2xl border border-slate-200/80 bg-white dark:border-white/[0.06] dark:bg-white/[0.03]">
       <h2 className="px-4 pt-3 text-sm font-bold text-slate-800 dark:text-slate-100">Component breakdown</h2>
-      <table className="mt-2 w-full min-w-[560px] text-left text-sm">
+      <table className="mt-2 w-full min-w-[560px] text-start text-sm">
         <thead>
           <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wide text-slate-500 dark:border-white/[0.06] dark:text-slate-400">
             <th className="px-4 py-2 font-semibold">Component</th>
             <th className="px-4 py-2 font-semibold">Paid by</th>
-            <th className="px-4 py-2 text-right font-semibold">Employees</th>
-            <th className="px-4 py-2 text-right font-semibold">Amount</th>
+            <th className="px-4 py-2 text-end font-semibold">Employees</th>
+            <th className="px-4 py-2 text-end font-semibold">Amount</th>
           </tr>
         </thead>
         <tbody>
@@ -467,7 +467,7 @@ function ComponentBreakdown({ rows }: { rows: GosiComponentBreakdown[] }) {
             <tr key={r.componentCode} className="border-b border-slate-50 last:border-0 dark:border-white/[0.03]">
               <td className="px-4 py-2">
                 <span className="font-medium text-slate-800 dark:text-slate-100">{r.componentName || r.componentCode}</span>
-                <span className="ml-2 font-mono text-[11px] text-slate-400">{r.componentCode}</span>
+                <span className="ms-2 font-mono text-[11px] text-slate-400">{r.componentCode}</span>
               </td>
               <td className="px-4 py-2">
                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${r.isEmployerContribution
@@ -476,8 +476,8 @@ function ComponentBreakdown({ rows }: { rows: GosiComponentBreakdown[] }) {
                   {r.isEmployerContribution ? 'Employer' : 'Employee'}
                 </span>
               </td>
-              <td className="px-4 py-2 text-right tabular-nums text-slate-600 dark:text-slate-300">{r.employeeCount}</td>
-              <td className="px-4 py-2 text-right font-mono font-semibold tabular-nums text-slate-800 dark:text-slate-100">{money(r.totalAmount)}</td>
+              <td className="px-4 py-2 text-end tabular-nums text-slate-600 dark:text-slate-300">{r.employeeCount}</td>
+              <td className="px-4 py-2 text-end font-mono font-semibold tabular-nums text-slate-800 dark:text-slate-100">{money(r.totalAmount)}</td>
             </tr>
           ))}
         </tbody>
@@ -489,7 +489,7 @@ function ComponentBreakdown({ rows }: { rows: GosiComponentBreakdown[] }) {
 function VarianceCell({ value }: { value: number }) {
   const ok = isZero(value);
   return (
-    <td className={`px-3 py-2 text-right font-mono tabular-nums ${ok ? 'text-slate-400 dark:text-slate-500' : 'font-bold text-rose-700 dark:text-rose-300'}`}>
+    <td className={`px-3 py-2 text-end font-mono tabular-nums ${ok ? 'text-slate-400 dark:text-slate-500' : 'font-bold text-rose-700 dark:text-rose-300'}`}>
       {ok ? '0.00' : signed(value)}
     </td>
   );
@@ -511,14 +511,14 @@ function VarianceHeader({ title, count, total }: { title: string; count: number;
 }
 
 const TH = 'px-3 py-2 font-semibold';
-const THR = 'px-3 py-2 text-right font-semibold';
+const THR = 'px-3 py-2 text-end font-semibold';
 
 function PeriodEmployeeTable({ period }: { period: GosiPeriodSummary }) {
   const rows = [...period.employees].sort((a, b) => Number(b.hasVariance) - Number(a.hasVariance) || a.employeeCode.localeCompare(b.employeeCode));
   return (
     <section className="overflow-x-auto rounded-2xl border border-slate-200/80 bg-white dark:border-white/[0.06] dark:bg-white/[0.03]">
       <VarianceHeader title="Per-employee reconciliation" count={period.varianceCount} total={rows.length} />
-      <table data-testid="gosi-employee-table" className="mt-2 w-full min-w-[900px] text-left text-xs">
+      <table data-testid="gosi-employee-table" className="mt-2 w-full min-w-[900px] text-start text-xs">
         <thead>
           <tr className="border-b border-slate-100 text-[10px] uppercase tracking-wide text-slate-500 dark:border-white/[0.06] dark:text-slate-400">
             <th className={TH}>Employee</th><th className={TH}>Class</th><th className={THR}>Covered wage</th>
@@ -533,14 +533,14 @@ function PeriodEmployeeTable({ period }: { period: GosiPeriodSummary }) {
               className={`border-b border-slate-50 last:border-0 dark:border-white/[0.03] ${r.hasVariance ? 'bg-rose-50/70 dark:bg-rose-500/[0.06]' : ''}`}>
               <td className="px-3 py-2"><EmployeeCell code={r.employeeCode} name={r.employeeName} flagged={r.hasVariance} /></td>
               <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{r.classification}</td>
-              <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-700 dark:text-slate-200">{money(r.coveredWageBase)}</td>
-              <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300">{money(r.expectedEmployee)}</td>
-              <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-800 dark:text-slate-100">{money(r.actualEmployee)}</td>
+              <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-700 dark:text-slate-200">{money(r.coveredWageBase)}</td>
+              <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-600 dark:text-slate-300">{money(r.expectedEmployee)}</td>
+              <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-800 dark:text-slate-100">{money(r.actualEmployee)}</td>
               <VarianceCell value={r.employeeVariance} />
-              <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300">{money(r.expectedEmployer)}</td>
-              <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-800 dark:text-slate-100">{money(r.actualEmployer)}</td>
+              <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-600 dark:text-slate-300">{money(r.expectedEmployer)}</td>
+              <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-800 dark:text-slate-100">{money(r.actualEmployer)}</td>
               <VarianceCell value={r.employerVariance} />
-              <td className="px-3 py-2 text-right tabular-nums text-slate-500 dark:text-slate-400">{r.runCount}</td>
+              <td className="px-3 py-2 text-end tabular-nums text-slate-500 dark:text-slate-400">{r.runCount}</td>
             </tr>
           ))}
         </tbody>
@@ -555,7 +555,7 @@ function RunVarianceTable({ report }: { report: GosiVarianceReport }) {
   return (
     <section className="overflow-x-auto rounded-2xl border border-slate-200/80 bg-white dark:border-white/[0.06] dark:bg-white/[0.03]">
       <VarianceHeader title="Per-employee variance (this run)" count={report.withVariance} total={report.totalEmployees} />
-      <table data-testid="gosi-employee-table" className="mt-2 w-full min-w-[900px] text-left text-xs">
+      <table data-testid="gosi-employee-table" className="mt-2 w-full min-w-[900px] text-start text-xs">
         <thead>
           <tr className="border-b border-slate-100 text-[10px] uppercase tracking-wide text-slate-500 dark:border-white/[0.06] dark:text-slate-400">
             <th className={TH}>Employee</th><th className={TH}>Class</th><th className={THR}>Covered wage</th>
@@ -577,12 +577,12 @@ function RunVarianceTable({ report }: { report: GosiVarianceReport }) {
                   </div>
                 </td>
                 <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{r.classification}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-700 dark:text-slate-200">{money(r.coveredWageBase)}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300">{money(r.expectedEmployeeContrib)}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-800 dark:text-slate-100">{money(r.actualEmployeeContrib)}</td>
+                <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-700 dark:text-slate-200">{money(r.coveredWageBase)}</td>
+                <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-600 dark:text-slate-300">{money(r.expectedEmployeeContrib)}</td>
+                <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-800 dark:text-slate-100">{money(r.actualEmployeeContrib)}</td>
                 <VarianceCell value={r.employeeVariance} />
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300">{money(r.expectedEmployerContrib)}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-800 dark:text-slate-100">{money(r.actualEmployerContrib)}</td>
+                <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-600 dark:text-slate-300">{money(r.expectedEmployerContrib)}</td>
+                <td className="px-3 py-2 text-end font-mono tabular-nums text-slate-800 dark:text-slate-100">{money(r.actualEmployerContrib)}</td>
                 <VarianceCell value={r.employerVariance} />
               </tr>
               {open === r.employeeId && (

@@ -131,7 +131,7 @@ export function PayslipTemplatesPage() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Name', 'Status', 'Version', 'Locale', 'Updated', ''].map((h) => (
-                  <th key={h} className="px-5 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-400">{h}</th>
+                  <th key={h} className="px-5 py-3 text-start text-xs font-bold uppercase tracking-wider text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -208,7 +208,7 @@ function VersionHistoryDrawer({
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <div className="relative ml-auto h-full w-80 overflow-y-auto bg-white shadow-2xl dark:bg-slate-900 p-5">
+      <div className="relative ms-auto h-full w-80 overflow-y-auto bg-white shadow-2xl dark:bg-slate-900 p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-semibold text-slate-900 dark:text-white">Version History</h3>
           <button type="button" onClick={onClose}><X className="h-4 w-4 text-slate-400" /></button>
@@ -359,7 +359,7 @@ function TemplateEditorDrawer({
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <div className="relative ml-auto flex h-full w-[640px] flex-col bg-white shadow-2xl dark:bg-slate-900">
+      <div className="relative ms-auto flex h-full w-[640px] flex-col bg-white shadow-2xl dark:bg-slate-900">
         {/* Drawer header */}
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-white/[0.07]">
           <div>
@@ -383,7 +383,7 @@ function TemplateEditorDrawer({
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
             >
               {t.charAt(0).toUpperCase() + t.slice(1)}
-              {t === 'preview' && !initial && <span className="ml-1 text-[10px] text-slate-400">(save first)</span>}
+              {t === 'preview' && !initial && <span className="ms-1 text-[10px] text-slate-400">(save first)</span>}
             </button>
           ))}
         </div>
@@ -624,9 +624,9 @@ function SectionCard({
         {/* Section name */}
         <div className="flex-1">
           <span className="text-sm font-medium text-slate-800 dark:text-white">{def.labelEn}</span>
-          {def.labelAr && <span className="ml-2 text-xs text-slate-400">{def.labelAr}</span>}
+          {def.labelAr && <span className="ms-2 text-xs text-slate-400">{def.labelAr}</span>}
           {!def.canDisable && (
-            <span className="ml-2 rounded bg-rose-50 px-1 py-0.5 text-[9px] font-bold text-rose-500 dark:bg-rose-500/10">
+            <span className="ms-2 rounded bg-rose-50 px-1 py-0.5 text-[9px] font-bold text-rose-500 dark:bg-rose-500/10">
               required
             </span>
           )}
