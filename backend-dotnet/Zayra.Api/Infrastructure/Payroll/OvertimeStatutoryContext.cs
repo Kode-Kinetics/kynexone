@@ -55,14 +55,24 @@ public static class OvertimeStatutoryContextResolver
     public const string RuleStandardMonthlyHours = "ot.standard_monthly_hours";
 
     /// <summary>
+    /// The regular-day multiplier assumed when the country pack has written no
+    /// <c>ot.standard_multiplier</c> rule.
+    ///
+    /// <para>1.5 is what the payroll run has always fallen back to, and it is kept EXACTLY so this
+    /// extraction cannot move a single payroll figure — including for a country that falls through
+    /// <c>CountryPackResolver</c> to the non-keyed Default pack, where a country-aware default
+    /// would have quietly REDUCED overtime pay from 1.5× to 1.25×. Both seeded packs write the
+    /// rule explicitly (KSA 1.5, UAE/QAT 1.25), so this value is only ever reached by a
+    /// jurisdiction nobody has modelled, and there the generous reading is the safe one.</para>
+    /// </summary>
+    public const decimal StatutoryStandardMultiplierFallback = 1.5m;
+
+    /// <summary>
     /// Resolves every statutory overtime input for a country/jurisdiction at an effective date.
     ///
     /// <para>Fallbacks, in one place:</para>
     /// <list type="bullet">
-    ///   <item><c>ot.standard_multiplier</c> → <see cref="DefaultRegularDayMultiplier"/> (KSA 1.5,
-    ///     otherwise 1.25). Both seeded packs write this rule explicitly (KSA 1.5, UAE/QAT 1.25),
-    ///     so the fallback is reached only by a country whose pack has not been seeded — where the
-    ///     country-aware default is the only defensible answer.</item>
+    ///   <item><c>ot.standard_multiplier</c> → <see cref="StatutoryStandardMultiplierFallback"/>.</item>
     ///   <item><c>ot.restday_multiplier</c> / <c>ot.holiday_multiplier</c> → the standard
     ///     multiplier, i.e. no day uplift unless the pack states one.</item>
     ///   <item><c>ot.hourly_base</c> → basic (anything but the literal "wage"), which collapses
@@ -80,7 +90,7 @@ public static class OvertimeStatutoryContextResolver
     {
         var standard = await reader.GetDecimalAsync(
             countryCode, jurisdiction, RuleStandardMultiplier, effectiveDate, tenantId, ct)
-            ?? DefaultRegularDayMultiplier(countryCode);
+            ?? StatutoryStandardMultiplierFallback;
         var restDay = await reader.GetDecimalAsync(
             countryCode, jurisdiction, RuleRestDayMultiplier, effectiveDate, tenantId, ct)
             ?? standard;
@@ -99,15 +109,4 @@ public static class OvertimeStatutoryContextResolver
             holiday,
             monthlyHours is > 0m ? (int)monthlyHours.Value : null);
     }
-
-    /// <summary>
-    /// The regular-day multiplier to assume when the pack has written no
-    /// <c>ot.standard_multiplier</c>. KSA Art. 107 is 1.5×; UAE Art. 19 and Qatar Art. 74 are
-    /// +25%, which is also the safer general default for an unmodelled jurisdiction.
-    /// </summary>
-    public static decimal DefaultRegularDayMultiplier(string? countryCode) =>
-        string.Equals(countryCode, CountryCodes.Saudi, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(countryCode, "SA", StringComparison.OrdinalIgnoreCase)
-            ? 1.5m
-            : 1.25m;
 }

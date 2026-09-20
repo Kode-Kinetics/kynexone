@@ -564,9 +564,17 @@ public class OvertimeController : ControllerBase
         return DefaultRegularDayMultiplier(countryCode);
     }
 
-    // One definition, shared with the payroll run's statutory-rule fallback.
+    /// <summary>
+    /// The regular-day multiplier a NEW policy is seeded with when the caller supplies none.
+    /// This is a policy-authoring convenience, not the statutory rate: what actually gets paid is
+    /// the configured multiplier floored at the jurisdiction's statutory rate, resolved in
+    /// <see cref="OvertimeStatutoryContext"/> from <c>ot.standard_multiplier</c>.
+    /// </summary>
     internal static decimal DefaultRegularDayMultiplier(string? countryCode) =>
-        OvertimeStatutoryContextResolver.DefaultRegularDayMultiplier(countryCode);
+        string.Equals(countryCode, CountryCodes.Saudi, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(countryCode, "SA", StringComparison.OrdinalIgnoreCase)
+            ? 1.5m
+            : 1.25m;
 
     private static int ApplyRounding(int minutes, string? rule) => (rule ?? string.Empty) switch
     {
