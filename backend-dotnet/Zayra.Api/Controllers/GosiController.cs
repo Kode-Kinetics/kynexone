@@ -217,8 +217,9 @@ public class GosiController : ControllerBase
 
         GosiContributionResult? preview = null;
         if (report.IsReady && salary?.BasicSalary > 0)
+            // S1/A2(b) — the contributory wage is basic + housing, matching the payroll run's pack.
             preview = GosiCalculationService.Calculate(
-                employee.Nationality, salary.BasicSalary, rules, periodDate, tenantId);
+                employee.Nationality, salary.BasicSalary + salary.HousingAllowance, rules, periodDate, tenantId);
 
         return Ok(new
         {

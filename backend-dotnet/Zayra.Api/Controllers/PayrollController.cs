@@ -1810,10 +1810,20 @@ public class PayrollController : ControllerBase
             .ToDictionaryAsync(p => p.EmployeeId, cancellationToken);
 
         // C4: filter overtime impacts to the current pay period only (via WorkDate on the originating request)
-        var periodOvertimeRequestIds = await _db.OvertimeRequests.AsNoTracking()
+        // S1/A5 — the WorkDate is now KEPT, not discarded. It is what lets the run tell a rest-day or
+        // public-holiday overtime hour from an ordinary one, which is the distinction that made
+        // ot.restday_multiplier and ot.holiday_multiplier dead rules: the seeder wrote them and nothing
+        // in the payroll run could ever have read them, because the run did not know the day type.
+        var periodOvertimeRequests = await _db.OvertimeRequests.AsNoTracking()
             .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployees && r.CompanyId == null)) && r.WorkDate >= periodStart && r.WorkDate <= periodEnd)
-            .Select(r => r.Id)
+            .Select(r => new { r.Id, r.WorkDate })
             .ToListAsync(cancellationToken);
+        var periodOvertimeRequestIds = periodOvertimeRequests.Select(r => r.Id).ToList();
+        var overtimeWorkDates = periodOvertimeRequests.ToDictionary(r => r.Id, r => r.WorkDate);
+        var periodPublicHolidays = (await _db.PublicHolidays.AsNoTracking()
+            .Where(h => h.TenantId == tenantId && !h.IsOptional && h.Date >= periodStart && h.Date <= periodEnd)
+            .Select(h => h.Date)
+            .ToListAsync(cancellationToken)).ToHashSet();
         var overtimeImpacts = await _db.OvertimePayrollImpacts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
             .ToListAsync(cancellationToken);
@@ -1833,6 +1843,32 @@ public class PayrollController : ControllerBase
         // [FLAG-COMPLIANCE-KSA: weekend/holiday OT multipliers may differ — Art.107 baseline only]
         var otMultiplier = await _ruleReader.GetDecimalAsync(
             packCc, packJur, "ot.standard_multiplier", eff, tenantId, cancellationToken) ?? 1.5m;
+        // ── S1/A5: the seeded rest-day and public-holiday rates, finally READ ─────────────────────
+        // StatutoryRuleSeeder has written ot.restday_multiplier and ot.holiday_multiplier at 2.0 since
+        // the pack was built. A repo-wide grep found no reader. The payroll run applied
+        // ot.standard_multiplier to every overtime hour regardless of the day it was worked, so a
+        // Saudi employee working Eid was paid the ordinary-day rate unless somebody happened to have
+        // stamped a higher ApprovedMultiplier on the request at approval time.
+        var otRestDayMultiplier = await _ruleReader.GetDecimalAsync(
+            packCc, packJur, "ot.restday_multiplier", eff, tenantId, cancellationToken) ?? otMultiplier;
+        var otHolidayMultiplier = await _ruleReader.GetDecimalAsync(
+            packCc, packJur, "ot.holiday_multiplier", eff, tenantId, cancellationToken) ?? otMultiplier;
+        // ── S1/A5: the OT hourly BASE ────────────────────────────────────────────────────────────
+        // KSA Labour Law Art. 107: the worker is paid for an overtime hour "an additional amount equal
+        // to the hourly wage plus 50% of his basic wage". The base is the WAGE (Art. 2: basic plus all
+        // due increments); the 50% uplift is on BASIC. The run computed basic/240 × 1.5 for everyone —
+        // on a 60/40 package that is about 30% short on every KSA overtime hour.
+        //
+        // The general form below covers all three jurisdictions with one expression:
+        //     hour pay = baseHourly + basicHourly × (multiplier − 1)
+        //   KSA  base = "wage":  wageHourly + 0.5 × basicHourly           (Art. 107)
+        //   UAE  base = "basic": basicHourly × 1.25                        (basic + 25%)
+        //   QAT  base = "basic": basicHourly × 1.25                        (Art. 74, +25% minimum)
+        // With base = "basic" the expression collapses to basicHourly × multiplier, i.e. EXACTLY the
+        // pre-S1 arithmetic — so nothing moves for UAE or Qatar.
+        var otHourlyBase = (await _ruleReader.GetStringAsync(
+            packCc, packJur, "ot.hourly_base", eff, tenantId, cancellationToken))?.Trim().ToLowerInvariant();
+        var otBaseIsFullWage = OvertimeStatutoryCalculator.BaseIsFullWage(otHourlyBase);
         // Standard monthly hours for hourly-rate divisor (overrides policy value if configured).
         var otMonthlyHoursRule = await _ruleReader.GetDecimalAsync(
             packCc, packJur, "ot.standard_monthly_hours", eff, tenantId, cancellationToken);
@@ -2198,12 +2234,45 @@ public class PayrollController : ControllerBase
             //  Whether OT pay is included in the GOSI covered wage requires sign-off before filing.]
             var empOtImpacts = overtimeImpacts.Where(x => x.EmployeeId == e.Id).ToList();
             var otHours = empOtImpacts.Sum(x => x.Hours);
-            // Use per-impact approved multiplier if set (> 0); fall back to statutory standard multiplier.
-            // This supports holiday/rest-day OT at 2× per KSA Art.107 where ApprovedMultiplier = 2.0.
-            var overtimePay = empOtImpacts.Count > 0 && hourlyRate > 0m
-                ? Math.Round(empOtImpacts.Sum(x =>
-                    x.Hours * hourlyRate * (x.ApprovedMultiplier > 0m ? x.ApprovedMultiplier : otMultiplier)), 2)
+            // ── S1/A5: Art. 107 base + the day-category statutory FLOOR ───────────────────────────
+            // `hourlyRate` above is basic ÷ standardMonthlyHours and stays the uplift base, because
+            // Art. 107's 50% is expressly "of his basic wage". What changes is the FIRST term: for a
+            // jurisdiction whose ot.hourly_base is "wage" it is the full-wage hourly rate, not basic.
+            // The full monthly wage is used for the same reason the basic hourly rate is: a joiner's
+            // overtime must not be paid at a fraction of their real hourly rate.
+            var fullWageForOt = fullBasic + fullHousing + fullTransport + fullOther;
+            var otBaseHourly = standardMonthlyHours > 0
+                ? (otBaseIsFullWage ? fullWageForOt : fullBasic) / standardMonthlyHours
                 : 0m;
+            // A per-request ApprovedMultiplier is honoured only where it is at or above the statutory
+            // floor for the day actually worked. It was previously preferred unconditionally whenever
+            // non-zero, which made it a back door around the statutory rate: an approved request on a
+            // policy configured at 1.0 paid 1.0, with no floor check anywhere in the system.
+            var overtimePay = empOtImpacts.Count > 0 && otBaseHourly > 0m
+                ? Math.Round(empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.HourPay(
+                    otBaseHourly, hourlyRate, OtEffectiveMultiplier(x))), 2)
+                : 0m;
+
+            // The payslip line must describe the arithmetic that actually produced the money. The
+            // weighted-average effective multiplier collapses to otMultiplier exactly when every
+            // impact sits on the ordinary-day floor with no approved override, so an unaffected run's
+            // label is byte-identical; it diverges only where the rate genuinely did.
+            var otEffectiveMultiplier = otHours > 0m
+                ? empOtImpacts.Sum(x => x.Hours * OtEffectiveMultiplier(x)) / otHours
+                : otMultiplier;
+
+            decimal OtEffectiveMultiplier(OvertimePayrollImpact impact)
+            {
+                var floor = otMultiplier;
+                if (overtimeWorkDates.TryGetValue(impact.OvertimeRequestId, out var workDate))
+                    floor = OvertimeStatutoryCalculator.StatutoryFloor(
+                        OvertimeStatutoryCalculator.DayCategory(
+                            workDate,
+                            periodPublicHolidays.Contains(workDate),
+                            workWeekConfig.IsWeekend(workDate.DayOfWeek)),
+                        otMultiplier, otRestDayMultiplier, otHolidayMultiplier);
+                return OvertimeStatutoryCalculator.EffectiveMultiplier(impact.ApprovedMultiplier, floor);
+            }
             // ── F2: CONFIGURED-VALUE PAY COMPONENTS — THE ENGINE IS THE SOLE SOURCE OF THEIR AMOUNTS ─────
             // Every other payslip line re-emits an amount computed HERE (structure columns, tax, attendance,
             // leave, loans, bonus, adjustments, the country pack), so it is already in the aggregates below.
@@ -2336,7 +2405,14 @@ public class PayrollController : ControllerBase
                 Nationality:  e.Nationality ?? string.Empty,
                 ContractType: e.ContractType ?? "Indefinite",
                 PeriodYear:   run.Year,
-                PeriodMonth:  run.Month);
+                PeriodMonth:  run.Month)
+            {
+                // S1/A3 — the person dimension. DateOfBirth exists on Employee today and drives the
+                // age-based eligibility corollary (annuities and SANED cease at retirement age).
+                // SocialInsuranceFirstRegisteredOn has no column yet; null means UNKNOWN, and no pack
+                // may read unknown as "new entrant".
+                DateOfBirth = e.DateOfBirth,
+            };
             var statutoryResult = await deductionCalc.CalculateAsync(statutoryInput, cancellationToken);
             if (priorStatutoryByEmp.Count > 0)
             {
@@ -2611,7 +2687,7 @@ public class PayrollController : ControllerBase
             {
                 var otRateDisplay = Math.Round(hourlyRate * otMultiplier, 2);
                 AddEarning(tenantId, id, e.Id, "OVERTIME",
-                    $"Overtime ({otHours:N2} h × {Math.Round(hourlyRate, 2):N2}/h × {otMultiplier:N2})",
+                    $"Overtime ({otHours:N2} h × {Math.Round(otBaseHourly, 2):N2}/h × {otEffectiveMultiplier:N2})",
                     overtimePay, "Overtime");
             }
             if (fixedDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "FIXED_DEDUCTION",
@@ -2649,7 +2725,7 @@ public class PayrollController : ControllerBase
                 {
                     Basic = basic, Housing = housing, Transport = transport,
                     OtherAllowances = otherAllowances, FixedDeduction = fixedDeduction, Gross = gross,
-                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = hourlyRate, OtMultiplier = otMultiplier,
+                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = otBaseHourly, OtMultiplier = otEffectiveMultiplier,
                     TaxDeduction = taxDeduction, IncomeTaxRate = incomeTaxRate,
                     AttendanceDeduction = attendanceDeduction,
                     LopDeduction = lopDeduction, LopDays = lopDays, LopDayRate = lopDayRate,
@@ -2959,6 +3035,19 @@ public class PayrollController : ControllerBase
             // than this run in isolation. Derived from the same priorStatutoryByEmp map the incremental
             // netting above used, so the figure Rule 2 credits is exactly the figure that was netted off.
             PriorPeriodGosiEeByEmployee             = BuildPriorPeriodGosiEe(priorStatutoryByEmp),
+            // S1/A2(c) — the ONE ceiling: the same effective-dated rule the country pack caps on,
+            // instead of a compiled 45,000 the validator would keep warning on after GOSI moves it.
+            // statutoryCeiling is decimal.MaxValue when no rule exists (the arrears delta wants "no
+            // cap" there). Zero means "not supplied" to the engine, which then applies its own
+            // default — so an unseeded tenant keeps the 45,000 warning it has always had rather than
+            // silently losing it.
+            GosiCoveredWageCeiling                  = statutoryCeiling == decimal.MaxValue ? 0m : statutoryCeiling,
+            // S1/A3 — the cohort gap is announced unless the tenant has acknowledged it, and the
+            // retirement-age corollary is checked only when an age is configured.
+            EntrantCohortSchemeAcknowledged         = await Zayra.Api.Application.CountryPack.StatutoryFlag.ReadAsync(
+                _ruleReader, packCc, packJur, "gosi.new_entrant_scheme_acknowledged", eff, false, cancellationToken),
+            GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
+                packCc, packJur, "gosi.retirement_age_years", eff, tenantId, cancellationToken) ?? 0m),
         };
         foreach (var r in PayrollValidationEngine.Run(validationCtx))
             _db.PayrollValidationResults.Add(r);
@@ -3755,6 +3844,18 @@ public class PayrollController : ControllerBase
             // run had already reported statutory for these employees, which is exactly this condition.
             StatutoryComputedIncrementally          = valPriorStatutory.Count > 0,
             PriorPeriodGosiEeByEmployee             = BuildPriorPeriodGosiEe(valPriorStatutory),
+            // S1/A2(c) — same ceiling source as Process. /validate REPLACES the stored results
+            // wholesale, so a version that read a different ceiling here would flip the warning on
+            // and off depending on which endpoint last ran.
+            GosiCoveredWageCeiling                  = await _ruleReader.GetDecimalAsync(
+                "SAU", "KSA-mainland", "gosi.covered_wage_ceiling_sar",
+                new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 45_000m,
+            EntrantCohortSchemeAcknowledged         = await Zayra.Api.Application.CountryPack.StatutoryFlag.ReadAsync(
+                _ruleReader, "SAU", "KSA-mainland", "gosi.new_entrant_scheme_acknowledged",
+                new DateOnly(run.Year, run.Month, 1), false, cancellationToken),
+            GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
+                "SAU", "KSA-mainland", "gosi.retirement_age_years",
+                new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 0m),
         };
         var results = PayrollValidationEngine.Run(ctx);
 
@@ -6540,10 +6641,7 @@ public class PayrollController : ControllerBase
             .FirstOrDefaultAsync(cancellationToken);
 
         var wageBasis = await ResolveEosbWageBasisAsync(tenantId, company.Id, salary, employee, cancellationToken);
-        var eligibleSalary = wageBasis.EligibleWage;
         var joiningDate = employee.JoiningDate;
-        var dailySalary = eligibleSalary * 12 / 365m;
-        var monthlySalary = eligibleSalary;
 
         // Resolve the separation reason once, consistently with /final-settlement:
         // explicit request override → recorded EmployeeOffboarding.SeparationType → conservative default.
@@ -6554,11 +6652,19 @@ public class PayrollController : ControllerBase
         // pro-rata gratuity to short-service TERMINATIONS from day one; the <2yr RESIGNATION
         // forfeiture, the Art.80 dismissal forfeiture, and the non-KSA ≥1yr eligibility floors
         // are all owned by the country packs (the single source of truth).
+        var unpaidLeaveDays = await ResolveUnpaidLeaveDaysAsync(
+            tenantId, employee.Id, DateOnly.FromDateTime(joiningDate), DateOnly.FromDateTime(calcDate), cancellationToken);
         var (eosbResult, totalYears) = await ComputeEndOfServiceAsync(
-            company.CountryCode, company.Jurisdiction, company.Id, eligibleSalary,
-            joiningDate, calcDate, terminationReason, employee, cancellationToken);
+            company.CountryCode, company.Jurisdiction, company.Id, wageBasis,
+            joiningDate, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, cancellationToken);
         var eosbAmount  = Math.Round(eosbResult.TotalGratuity, 2);
         var eosbFormula = eosbResult.ApplicableRule;
+        // S1/A1 — the wage the PACK awarded on, not the controller's pre-narrowed scalar. When a pack
+        // does not report one (Default), fall back to the configured wage so the field is never zero
+        // against a non-zero award.
+        var eligibleSalary = eosbResult.AppliedWageBase > 0m ? eosbResult.AppliedWageBase : wageBasis.ConfiguredWage;
+        var dailySalary = eligibleSalary * 12 / 365m;
+        var monthlySalary = eligibleSalary;
 
         // Persist the calculation
         var existing = await _db.EOSBCalculations.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.Status == "Draft", cancellationToken);
@@ -6592,6 +6698,12 @@ public class PayrollController : ControllerBase
             formula = eosbFormula,
             eosbAmount,
             wageBasis = wageBasis.IncludedComponents,
+            // S1/A1 — the pack's statutory notices and the compatibility-fallback reason are part of the
+            // ANSWER, not a snapshot footnote. A caller that cannot see them cannot sign off on the award.
+            statutoryNotices = wageBasis.FallbackReason is null
+                ? eosbResult.Notices
+                : eosbResult.Notices.Prepend(wageBasis.FallbackReason).ToList(),
+            unpaidLeaveDays,
             countryCode = company.CountryCode,
             jurisdiction = company.Jurisdiction,
             terminationReason,
@@ -6614,7 +6726,21 @@ public class PayrollController : ControllerBase
     // Service period: the pack derives service length from DateOnly start/end
     // (fullMonths/12 + remDays/365), eliminating the /365.0 leap drift the old inline
     // final-settlement formula suffered.
-    private sealed record EosbWageBasis(decimal EligibleWage, IReadOnlyList<string> IncludedComponents);
+    /// <summary>
+    /// S1/A1 — the EOSB wage inputs. The controller no longer DECIDES the wage base; it reports the
+    /// facts (the real salary package, and whatever the tenant's component catalog flags in) and the
+    /// country pack applies its own statute to them.
+    ///
+    /// <para>Before this change the controller collapsed the package into a single scalar and handed it
+    /// to the pack as <c>new SalaryBreakdown(eligibleWage, 0, 0, 0)</c> — housing and transport
+    /// explicitly zeroed — so no pack could ever see, let alone apply, the Art. 84 "last wage". That is
+    /// the mechanical cause of A1.</para>
+    /// </summary>
+    private sealed record EosbWageBasis(
+        SalaryBreakdown Package,
+        decimal ConfiguredWage,
+        IReadOnlyList<string> IncludedComponents,
+        string? FallbackReason);
 
     private async Task<EosbWageBasis> ResolveEosbWageBasisAsync(
         Guid tenantId, Guid? companyId, EmployeeSalaryStructure? salary, Employee employee, CancellationToken ct)
@@ -6624,6 +6750,7 @@ public class PayrollController : ControllerBase
         var transport = salary?.TransportAllowance ?? 0m;
         var other = (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
         var gross = basic + housing + transport + other;
+        var package = new SalaryBreakdown(basic, housing, transport, other);
         // F2 — the catalog version in effect for the CURRENT payroll month (the EOSB wage is the last wage).
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var components = await LoadPayComponentsAsync(tenantId, companyId, new DateOnly(today.Year, today.Month, 1), ct);
@@ -6640,28 +6767,98 @@ public class PayrollController : ControllerBase
         }).Earnings;
         var eligible = Math.Round(computed.Sum(l => l.Amount), 2);
         if (eligible > 0m)
-            return new EosbWageBasis(eligible, computed.Select(l => l.Code).Distinct(StringComparer.Ordinal).ToList());
+            return new EosbWageBasis(package, eligible,
+                computed.Select(l => l.Code).Distinct(StringComparer.Ordinal).ToList(), null);
 
-        // Existing tenants may have a partially seeded component catalog with no EOSB flags. Preserve the
-        // historical basic-wage floor, but make the fallback explicit in every persisted result snapshot.
-        return new EosbWageBasis(Math.Round(basic, 2), ["BASIC (compatibility fallback: no positive EOSB-included component)"]);
+        // A tenant may have a partially seeded component catalog with no EOSB flags at all. The OLD
+        // behaviour here was to fall back to BASIC ALONE and record the reason in a snapshot column
+        // nobody reads — a silent 40% under-award on a Saudi settlement. It now falls back to the FULL
+        // PACKAGE and leaves the statutory narrowing to the pack (KSA takes basic + housing + configured
+        // allowances; UAE Art. 51 and Qatar Art. 54 take basic and are unaffected), and the fallback is
+        // surfaced as a settlement warning by the caller instead of being buried.
+        return new EosbWageBasis(package, 0m,
+            ["(compatibility fallback: no EOSB-flagged pay component — statutory base applied by the country pack)"],
+            "No active pay component in this company's catalog is flagged EosbIncluded, so the gratuity was " +
+            "computed on the country pack's STATUTORY base rather than on a configured one. For KSA that is " +
+            "Art. 84 last wage (basic + housing, plus transport unless disabled); for UAE/Qatar it is basic. " +
+            "Seed the pay-component catalog so the base is an explicit, auditable configuration.");
+    }
+
+    /// <summary>
+    /// S1/A8 — calendar days of APPROVED UNPAID leave falling inside the service window.
+    ///
+    /// <para>UAE Decree-Law 33/2021 Art. 51 says expressly that periods of unpaid leave are not
+    /// included in the service period for gratuity. The product had the data all along — an unpaid
+    /// leave type already drives a payroll deduction — and simply never fed it back into service
+    /// accrual, so every UAE gratuity was over-stated by the unpaid time and the EOSB provision on the
+    /// balance sheet with it. KSA and Qatar turn on "continuous service" and their packs default to
+    /// INCLUDING the days; each pack decides, this method only reports the fact.</para>
+    ///
+    /// <para>A request straddling the window boundary is apportioned by the overlapping fraction of its
+    /// own span, so a leave that starts before the joining date or runs past the last working day
+    /// contributes only the part actually inside service.</para>
+    /// </summary>
+    private async Task<int> ResolveUnpaidLeaveDaysAsync(
+        Guid tenantId, int employeeId, DateOnly windowStart, DateOnly windowEnd, CancellationToken ct)
+    {
+        if (windowEnd < windowStart) return 0;
+
+        var unpaidTypeIds = await _db.LeaveTypes.AsNoTracking()
+            .Where(t => t.TenantId == tenantId && !t.IsPaid)
+            .Select(t => t.Id)
+            .ToListAsync(ct);
+        if (unpaidTypeIds.Count == 0) return 0;
+
+        var requests = await _db.LeaveRequests.AsNoTracking()
+            .Where(r => r.TenantId == tenantId
+                     && r.EmployeeId == employeeId
+                     && r.Status == "Approved"
+                     && unpaidTypeIds.Contains(r.LeaveTypeId)
+                     && r.StartDate <= windowEnd
+                     && r.EndDate >= windowStart)
+            .Select(r => new { r.StartDate, r.EndDate, r.TotalDays })
+            .ToListAsync(ct);
+
+        decimal days = 0m;
+        foreach (var r in requests)
+        {
+            var span = r.EndDate.DayNumber - r.StartDate.DayNumber + 1;
+            if (span <= 0) continue;
+            var from = r.StartDate > windowStart ? r.StartDate : windowStart;
+            var to   = r.EndDate   < windowEnd   ? r.EndDate   : windowEnd;
+            var overlap = to.DayNumber - from.DayNumber + 1;
+            if (overlap <= 0) continue;
+            var counted = r.TotalDays > 0m ? r.TotalDays : span;
+            days += overlap >= span ? counted : counted * overlap / span;
+        }
+
+        return (int)Math.Round(days, MidpointRounding.AwayFromZero);
     }
 
     private async Task<(EndOfServiceResult Result, double ServiceYearsDisplay)> ComputeEndOfServiceAsync(
-        string countryCode, string jurisdiction, Guid companyId, decimal eligibleWage,
-        DateTime joiningDate, DateTime asOfDate, string terminationReason, Employee employee, CancellationToken ct)
+        string countryCode, string jurisdiction, Guid companyId, EosbWageBasis wageBasis,
+        DateTime joiningDate, DateTime asOfDate, string terminationReason, Employee employee,
+        int unpaidLeaveDays, GCCComplianceSetting? gcc, CancellationToken ct)
     {
         var calc = _packResolver.ResolveEndOfServiceCalculator(countryCode, jurisdiction);
 
         var input = new EndOfServiceInput(
             EmployeeId:        employee.PublicId,
             CompanyId:         companyId,
-            Salary:            new SalaryBreakdown(eligibleWage, 0m, 0m, 0m),
+            Salary:            wageBasis.Package,
             ServiceStartDate:  DateOnly.FromDateTime(joiningDate),
             ServiceEndDate:    DateOnly.FromDateTime(asOfDate),
             TerminationReason: terminationReason,
             ContractType:      employee.ContractType ?? "Indefinite",
-            Nationality:       employee.Nationality ?? string.Empty);
+            Nationality:       employee.Nationality ?? string.Empty)
+        {
+            ConfiguredEosbWage = wageBasis.ConfiguredWage,
+            UnpaidLeaveDays    = unpaidLeaveDays,
+            // S1 — the three EOSB fields the country compliance-config screen has always let a customer
+            // edit and which nothing read. The pack decides what it is lawful to honour.
+            Policy             = gcc is null ? null : new EosbPolicyOverride(
+                                     gcc.EosbYears1To5Rate, gcc.EosbYearsAbove5Rate, gcc.EosbMinYears),
+        };
 
         var result = await calc.CalculateAsync(input, ct);
         var serviceYearsDisplay = (asOfDate - joiningDate).Days / 365.0;
@@ -8671,26 +8868,42 @@ public class PayrollController : ControllerBase
         // ── POD-A2's ONE authoritative engine. The Breakdown is kept IN FULL — /eosb/calculate discards
         //    it and keeps only the rule string, so the Art.84 tier split and the Art.85/80 adjustment line
         //    were unrecoverable from anything the product persisted.
+        var unpaidLeaveDays = await ResolveUnpaidLeaveDaysAsync(
+            tenantId, employee.Id, DateOnly.FromDateTime(employee.JoiningDate), lastDay, ct);
         var (eosbResult, serviceYears) = await ComputeEndOfServiceAsync(
-            countryCode, jurisdiction, companyId ?? Guid.Empty, wageBasis.EligibleWage,
-            employee.JoiningDate, calcDate, terminationReason, employee, ct);
+            countryCode, jurisdiction, companyId ?? Guid.Empty, wageBasis,
+            employee.JoiningDate, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, ct);
         var gratuity = Math.Round(eosbResult.TotalGratuity, 2);
+        var appliedWageBase = eosbResult.AppliedWageBase > 0m ? eosbResult.AppliedWageBase : wageBasis.ConfiguredWage;
 
-        // [FLAG-COMPLIANCE-KSA] the Art. 84 wage-base delta, computed by re-running the SAME pack on the
-        // full package. Purely indicative and never paid automatically — it is the number the approver
-        // must consciously accept or correct.
+        // ── S1/A1: the pack's own statutory notices, surfaced ON THE SETTLEMENT ──────────────────────
+        // A [COUNSEL] default that changes the award (transport in / other out) and a DIFC trustee
+        // position that means "do not pay this" are decisions the approver has to make consciously.
+        warnings.AddRange(eosbResult.Notices);
+        if (wageBasis.FallbackReason is not null && gratuity > 0m)
+            warnings.Add("[FLAG-COMPLIANCE] " + wageBasis.FallbackReason);
+
+        // [FLAG-COMPLIANCE] the wage-base delta against the FULL package, computed by re-running the SAME
+        // pack on a package whose every component is loaded into the pack's configured-wage slot. Purely
+        // indicative and never paid automatically — it is the number the approver must consciously accept
+        // or correct. Post-A1 this is ZERO for a KSA leaver on the default rules whose only allowances are
+        // housing and transport, because those are now IN the statutory base; it still fires where a
+        // composite "other allowance" sits outside it.
         decimal wageBaseDelta = 0m;
-        if (monthlyGross > wageBasis.EligibleWage && gratuity > 0m)
+        if (monthlyGross > appliedWageBase && gratuity > 0m)
         {
+            var fullBasis = wageBasis with { ConfiguredWage = monthlyGross };
             var (fullResult, _) = await ComputeEndOfServiceAsync(
-                countryCode, jurisdiction, companyId ?? Guid.Empty, monthlyGross,
-                employee.JoiningDate, calcDate, terminationReason, employee, ct);
+                countryCode, jurisdiction, companyId ?? Guid.Empty, fullBasis,
+                employee.JoiningDate, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, ct);
             wageBaseDelta = Math.Max(0m, Math.Round(fullResult.TotalGratuity - gratuity, 2));
             if (wageBaseDelta > 0m)
-                warnings.Add($"[FLAG-COMPLIANCE-KSA] Gratuity is computed on the configured EOSB wage base ({wageBasis.EligibleWage:N2}: {string.Join(", ", wageBasis.IncludedComponents)}). On the " +
+                warnings.Add($"[FLAG-COMPLIANCE] Gratuity is computed on the wage base the country pack applied " +
+                             $"({appliedWageBase:N2}; configured components: {string.Join(", ", wageBasis.IncludedComponents)}). On the " +
                              $"full package ({monthlyGross:N2}) it would be {wageBaseDelta:N2} {currency} higher. " +
-                             "KSA Art. 84 measures the award on the LAST WAGE, which is read as including regular " +
-                             "allowances. Approval requires an explicit acknowledgement of this floor.");
+                             "KSA Art. 84 measures the award on the LAST WAGE (Art. 2: basic plus all due increments); " +
+                             "UAE Art. 51 and Qatar Art. 54 are basic-only and this delta is expected there. " +
+                             "Approval requires an explicit acknowledgement of this floor.");
         }
 
         // ── K5: one authoritative encashable-days function ───────────────────────────────────────────
@@ -8875,10 +9088,19 @@ public class PayrollController : ControllerBase
                 totalGratuity = eosbResult.TotalGratuity,
                 applicableRule = eosbResult.ApplicableRule,
                 breakdown = eosbResult.Breakdown.Select(b => new { b.Label, b.Amount }).ToList(),
+                notices = eosbResult.Notices,
             }),
             JsonSerializer.Serialize(new
             {
-                basicWage, monthlyGross, eligibleEosbWage = wageBasis.EligibleWage,
+                basicWage, monthlyGross,
+                // S1/A1 — the wage the PACK awarded on. `configuredEosbWage` is what the tenant's
+                // component catalog contributed; `appliedWageBase` is what statute actually used, and
+                // the two differ whenever statute is the more generous of the pair.
+                appliedWageBase, configuredEosbWage = wageBasis.ConfiguredWage,
+                packageHousing = wageBasis.Package.HousingAllowance,
+                packageTransport = wageBasis.Package.TransportAllowance,
+                packageOther = wageBasis.Package.OtherAllowances,
+                unpaidLeaveDays,
                 eosbIncludedComponents = wageBasis.IncludedComponents, currency,
                 serviceStart = DateOnly.FromDateTime(employee.JoiningDate),
                 serviceEnd = lastDay,
@@ -8887,7 +9109,7 @@ public class PayrollController : ControllerBase
                 jurisdiction,
                 contractType = employee.ContractType,
                 nationality = employee.Nationality,
-                wageBase = "configured PayComponent.EosbIncluded",
+                wageBase = "country-pack statutory base, raised (never lowered) by PayComponent.EosbIncluded",
             }),
             gratuity, encashment.TotalAmount, encashment.TotalDays,
             noticePay, Math.Max(0m, req.OtherDuesAmount),

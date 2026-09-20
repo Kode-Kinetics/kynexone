@@ -13,8 +13,29 @@ public sealed class DefaultStatutoryDeductionCalculator : IStatutoryDeductionCal
 
 public sealed class DefaultEndOfServiceCalculator : IEndOfServiceCalculator
 {
+    /// <summary>
+    /// S1 — a zero here is NOT an answer, it is the absence of one, and a settlement screen showing
+    /// "KWD 0.00 indemnity" is worse than one that refuses. Kuwait Law 6/2010 Art. 51 alone is 15 days
+    /// per year rising to a month after five, on the TOTAL wage, with its own resignation scale; Oman
+    /// and Bahrain have both moved expatriate end-of-service to funded monthly schemes. None of that is
+    /// modelled. The WPS path already refuses rather than emitting an empty file
+    /// (<c>PayrollController</c>'s <c>no_wps_pack_configured</c> guard); this is the missing half of
+    /// that asymmetry, so callers can make the same refusal.
+    /// </summary>
+    public const string NoPackNotice =
+        "[NO-PACK] No end-of-service pack is configured for this company's country/jurisdiction, so the " +
+        "gratuity is reported as ZERO — that is the absence of an answer, not an answer. Do not settle a " +
+        "leaver on this figure. End-of-service in Kuwait, Oman and Bahrain is substantial and structurally " +
+        "different from the KSA/UAE/Qatar packs (Bahrain and Oman have moved expatriate end-of-service to " +
+        "funded monthly contribution schemes), and none of it is implemented. Compute the indemnity outside " +
+        "the product and record it as an explicit other-dues line.";
+
     public Task<EndOfServiceResult> CalculateAsync(EndOfServiceInput input, CancellationToken ct = default)
-        => Task.FromResult(new EndOfServiceResult(0m, "default-no-op", Array.Empty<EndOfServiceBreakdown>()));
+        => Task.FromResult(new EndOfServiceResult(0m, "default-no-op", Array.Empty<EndOfServiceBreakdown>())
+        {
+            Notices = new[] { NoPackNotice },
+            AppliedWageBase = 0m,
+        });
 }
 
 public sealed class DefaultWageProtectionExporter : IWageProtectionExporter

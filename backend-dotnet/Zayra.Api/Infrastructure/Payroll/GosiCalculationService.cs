@@ -41,6 +41,20 @@ public static class GosiCalculationService
             ["UAE"]     = "GCC",
         };
 
+    // S1/A4 — the HOME STATE behind a GCC classification. Under the GCC Unified Insurance Extension
+    // Scheme a GCC national employed in Saudi Arabia is insured under their OWN state's scheme at
+    // their OWN state's rates, collected by GOSI — so "GCC" alone is not enough to compute anything.
+    // Every spelling in GccNationalityTerms maps here to an ISO-3166-1 alpha-2 home state.
+    private static readonly Dictionary<string, string> GccHomeStates =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["BH"] = "BH", ["Bahrain"]             = "BH", ["Bahraini"] = "BH",
+            ["KW"] = "KW", ["Kuwait"]              = "KW", ["Kuwaiti"]  = "KW",
+            ["OM"] = "OM", ["Oman"]                = "OM", ["Omani"]    = "OM",
+            ["QA"] = "QA", ["Qatar"]               = "QA", ["Qatari"]   = "QA",
+            ["AE"] = "AE", ["United Arab Emirates"] = "AE", ["Emirati"] = "AE", ["UAE"] = "AE",
+        };
+
     /// <summary>
     /// Derives GosiClassifications.Saudi / GCC / NonSaudi from a raw nationality string.
     /// </summary>
@@ -57,6 +71,18 @@ public static class GosiCalculationService
 
         return GosiClassifications.NonSaudi;
     }
+
+    /// <summary>
+    /// S1/A4 — the ISO-3166-1 alpha-2 home state for a GCC national, or null for anyone who is not
+    /// one. Kept beside <see cref="DeriveClassification"/> so the two can never disagree about who
+    /// counts as GCC.
+    /// </summary>
+    public static string? DeriveGccHomeState(string? nationality)
+        => !string.IsNullOrWhiteSpace(nationality)
+           && !SaudiNationalityTerms.Contains(nationality)
+           && GccHomeStates.TryGetValue(nationality, out var iso)
+            ? iso
+            : null;
 
     /// <summary>
     /// Selects active rules from <paramref name="allRules"/> that apply to
@@ -90,13 +116,23 @@ public static class GosiCalculationService
     /// Calculates GOSI contributions for a single employee for one pay period.
     /// </summary>
     /// <param name="nationality">Raw nationality string from the Employee record.</param>
-    /// <param name="basicSalary">Contributory wage (basic salary only).</param>
+    /// <param name="contributoryWage">
+    /// S1/A2(b) — the GOSI CONTRIBUTORY WAGE, which for a Saudi national is <b>basic + housing</b>
+    /// (cash or in-kind), not basic alone.
+    ///
+    /// <para>This parameter used to be named <c>basicSalary</c> and every caller passed basic. The
+    /// country-pack engine (<c>KsaDeductionCalculator</c>, via <c>SalaryBreakdown.GosiCoveredWage</c>)
+    /// has always used basic + housing, so the two engines disagreed by the whole housing allowance:
+    /// the payslip deducted one number and the GOSI readiness report, the Saudi compliance dashboard
+    /// and the GOSI preview all showed a smaller one. The dashboard is the figure a customer's finance
+    /// team reconciles against the GOSI portal, so it was the wrong one that got trusted.</para>
+    /// </param>
     /// <param name="allRules">All active rules for the tenant — preloaded once per run.</param>
     /// <param name="periodDate">The last date of the pay period (used for effective-date selection).</param>
     /// <param name="tenantId">The tenant ID for override precedence resolution.</param>
     public static GosiContributionResult Calculate(
         string?                             nationality,
-        decimal                             basicSalary,
+        decimal                             contributoryWage,
         IReadOnlyList<GosiContributionRule> allRules,
         DateOnly                            periodDate,
         Guid                                tenantId)
@@ -111,7 +147,7 @@ public static class GosiCalculationService
             if (rule.Rate <= 0m) continue;
 
             // Apply contributory wage caps if set on the rule
-            var wage = basicSalary;
+            var wage = contributoryWage;
             if (rule.MinContributoryWage.HasValue && wage < rule.MinContributoryWage.Value)
                 wage = rule.MinContributoryWage.Value;
             if (rule.MaxContributoryWage.HasValue && wage > rule.MaxContributoryWage.Value)

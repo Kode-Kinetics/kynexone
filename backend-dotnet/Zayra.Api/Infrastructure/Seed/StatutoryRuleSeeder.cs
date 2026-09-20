@@ -115,6 +115,65 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "ot.restday_multiplier", "2.0", "decimal", eff07,
             "FLAG-COMPLIANCE: Rest-day (weekend) OT 2× per KSA Labour Law Art.107 — VERIFY before filing"));
+        // S1/A5 — the OT hourly BASE. Art.107: "an additional amount equal to the hourly WAGE plus 50%
+        // of his BASIC wage". The base is the wage (Art.2: basic + all due increments); only the 50%
+        // uplift is measured on basic. The payroll run computes
+        //     hour pay = baseHourly + basicHourly × (multiplier − 1)
+        // so "wage" + 1.5 reproduces Art.107 exactly, and "basic" collapses to the pre-S1 arithmetic.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ot.hourly_base", "wage", "string", eff07,
+            "[CERT] KSA Art.107 overtime is the hourly WAGE plus 50% of BASIC. Values: wage | basic. " +
+            "Set to 'basic' only on a written opinion — computing KSA overtime on basic alone under-pays " +
+            "every overtime hour by roughly 30% on a typical 60/40 package."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "ot.hourly_base", "basic", "string", eff22,
+            "[CONF] UAE overtime is basic + 25% (and +50% for 22:00–04:00 work, which is not yet modelled). " +
+            "Basic-only is correct here and is deliberately NOT the KSA rule."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "ot.standard_multiplier", "1.25", "decimal", eff22,
+            "[CONF] UAE ordinary overtime: basic + 25%. VERIFY the 22:00–04:00 night rate (+50%) before filing."));
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "ot.hourly_base", "basic", "string", eff22,
+            "[CONF] Qatar Art.74 overtime is basic + not less than 25% (+50% for night work, not yet modelled)."));
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "ot.standard_multiplier", "1.25", "decimal", eff22,
+            "[CONF] Qatar Art.74 ordinary overtime: basic + not less than 25%. This is a FLOOR."));
+
+        // ── S1/A1 + A8 — KSA EOSB wage base and service period ────────────────
+        // Art. 84 M/51 awards on the LAST WAGE; Art. 2 defines wage as "the basic wage plus all other
+        // due increments". The statutory FLOOR (basic + housing) is compiled into KsaEndOfServiceCalculator
+        // and is deliberately NOT a rule — it is not configurable, because a tenant cannot contract out
+        // of the Labour Law. What IS a rule is each genuinely arguable component, effective-dated from
+        // the Labour Law's own commencement, so the record shows when each reading applied.
+        // These are NOT new law. Art. 84 has always said "last wage"; there is no commencement date to
+        // date the fix from, which is precisely why the change is retroactive in effect for any settlement
+        // that has not yet accrued. Settlements that have already posted their accrual journal are
+        // immutable and are NOT recomputed — see the report.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "eosb.include_transport", "true", "bool", eff07,
+            "[COUNSEL] Transport allowance IN the Art.84 last-wage base. A fixed monthly transport allowance is " +
+            "due irrespective of expenditure and so reads as an Art.2 'increment'; a reimbursive travel float does " +
+            "not. Housing is NOT governed by this rule — it is the non-configurable statutory floor. Set false only " +
+            "on a written opinion that your transport allowance is reimbursive."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "eosb.include_other_allowances", "false", "bool", eff07,
+            "[COUNSEL] Composite 'other allowances' (food + mobile + other) OUT of the Art.84 last-wage base, " +
+            "because the composite mixes regular cash increments (which ARE wage under Art.2) with reimbursive " +
+            "items (which are not) and the data model cannot tell them apart. Model a regular allowance as its own " +
+            "EOSB-included pay component rather than flipping this."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "eosb.exclude_unpaid_leave", "false", "bool", eff07,
+            "[CONF] Unpaid leave stays IN the KSA service period for gratuity. Unlike UAE Decree-Law 33/2021 " +
+            "Art.51 there is no express KSA exclusion — it rests on the 'continuous service' reading. Excluding it " +
+            "is the employer-favourable direction and must be a conscious, counselled decision."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "eosb.exclude_unpaid_leave", "true", "bool", eff22,
+            "[CERT] UAE Decree-Law 33/2021 Art.51 excludes periods of unpaid leave from the service period for " +
+            "gratuity EXPRESSLY. Turning this off over-states both the award and the EOSB provision."));
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "eosb.exclude_unpaid_leave", "false", "bool", eff22,
+            "[CONF] Qatar has no express exclusion of unpaid leave from the Art.54 service period; it turns on " +
+            "'continuous service'. Defaults to including the days — confirm with counsel before flipping."));
 
         // ── UAE GPSSA ────────────────────────────────────────────────────────
         // Source: Federal Law 7/1999 + Cabinet Resolution 50/2022.
@@ -124,6 +183,19 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
             "gpssa.national_employer_rate", "0.125", "decimal", eff22,
             "VERIFY: GPSSA employer 12.5% — confirm current rate with GPSSA"));
+        // S1/A10 — GPSSA contribution-salary bounds. [COUNSEL] on the exact figures; the mechanism is
+        // certain and the absence of ANY bound was producing an unlawful over-deduction from the
+        // employee's net pay (Art. 25, Decree-Law 33/2021). Effective-dated from Law 7/1999 so a
+        // current circular can supersede them without touching code. Set a rule to 0 to disable it.
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "gpssa.contribution_salary_min", "1000", "decimal", new DateTime(1999, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            "[COUNSEL] GPSSA contribution-salary FLOOR, AED 1,000 (Law 7/1999, private sector). Confirm the " +
+            "current figure and the Decree-Law 57/2023 equivalent before filing."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "gpssa.contribution_salary_max", "50000", "decimal", new DateTime(1999, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            "[COUNSEL] GPSSA contribution-salary CEILING, AED 50,000 (Law 7/1999, private sector). Without a " +
+            "ceiling the product over-deducts from senior Emirati employees, which is an unlawful deduction. " +
+            "Confirm the current figure and the Decree-Law 57/2023 equivalent before filing."));
         list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
             "emiratisation.target_ratio", "0.10", "decimal", eff22,
             "VERIFY: Emiratisation 10% target varies by sector — confirm with Nafis/MOHRE"));
@@ -145,6 +217,14 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
             "grsia.national_employer_rate", "0.14", "decimal", eff22,
             "VERIFY: GRSIA employer 14% — Qatar Law 24/2002 and amendments"));
+        // S1/A11 — Law 1/2022 contribution salary = basic + social + housing, from January 2023.
+        // Effective-dated so a pre-2023 period still reproduces the Law 24/2002 basic-only base it was
+        // actually filed on. A SOCIAL allowance has no field in this data model — see the pack.
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "grsia.include_housing_in_contribution_salary", "true", "bool", new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            "[CONF] Social Insurance Law No.1 of 2022 (in force Jan 2023, superseding Law 24/2002): the " +
+            "contribution salary for Qatari nationals is basic + social allowance + housing allowance, not " +
+            "basic alone. [COUNSEL] confirm the treatment of housing provided IN KIND."));
         list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
             "qatarization.target_ratio", "0.20", "decimal", eff22,
             "VERIFY: Qatarization 20% directional — confirm sector targets with Ministry of Labor"));
