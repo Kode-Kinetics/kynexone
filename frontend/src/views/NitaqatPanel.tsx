@@ -78,7 +78,7 @@ function BandRail({ standing }: { standing: NitaqatStanding }) {
       <div className="relative h-2.5 w-full rounded-full bg-slate-100 dark:bg-white/[0.07]">
         <div className={`h-2.5 rounded-full ${s.bar}`} style={{ width: `${pos}%` }} />
         <div
-          className="absolute -top-1 h-4.5 w-0.5 bg-slate-700 dark:bg-slate-200"
+          className="absolute -top-1 w-0.5 bg-slate-700 dark:bg-slate-200"
           style={{ left: `${pos}%`, height: '1.125rem' }}
           aria-hidden
         />
