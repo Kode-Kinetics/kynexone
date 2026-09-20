@@ -90,7 +90,10 @@ public static class FinalSettlementExternalDischarge
 
         // The accrual, at its STORED credit account — the clearing DEBIT must hit the exact account the
         // approval credited, so a chart-of-accounts remap can never leave 2320 off zero.
-        var accruals = await db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
+        // No .IgnoreQueryFilters() here (unlike FinalSettlementGlLedger's reads): FinanceGlEntry is
+        // tenant-owned but deliberately NOT ICompanyScoped, so the only ambient filter is the tenant one
+        // — which is exactly the scope this read wants, and the WHERE re-applies it explicitly anyway.
+        var accruals = await db.FinanceGlEntries.AsNoTracking()
             .Where(x => x.TenantId == s.TenantId
                      && x.SourceModule == FinalSettlementGlDescriptions.SourceModule
                      && x.SourceEntityId == s.Id
@@ -107,7 +110,7 @@ public static class FinalSettlementExternalDischarge
         var accrued = Math.Round(accruals.Sum(a => a.Amount), 2);
 
         var settlementRef = FinalSettlementGlDescriptions.SettlementRef(s.Id);
-        var alreadyCleared = await db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
+        var alreadyCleared = await db.FinanceGlEntries.AsNoTracking()
             .Where(x => x.TenantId == s.TenantId && !x.IsReversed && x.DebitAccount != ""
                      && ((x.EventType == GlEventTypes.SettlementPayrollClearing && x.SourceEntityRef == settlementRef)
                       || ((x.EventType == GlEventTypes.SettlementAccrualReversal
