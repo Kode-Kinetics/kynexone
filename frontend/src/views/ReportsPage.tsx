@@ -318,6 +318,11 @@ function ReportLibrary() {
             <FormField label="Days Ahead">
               <input type="number" value={filters.daysAhead ?? ''} onChange={(e) => setFilters(x => ({ ...x, daysAhead: e.target.value ? Number(e.target.value) : undefined }))} className="input w-full" placeholder="30" />
             </FormField>
+            {selectedReport.key === 'finance.expense-claims' && (
+              <FormField label="Expense Category">
+                <input type="text" value={filters.category ?? ''} onChange={(e) => setFilters(x => ({ ...x, category: e.target.value || undefined }))} className="input w-full" placeholder="e.g. TRAVEL" />
+              </FormField>
+            )}
           </div>
 
           {runError && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">{runError}</p>}

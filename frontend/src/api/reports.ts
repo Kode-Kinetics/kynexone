@@ -17,6 +17,8 @@ export interface ReportFilters {
   status?: string;
   period?: string;
   daysAhead?: number;
+  /** W2-B — expense category code (finance.expense-claims). */
+  category?: string;
 }
 
 export interface ReportResult {

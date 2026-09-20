@@ -474,6 +474,13 @@ export function EmployeeSelfServicePage() {
               >
                 <ClipboardList className="h-4 w-4" /> My Requests
               </button>
+              <button
+                type="button"
+                onClick={() => router.push('/ess/expenses')}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
+              >
+                <Banknote className="h-4 w-4" /> My Expenses
+              </button>
             </div>
 
             {/* Today attendance pill */}
