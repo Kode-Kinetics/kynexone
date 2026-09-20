@@ -366,6 +366,19 @@ public static class GlEventTypes
     public const string SettlementPayrollClearing = "FinalSettlementPayrollClearing";
     /// <summary>POD-C1 (F2) — residual employee debt reclassified on payment: DR 1420 / CR 1400|1410.</summary>
     public const string SettlementResidualReclass = "FinalSettlementResidualReclass";
+    /// <summary>
+    /// S2-B2 — settled OUTSIDE payroll (bank transfer / cheque / cash, the normal route for one leaver
+    /// mid-month): DR the settlement's STORED payable account / CR 5113 deductions + CR Cash-Bank. The
+    /// direct analogue of <see cref="BonusPayment"/>, and it retires the payable exactly like
+    /// <see cref="SettlementPayrollClearing"/> does, so 2320 still closes to zero on either route.
+    /// Written only by <c>FinalSettlementExternalDischarge</c>.
+    /// </summary>
+    public const string SettlementExternalPayment = "FinalSettlementExternalPayment";
+
+    /// <summary>S2-B2 — every event that DEBITS (retires) a settlement payable. One list, so "how much of
+    /// this accrual is still outstanding?" has the same answer everywhere it is asked.</summary>
+    public static readonly string[] SettlementClearingEvents =
+        { SettlementPayrollClearing, SettlementExternalPayment, SettlementAccrualReversal };
 
     // ── POD-C2 SEAM — the monthly EOSB liability accrual ─────────────────────────────────────────
     // C1 builds and READS this sub-ledger; it never WRITES an accrual. POD-C2 posts
