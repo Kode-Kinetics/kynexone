@@ -66,6 +66,41 @@ export interface NitaqatStanding {
   qiwaReportedBand: string | null;
   qiwaReportedOn: string | null;
   disagreesWithQiwa: boolean;
+  /**
+   * Which regime produced the floors: 'nitaqat_mutawar_curve' (the one in force since
+   * 1 December 2021) or 'size_tier_grid' (pre-2021, or a manually loaded override).
+   * Reported because the two are not equivalent and the reader deserves to know which
+   * question was answered.
+   */
+  bandingMethod: string;
+  bandingMethodNote: string;
+}
+
+export const NITAQAT_CURVE_METHOD = 'nitaqat_mutawar_curve';
+
+/** Coverage of one economic activity's band floors, for the setup screen. */
+export interface NitaqatActivityCoverage {
+  activityCode: string;
+  activityNameEn: string;
+  activityGroup: string;
+  sizeTiersCovered: number;
+  sizeTiersTotal: number;
+  isComplete: boolean;
+  anyVerified: boolean;
+  allVerified: boolean;
+  effectiveFrom: string | null;
+  sourceNote: string;
+}
+
+export interface NitaqatGridCoverage {
+  activitiesTotal: number;
+  activitiesWithAnyGrid: number;
+  activitiesWithCompleteGrid: number;
+  activitiesFullyVerified: number;
+  /** Non-null whenever the grid is missing or unverified. Rendered verbatim. */
+  configurationRequiredNotice: string | null;
+  activities: NitaqatActivityCoverage[];
+  sizeTierCodes: string[];
 }
 
 export interface NitaqatStandingResponse {
@@ -186,6 +221,10 @@ export const nitaqatApi = {
 
   activities: () =>
     client.get<NitaqatActivity[]>('/api/saudi-compliance/nitaqat/activities').then((r) => r.data),
+
+  /** What this tenant can actually band today, and the notice to show when it cannot. */
+  gridCoverage: () =>
+    client.get<NitaqatGridCoverage>('/api/saudi-compliance/nitaqat/grid').then((r) => r.data),
 
   saveProfile: (body: {
     companyId: string;

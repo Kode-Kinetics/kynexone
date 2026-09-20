@@ -207,6 +207,8 @@ public sealed class NitaqatCalculationService
         public List<NitaqatBandThreshold> Thresholds = new();
         public List<NitaqatWeightRule> WeightRules = new();
         public List<NitaqatWeightLine> Breakdown = new();
+        /// <summary>Which regime produced the floors. Reported, because the two are not equivalent.</summary>
+        public string BandingMethod = NitaqatBandingMethods.SizeTierGrid;
         public decimal SaudiWeighted;
         public decimal TotalWeighted;
         public int RawSaudi;
@@ -316,28 +318,68 @@ public sealed class NitaqatCalculationService
 
         ctx.Tier = tier;
 
-        // ── The band thresholds for THIS cell of the matrix ───────────────────
-        var thresholds = Effective(await ReferenceAsync(_db.NitaqatBandThresholds, tenantId, ct), asOf)
-            .Where(t => string.Equals(t.ActivityCode, activity.Code, StringComparison.OrdinalIgnoreCase)
-                     && string.Equals(t.SizeTierCode, tier.Code, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        // ── The band floors ───────────────────────────────────────────────────
+        //
+        // TWO REGIMES, IN ORDER OF AUTHORITY.
+        //
+        // (1) NITAQAT MUTAWAR, in force since 1 December 2021. MHRSD computes the
+        //     floor from a per-activity logarithmic curve, y = m·ln(x) + c, and
+        //     Ministerial Decision 182495 explicitly abolished the fixed size bands
+        //     ("Cancel the use of Saudization Rates according to fixed size bands").
+        //     This is what a real establishment is banded by today, so it is tried
+        //     first. See NitaqatCurve for the citation.
+        //
+        // (2) The stored (activity × size tier) GRID. Correct for periods before
+        //     2021-12-01, and the manual override for a customer who has a figure
+        //     from their own Qiwa screen but no curve loaded. Kept, not deleted:
+        //     a closed period must stay explicable.
+        //
+        // The size tier is still resolved and reported either way, because it is
+        // useful context and is the join key for (2) — but under (1) it no longer
+        // determines the answer.
+        var curve = await NitaqatCurve.ResolveAsync(
+            _rules, activity.Code, ctx.TotalWeighted, asOf, tenantId, ct);
 
-        // Tenant rows override platform rows for the same band.
-        thresholds = thresholds
-            .GroupBy(t => t.Band, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.OrderByDescending(t => t.TenantId != null)
-                          .ThenByDescending(t => t.EffectiveFrom)
-                          .First())
-            .OrderByDescending(t => t.BandRank)
-            .ToList();
+        List<NitaqatBandThreshold> thresholds;
+
+        if (curve is not null)
+        {
+            ctx.BandingMethod = NitaqatBandingMethods.Curve;
+            thresholds = NitaqatCurve.ToThresholds(curve, activity.Code, tier.Code, asOf);
+        }
+        else
+        {
+            ctx.BandingMethod = NitaqatBandingMethods.SizeTierGrid;
+
+            thresholds = Effective(await ReferenceAsync(_db.NitaqatBandThresholds, tenantId, ct), asOf)
+                .Where(t => string.Equals(t.ActivityCode, activity.Code, StringComparison.OrdinalIgnoreCase)
+                         && string.Equals(t.SizeTierCode, tier.Code, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            // Tenant rows override platform rows for the same band.
+            thresholds = thresholds
+                .GroupBy(t => t.Band, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(t => t.TenantId != null)
+                              .ThenByDescending(t => t.EffectiveFrom)
+                              .First())
+                .OrderByDescending(t => t.BandRank)
+                .ToList();
+        }
 
         if (thresholds.Count == 0)
             return Refuse(NitaqatRefusalReasons.ThresholdsMissing,
-                $"No Nitaqat band thresholds are published for activity '{activity.NameEn}' " +
-                $"({activity.Code}) at size tier '{tier.NameEn}' effective {asOf:yyyy-MM-dd}. " +
-                "The required percentage differs by both, so no band is computed.",
-                "Load the MHRSD Nitaqat table row for this activity and size tier, " +
-                "or record the band Qiwa reports.");
+                $"No Nitaqat band floors are configured for activity '{activity.NameEn}' " +
+                $"({activity.Code}) effective {asOf:yyyy-MM-dd}, so no band is computed. " +
+                "Since 1 December 2021 MHRSD derives the floor from a per-activity curve " +
+                "(y = m·ln(x) + c) rather than from a size-tier table; the curve constants for " +
+                "each economic activity are published in the Ministry's Nitaqat Mutawar " +
+                "procedural guideline and are not shipped with this product, because a stale or " +
+                "invented constant produces a confident wrong answer about work-visa eligibility.",
+                "Load this activity's curve constants (m and c for each band) from the current " +
+                $"MHRSD annex at {NitaqatCurve.CurrentAnnexUrl} — or, as a manual override, load " +
+                "the band percentages your own Qiwa establishment screen reports under " +
+                "Saudi Compliance → Saudization → Nitaqat grid. You can also record the band " +
+                "Qiwa reports, which is authoritative.");
 
         ctx.Thresholds = thresholds;
         return ctx;
@@ -616,7 +658,20 @@ public sealed class NitaqatCalculationService
 
         var unverified = new List<string>();
         if (!ctx.Activity.IsVerified) unverified.Add($"Economic activity '{ctx.Activity.Code}'");
-        if (!ctx.Tier.IsVerified) unverified.Add($"Size tier '{ctx.Tier.Code}' boundaries");
+
+        // Under the CURVE the size tier is reported as context and does not touch the answer, so
+        // it is not an input to flag. Under the GRID it selects the row, so both the regime and
+        // the tier boundaries bear on the band — and being banded off the pre-2021 grid at all is
+        // the most consequential caveat on the screen, because it is the previous regime's answer.
+        if (!string.Equals(ctx.BandingMethod, NitaqatBandingMethods.Curve, StringComparison.Ordinal))
+        {
+            unverified.Add(
+                "Band floors came from a size-tier table, not the MHRSD curve in force since "
+                + "1 December 2021");
+
+            if (!ctx.Tier.IsVerified)
+                unverified.Add($"Size tier '{ctx.Tier.Code}' boundaries");
+        }
         foreach (var t in ctx.Thresholds.Where(t => !t.IsVerified))
             unverified.Add($"{t.Band} threshold ({t.MinSaudizationPercent:0.##}%)");
         foreach (var l in ctx.Breakdown.Where(l => !l.IsVerified).DistinctBy(l => l.Category))
@@ -655,7 +710,9 @@ public sealed class NitaqatCalculationService
             QiwaReportedBand: qiwaBand,
             QiwaReportedOn: ctx.Profile.QiwaReportedOn,
             DisagreesWithQiwa: qiwaBand is not null
-                && !string.Equals(qiwaBand, band, StringComparison.OrdinalIgnoreCase));
+                && !string.Equals(qiwaBand, band, StringComparison.OrdinalIgnoreCase),
+            BandingMethod: ctx.BandingMethod,
+            BandingMethodNote: NitaqatBandingMethods.Explain(ctx.BandingMethod));
     }
 
     /// <summary>
@@ -736,12 +793,30 @@ public sealed class NitaqatCalculationService
         if (profile is null) return null;
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-        var latestTier = await _db.NitaqatStandingSnapshots
+        var latest = await _db.NitaqatStandingSnapshots
             .Where(s => s.TenantId == tenantId && s.CompanyId == companyId)
             .OrderByDescending(s => s.AsOfDate)
-            .Select(s => s.SizeTierCode)
+            .Select(s => new { s.SizeTierCode, s.TotalWeighted })
             .FirstOrDefaultAsync(ct);
-        if (string.IsNullOrEmpty(latestTier)) return null;
+        if (latest is null || string.IsNullOrEmpty(latest.SizeTierCode)) return null;
+
+        // Same order of authority as the standing read. Without this the "you are heading for a
+        // downgrade" warning would go quiet for every establishment banded off a curve — a silent
+        // loss of the one thing the trend chart is for.
+        var curve = await NitaqatCurve.ResolveAsync(
+            _rules, profile.ActivityCode, latest.TotalWeighted, today, tenantId, ct);
+
+        if (curve is not null)
+            return band switch
+            {
+                NitaqatBands.LowGreen    => curve.LowGreen,
+                NitaqatBands.MediumGreen => curve.MediumGreen,
+                NitaqatBands.HighGreen   => curve.HighGreen,
+                NitaqatBands.Platinum    => curve.Platinum,
+                _ => null,   // Red has no floor; nothing can push you out of it.
+            };
+
+        var latestTier = latest.SizeTierCode;
 
         return Effective(await ReferenceAsync(_db.NitaqatBandThresholds, tenantId, ct), today)
             .Where(t => t.ActivityCode == profile.ActivityCode

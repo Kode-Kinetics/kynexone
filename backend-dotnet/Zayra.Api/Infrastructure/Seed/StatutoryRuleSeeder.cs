@@ -48,7 +48,10 @@ public static class StatutoryRuleSeeder
         }
     }
 
-    private static List<StatutoryRule> BuildRules()
+    /// <summary>Exposed to tests (InternalsVisibleTo) so the seeded statutory constants can be
+    /// asserted directly — notably that every Nitaqat curve constant carries a source and expires
+    /// when MHRSD reissued the annex.</summary>
+    internal static List<StatutoryRule> BuildRules()
     {
         var list = new List<StatutoryRule>();
         var eff16 = new DateTime(2016, 6, 1, 0, 0, 0, DateTimeKind.Utc);   // GOSI regulation effective date
@@ -97,14 +100,80 @@ public static class StatutoryRuleSeeder
         // key (StatutoryRateGuard), so a tenant may override but not invent.
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "nitaqat.counting_wage_floor_sar", "4000", "decimal", eff21,
-            "VERIFY: monthly wage at or above which a Saudi employee counts as a full Nitaqat unit. "
-            + "SAR 4,000 is the widely applied figure since the 2021 balanced-Nitaqat revision — "
-            + "confirm against the current MHRSD decision."));
+            "VERIFIED 2026-09-20 against MHRSD Ministerial Decision 61706 (ref. 61706, dated "
+            + "03/04/1442 AH), clause Fourth: \"To enroll a Saudi worker in the Localization "
+            + "percentage calculated in 'Nitaqat' program as one worker, the monthly wage shall be "
+            + "at least (4,000 riyals).\" Clause Third: monthly wage means the salary subject to "
+            + "GOSI subscription. hrsd.gov.sa/sites/default/files/2023-02/E61706.pdf"));
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "nitaqat.counting_wage_half_floor_sar", "3000", "decimal", eff21,
-            "VERIFY: monthly wage at or above which a Saudi employee counts as HALF a Nitaqat unit; "
-            + "below it they do not count toward the Saudi total at all. SAR 3,000 is the widely "
-            + "applied figure — confirm against the current MHRSD decision."));
+            "VERIFIED 2026-09-20 against MHRSD Ministerial Decision 61706, clauses Fifth "
+            + "(wage of 3,000 = half worker), Seventh (more than 3,000 and less than 4,000 = half "
+            + "worker — a FLAT half, not a sliding scale) and Sixth (less than 3,000 = not counted). "
+            + "hrsd.gov.sa/sites/default/files/2023-02/E61706.pdf"));
+
+        // ── KSA Nitaqat Mutawar band curve (نطاقات المطور) ────────────────────
+        //
+        // Since 1 December 2021 MHRSD does NOT publish a band percentage per
+        // (activity × size tier). It publishes, per economic activity, a curve
+        //     y = m · ln(x) + c
+        // where x is the establishment's total workforce, and abolished the fixed
+        // size bands outright. See Infrastructure/Compliance/NitaqatCurve.cs for the
+        // verbatim quotations and the full citation.
+        //
+        // WHAT IS SEEDED HERE, AND WHY SO LITTLE. Exactly one activity's constants:
+        // Manufacturing, from the Ministry's OWN WORKED EXAMPLE in the official
+        // English procedural guideline. Those eight numbers were read out of the
+        // published PDF on 2026-09-20 and reproduced arithmetically against the
+        // Ministry's own stated answers (400 workers, C-2023 → 22.15 / 30.07 /
+        // 34.93 / 40.83, and an entity at 35.00% lands in High Green). That
+        // reproduction is pinned as a test. Nothing else is seeded, because nothing
+        // else was verified to that standard.
+        //
+        // END-DATED 2026-01-01 ON PURPOSE. MHRSD reissued the constants annex in
+        // January 2026 with 41 activities and re-baselined values. Those have NOT
+        // been verified here, so rather than let a 2024 constant quietly answer a
+        // 2026 question, the rows expire and the product refuses with a pointer to
+        // the exact document. A stale constant produces a confident wrong answer
+        // about work-visa eligibility; a refusal does not.
+        var effCurve23 = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var effCurve24 = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var curveExpiry = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        const string curveSource =
+            "MHRSD Nitaqat Program Procedural Guideline (official English edition of Ministerial "
+            + "Decision 182495, in force 1 December 2021), worked example for Manufacturing. Read "
+            + "from hrsd.gov.sa/sites/default/files/2023-06/E20210523.pdf on 2026-09-20 and "
+            + "reproduced against the Ministry's own published results. SUPERSEDED from 2026-01-01 "
+            + "by the January 2026 annex (hrsd.gov.sa/sites/default/files/2026-03/ntaqat-almtwr.pdf), "
+            + "which has NOT been verified here — load it before relying on a 2026+ band.";
+
+        // m (gradient) — published per activity, not per year, so one row each.
+        foreach (var (band, m) in new[]
+                 {
+                     ("LOWGREEN", "1.68"), ("MEDIUMGREEN", "1.87"),
+                     ("HIGHGREEN", "2.08"), ("PLATINUM", "2.08"),
+                 })
+            list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                $"nitaqat.curve.MANUFACTURING.{band}.m", m, "decimal", effCurve23, curveExpiry,
+                $"Curve gradient m for Manufacturing / {band}. {curveSource}"));
+
+        // c (intercept) — published per activity AND YEAR. The guideline states the
+        // third-year value applies "in the third year and beyond", which is why the
+        // 2024 row would otherwise have run forever; the 2026 reissue is why it does not.
+        foreach (var (band, c23, c24) in new[]
+                 {
+                     ("LOWGREEN", "12.08", "17.08"), ("MEDIUMGREEN", "18.87", "23.87"),
+                     ("HIGHGREEN", "22.47", "25.47"), ("PLATINUM", "28.37", "32.87"),
+                 })
+        {
+            list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                $"nitaqat.curve.MANUFACTURING.{band}.c", c23, "decimal", effCurve23, effCurve24,
+                $"Curve intercept c for Manufacturing / {band}, C-2023 (Jan 2023 to Dec 2023). {curveSource}"));
+            list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                $"nitaqat.curve.MANUFACTURING.{band}.c", c24, "decimal", effCurve24, curveExpiry,
+                $"Curve intercept c for Manufacturing / {band}, C-2024 (Jan 2024 onwards). {curveSource}"));
+        }
 
         // ── KSA OT / LOP ──────────────────────────────────────────────────────
         // ⚠️  FLAG FOR SAUDI COMPLIANCE SIGN-OFF — do NOT file payroll against these
@@ -339,6 +408,19 @@ public static class StatutoryRuleSeeder
             "VERIFY: Qatarization 20% directional — confirm sector targets with Ministry of Labor"));
 
         return list;
+    }
+
+    /// <summary>
+    /// A rule with an explicit expiry. Used where a value is known to be superseded on a date and
+    /// letting it run forever would answer a later period with an earlier regime's number.
+    /// </summary>
+    private static StatutoryRule RuleUntil(
+        string country, string jurisdiction, string key, string value,
+        string dataType, DateTime effectiveFrom, DateTime effectiveTo, string description)
+    {
+        var r = Rule(country, jurisdiction, key, value, dataType, effectiveFrom, description);
+        r.EffectiveTo = effectiveTo;
+        return r;
     }
 
     private static StatutoryRule Rule(

@@ -11,11 +11,26 @@ public static class QiwaSyncStatuses
     /// <summary>Sync has been enqueued but not yet processed.</summary>
     public const string Pending   = "pending";
 
-    /// <summary>Last sync completed successfully.</summary>
+    /// <summary>
+    /// Last sync was really filed with Qiwa over the network by the live adapter.
+    /// Only <c>LiveQiwaApiAdapter</c> can ever produce this value.
+    /// </summary>
     public const string Synced    = "synced";
+
+    /// <summary>
+    /// The sync pipeline ran to completion against a SIMULATOR — no request reached Qiwa and
+    /// nothing was filed with MHRSD. Distinct from <see cref="Synced"/> because the two mean
+    /// opposite things to a customer facing an MHRSD inspection, and the product used to report
+    /// both as "synced".
+    /// </summary>
+    public const string Simulated = "simulated";
 
     /// <summary>Last sync attempt failed; see QiwaSyncLog.ErrorMessage.</summary>
     public const string Error     = "error";
+
+    /// <summary>True for a status that means the record really reached Qiwa.</summary>
+    public static bool IsRealFiling(string? status) =>
+        string.Equals(status, Synced, StringComparison.OrdinalIgnoreCase);
 }
 
 // ── Qiwa tenant connection ────────────────────────────────────────────────────
@@ -65,7 +80,17 @@ public class QiwaTenantConnection : ITenantOwned
 public static class QiwaConnectionStatuses
 {
     public const string Disconnected        = "Disconnected";
+
+    /// <summary>A real Qiwa endpoint answered. Only the live adapter can set this.</summary>
     public const string Connected           = "Connected";
+
+    /// <summary>
+    /// The pipeline is working end-to-end against the SANDBOX SIMULATOR. Nothing has been filed
+    /// with Qiwa. Shown as its own state rather than folded into <see cref="Connected"/>, which is
+    /// what the dashboard used to claim while the process had never opened a socket to Qiwa.
+    /// </summary>
+    public const string Simulated           = "Simulated";
+
     public const string ConfigurationError  = "ConfigurationError";
     public const string ApiError            = "ApiError";
 }

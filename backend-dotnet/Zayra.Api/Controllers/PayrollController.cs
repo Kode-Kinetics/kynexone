@@ -5050,6 +5050,11 @@ public class PayrollController : ControllerBase
             // §6.6: already-Active employees who drifted pay-blocked after a policy change. Surfaced
             // (never silently dropped); GenerateWps requires explicit acknowledgement to proceed.
             readinessDrift = driftWarn.ToArray(),
+            // What "valid" means here, precisely. This validator checks the DATA in the file and
+            // cannot check that the FORMAT is one a Saudi WPS gateway will parse — and no file from
+            // this generator has ever been put in front of one. An operator reading "0 errors" must
+            // not conclude the submission is safe, so the scope of the guarantee travels with it.
+            conformance = Infrastructure.Payroll.WpsConformance.For(null),
         });
     }
 
@@ -5332,6 +5337,10 @@ public class PayrollController : ControllerBase
             wps.TotalSalaryAmount,
             wps.GeneratedByUserId,
             wps.CreatedAtUtc,
+            // "File generated" is not "wage filed". The generated artefact's layout has never been
+            // accepted by a live Mudad/bank gateway, and the screen that celebrates a successful
+            // generation is exactly where that has to be said.
+            conformance = Infrastructure.Payroll.WpsConformance.For(genResult.FormatVersion),
         });
     }
 
@@ -6360,6 +6369,12 @@ public class PayrollController : ControllerBase
 
         var mimeType = dlResult.Format == "mudad-xml" ? "application/xml" : "text/plain";
         Response.Headers["Content-Disposition"] = $"attachment; filename={dlResult.FileName}";
+        // The artefact itself states what it is. The bytes are content-addressed by SHA-256 and
+        // their determinism is pinned by tests, so the statement rides on a header rather than in
+        // the payload — a WPS gateway would reject an unexpected comment line anyway. Without this,
+        // the downloaded file is completely silent about never having been accepted by a gateway.
+        Response.Headers[Infrastructure.Payroll.WpsConformance.DownloadHeader] =
+            Infrastructure.Payroll.WpsConformance.HeaderValue(dlResult.Format);
         return File(dlResult.FileBytes, mimeType, dlResult.FileName);
     }
 

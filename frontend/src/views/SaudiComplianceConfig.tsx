@@ -44,6 +44,17 @@ interface QiwaConnection {
   configured: boolean;
   hasError: boolean;
   lastErrorMessage?: string;
+  /**
+   * What the RUNNING PROCESS will actually do — not what the stored `environment`
+   * column says. The two used to disagree silently: a tenant row could read
+   * "production" while the server had only ever run the sandbox simulator.
+   */
+  runtimeAdapter?: string;
+  isLiveIntegration?: boolean;
+  filesWithQiwa?: boolean;
+  simulationNotice?: string | null;
+  /** Set when a stored "production" setting cannot be honoured by this deployment. */
+  configurationIgnored?: string | null;
 }
 
 const qiwaApi = {
@@ -190,6 +201,37 @@ function QiwaPanel() {
       badge={conn ? <StatusBadge status={conn.status} /> : <StatusBadge status="NotConfigured" />}
     >
       <div className="space-y-6">
+        {/* ── What this deployment will actually do ──────────────────────────
+            A mock that announces itself is defensible; one that passes for the
+            real thing is not. Before this, a sandbox sync marked employees
+            "Synced" and the connection "Connected" with nothing filed. */}
+        {conn?.isLiveIntegration === false && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-3 dark:border-amber-500/30 dark:bg-amber-500/[0.08]">
+            <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+              🧪 Simulation — nothing is filed with Qiwa
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-amber-900/90 dark:text-amber-100/90">
+              {conn.simulationNotice
+                ?? 'This deployment is running the Qiwa sandbox simulator. No request leaves this '
+                 + 'server and no employee record is filed with Qiwa or MHRSD.'}
+            </p>
+            <p className="mt-1.5 text-xs text-amber-900/80 dark:text-amber-100/80">
+              Employees synced here are marked <strong>Simulated</strong>, never <strong>Synced</strong>.
+            </p>
+          </div>
+        )}
+
+        {conn?.configurationIgnored && (
+          <div className="rounded-lg border border-red-300 bg-red-50 px-3.5 py-3 dark:border-red-700 dark:bg-red-900/20">
+            <p className="text-sm font-semibold text-red-800 dark:text-red-300">
+              This connection is saved as &ldquo;production&rdquo; but cannot be honoured
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-red-800/90 dark:text-red-300/90">
+              {conn.configurationIgnored}
+            </p>
+          </div>
+        )}
+
         {/* Readiness summary */}
         {readiness && (
           <div className="grid grid-cols-3 gap-3">

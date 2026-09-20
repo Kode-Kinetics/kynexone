@@ -48,10 +48,28 @@ public static class NitaqatReferenceSeeder
         "Nitaqat platform-default reference rows are stored under TenantId = null, which the " +
         "tenant query filter excludes; this read is pinned to exactly that null scope.";
 
+    // ── EVERY NOTE CONSTANT AND EVERY SourceNote BELOW MUST STAY UNDER 500 CHARACTERS ─────────
+    // SourceNote is varchar(500) on all four Nitaqat reference entities (ZayraDbContext.cs ~3019-
+    // 3058) and EF does NOT client-side validate MaxLength. An over-length note does not fail its
+    // own row: PostgreSQL throws 22001 inside the single SaveChangesAsync in SeedAsync and rolls
+    // back EVERY Nitaqat reference row — size tiers, weight rules, activities and the illustrative
+    // grid, all 66 of them. Program.cs wraps seeders in TrySeedAsync, so the API then boots healthy
+    // with an empty catalogue: the Saudization panel offers an EMPTY economic-activity dropdown
+    // while its own refusal tells the user to go and set the activity. A 9-character overrun
+    // disabled the feature once already and nothing went red. NitaqatSeedFitsColumnTests measures
+    // every constant and every weight note against the EF model; keep them under the limit rather
+    // than widening the column.
+    //
+    // The full text these notes were condensed from (the MHRSD quotations, the URL, the pre-2021
+    // seven-band list) lives in NitaqatCurve.cs, which is source, not a varchar.
+
     private const string TierSource =
-        "Shape of the post-2021 balanced-Nitaqat size tiers (Very Small / Small A-C / Medium A-C / " +
-        "Large / Giant). The tier NAMES are as published; the exact headcount boundaries need the " +
-        "current MHRSD table. VERIFY against MHRSD / Qiwa before relying on a tier assignment.";
+        "REPORTING CONTEXT ONLY — these tiers no longer determine a Nitaqat band. MHRSD Ministerial " +
+        "Decision 182495, in force 1 December 2021, abolished the fixed establishment size bands " +
+        "and replaced them with a per-activity curve y = m·ln(x) + c; NitaqatCurve.cs carries the " +
+        "Ministry's wording and the source. The pre-2021 regime published SEVEN bands; the nine " +
+        "here split 6-49 into three and match no MHRSD publication found. Retained ONLY as the " +
+        "join key for a manually loaded override grid. UNVERIFIED.";
 
     private const string GridSource =
         "ILLUSTRATIVE ONLY — not an MHRSD figure. This grid exists so the Nitaqat mechanism can be " +
@@ -119,9 +137,21 @@ public static class NitaqatReferenceSeeder
 
     // ── Weighted headcount rules ──────────────────────────────────────────────
 
+    /// <summary>
+    /// MHRSD Ministerial Decision 61706 (ref. 61706, 03/04/1442 AH) sets the counting weights.
+    /// Clause Twenty-three: "This decision shall be come into force only 5 months after the date
+    /// of issuance" — 03/04/1442 AH is ≈ 18 November 2020, so the in-force date is ≈ 18 April 2021.
+    /// Used as the effective date for any weight this change CORRECTED, so the correction is
+    /// effective-dated from when the decision actually bound rather than restating earlier periods.
+    /// </summary>
+    private static readonly DateTime Eff61706 = new(2021, 4, 18, 0, 0, 0, DateTimeKind.Utc);
+
     private sealed record WeightDef(
         string Code, string Classification, string Basis, string Category,
-        decimal Num, decimal Den, int Precedence, bool Verified, string Source);
+        decimal Num, decimal Den, int Precedence, bool Verified, string Source,
+        // Null = the original 2021-01-01 window. Set only where this change moved a VALUE, so the
+        // earlier row is superseded at this date instead of being rewritten.
+        DateTime? EffectiveFrom = null);
 
     private static readonly WeightDef[] Weights =
     {
@@ -136,70 +166,108 @@ public static class NitaqatReferenceSeeder
             NitaqatWeightCategories.Standard, 0m, 1m, 10, true,
             "A non-Saudi employee counts toward the total workforce only. Settled."),
 
-        // Mechanism confident, fraction needs the circular.
+        // VERIFIED against the decision text.
         new("SAUDI_PARTTIME", GosiClassifications.Saudi, NitaqatCountBasis.PartTime,
-            NitaqatWeightCategories.Standard, 0.5m, 0.5m, 20, false,
-            "MHRSD counts a part-time Saudi as a fraction of a unit; 0.5 is the widely applied " +
-            "figure and is conditioned on minimum weekly hours. VERIFY the fraction and the hours " +
-            "condition against the current MHRSD part-time regulation."),
+            NitaqatWeightCategories.Standard, 0.5m, 0.5m, 20, true,
+            "VERIFIED 2026-09-20 — MHRSD Ministerial Decision 61706, clause Eighth: a part-time " +
+            "worker counts as half a worker, provided GOSI subscriptions are paid on a minimum " +
+            "monthly wage of SAR 3,000 and the worker is not counted in more than two entities. " +
+            "NOT MODELLED HERE: the two-entity limit and the SAR 3,000 subscription condition " +
+            "cannot be checked from this system's data."),
 
-        // Mechanism certain, multiplier needs the circular.
+        // VERIFIED against the decision text; the 10% cap is a known, stated gap.
         new("SAUDI_DISABILITY", GosiClassifications.Saudi, NitaqatCountBasis.Any,
-            NitaqatWeightCategories.Disability, 4m, 1m, 40, false,
-            "A Saudi employee with a disability has historically counted as four units in the Saudi " +
-            "count while occupying one place in the total workforce. VERIFY the current multiplier " +
-            "and its eligibility conditions with MHRSD before relying on it — it materially moves " +
-            "the band."),
+            NitaqatWeightCategories.Disability, 4m, 1m, 40, true,
+            "VERIFIED 2026-09-20 — MHRSD Ministerial Decision 61706, clause Thirteenth: a Saudi " +
+            "worker with a disability able to work counts as FOUR, provided GOSI is paid on a " +
+            "minimum wage of SAR 4,000 and they are not counted elsewhere. (Some sources say " +
+            "×2; the decision says ×4.) NOT MODELLED: clause Fourteenth caps ×4 at 10% of Saudi " +
+            "workers and clause Nineteenth caps special categories at 15%; ×4 is applied to " +
+            "every marked employee, so an entity over those caps is OVER-stated. [COUNSEL]"),
 
         // The Saudi wage floor. The floor VALUES live in StatutoryRule
         // (nitaqat.counting_wage_floor_sar / nitaqat.counting_wage_half_floor_sar);
         // these two rows are what happens on either side of them.
         new("SAUDI_HALF_WAGE", GosiClassifications.Saudi, NitaqatCountBasis.Any,
-            NitaqatWeightCategories.HalfWageFloor, 0.5m, 1m, 30, false,
-            "A Saudi paid between the half floor and the full floor counts as half a unit in the " +
-            "Saudi count. VERIFY both thresholds and the half-unit treatment against the current " +
-            "MHRSD wage-floor decision."),
+            NitaqatWeightCategories.HalfWageFloor, 0.5m, 1m, 30, true,
+            "VERIFIED 2026-09-20 — MHRSD Ministerial Decision 61706, clause Seventh: a Saudi whose " +
+            "monthly wage is more than SAR 3,000 and less than SAR 4,000 counts as half a worker; " +
+            "clause Fifth applies the same half-unit treatment at exactly SAR 3,000. It is a FLAT " +
+            "half over the whole band, not a sliding scale. 'Monthly wage' means the salary subject " +
+            "to GOSI subscription (clause Third)."),
 
         new("SAUDI_BELOW_WAGE", GosiClassifications.Saudi, NitaqatCountBasis.Any,
-            NitaqatWeightCategories.BelowWageFloor, 0m, 1m, 30, false,
-            "A Saudi paid below the half floor does not count toward the Saudi count but still " +
-            "occupies a place in the total workforce. VERIFY against the current MHRSD wage-floor " +
-            "decision."),
+            NitaqatWeightCategories.BelowWageFloor, 0m, 1m, 30, true,
+            "VERIFIED 2026-09-20 — MHRSD Ministerial Decision 61706, clause Sixth: a Saudi whose " +
+            "wage is less than SAR 3,000 is not counted in the localization percentage. They still " +
+            "occupy a place in the total workforce."),
 
-        // The consequential default. See the long note in the accompanying analysis.
+        // ── CORRECTED, AND IT MOVES THE BAND IN THE CUSTOMER'S FAVOUR ─────────
+        // This row previously counted a GCC national as a plain expatriate
+        // (numerator 0, denominator 1), seeded "conservatively" because nobody had
+        // found the circular. The circular says the opposite, in terms:
+        //   Decision 61706, clause Twenty-two — "The provisions of clauses (4, 5,
+        //   6, 7) of this decision regulating the monthly wages shall be applied to
+        //   all non-Saudi workers, WHO ARE DEALT AS SAUDIS FOR THE PURPOSE OF
+        //   'NITAQAT' PROGRAM, SUCH AS THE GULF NATIONALS."
+        // Counting them as expatriates UNDER-states Saudization, so the old default
+        // was safe but wrong, and a customer with GCC staff was shown a worse band
+        // than MHRSD gives them. Because the treatment changes the answer, the old
+        // row is SUPERSEDED at the decision's own in-force date rather than edited —
+        // see SupersedeAsync below.
         new("GCC_STANDARD", GosiClassifications.GCC, NitaqatCountBasis.Any,
-            NitaqatWeightCategories.Standard, 0m, 1m, 10, false,
-            // 491 chars. SourceNote is varchar(500) (ZayraDbContext.cs ~3042) and EF does not
-            // client-side validate MaxLength, so an over-length note here does not fail this row
-            // — it throws 22001 inside the single SaveChangesAsync in SeedAsync and rolls back
-            // EVERY Nitaqat reference row: size tiers, weight rules, activities and the
-            // illustrative grid. The visible symptom is an empty economic-activity dropdown and a
-            // Nitaqat panel permanently stuck on nitaqat_activity_not_configured. Keep it under 500.
-            "GCC nationals in the Kingdom need no work permit, and it is unclear without a " +
-            "circular whether Nitaqat counts them in the total workforce or excludes them from " +
-            "both sides. SEEDED CONSERVATIVELY as denominator-only (identical to a non-Saudi): " +
-            "that UNDER-states the establishment's Saudization rather than over-stating it. " +
-            "Over-stating is the dangerous direction — it produces a confident green against a " +
-            "real Red and the customer discovers it when their visa quota freezes. VERIFY with MHRSD."),
+            NitaqatWeightCategories.Standard, 1m, 1m, 10, true,
+            "VERIFIED 2026-09-20 — MHRSD Ministerial Decision 61706, clause Twenty-two: GCC " +
+            "nationals are dealt with as Saudis for Nitaqat, and the " +
+            "SAR 4,000 / 3,000 wage clauses apply to them as to Saudis. Counted in BOTH the " +
+            "Saudi numerator and the total workforce. Corrects an earlier conservative default " +
+            "that counted them as expatriates and under-stated Saudization. NOTE: wage-floor " +
+            "categories are derived for Saudis only, so a GCC national below the floor still " +
+            "counts as a full unit. [COUNSEL]",
+            Eff61706),
 
+        // Still unsourced, and stays that way.
         new("EXPAT_PREMIUM_RESIDENCY", GosiClassifications.NonSaudi, NitaqatCountBasis.Any,
             NitaqatWeightCategories.PremiumResidency, 0m, 0m, 40, false,
-            "Premium Residency (Iqama Mumayyaza) holders are understood to be excluded from the " +
-            "Nitaqat expatriate count. VERIFY; applies only where an employee is explicitly marked " +
-            "with this category."),
+            "UNVERIFIED — searched 2026-09-20 and NOT FOUND in any primary source. Secondary " +
+            "sources assert that Premium Residency (الإقامة المميزة) holders sit outside the " +
+            "Nitaqat headcount; no MHRSD or Premium Residency Center text saying so could be " +
+            "obtained. Seeded as excluded from both sides, applied ONLY where an employee is " +
+            "explicitly marked, and reported as unverified wherever it affects a band. To " +
+            "resolve: written enquiry to MHRSD, or Royal Decree M/106 (1440). [COUNSEL]"),
     };
 
     private static async Task<int> SeedWeightRulesAsync(ZayraDbContext db)
     {
+        // Keyed on (RuleCode, EffectiveFrom), matching the unique index, so a CORRECTED weight
+        // with a later effective date is a new row rather than a skipped duplicate.
         var existing = await ScopedBypass.NullableTenantWide(db.NitaqatWeightRules, null, PlatformScope)
-            .Select(r => r.RuleCode)
             .ToListAsync();
 
-        var have = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
         var n = 0;
 
-        foreach (var w in Weights.Where(w => !have.Contains(w.Code)))
+        foreach (var w in Weights)
         {
+            var effectiveFrom = w.EffectiveFrom ?? Eff2021;
+
+            if (existing.Any(r => string.Equals(r.RuleCode, w.Code, StringComparison.OrdinalIgnoreCase)
+                               && r.EffectiveFrom == effectiveFrom))
+                continue;
+
+            // ── SUPERSEDE, NEVER REWRITE ─────────────────────────────────────
+            // A corrected weight closes the earlier row at the new effective date rather than
+            // editing its value. A Nitaqat standing snapshot taken under the old weighting has
+            // to stay explicable; silently restating the weight would make last quarter's band
+            // unreproducible from the data that produced it.
+            foreach (var prior in existing.Where(r =>
+                         string.Equals(r.RuleCode, w.Code, StringComparison.OrdinalIgnoreCase)
+                         && r.EffectiveFrom < effectiveFrom
+                         && (r.EffectiveTo == null || r.EffectiveTo > effectiveFrom)))
+            {
+                prior.EffectiveTo = effectiveFrom;
+                prior.UpdatedAtUtc = Ts;
+            }
+
             db.NitaqatWeightRules.Add(new NitaqatWeightRule
             {
                 TenantId = null,
@@ -210,7 +278,7 @@ public static class NitaqatReferenceSeeder
                 NumeratorWeight = w.Num,
                 DenominatorWeight = w.Den,
                 Precedence = w.Precedence,
-                EffectiveFrom = Eff2021,
+                EffectiveFrom = effectiveFrom,
                 SourceNote = w.Source,
                 IsVerified = w.Verified,
                 CreatedAtUtc = Ts,

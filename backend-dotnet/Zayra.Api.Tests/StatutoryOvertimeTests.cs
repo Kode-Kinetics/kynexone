@@ -98,9 +98,19 @@ public class StatutoryOvertimeTests
     [Fact]
     public void Seeder_ShipsTheKsaOvertimeBaseAndDayRates()
     {
+        // Keyed by RuleKey, taking the LATEST effective row for each.
+        //
+        // This used to be a plain ToDictionary(r => r.RuleKey, …), which assumed the seeder ships
+        // at most one row per key. It does not: StatutoryRule is effective-dated and the seeder's
+        // own idempotency check keys on (TenantId, Country, Jurisdiction, RuleKey, EffectiveFrom)
+        // precisely so a key CAN carry several dated values. The KSA Nitaqat curve intercepts are
+        // the first to use that (a C-2023 row and a C-2024 row for the same key), and the plain
+        // ToDictionary threw on them. The overtime rules below have a single row each, so every
+        // assertion is unchanged — what changed is the assumption, which was never true by design.
         var rules = InvokeBuildRules()
             .Where(r => r.CountryCode == "SAU" && r.Jurisdiction == "KSA-mainland")
-            .ToDictionary(r => r.RuleKey, r => r.RuleValue);
+            .GroupBy(r => r.RuleKey)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.EffectiveFrom).First().RuleValue);
 
         Assert.Equal("wage", rules["ot.hourly_base"]);
         Assert.Equal("1.5",  rules["ot.standard_multiplier"]);
