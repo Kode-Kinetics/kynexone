@@ -17,6 +17,7 @@ import {
   Settings2,
   ShieldCheck,
   TimerReset,
+  Timer,
   UserCircle2,
   UserMinus,
   UserRoundCog,
@@ -49,6 +50,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Leave', icon: ClipboardList, path: '/leave', requiredPermissions: ['leave.read', 'leave.write'] },
       { label: 'Shifts & Rosters', icon: CalendarCheck, path: '/shifts', requiredPermissions: ['attendance.read'], requiredFeatureKey: 'shifts' },
       { label: 'Overtime', icon: TimerReset, path: '/overtime', requiredPermissions: ['overtime.read', 'overtime.write'], requiredFeatureKey: 'overtime' },
+      { label: 'Timesheets', icon: Timer, path: '/timesheets', requiredPermissions: ['ess.read', 'attendance.read', 'manager.read'] },
     ],
   },
   {
