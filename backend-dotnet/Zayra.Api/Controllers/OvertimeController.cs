@@ -7,6 +7,8 @@ using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
@@ -21,14 +23,18 @@ public class OvertimeController : ControllerBase
     private readonly IDataScopeService _scopeService;
     private readonly IHrmHierarchyService _hierarchyService;
     private readonly IWorkWeekService _workWeek;
+    private readonly IStatutoryRuleReader _ruleReader;
 
-    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null)
+    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null, IStatutoryRuleReader? ruleReader = null)
     {
         _db = db;
         _scopeService = scopeService;
         _hierarchyService = hierarchyService;
         // Optional so existing callers/tests keep working; DI always supplies the real one.
         _workWeek = workWeek ?? new WorkWeekService(db);
+        // Same statutory rule source the payroll run reads. Without it this controller computed
+        // overtime on the pre-S1 basis and disagreed with the money actually paid.
+        _ruleReader = ruleReader ?? new StatutoryRuleReader(db);
     }
 
     [HttpGet("policies")]
@@ -417,27 +423,126 @@ public class OvertimeController : ControllerBase
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.EmployeeId, ct);
         var basic = salary?.BasicSalary ?? employee?.Salary ?? 0m;
         var gross = salary is null ? basic : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance;
-        var rateBase = policy.HourlyRateBasis switch
-        {
-            "GrossSalary" => gross,
-            "FixedHourlyRate" => policy.FixedHourlyRate * policy.StandardMonthlyHours,
-            _ => basic
-        };
-        var hourlyRate = policy.HourlyRateBasis == "FixedHourlyRate" ? policy.FixedHourlyRate : Math.Round(rateBase / Math.Max(1, policy.StandardMonthlyHours), 2);
+
         // Weekend categorisation is config-driven (WorkWeekService): the employee's company
         // resolves the rest days, not a hard-coded Fri/Sat — which was wrong for UAE (Sat/Sun)
         // and any non-default tenant.
         var workWeek = await _workWeek.ResolveAsync(tenantId, employee?.CompanyId, string.IsNullOrWhiteSpace(employee?.CountryCode) ? null : employee!.CountryCode, ct);
-        var dayCategory = await IsPublicHoliday(tenantId, request.WorkDate, ct) ? "PublicHoliday" : workWeek.IsWeekend(request.WorkDate.DayOfWeek) ? "Weekend" : "RegularDay";
-        var multiplier = await _db.OvertimeMultipliers.AsNoTracking().Where(x => x.TenantId == tenantId && x.OvertimePolicyId == policy.Id && x.DayCategory == dayCategory && x.IsActive).Select(x => x.Multiplier).FirstOrDefaultAsync(ct);
-        if (multiplier <= 0)
-            multiplier = dayCategory == "PublicHoliday" ? 2m
-                : dayCategory == "Weekend" ? 1.5m
-                : await ResolveRegularDayDefaultMultiplierAsync(tenantId, ct);
+        var dayCategory = OvertimeStatutoryCalculator.DayCategory(
+            request.WorkDate,
+            await IsPublicHoliday(tenantId, request.WorkDate, ct),
+            workWeek.IsWeekend(request.WorkDate.DayOfWeek));
+
+        // ── The statutory context: the SAME rule keys, fallbacks and arithmetic the payroll run
+        //    uses (PayrollController → OvertimeStatutoryContext / OvertimeStatutoryCalculator).
+        //    Before this, the controller computed basic ÷ StandardMonthlyHours × policy-multiplier
+        //    and never read a statutory rule, so it reported 112.50 for the canonical 60/40 Saudi
+        //    overtime hour that payroll paid at 162.50 (Art. 107: hourly WAGE + 50% of BASIC).
+        var (packCc, packJur) = await ResolveCountryPackAsync(tenantId, employee?.CompanyId, employee?.CountryCode, ct);
+        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, request.WorkDate, tenantId, ct);
+
+        // The divisor: the request's own policy, unless the pack states one (payroll applies the
+        // same rule override on top of the active policy's StandardMonthlyHours).
+        var standardMonthlyHours = otContext.StandardMonthlyHoursOverride is int h && h > 0
+            ? h
+            : Math.Max(1, policy.StandardMonthlyHours);
+
+        // The multiplier the tenant configured for this day category. It is a CANDIDATE only:
+        // EffectiveMultiplier honours it at or above the statutory floor for the day and never
+        // below it — an approval workflow cannot authorise an unlawful rate. That is exactly the
+        // check payroll applies to the ApprovedMultiplier this method goes on to persist, so the
+        // rate stamped at approval time is already the rate payroll will pay.
+        var configuredMultiplier = await _db.OvertimeMultipliers.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.OvertimePolicyId == policy.Id && x.DayCategory == dayCategory && x.IsActive)
+            .Select(x => x.Multiplier).FirstOrDefaultAsync(ct);
+        var multiplier = otContext.EffectiveMultiplier(configuredMultiplier, dayCategory);
+
+        // Art. 107's 50% is expressly "of his BASIC wage", so basic hourly is always the uplift
+        // base. Only the FIRST term follows the jurisdiction's ot.hourly_base — or the tenant's
+        // own GrossSalary policy, which is a contractual improvement on a statutory floor and so
+        // is honoured wherever it is the more generous of the two.
+        //
+        // FixedHourlyRate policies are left on the fixed rate for both terms: the payroll run has
+        // no concept of a fixed OT rate at all (it always divides basic by the monthly hours), so
+        // this is a KNOWN remaining divergence rather than one this change introduces.
+        decimal basicHourly, baseHourly;
+        if (policy.HourlyRateBasis == "FixedHourlyRate")
+        {
+            basicHourly = baseHourly = policy.FixedHourlyRate;
+        }
+        else
+        {
+            basicHourly = basic / standardMonthlyHours;
+            var wageHourly = gross / standardMonthlyHours;
+            baseHourly = otContext.BaseIsFullWage || policy.HourlyRateBasis == "GrossSalary"
+                ? wageHourly
+                : basicHourly;
+        }
+
         var approvedHours = Math.Round(request.ApprovedMinutes / 60m, 2);
-        var amount = Math.Round(approvedHours * hourlyRate * multiplier, 2);
+        // Rounded once at the end, from the unrounded hourly rates — the same shape as the payroll
+        // run, which rounds only the summed overtime line. Rounding the hourly rate first (as this
+        // method used to) put the controller a cent away from payroll on any salary that does not
+        // divide evenly by the monthly hours.
+        var amount = Math.Round(approvedHours * OvertimeStatutoryCalculator.HourPay(baseHourly, basicHourly, multiplier), 2);
         var currency = !string.IsNullOrWhiteSpace(salary?.Currency) ? salary.Currency : await _db.ResolveTenantCurrencyAsync(tenantId, ct);
-        return new OvertimeCalculation { TenantId = tenantId, OvertimeRequestId = request.Id, EmployeeId = request.EmployeeId, ApprovedHours = approvedHours, HourlyRate = hourlyRate, Multiplier = multiplier, Amount = amount, Currency = currency, CalculationJson = $"{{\"dayCategory\":\"{dayCategory}\",\"basis\":\"{policy.HourlyRateBasis}\"}}" };
+        var calculationJson =
+            $"{{\"dayCategory\":\"{dayCategory}\",\"basis\":\"{policy.HourlyRateBasis}\"," +
+            $"\"otHourlyBase\":\"{(otContext.BaseIsFullWage ? "wage" : "basic")}\"," +
+            $"\"standardMonthlyHours\":{standardMonthlyHours}," +
+            $"\"basicHourly\":{Math.Round(basicHourly, 4).ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
+            $"\"baseHourly\":{Math.Round(baseHourly, 4).ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
+            $"\"statutoryFloor\":{otContext.FloorFor(dayCategory).ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
+            $"\"configuredMultiplier\":{configuredMultiplier.ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
+            $"\"effectiveMultiplier\":{multiplier.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}";
+        return new OvertimeCalculation
+        {
+            TenantId = tenantId,
+            OvertimeRequestId = request.Id,
+            EmployeeId = request.EmployeeId,
+            ApprovedHours = approvedHours,
+            // The Art. 107 base hourly rate — the first term of the hour's pay. The full
+            // arithmetic (including the basic-hourly uplift base) is in CalculationJson, because
+            // hours × HourlyRate × Multiplier is not the shape of an Art. 107 overtime hour.
+            HourlyRate = Math.Round(baseHourly, 2),
+            // The DAY multiplier, not an effective rate ratio: payroll re-floors this value via
+            // OvertimeStatutoryCalculator.EffectiveMultiplier, so it must stay a day multiplier.
+            Multiplier = multiplier,
+            Amount = amount,
+            Currency = currency,
+            CalculationJson = calculationJson
+        };
+    }
+
+    /// <summary>
+    /// The country pack to read statutory overtime rules from: the employee's company, falling
+    /// back to the employee's own country code and then to the tenant's first active company —
+    /// the same company row whose CountryCode/Jurisdiction the payroll run uses.
+    /// </summary>
+    private async Task<(string CountryCode, string Jurisdiction)> ResolveCountryPackAsync(
+        Guid tenantId, Guid? companyId, string? employeeCountryCode, CancellationToken ct)
+    {
+        var company = companyId.HasValue
+            ? await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.Id == companyId.Value)
+                .Select(c => new { c.CountryCode, c.Jurisdiction })
+                .FirstOrDefaultAsync(ct)
+            : null;
+        company ??= await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .Select(c => new { c.CountryCode, c.Jurisdiction })
+            .FirstOrDefaultAsync(ct);
+
+        var cc = company?.CountryCode;
+        if (string.IsNullOrWhiteSpace(cc)) cc = employeeCountryCode;
+        if (string.IsNullOrWhiteSpace(cc))
+            cc = await _db.TenantLocalizationSettings.AsNoTracking()
+                .Where(x => x.TenantId == tenantId)
+                .Select(x => x.CountryCode)
+                .FirstOrDefaultAsync(ct);
+
+        return (cc ?? string.Empty, company?.Jurisdiction ?? string.Empty);
     }
 
     private Task<bool> IsPublicHoliday(Guid tenantId, DateOnly date, CancellationToken ct) =>
@@ -459,11 +564,9 @@ public class OvertimeController : ControllerBase
         return DefaultRegularDayMultiplier(countryCode);
     }
 
+    // One definition, shared with the payroll run's statutory-rule fallback.
     internal static decimal DefaultRegularDayMultiplier(string? countryCode) =>
-        string.Equals(countryCode, CountryCodes.Saudi, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(countryCode, "SA", StringComparison.OrdinalIgnoreCase)
-            ? 1.5m
-            : 1.25m;
+        OvertimeStatutoryContextResolver.DefaultRegularDayMultiplier(countryCode);
 
     private static int ApplyRounding(int minutes, string? rule) => (rule ?? string.Empty) switch
     {

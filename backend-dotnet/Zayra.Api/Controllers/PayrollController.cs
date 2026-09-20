@@ -1839,41 +1839,34 @@ public class PayrollController : ControllerBase
         // Read from StatutoryRule table (tenant-overridable).  Fallback defaults are
         // directional KSA values — FLAG FOR COMPLIANCE SIGN-OFF before production filing.
         var eff = new DateOnly(run.Year, run.Month, 1);
-        // OT multiplier: KSA Labour Law Art.107 = 1.5× for regular overtime days.
-        // [FLAG-COMPLIANCE-KSA: weekend/holiday OT multipliers may differ — Art.107 baseline only]
-        var otMultiplier = await _ruleReader.GetDecimalAsync(
-            packCc, packJur, "ot.standard_multiplier", eff, tenantId, cancellationToken) ?? 1.5m;
-        // ── S1/A5: the seeded rest-day and public-holiday rates, finally READ ─────────────────────
-        // StatutoryRuleSeeder has written ot.restday_multiplier and ot.holiday_multiplier at 2.0 since
-        // the pack was built. A repo-wide grep found no reader. The payroll run applied
-        // ot.standard_multiplier to every overtime hour regardless of the day it was worked, so a
-        // Saudi employee working Eid was paid the ordinary-day rate unless somebody happened to have
-        // stamped a higher ApprovedMultiplier on the request at approval time.
-        var otRestDayMultiplier = await _ruleReader.GetDecimalAsync(
-            packCc, packJur, "ot.restday_multiplier", eff, tenantId, cancellationToken) ?? otMultiplier;
-        var otHolidayMultiplier = await _ruleReader.GetDecimalAsync(
-            packCc, packJur, "ot.holiday_multiplier", eff, tenantId, cancellationToken) ?? otMultiplier;
-        // ── S1/A5: the OT hourly BASE ────────────────────────────────────────────────────────────
+        // ── S1/A5 + the OT hourly BASE, resolved by the SHARED context ───────────────────────────
         // KSA Labour Law Art. 107: the worker is paid for an overtime hour "an additional amount equal
         // to the hourly wage plus 50% of his basic wage". The base is the WAGE (Art. 2: basic plus all
-        // due increments); the 50% uplift is on BASIC. The run computed basic/240 × 1.5 for everyone —
-        // on a 60/40 package that is about 30% short on every KSA overtime hour.
+        // due increments); the 50% uplift is on BASIC. Pre-S1 the run computed basic/240 × 1.5 for
+        // everyone — on a 60/40 package that is about 30% short on every KSA overtime hour — and the
+        // seeded ot.restday_multiplier / ot.holiday_multiplier rates were read by nothing at all.
         //
-        // The general form below covers all three jurisdictions with one expression:
+        // The general form covers all three jurisdictions with one expression:
         //     hour pay = baseHourly + basicHourly × (multiplier − 1)
         //   KSA  base = "wage":  wageHourly + 0.5 × basicHourly           (Art. 107)
         //   UAE  base = "basic": basicHourly × 1.25                        (basic + 25%)
         //   QAT  base = "basic": basicHourly × 1.25                        (Art. 74, +25% minimum)
         // With base = "basic" the expression collapses to basicHourly × multiplier, i.e. EXACTLY the
         // pre-S1 arithmetic — so nothing moves for UAE or Qatar.
-        var otHourlyBase = (await _ruleReader.GetStringAsync(
-            packCc, packJur, "ot.hourly_base", eff, tenantId, cancellationToken))?.Trim().ToLowerInvariant();
-        var otBaseIsFullWage = OvertimeStatutoryCalculator.BaseIsFullWage(otHourlyBase);
+        //
+        // These five rule keys, their fallbacks and the arithmetic they feed now live in
+        // OvertimeStatutoryContext / OvertimeStatutoryCalculator and are shared verbatim with
+        // OvertimeController, which used to duplicate the calculation on the pre-S1 basis and
+        // therefore reported a different number for the same overtime hour.
+        // [FLAG-COMPLIANCE-KSA: weekend/holiday OT multipliers may differ — Art.107 baseline only]
+        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, eff, tenantId, cancellationToken);
+        var otMultiplier = otContext.StandardMultiplier;
+        var otRestDayMultiplier = otContext.RestDayMultiplier;
+        var otHolidayMultiplier = otContext.HolidayMultiplier;
+        var otBaseIsFullWage = otContext.BaseIsFullWage;
         // Standard monthly hours for hourly-rate divisor (overrides policy value if configured).
-        var otMonthlyHoursRule = await _ruleReader.GetDecimalAsync(
-            packCc, packJur, "ot.standard_monthly_hours", eff, tenantId, cancellationToken);
-        if (otMonthlyHoursRule.HasValue && otMonthlyHoursRule.Value > 0)
-            standardMonthlyHours = (int)otMonthlyHoursRule.Value;
+        if (otContext.StandardMonthlyHoursOverride is int otMonthlyHoursRule)
+            standardMonthlyHours = otMonthlyHoursRule;
         // LOP day-rate divisor: basic ÷ lopDayDivisor per absent day.
         // [FLAG-COMPLIANCE-KSA: basic/30 is common KSA practice but court precedent varies — VERIFY]
         var lopDayDivisor = (int)(await _ruleReader.GetDecimalAsync(

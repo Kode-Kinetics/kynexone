@@ -190,6 +190,15 @@ public class LoansController : ControllerBase
         var tid = GetTenantId();
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (loan == null) return NotFound();
+        // A new Pending step on a decided loan resets the "all steps approved" roll-up that
+        // DecideApproval uses, which is the back door around the status guard added there.
+        // OffersController.AddApproval refuses the same way.
+        if (loan.Status != "Pending")
+            return Conflict(new
+            {
+                error = "invalid_loan_state",
+                message = $"Approval steps can only be added to a Pending loan (current: {loan.Status})."
+            });
         var step = new LoanApproval
         {
             TenantId = tid, LoanId = id, StepOrder = req.StepOrder,
@@ -207,9 +216,49 @@ public class LoansController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+
+        // ── The state guard ──────────────────────────────────────────────────────────────────
+        // This endpoint used to act on a loan in ANY status and on an approval step that had
+        // already been decided. Concretely, before this guard:
+        //   • Approving an already-Active loan re-ran the whole disbursement block below — it
+        //     reset ApprovedAmount and OutstandingBalance while TotalRepaid stayed put, breaking
+        //     the ApprovedAmount − TotalRepaid − OutstandingBalance == 0 invariant AuditReport
+        //     reconciles on, pushed a fresh DisbursementDate, and re-ran GenerateInstallments
+        //     into the unique (TenantId, LoanId, InstallmentNumber) index for an unhandled 500.
+        //   • Rejecting an Active or Settled loan silently flipped it to Rejected while the
+        //     disbursement GL entry and the installment schedule stayed live.
+        //   • A replayed request simply re-decided the same step, overwriting the decider and
+        //     the decision itself.
+        // Only the GL posting was idempotent (POD-B1b, below), which was a band-aid over this
+        // missing guard rather than the guard. The shape and the error codes mirror
+        // OffersController.DecideApproval — the same route on the same kind of two-row aggregate.
+        if (req.Decision is not ("Approved" or "Rejected"))
+            return BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." });
+
         var approval = await _db.LoanApprovals.FirstOrDefaultAsync(x => x.Id == approvalId && x.LoanId == id && x.TenantId == tid, ct);
         if (approval == null) return NotFound();
-        var loan = await _db.EmployeeLoans.FirstAsync(x => x.Id == id && x.TenantId == tid, ct);
+        if (approval.Status != "Pending")
+            return Conflict(new
+            {
+                error = "approval_already_decided",
+                message = $"This approval step is already in '{approval.Status}' status."
+            });
+
+        var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+        if (loan == null) return NotFound();
+        if (loan.Status != "Pending")
+            return Conflict(new
+            {
+                error = "invalid_loan_state",
+                message = $"Loan approval decisions require Pending status (current: {loan.Status})."
+            });
+        if (loan.IsLockedByPayroll)
+            return Conflict(new
+            {
+                error = "locked_by_payroll",
+                message = "This loan is locked by an in-flight payroll run and cannot be decided."
+            });
+
         if (req.Decision == "Approved" && loan.CreatedBy.HasValue && uid.HasValue && loan.CreatedBy == uid)
             return BadRequest("Maker-checker control: requester cannot approve their own loan.");
 

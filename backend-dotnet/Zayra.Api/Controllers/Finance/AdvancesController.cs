@@ -232,6 +232,17 @@ public class AdvancesController : ControllerBase
         var uid = GetUserId();
         var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (adv == null) return NotFound();
+        // The same hole this batch closed on LoansController.DecideApproval, on the sibling
+        // module: Reject wrote "Rejected" over ANY status while Approve (above) has always
+        // required Pending. Rejecting an Active advance left the disbursement GL entry and the
+        // installment schedule live under a Rejected header, and payroll's deduction query keys
+        // on Status == "Active", so the repayments simply stopped.
+        if (adv.Status != "Pending")
+            return Conflict(new
+            {
+                error = "invalid_advance_state",
+                message = $"Only a Pending advance can be rejected (current: {adv.Status})."
+            });
         var oldStatus = adv.Status;
         adv.Status = "Rejected"; adv.RejectionReason = req.Reason;
         adv.UpdatedAtUtc = DateTime.UtcNow; adv.UpdatedBy = uid;
