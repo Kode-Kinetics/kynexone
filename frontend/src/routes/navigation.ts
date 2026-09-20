@@ -22,6 +22,8 @@ import {
   WalletCards,
   KeyRound,
   CheckSquare2,
+  HeartPulse,
+  FileSpreadsheet,
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 
@@ -32,6 +34,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Dashboard', icon: Gauge, path: '/dashboard', requiredPermissions: ['dashboard.read'] },
       { label: 'Group Overview', icon: Building2, path: '/group', requiredPermissions: ['dashboard.read'], groupAccountOnly: true },
       { label: 'Self-Service', icon: UserCircle2, path: '/ess', requiredPermissions: ['ess.read'] },
+      { label: 'My Benefits', icon: HeartPulse, path: '/ess/benefits', requiredPermissions: ['ess.read'] },
     ],
   },
   {
@@ -51,6 +54,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Payroll', icon: WalletCards, path: '/payroll', requiredPermissions: ['payroll.read'], requiredFeatureKey: 'payroll' },
       { label: 'Payslip Templates', icon: FileText, path: '/payroll/templates', requiredPermissions: ['payroll.read'], requiredFeatureKey: 'payslip_template_designer' },
       { label: 'Loans & Advances', icon: Landmark, path: '/loans', requiredPermissions: ['loans.read', 'loans.write'] },
+      { label: 'Benefits', icon: HeartPulse, path: '/benefits', requiredPermissions: ['employees.write'] },
       { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },
       { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.read', 'employees.write'] },
       { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: ['performance.read', 'performance.write'], requiredFeatureKey: 'performance' },
@@ -73,6 +77,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Approvals', icon: CheckSquare2, path: '/approvals', requiredPermissions: ['approvals.read', 'approvals.decide'] },
       { label: 'User Management', icon: KeyRound, path: '/user-management', requiredPermissions: ['users.manage', 'roles.manage', 'security.manage'] },
       { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
+      { label: 'GOSI Filing', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
       { label: 'Tenant Admin', icon: Settings2, path: '/tenant-admin', requiredPermissions: ['security.manage'] },
       { label: 'Setup', icon: UserRoundCog, path: '/setup', requiredPermissions: ['organization.write'] },
     ],
