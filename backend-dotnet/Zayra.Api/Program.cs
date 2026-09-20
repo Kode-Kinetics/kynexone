@@ -363,6 +363,8 @@ builder.Services.AddScoped<Zayra.Api.Application.WorkWeek.IWorkWeekService, Zayr
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IProrationPolicyResolver, Zayra.Api.Infrastructure.Payroll.ProrationPolicyResolver>();
 builder.Services.AddScoped<IHrmHierarchyService, HrmHierarchyService>();
 builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
+// W2-B — expense claims & reimbursement (approval via the F1 router, payout via one PayrollAdjustment).
+builder.Services.AddScoped<Zayra.Api.Application.Expenses.IExpenseClaimService, Zayra.Api.Infrastructure.Expenses.ExpenseClaimService>();
 builder.Services.AddScoped<IApprovalRouter, ApprovalRouter>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
 builder.Services.AddScoped<IEmployeeModuleSchemaBootstrapper, EmployeeModuleSchemaBootstrapper>();

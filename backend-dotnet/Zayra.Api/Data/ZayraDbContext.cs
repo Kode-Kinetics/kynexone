@@ -1056,6 +1056,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<UserEntityAccess> UserEntityAccesses => Set<UserEntityAccess>();
     // ── HR Workflow Configuration ──────────────────────────────────────────────
     public DbSet<TenantHrConfig> TenantHrConfigs => Set<TenantHrConfig>();
+    // ── W2-B Expenses & reimbursement ──────────────────────────────────────────
+    public DbSet<ExpenseClaim> ExpenseClaims => Set<ExpenseClaim>();
+    public DbSet<ExpenseClaimLine> ExpenseClaimLines => Set<ExpenseClaimLine>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -3861,6 +3864,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasOne(x => x.User).WithMany(x => x.EntityAccesses).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.SetNull);
         });
+
+        // W2-B — expense claims (config kept in Models/Expenses.cs to keep this file append-only).
+        ExpenseModelConfiguration.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

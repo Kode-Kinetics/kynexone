@@ -172,6 +172,13 @@ public static class PayrollGlCatalog
         // What the leaver is owed between approval and disbursement. Cleared by the payroll run's own
         // Lock journal, exactly the way POD-B1b clears Bonus Payable.
         new Driver("SETTLEMENT_PAYABLE",    "Final Settlement Payable",      "2320", "Final Settlement Payable",        "Liability"),
+        // W2-B EXPENSES — an approved expense claim is paid through payroll as ONE PayrollAdjustment
+        // (AdjustmentType "Expense Reimbursement" ⇒ earning component ADJ_EXPENSE_REIMBURSEMENT, source
+        // "Adjustment"). Without its own driver the catch-all EARN:OTHER (seeded `Any`) claims it and the
+        // reimbursement lands in 5099 Other Earnings — i.e. it is booked as WAGES. It is not a wage: it
+        // is the business's own expense, fronted by the employee. 5120 sits with the other employer-
+        // borne people costs; the credit side is the normal NET_PAYABLE (2100) the run already clears.
+        new Driver("EARN:EXPENSE_REIMBURSEMENT","Earning — Expense Reimbursement","5120","Employee Expense Reimbursements","Expense"),
     };
 
     public static IReadOnlyDictionary<string, (string Code, string Name)> Defaults { get; } =
@@ -243,6 +250,10 @@ public static class PayrollGlCatalog
         // account by accident. They are resolved EXCLUSIVELY by explicit GlAccountResolver.AccountLabel.
         Sys(tenantId, "EOSB_PROVISION",        "End of Service Benefit Provision",GlDriverCategories.Balancing,"CR","Liability","2310", "End of Service Benefit Provision", null,        "Any",    null,               108),
         Sys(tenantId, "SETTLEMENT_PAYABLE",    "Final Settlement Payable",      GlDriverCategories.Balancing, "CR", "Liability", "2320", "Final Settlement Payable",         null,        "Any",    null,               109),
+        // W2-B — Exact on the reimbursement's earning component and Source "Adjustment", so it outranks
+        // the `Any` catch-all EARN:OTHER on ResolveDriverForComponent's specificity rank, and
+        // EarningDriverKeyFor returns it directly (a non-`Any` match wins outright).
+        Sys(tenantId, "EARN:EXPENSE_REIMBURSEMENT","Earning — Expense Reimbursement",GlDriverCategories.Earning,"DR","Expense","5120","Employee Expense Reimbursements","Adjustment","Exact","ADJ_EXPENSE_REIMBURSEMENT",18),
     };
 
     private static GlDriver Sys(

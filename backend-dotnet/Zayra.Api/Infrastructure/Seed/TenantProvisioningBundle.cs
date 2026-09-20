@@ -192,6 +192,14 @@ public static class TenantProvisioningBundle
         {
             ("LIMITED", "Limited Term", "محدد المدة"), ("UNLIMITED", "Unlimited Term", "غير محدد المدة"),
         }),
+        // W2-B — expense-claim categories. Policy (per-claim cap, receipt threshold) lives in each
+        // value's ExtraJson and starts EMPTY (no cap, receipt optional) — the tenant sets it.
+        new("ExpenseCategory", "Expense Category", "فئة المصروفات", new[]
+        {
+            ("TRAVEL", "Travel", "سفر"), ("ACCOMMODATION", "Accommodation", "إقامة"),
+            ("MEALS", "Meals & Entertainment", "وجبات وضيافة"), ("TRANSPORT", "Local Transport", "مواصلات محلية"),
+            ("OFFICE", "Office Supplies", "مستلزمات مكتبية"), ("OTHER", "Other", "أخرى"),
+        }),
     };
 
     private static async Task<(int types, int values)> InstallMasterDataAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
@@ -352,6 +360,8 @@ public static class TenantProvisioningBundle
         (nameof(LeaveRequest), "LEAVE-DEFAULT", "Default Leave Approval"),
         (nameof(OvertimeRequest), "OVERTIME-DEFAULT", "Default Overtime Approval"),
         ("PayrollRun", "PAYROLL-DEFAULT", "Default Payroll Approval"),
+        // W2-B — expense claims route through the same router; one HR step by default, editable.
+        ("ExpenseClaim", "EXPENSE-DEFAULT", "Default Expense Claim Approval"),
     };
 
     private static async Task<int> InstallDefaultApprovalWorkflowsAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)

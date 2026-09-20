@@ -67,6 +67,7 @@ public class ReportsController : ControllerBase
             new { key = "attendance.corrections", name = "Attendance Corrections", category = "Attendance", description = "Submitted, approved, and rejected attendance correction requests" },
             new { key = "compliance.document-compliance", name = "Document Compliance", category = "Compliance", description = "Employee document status: verified, pending, rejected, expired, and missing required docs" },
             new { key = "qiwa.readiness", name = "Qiwa Readiness", category = "Compliance", description = "Employees missing Iqama, Work Permit, National ID, or Passport required for Qiwa" },
+            new { key = "finance.expense-claims", name = "Expense Claims", category = "Finance", description = "Expense claim amounts by status, category and month (filter by status, category, date range)" },
         };
         return Ok(catalog);
     }
@@ -132,6 +133,7 @@ public class ReportsController : ControllerBase
             "attendance.corrections" => await RunAttendanceCorrections(tid, req, employeeIds, ct),
             "compliance.document-compliance" => await RunDocumentCompliance(tid, req, employeeIds, ct),
             "qiwa.readiness" => await RunQiwaReadiness(tid, req, employeeIds, ct),
+            "finance.expense-claims" => await RunExpenseClaims(tid, req, employeeIds, ct),
             _ => null,
         };
 
@@ -491,6 +493,39 @@ public class ReportsController : ControllerBase
         return await q
             .Select(x => new { x.EmployeeName, x.AdvanceNumber, x.ApprovedAmount, x.TotalRepaid, x.OutstandingBalance, x.RepaymentStartDate })
             .OrderByDescending(x => x.OutstandingBalance).ToListAsync(ct);
+    }
+
+    /// <summary>W2-B — expense claim lines grouped by month of expense, category and claim status.
+    /// Reconciles claim status against the approval and payroll rows first so the report never shows a
+    /// claim as Submitted after its approver decided it in the Approval Center.</summary>
+    private async Task<object> RunExpenseClaims(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
+    {
+        await Zayra.Api.Infrastructure.Expenses.ExpenseClaimReconciler.ReconcileAsync(_db, tid, releaseVoidedRuns: false, ct);
+        var q = from l in _db.ExpenseClaimLines
+                join c in _db.ExpenseClaims on l.ClaimId equals c.Id
+                where l.TenantId == tid && c.TenantId == tid && c.Status != ExpenseClaimStatuses.Draft && c.Status != ExpenseClaimStatuses.Cancelled
+                select new { l, c };
+        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.c.EmployeeId));
+        if (!string.IsNullOrWhiteSpace(req.Filters?.Status)) q = q.Where(x => x.c.Status == req.Filters.Status);
+        if (!string.IsNullOrWhiteSpace(req.Filters?.Category)) q = q.Where(x => x.l.CategoryCode == req.Filters.Category.ToUpper());
+        if (req.Filters?.DateFrom is { } from) q = q.Where(x => x.l.ExpenseDate >= DateOnly.FromDateTime(from));
+        if (req.Filters?.DateTo is { } to) q = q.Where(x => x.l.ExpenseDate <= DateOnly.FromDateTime(to));
+        var rows = await q.Select(x => new { x.l.ExpenseDate, x.l.CategoryCode, x.l.CategoryName, x.c.Status, x.c.Currency, x.l.Amount, x.c.Id })
+            .ToListAsync(ct);
+        return rows
+            .GroupBy(x => new { Period = $"{x.ExpenseDate.Year}-{x.ExpenseDate.Month:00}", x.CategoryCode, x.CategoryName, x.Status, x.Currency })
+            .OrderBy(g => g.Key.Period).ThenBy(g => g.Key.CategoryName).ThenBy(g => g.Key.Status)
+            .Select(g => new
+            {
+                g.Key.Period,
+                Category = g.Key.CategoryName,
+                g.Key.Status,
+                g.Key.Currency,
+                Claims = g.Select(x => x.Id).Distinct().Count(),
+                Lines = g.Count(),
+                TotalAmount = g.Sum(x => x.Amount),
+            })
+            .ToList();
     }
 
     private async Task<object> RunBonusPayout(Guid tid, RunReportRequest req, CancellationToken ct)
@@ -875,6 +910,8 @@ public class ReportFilters
     public string? Status { get; set; }
     public string? Period { get; set; }
     public int? DaysAhead { get; set; }
+    /// <summary>W2-B — expense category code (finance.expense-claims).</summary>
+    public string? Category { get; set; }
 }
 
 public record RunReportRequest(string ReportKey, ReportFilters? Filters);

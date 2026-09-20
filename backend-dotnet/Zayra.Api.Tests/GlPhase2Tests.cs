@@ -203,7 +203,7 @@ public class GlPhase2Tests
         // SETTLEMENT_PAYABLE 2320). None of them can steal an existing component: the three earnings are
         // Exact-matched on codes no prior component uses, and the deduction only fires for a Settlement
         // source — which the two catch-all assertions at the end of this test continue to prove.
-        drivers.Should().HaveCount(30);
+        drivers.Should().HaveCount(31, "W2-B adds EARN:EXPENSE_REIMBURSEMENT");
         drivers.Where(d => d.Category == GlDriverCategories.Balancing).Should().HaveCount(6 + 2 + 2,
             "NET_PAYABLE + EMPLOYER_STATUTORY_EXPENSE + the six control accounts + POD-D's EOSB_PROVISION " +
             "and SETTLEMENT_PAYABLE are the only Balancing drivers");
