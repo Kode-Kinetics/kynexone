@@ -99,11 +99,13 @@ public class UaePackTests
     // ── UAE DIFC DEWS ────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task UaeDifcEos_ThreeYears_ReturnsDeWsMonthlyAccrual()
+    public async Task UaeDifcEos_WhollyPostCutOver_IsNotAnEmployerPayable()
     {
-        // 3 years = 36 months all tier 1 (≤ 5 years)
-        // Basic AED 20,000, monthly rate 5.83%
-        // 36 × 20,000 × 0.0583 = 41,976
+        // S1/A9 — REWRITTEN. This test previously asserted that DIFC returns the DEWS accrual
+        // (36 × 20,000 × 5.83% = 41,976) as TotalGratuity, i.e. as a payable cash lump sum. That is
+        // the defect, not the specification: since 1 February 2020 the DEWS trustee pays the employee
+        // their vested account value and the employer pays nothing on termination for that service.
+        // An employer who paid the old number paid roughly AED 42,000 twice.
         var calc = new UaeDifcEndOfServiceCalculator(StubRules);
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
@@ -113,17 +115,23 @@ public class UaePackTests
 
         var result = await calc.CalculateAsync(input);
 
-        Assert.Equal("DEWS-monthly-contribution", result.ApplicableRule);
-        Assert.Equal(41_976m, result.TotalGratuity);
+        Assert.Equal("DIFC-EmploymentLaw-DEWS-2020-cutover", result.ApplicableRule);
+        Assert.Equal(0m, result.TotalGratuity);
+        Assert.Contains(result.Notices, n => n.Contains("DO NOT PAY the DEWS portion"));
+        // The accrual is still REPORTED — at zero — so the approver can reconcile it against the
+        // trustee's statement rather than being told nothing happened.
+        Assert.Contains(result.Breakdown, b => b.Label.Contains("PAID BY THE TRUSTEE") && b.Amount == 0m);
     }
 
     [Fact]
-    public async Task UaeDifcEos_SevenYears_TwoTierDewsAccrual()
+    public async Task UaeDifcEos_StraddlingTheCutOver_PaysTheGrandfatheredPortionOnly()
     {
-        // 7 years = 84 months: 60 tier-1 + 24 tier-2
-        // Basic AED 15,000
-        // Tier 1: 60 × 15,000 × 5.83% = 52,470
-        // Tier 2: 24 × 15,000 × 8.33% = 29,988
+        // S1/A9 — REWRITTEN. Hired 2016, left 2023: 4.0877 years fall BEFORE the 1 Feb 2020 cut-over
+        // and are an employer-paid lump sum under the pre-DEWS DIFC law (21 days basic per year for
+        // the first five years); the remaining ~3 years are the trustee's.
+        //   4.0877 yrs × 21 days × (15,000 / 30) = AED 42,920.55
+        // The old assertion (52,470 + 29,988 = 82,458) applied DEWS rates across ALL seven years and
+        // returned them as cash — both the wrong model and, for the pre-2020 service, the wrong scale.
         var calc = new UaeDifcEndOfServiceCalculator(StubRules);
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
@@ -133,9 +141,10 @@ public class UaePackTests
 
         var result = await calc.CalculateAsync(input);
 
-        Assert.Equal("DEWS-monthly-contribution", result.ApplicableRule);
-        Assert.Equal(52_470m + 29_988m, result.TotalGratuity);
-        Assert.Equal(2, result.Breakdown.Count);
+        Assert.Equal("DIFC-EmploymentLaw-DEWS-2020-cutover", result.ApplicableRule);
+        Assert.Equal(42_920.55m, result.TotalGratuity);
+        Assert.Equal(2, result.Breakdown.Count);   // grandfathered (payable) + DEWS (zero, trustee's)
+        Assert.Contains(result.Notices, n => n.Contains("[CERT-DIFC]") && n.Contains("grandfathered"));
     }
 
     // ── Jurisdiction resolver: DIFC vs Mainland ─────────────────────────────

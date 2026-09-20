@@ -63,21 +63,57 @@ public sealed class QatarEndOfServiceCalculator : IEndOfServiceCalculator
     public async Task<EndOfServiceResult> CalculateAsync(
         EndOfServiceInput input, CancellationToken ct = default)
     {
-        _ = _rules;
-
+        // S1/A1 — Qatar Art. 54 measures the award on the BASIC wage, so this pack reads Salary.Basic
+        // and is deliberately unaffected by the KSA Art. 84 last-wage fix in the same stream.
         decimal basic = input.Salary.Basic;
         decimal dailyRate = basic / 30m;
 
+        var notices = new List<string>();
         int totalDays = input.ServiceEndDate.DayNumber - input.ServiceStartDate.DayNumber;
         decimal serviceYears = totalDays / 365m;
+
+        // ── S1/A8: unpaid leave and the service period ────────────────────────────────────────────
+        // [CONF] Qatar turns on "continuous service" with no express exclusion like UAE Art. 51, so the
+        // exclusion defaults OFF and is a rule, not a literal. Including the days over-states the award
+        // and the provision; excluding them without counsel under-pays. Either way it is now VISIBLE.
+        if (input.UnpaidLeaveDays > 0)
+        {
+            bool exclude = await StatutoryFlag.ReadAsync(
+                _rules, CountryCodes.Qatar, Jurisdictions.QatarMainland,
+                "eosb.exclude_unpaid_leave", input.ServiceEndDate, false, ct);
+            if (exclude)
+            {
+                var before = serviceYears;
+                serviceYears = Math.Max(0m, serviceYears - input.UnpaidLeaveDays / 365m);
+                notices.Add($"[CONF-QAT] {input.UnpaidLeaveDays} day(s) of unpaid leave were EXCLUDED from the service " +
+                            $"period ({before:F4} yrs → {serviceYears:F4} yrs) because 'eosb.exclude_unpaid_leave' is " +
+                            "set for QAT/QAT-mainland. Qatar has no express exclusion — confirm with counsel.");
+            }
+            else
+            {
+                notices.Add($"[CONF-QAT] {input.UnpaidLeaveDays} day(s) of unpaid leave are INCLUDED in the service " +
+                            "period for gratuity. Qatar has no express exclusion (contrast UAE Art. 51), so the award " +
+                            "is measured on elapsed calendar service and the EOSB provision is correspondingly higher. " +
+                            "Set 'eosb.exclude_unpaid_leave' if counsel advises the \"continuous service\" reading.");
+            }
+        }
 
         // Qatar Law 14/2004 Art.54 (as amended by Law 19/2020): EOS gratuity requires at
         // least ONE completed year of service. This eligibility floor lives in the pack
         // (single engine) — the controller no longer pre-gates on GCC minYears.
+        // S1 — the configured minimum-service years. Art. 54's gate is ONE completed year; a higher
+        // configured minimum would deny a statutory entitlement, so it is refused and named.
+        if (input.Policy?.MinServiceYears is int minYears && minYears > 1 && serviceYears >= 1m && serviceYears < minYears)
+            notices.Add($"[CERT-QAT] This company is configured with a {minYears}-year EOSB minimum-service " +
+                        $"requirement and this leaver has {serviceYears:F2} years, but the award has NOT been " +
+                        "withheld. Qatar Law 14/2004 Art. 54 (as amended by Law 19/2020) sets the gate at ONE " +
+                        "completed year and it cannot be raised by configuration.");
+
         if (serviceYears < 1m)
-            return await Task.FromResult(new EndOfServiceResult(
+            return new EndOfServiceResult(
                 0m, "Qatar-LaborLaw-14-2004-Art54",
-                new List<EndOfServiceBreakdown> { new("No entitlement (< 1 year service, Art.54)", 0m) }));
+                new List<EndOfServiceBreakdown> { new("No entitlement (< 1 year service, Art.54)", 0m) })
+            { Notices = notices, AppliedWageBase = basic };
 
         // Minimum 3 weeks = 21 days per year of service
         decimal totalDaysEntitled = Math.Round(serviceYears * 21m, 4);
@@ -88,8 +124,8 @@ public sealed class QatarEndOfServiceCalculator : IEndOfServiceCalculator
             new($"{serviceYears:F4} yrs × 21 days × {dailyRate:F2} QAR/day", total),
         };
 
-        return await Task.FromResult(
-            new EndOfServiceResult(total, "Qatar-LaborLaw-14-2004-Art54", bd));
+        return new EndOfServiceResult(total, "Qatar-LaborLaw-14-2004-Art54", bd)
+        { Notices = notices, AppliedWageBase = basic };
     }
 }
 

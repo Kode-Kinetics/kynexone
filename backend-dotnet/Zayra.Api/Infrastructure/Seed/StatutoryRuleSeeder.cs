@@ -116,6 +116,42 @@ public static class StatutoryRuleSeeder
             "ot.restday_multiplier", "2.0", "decimal", eff07,
             "FLAG-COMPLIANCE: Rest-day (weekend) OT 2× per KSA Labour Law Art.107 — VERIFY before filing"));
 
+        // ── S1/A1 + A8 — KSA EOSB wage base and service period ────────────────
+        // Art. 84 M/51 awards on the LAST WAGE; Art. 2 defines wage as "the basic wage plus all other
+        // due increments". The statutory FLOOR (basic + housing) is compiled into KsaEndOfServiceCalculator
+        // and is deliberately NOT a rule — it is not configurable, because a tenant cannot contract out
+        // of the Labour Law. What IS a rule is each genuinely arguable component, effective-dated from
+        // the Labour Law's own commencement, so the record shows when each reading applied.
+        // These are NOT new law. Art. 84 has always said "last wage"; there is no commencement date to
+        // date the fix from, which is precisely why the change is retroactive in effect for any settlement
+        // that has not yet accrued. Settlements that have already posted their accrual journal are
+        // immutable and are NOT recomputed — see the report.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "eosb.include_transport", "true", "bool", eff07,
+            "[COUNSEL] Transport allowance IN the Art.84 last-wage base. A fixed monthly transport allowance is " +
+            "due irrespective of expenditure and so reads as an Art.2 'increment'; a reimbursive travel float does " +
+            "not. Housing is NOT governed by this rule — it is the non-configurable statutory floor. Set false only " +
+            "on a written opinion that your transport allowance is reimbursive."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "eosb.include_other_allowances", "false", "bool", eff07,
+            "[COUNSEL] Composite 'other allowances' (food + mobile + other) OUT of the Art.84 last-wage base, " +
+            "because the composite mixes regular cash increments (which ARE wage under Art.2) with reimbursive " +
+            "items (which are not) and the data model cannot tell them apart. Model a regular allowance as its own " +
+            "EOSB-included pay component rather than flipping this."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "eosb.exclude_unpaid_leave", "false", "bool", eff07,
+            "[CONF] Unpaid leave stays IN the KSA service period for gratuity. Unlike UAE Decree-Law 33/2021 " +
+            "Art.51 there is no express KSA exclusion — it rests on the 'continuous service' reading. Excluding it " +
+            "is the employer-favourable direction and must be a conscious, counselled decision."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "eosb.exclude_unpaid_leave", "true", "bool", eff22,
+            "[CERT] UAE Decree-Law 33/2021 Art.51 excludes periods of unpaid leave from the service period for " +
+            "gratuity EXPRESSLY. Turning this off over-states both the award and the EOSB provision."));
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "eosb.exclude_unpaid_leave", "false", "bool", eff22,
+            "[CONF] Qatar has no express exclusion of unpaid leave from the Art.54 service period; it turns on " +
+            "'continuous service'. Defaults to including the days — confirm with counsel before flipping."));
+
         // ── UAE GPSSA ────────────────────────────────────────────────────────
         // Source: Federal Law 7/1999 + Cabinet Resolution 50/2022.
         list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
