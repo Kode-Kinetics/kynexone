@@ -96,7 +96,10 @@ public record WebPunchRequest(
     decimal? Longitude,
     string? PhotoReference = null,
     string? VerificationMethod = null,
-    decimal? ConfidenceScore = null);
+    decimal? ConfidenceScore = null,
+    decimal? AccuracyMeters = null,
+    bool? LocationMocked = null,
+    bool? ClientBiometricVerified = null);
 
 // ── Device-key-authenticated ingest (generic webhook connector) ──────────────
 public record DeviceIngestPunch(

@@ -2,8 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  RefreshControl,
-  ScrollView,
+  FlatList,
   StyleSheet,
   Text,
   View,
@@ -52,101 +51,103 @@ export default function PayslipsScreen() {
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
       <LiquidBackdrop subtle />
-      <ScrollView
+      <FlatList
+        data={loading ? [] : payslips}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <View style={styles.listItem}>
+            <PayslipCard
+              payslip={item}
+              onPress={() => navigation.navigate('PayslipDetail', { id: item.id })}
+            />
+          </View>
+        )}
+        ItemSeparatorComponent={() => <View style={styles.listGap} />}
         contentContainerStyle={styles.content}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={() => void fetchPayslips(true)}
-            tintColor={theme.colors.primary}
-            colors={[theme.colors.primary]}
-          />
-        }
+        refreshing={refreshing}
+        onRefresh={() => void fetchPayslips(true)}
         showsVerticalScrollIndicator={false}
-      >
-        <ScreenHero
-          eyebrow="Payroll"
-          title="Payslips"
-          subtitle="Private salary statements and payment history"
-        />
-        {loading ? (
-          <View style={styles.section}>
-            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
-              <ActivityIndicator color={theme.colors.primary} />
-              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading payslips…</Text>
-            </GlassSurface>
-          </View>
-        ) : latest ? (
-          <View style={styles.section}>
-            <MotionPressable
-              onPress={() => navigation.navigate('PayslipDetail', { id: latest.id })}
-              haptic="selection"
-              contentStyle={styles.rounded}
-            >
-              <LinearGradient
-                colors={theme.gradients.primary}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.latestCard}
-              >
-                <View style={styles.latestHeader}>
-                  <View>
-                    <Text style={styles.latestEyebrow}>LATEST PAYSLIP</Text>
-                    <Text style={styles.latestPeriod}>
-                      {latest.periodLabel || formatDate(latest.periodStart, 'monthYear')}
-                    </Text>
-                  </View>
-                  <View style={styles.latestArrow}>
-                    <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
-                  </View>
-                </View>
-                <Text style={styles.latestAmountLabel}>Net pay</Text>
-                <Text style={styles.latestAmount}>
-                  {latest.currency} {(latest.netPay ?? latest.netSalary).toLocaleString('en-US', {
-                    minimumFractionDigits: 2,
-                  })}
-                </Text>
-                <View style={styles.latestMetrics}>
-                  <SalaryMetric label="Gross" value={`${latest.currency} ${(latest.grossPay ?? latest.grossSalary).toLocaleString()}`} />
-                  <View style={styles.latestDivider} />
-                  <SalaryMetric label="Deductions" value={`${latest.currency} ${latest.totalDeductions.toLocaleString()}`} />
-                </View>
-              </LinearGradient>
-            </MotionPressable>
-          </View>
-        ) : null}
-
-        <View style={styles.section}>
-          <SectionHeader
-            title="Salary history"
-            subtitle={payslips.length ? `${payslips.length} published statement${payslips.length === 1 ? '' : 's'}` : 'Published statements appear here'}
-          />
-          {!loading && payslips.length === 0 ? (
-            <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
-              <View style={[styles.emptyIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
-                <Ionicons name="wallet-outline" size={29} color={theme.colors.primary} />
+        ListHeaderComponent={
+          <>
+            <ScreenHero
+              eyebrow="Payroll"
+              title="Payslips"
+              subtitle="Private salary statements and payment history"
+            />
+            {loading ? (
+              <View style={styles.section}>
+                <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+                  <ActivityIndicator color={theme.colors.primary} />
+                  <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading payslips…</Text>
+                </GlassSurface>
               </View>
-              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>No payslips yet</Text>
-              <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
-                Your salary statements will appear after payroll is finalized and published.
-              </Text>
-            </GlassSurface>
-          ) : (
-            <View style={styles.list}>
-              {payslips.map((payslip) => (
-                <PayslipCard
-                  key={payslip.id}
-                  payslip={payslip}
-                  onPress={() => navigation.navigate('PayslipDetail', { id: payslip.id })}
-                />
-              ))}
+            ) : latest ? (
+              <View style={styles.section}>
+                <MotionPressable
+                  onPress={() => navigation.navigate('PayslipDetail', { id: latest.id })}
+                  haptic="selection"
+                  contentStyle={styles.rounded}
+                >
+                  <LinearGradient
+                    colors={theme.gradients.primary}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.latestCard}
+                  >
+                    <View style={styles.latestHeader}>
+                      <View>
+                        <Text style={styles.latestEyebrow}>LATEST PAYSLIP</Text>
+                        <Text style={styles.latestPeriod}>
+                          {latest.periodLabel || formatDate(latest.periodStart, 'monthYear')}
+                        </Text>
+                      </View>
+                      <View style={styles.latestArrow}>
+                        <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+                      </View>
+                    </View>
+                    <Text style={styles.latestAmountLabel}>Net pay</Text>
+                    <Text style={styles.latestAmount}>
+                      {latest.currency} {(latest.netPay ?? latest.netSalary).toLocaleString('en-US', {
+                        minimumFractionDigits: 2,
+                      })}
+                    </Text>
+                    <View style={styles.latestMetrics}>
+                      <SalaryMetric label="Gross" value={latest.currency + ' ' + (latest.grossPay ?? latest.grossSalary).toLocaleString()} />
+                      <View style={styles.latestDivider} />
+                      <SalaryMetric label="Deductions" value={latest.currency + ' ' + latest.totalDeductions.toLocaleString()} />
+                    </View>
+                  </LinearGradient>
+                </MotionPressable>
+              </View>
+            ) : null}
+            <View style={styles.section}>
+              <SectionHeader
+                title="Salary history"
+                subtitle={payslips.length ? payslips.length + ' published statement' + (payslips.length === 1 ? '' : 's') : 'Published statements appear here'}
+              />
             </View>
-          )}
-        </View>
-        <View style={styles.bottomSpacer} />
-      </ScrollView>
+          </>
+        }
+        ListEmptyComponent={
+          !loading ? (
+            <View style={styles.section}>
+              <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
+                <View style={[styles.emptyIcon, { backgroundColor: theme.colors.primary + '18' }]}>
+                  <Ionicons name="wallet-outline" size={29} color={theme.colors.primary} />
+                </View>
+                <Text style={[theme.typography.h3, { color: theme.colors.text }]}>No payslips yet</Text>
+                <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
+                  Your salary statements will appear after payroll is finalized and published.
+                </Text>
+              </GlassSurface>
+            </View>
+          ) : null
+        }
+        ListFooterComponent={<View style={styles.bottomSpacer} />}
+      />
     </View>
   );
+
 }
 function SalaryMetric({ label, value }: { label: string; value: string }) {
   return (
@@ -209,18 +210,20 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   content: { paddingBottom: 34 },
   section: { paddingHorizontal: 16, marginTop: 16 },
+  listItem: { paddingHorizontal: 16 },
+  listGap: { height: 9 },
   rounded: { borderRadius: 24 },
   stateCard: { minHeight: 170, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 22 },
   latestCard: { borderRadius: 26, padding: 19, minHeight: 230 },
   latestHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  latestEyebrow: { color: 'rgba(255,255,255,0.72)', fontSize: 10, lineHeight: 14, fontWeight: '800', letterSpacing: 1.2 },
+  latestEyebrow: { color: 'rgba(255,255,255,0.72)', fontSize: 11, lineHeight: 15, fontWeight: '800', letterSpacing: 1.1 },
   latestPeriod: { color: '#FFFFFF', fontSize: 19, lineHeight: 24, fontWeight: '800', marginTop: 4 },
   latestArrow: { width: 43, height: 43, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.16)', alignItems: 'center', justifyContent: 'center' },
   latestAmountLabel: { color: 'rgba(255,255,255,0.72)', fontSize: 12, marginTop: 24 },
   latestAmount: { color: '#FFFFFF', fontSize: 31, lineHeight: 37, fontWeight: '800', letterSpacing: -0.7, marginTop: 3 },
   latestMetrics: { flexDirection: 'row', alignItems: 'stretch', marginTop: 22, backgroundColor: 'rgba(255,255,255,0.11)', borderRadius: 17, paddingVertical: 12 },
   salaryMetric: { flex: 1, paddingHorizontal: 14 },
-  salaryMetricLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 10, fontWeight: '600' },
+  salaryMetricLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 11, lineHeight: 15, fontWeight: '600' },
   salaryMetricValue: { color: '#FFFFFF', fontSize: 13, fontWeight: '700', marginTop: 4 },
   latestDivider: { width: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.24)' },
   list: { gap: 9 },

@@ -1,20 +1,34 @@
 import React, { useState } from 'react';
 import {
-  View, Text, TouchableOpacity, TextInput,
-  ActivityIndicator, Alert, ScrollView,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
-import { useForm, Controller } from 'react-hook-form';
+import { Controller, useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { authApi } from '@/api/adapters';
-import { COLORS } from '@/config';
+import {
+  GlassSurface,
+  GlassTextField,
+  LiquidBackdrop,
+  LiquidButton,
+  MotionPressable,
+  ScreenHero,
+} from '@/components/ui';
+import { useTheme } from '@/theme/ThemeProvider';
 
 const schema = z.object({
-  currentPassword: z.string().min(1, 'Required'),
-  newPassword: z.string().min(10, 'At least 10 characters'),
-  confirmPassword: z.string().min(1, 'Required'),
-}).refine((d) => d.newPassword === d.confirmPassword, {
+  currentPassword: z.string().min(1, 'Current password is required'),
+  newPassword: z.string().min(10, 'Use at least 10 characters'),
+  confirmPassword: z.string().min(1, 'Confirm your new password'),
+}).refine((data) => data.newPassword === data.confirmPassword, {
   message: 'Passwords do not match',
   path: ['confirmPassword'],
 });
@@ -22,13 +36,17 @@ type FormData = z.infer<typeof schema>;
 
 export default function ChangePasswordScreen() {
   const navigation = useNavigation();
+  const { theme } = useTheme();
   const [submitting, setSubmitting] = useState(false);
-  const [showCurrent, setShowCurrent] = useState(false);
-  const [showNew, setShowNew] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
+  const [visible, setVisible] = useState<Record<keyof FormData, boolean>>({
+    currentPassword: false,
+    newPassword: false,
+    confirmPassword: false,
+  });
 
   const { control, handleSubmit, reset, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
+    defaultValues: { currentPassword: '', newPassword: '', confirmPassword: '' },
   });
 
   const onSubmit = async (data: FormData) => {
@@ -38,99 +56,165 @@ export default function ChangePasswordScreen() {
         currentPassword: data.currentPassword,
         newPassword: data.newPassword,
       });
-      Alert.alert(
-        'Password Changed',
-        'Your password has been updated successfully.',
-        [{ text: 'OK', onPress: () => navigation.goBack() }]
-      );
       reset();
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to change password');
+      Alert.alert(
+        'Password updated',
+        'Your new password is active on this account.',
+        [{ text: 'Done', onPress: () => navigation.goBack() }],
+      );
+    } catch (error: any) {
+      Alert.alert('Could not update password', error?.message || 'Please try again.');
     } finally {
       setSubmitting(false);
     }
   };
 
+  const fields: {
+    name: keyof FormData;
+    label: string;
+    icon: React.ComponentProps<typeof Ionicons>['name'];
+    autoComplete: 'current-password' | 'new-password';
+  }[] = [
+    {
+      name: 'currentPassword',
+      label: 'Current password',
+      icon: 'lock-closed-outline',
+      autoComplete: 'current-password',
+    },
+    {
+      name: 'newPassword',
+      label: 'New password',
+      icon: 'key-outline',
+      autoComplete: 'new-password',
+    },
+    {
+      name: 'confirmPassword',
+      label: 'Confirm new password',
+      icon: 'checkmark-circle-outline',
+      autoComplete: 'new-password',
+    },
+  ];
+
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-      {/* Header */}
-      <View style={{ backgroundColor: COLORS.navy, paddingTop: 56, paddingBottom: 16, paddingHorizontal: 20 }}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={{ marginBottom: 10 }}>
-          <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700' }}>Change Password</Text>
-        <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, marginTop: 2 }}>
-          Keep your account secure
-        </Text>
-      </View>
+    <KeyboardAvoidingView
+      style={[styles.root, { backgroundColor: theme.colors.canvas }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      <LiquidBackdrop subtle />
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHero
+          eyebrow="Security"
+          title="Change password"
+          subtitle="Update your sign-in password without interrupting your workspace."
+          onBack={() => navigation.goBack()}
+        />
 
-      <ScrollView contentContainerStyle={{ padding: 20 }} keyboardShouldPersistTaps="handled">
-        <View style={{
-          backgroundColor: '#fff', borderRadius: 16, padding: 20,
-          shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
-        }}>
-          {/* Password strength hints */}
-          <View style={{ backgroundColor: '#F0F9FF', borderRadius: 10, padding: 12, marginBottom: 20 }}>
-            <Text style={{ fontSize: 12, color: '#0369A1', fontWeight: '600', marginBottom: 4 }}>Password requirements</Text>
-            {['At least 10 characters', 'Mix of letters and numbers recommended'].map((h) => (
-              <Text key={h} style={{ fontSize: 12, color: '#0369A1' }}>• {h}</Text>
-            ))}
-          </View>
+        <View style={styles.content}>
+          <GlassSurface
+            elevated={false}
+            radius={theme.radius.xl}
+            contentStyle={styles.requirements}
+          >
+            <View style={[styles.requirementsIcon, { backgroundColor: theme.colors.primary + '16' }]}>
+              <Ionicons name="shield-checkmark-outline" size={21} color={theme.colors.primary} />
+            </View>
+            <View style={styles.requirementsCopy}>
+              <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
+                Password requirements
+              </Text>
+              <Text style={[theme.typography.caption, styles.requirementLine, { color: theme.colors.textSecondary }]}>
+                At least 10 characters. A unique mix of letters, numbers and symbols is recommended.
+              </Text>
+            </View>
+          </GlassSurface>
 
-          {[
-            { name: 'currentPassword' as const, label: 'Current Password', show: showCurrent, setShow: setShowCurrent },
-            { name: 'newPassword' as const, label: 'New Password', show: showNew, setShow: setShowNew },
-            { name: 'confirmPassword' as const, label: 'Confirm New Password', show: showConfirm, setShow: setShowConfirm },
-          ].map(({ name, label, show, setShow }) => (
-            <View key={name} style={{ marginBottom: 16 }}>
-              <Text style={{ fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6 }}>{label} *</Text>
+          <GlassSurface radius={theme.radius.xl} contentStyle={styles.form}>
+            {fields.map((field) => (
               <Controller
+                key={field.name}
                 control={control}
-                name={name}
-                render={({ field: { onChange, value } }) => (
-                  <View style={{ position: 'relative' }}>
-                    <TextInput
-                      value={value}
-                      onChangeText={onChange}
-                      secureTextEntry={!show}
-                      style={{
-                        borderWidth: 1,
-                        borderColor: errors[name] ? '#DC2626' : '#D1D5DB',
-                        borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
-                        paddingRight: 50, fontSize: 15,
-                      }}
-                    />
-                    <TouchableOpacity
-                      onPress={() => setShow(!show)}
-                      style={{ position: 'absolute', right: 14, top: 13 }}
-                    >
-                      <Text style={{ fontSize: 18 }}>{show ? '🙈' : '👁️'}</Text>
-                    </TouchableOpacity>
-                  </View>
+                name={field.name}
+                render={({ field: { onChange, value, onBlur } }) => (
+                  <GlassTextField
+                    label={field.label}
+                    icon={field.icon}
+                    value={value}
+                    onChangeText={onChange}
+                    onBlur={onBlur}
+                    secureTextEntry={!visible[field.name]}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete={field.autoComplete}
+                    textContentType={field.autoComplete === 'current-password' ? 'password' : 'newPassword'}
+                    error={errors[field.name]?.message}
+                    trailing={
+                      <MotionPressable
+                        accessibilityRole="button"
+                        accessibilityLabel={(visible[field.name] ? 'Hide ' : 'Show ') + field.label}
+                        onPress={() => setVisible((current) => ({
+                          ...current,
+                          [field.name]: !current[field.name],
+                        }))}
+                        haptic="selection"
+                        contentStyle={styles.visibilityButton}
+                      >
+                        <Ionicons
+                          name={visible[field.name] ? 'eye-off-outline' : 'eye-outline'}
+                          size={20}
+                          color={theme.colors.textMuted}
+                        />
+                      </MotionPressable>
+                    }
+                  />
                 )}
               />
-              {errors[name] && (
-                <Text style={{ color: '#DC2626', fontSize: 12, marginTop: 2 }}>{errors[name]?.message}</Text>
-              )}
-            </View>
-          ))}
+            ))}
 
-          <TouchableOpacity
-            onPress={handleSubmit(onSubmit)}
-            disabled={submitting}
-            style={{
-              backgroundColor: submitting ? '#93C5FD' : COLORS.blue,
-              borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 8,
-            }}
-          >
-            {submitting ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Update Password</Text>
-            )}
-          </TouchableOpacity>
+            <LiquidButton
+              label="Update password"
+              icon="shield-checkmark-outline"
+              onPress={handleSubmit(onSubmit)}
+              loading={submitting}
+              disabled={submitting}
+            />
+          </GlassSurface>
+
+          <Text style={[theme.typography.micro, styles.footer, { color: theme.colors.textMuted }]}>
+            KynexOne never displays your existing password after submission.
+          </Text>
         </View>
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  scroll: { flexGrow: 1, paddingBottom: 34 },
+  content: { paddingHorizontal: 16, paddingTop: 12, gap: 12 },
+  requirements: { flexDirection: 'row', alignItems: 'flex-start', gap: 11, padding: 14 },
+  requirementsIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  requirementsCopy: { flex: 1, minWidth: 0 },
+  requirementLine: { marginTop: 4, lineHeight: 18 },
+  form: { padding: 18 },
+  visibilityButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  footer: { textAlign: 'center', paddingHorizontal: 18 },
+});

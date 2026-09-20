@@ -8,6 +8,7 @@ import {
   View,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as LocalAuthentication from 'expo-local-authentication';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSurface, MotionPressable } from '@/components/ui';
@@ -18,7 +19,10 @@ interface Props {
   visible: boolean;
   punchType: PunchType | null;
   onCancel: () => void;
-  onConfirm: (uri: string) => Promise<void> | void;
+  onConfirm: (
+    uri: string,
+    verification: { deviceFaceVerified: boolean; faceCapabilityAvailable: boolean },
+  ) => Promise<void> | void;
 }
 
 export function AttendanceSelfieModal({
@@ -30,11 +34,18 @@ export function AttendanceSelfieModal({
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const cameraRef = useRef<CameraView>(null);
+  const biometricAttemptedRef = useRef(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [cameraReady, setCameraReady] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [faceCapabilityAvailable, setFaceCapabilityAvailable] = useState(false);
+  const [deviceFaceVerified, setDeviceFaceVerified] = useState(false);
+  const [biometricChecking, setBiometricChecking] = useState(false);
+  const [biometricResolved, setBiometricResolved] = useState(false);
+  const [biometricMessage, setBiometricMessage] = useState<string | null>(null);
+  const actionLabel = punchType === 'CLOCK_OUT' ? 'Clock Out' : 'Clock In';
 
   useEffect(() => {
     if (!visible) {
@@ -42,6 +53,12 @@ export function AttendanceSelfieModal({
       setCapturing(false);
       setSubmitting(false);
       setCameraReady(false);
+      setFaceCapabilityAvailable(false);
+      setDeviceFaceVerified(false);
+      setBiometricChecking(false);
+      setBiometricResolved(false);
+      setBiometricMessage(null);
+      biometricAttemptedRef.current = false;
       return;
     }
     if (permission && !permission.granted && permission.canAskAgain) {
@@ -49,31 +66,93 @@ export function AttendanceSelfieModal({
     }
   }, [permission, requestPermission, visible]);
 
+  const verifyDeviceFace = useCallback(async () => {
+    setBiometricChecking(true);
+    setBiometricResolved(false);
+    setBiometricMessage(null);
+    try {
+      const [hasHardware, enrolled, supported] = await Promise.all([
+        LocalAuthentication.hasHardwareAsync(),
+        LocalAuthentication.isEnrolledAsync(),
+        LocalAuthentication.supportedAuthenticationTypesAsync(),
+      ]);
+      const supportsFace =
+        hasHardware
+        && enrolled
+        && supported.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION);
+
+      setFaceCapabilityAvailable(supportsFace);
+      if (!supportsFace) {
+        setDeviceFaceVerified(false);
+        setBiometricMessage('Face biometric is not available on this device. Selfie + GPS verification will be used.');
+        return;
+      }
+
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: actionLabel + ' — verify your face',
+        cancelLabel: 'Cancel',
+        fallbackLabel: '',
+        disableDeviceFallback: true,
+      });
+      setDeviceFaceVerified(result.success);
+      setBiometricMessage(
+        result.success
+          ? 'Device face verification passed.'
+          : 'Face verification was not completed. Retry before submitting attendance.',
+      );
+    } catch {
+      setDeviceFaceVerified(false);
+      setBiometricMessage('Face verification could not be completed. Retry or contact your administrator.');
+    } finally {
+      setBiometricChecking(false);
+      setBiometricResolved(true);
+    }
+  }, [actionLabel]);
+
+  useEffect(() => {
+    if (!visible || biometricAttemptedRef.current) return;
+    biometricAttemptedRef.current = true;
+    void verifyDeviceFace();
+  }, [verifyDeviceFace, visible]);
+
   const takeSelfie = useCallback(async () => {
-    if (!cameraReady || capturing || !cameraRef.current) return;
+    if (
+      !cameraReady
+      || capturing
+      || !cameraRef.current
+      || (faceCapabilityAvailable && !deviceFaceVerified)
+    ) return;
     setCapturing(true);
     try {
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.62,
         skipProcessing: false,
+        exif: false,
       });
       if (photo?.uri) setPhotoUri(photo.uri);
     } finally {
       setCapturing(false);
     }
-  }, [cameraReady, capturing]);
+  }, [cameraReady, capturing, deviceFaceVerified, faceCapabilityAvailable]);
 
   const confirm = useCallback(async () => {
     if (!photoUri || submitting) return;
     setSubmitting(true);
     try {
-      await onConfirm(photoUri);
+      await onConfirm(photoUri, {
+        deviceFaceVerified,
+        faceCapabilityAvailable,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [onConfirm, photoUri, submitting]);
-
-  const actionLabel = punchType === 'CLOCK_OUT' ? 'Clock Out' : 'Clock In';
+  }, [
+    deviceFaceVerified,
+    faceCapabilityAvailable,
+    onConfirm,
+    photoUri,
+    submitting,
+  ]);
 
   return (
     <Modal
@@ -83,7 +162,11 @@ export function AttendanceSelfieModal({
       onRequestClose={onCancel}
     >
       <View style={[styles.root, { backgroundColor: '#020617' }]}>
-        {permission?.granted && !photoUri ? (
+        {permission?.granted
+          && biometricResolved
+          && !biometricChecking
+          && (!faceCapabilityAvailable || deviceFaceVerified)
+          && !photoUri ? (
           <CameraView
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
@@ -121,16 +204,43 @@ export function AttendanceSelfieModal({
         </View>
 
         <View style={styles.center}>
-          {!permission ? (
-            <ActivityIndicator color="#FFFFFF" />
+          {!permission || biometricChecking || !biometricResolved ? (
+            <GlassSurface radius={24} contentStyle={styles.permissionCard}>
+              <ActivityIndicator color="#FFFFFF" />
+              <Text style={styles.permissionTitle}>
+                {biometricChecking ? 'Verifying your face' : 'Preparing attendance'}
+              </Text>
+              <Text style={styles.permissionText}>
+                Camera, device biometric and location checks are prepared before the punch is submitted.
+              </Text>
+            </GlassSurface>
+          ) : faceCapabilityAvailable && !deviceFaceVerified ? (
+            <GlassSurface radius={24} contentStyle={styles.permissionCard}>
+              <Ionicons name="scan-outline" size={34} color={theme.colors.cyan} />
+              <Text style={styles.permissionTitle}>Face verification required</Text>
+              <Text style={styles.permissionText}>
+                {biometricMessage ?? 'Use Face ID to verify this attendance action before taking the selfie.'}
+              </Text>
+              <MotionPressable
+                accessibilityRole="button"
+                accessibilityLabel="Retry face verification"
+                onPress={() => void verifyDeviceFace()}
+                haptic="medium"
+                contentStyle={styles.permissionButton}
+              >
+                <Text style={styles.permissionButtonText}>Retry Face ID</Text>
+              </MotionPressable>
+            </GlassSurface>
           ) : !permission.granted ? (
             <GlassSurface radius={24} contentStyle={styles.permissionCard}>
               <Ionicons name="camera-outline" size={34} color={theme.colors.cyan} />
               <Text style={styles.permissionTitle}>Front camera required</Text>
               <Text style={styles.permissionText}>
-                KynexOne uses a live selfie as attendance evidence when your company requires it.
+                The attendance selfie is attached only to this attendance action and is subject to your organization’s retention policy.
               </Text>
               <MotionPressable
+                accessibilityRole="button"
+                accessibilityLabel="Allow camera access"
                 onPress={() => void requestPermission()}
                 haptic="medium"
                 contentStyle={styles.permissionButton}
@@ -165,6 +275,8 @@ export function AttendanceSelfieModal({
             {photoUri ? (
               <View style={styles.reviewActions}>
                 <MotionPressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Retake attendance selfie"
                   onPress={() => setPhotoUri(null)}
                   haptic="selection"
                   contentStyle={styles.secondaryAction}
@@ -174,6 +286,9 @@ export function AttendanceSelfieModal({
                   <Text style={styles.secondaryActionText}>Retake</Text>
                 </MotionPressable>
                 <MotionPressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Submit attendance selfie"
+                  accessibilityState={{ busy: submitting, disabled: submitting }}
                   onPress={() => void confirm()}
                   haptic="medium"
                   contentStyle={styles.primaryAction}
@@ -196,6 +311,7 @@ export function AttendanceSelfieModal({
                 disabled={!cameraReady || capturing}
                 accessibilityRole="button"
                 accessibilityLabel="Capture attendance selfie"
+                accessibilityState={{ busy: capturing, disabled: !cameraReady || capturing }}
                 contentStyle={styles.captureOuter}
               >
                 <View style={styles.captureInner}>

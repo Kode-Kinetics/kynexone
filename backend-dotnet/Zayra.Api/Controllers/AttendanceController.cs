@@ -376,11 +376,156 @@ public class AttendanceController : ControllerBase
 
     private async Task<ActionResult<AttendanceRawEvent>> Punch(WebPunchRequest request, string source, CancellationToken ct)
     {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(request.EmployeeId)) return Forbid();
-        try { return Ok(await _attendance.PunchAsync(RequireTenant(), request, source, Context(), ct)); }
+
+        if (source.Contains("mobile", StringComparison.OrdinalIgnoreCase))
+        {
+            var geo = await ValidateMobileGeoAsync(tenantId, request, ct);
+            if (!geo.Ok)
+                return BadRequest(new { message = geo.Error });
+
+            request = request with
+            {
+                LocationName = geo.LocationName ?? request.LocationName,
+                VerificationMethod = AppendVerification(
+                    request.VerificationMethod,
+                    geo.GeofenceVerified ? "Geofence" : "GPS")
+            };
+        }
+
+        try { return Ok(await _attendance.PunchAsync(tenantId, request, source, Context(), ct)); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    private async Task<MobileGeoResult> ValidateMobileGeoAsync(
+        Guid tenantId,
+        WebPunchRequest request,
+        CancellationToken ct)
+    {
+        if (request.Latitude is null || request.Longitude is null)
+            return MobileGeoResult.Fail("Location is required for mobile attendance.");
+
+        if (request.Latitude is < -90 or > 90 || request.Longitude is < -180 or > 180)
+            return MobileGeoResult.Fail("The device returned an invalid location.");
+
+        var employeeBranchId = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.Id == request.EmployeeId && !e.IsDeleted)
+            .Select(e => e.BranchId)
+            .FirstOrDefaultAsync(ct);
+
+        var locations = await _db.AttendanceLocations.AsNoTracking()
+            .Where(l => l.TenantId == tenantId && l.IsActive
+                && (l.BranchId == null || l.BranchId == employeeBranchId))
+            .Select(l => new { l.Id, l.Name })
+            .ToListAsync(ct);
+
+        if (locations.Count == 0)
+            return MobileGeoResult.Pass("Mobile GPS", false);
+
+        var locationIds = locations.Select(l => l.Id).ToList();
+        var fences = await _db.AttendanceGeofences.AsNoTracking()
+            .Where(g => g.TenantId == tenantId && g.IsActive
+                && locationIds.Contains(g.AttendanceLocationId))
+            .ToListAsync(ct);
+
+        if (request.LocationMocked == true && fences.Any(g => g.SpoofingRiskCheckEnabled))
+            return MobileGeoResult.Fail(
+                "Mocked or simulated location is not permitted for attendance at this work location.");
+
+        var isOut = string.Equals(request.PunchDirection, "Out", StringComparison.OrdinalIgnoreCase);
+        var required = fences
+            .Where(g => isOut ? g.ClockOutRequiredInside : g.ClockInRequiredInside)
+            .ToList();
+
+        if (required.Count == 0)
+            return MobileGeoResult.Pass("Mobile GPS", false);
+
+        var latitude = (double)request.Latitude.Value;
+        var longitude = (double)request.Longitude.Value;
+        var measured = required
+            .Select(g => new
+            {
+                Fence = g,
+                DistanceMeters = HaversineMeters(
+                    latitude,
+                    longitude,
+                    (double)g.Latitude,
+                    (double)g.Longitude)
+            })
+            .OrderBy(x => x.DistanceMeters)
+            .ToList();
+
+        var match = measured.FirstOrDefault(x => x.DistanceMeters <= x.Fence.RadiusMeters);
+        if (match is not null)
+        {
+            var locationName = locations
+                .FirstOrDefault(l => l.Id == match.Fence.AttendanceLocationId)?.Name
+                ?? match.Fence.Name
+                ?? "Approved work location";
+
+            return MobileGeoResult.Pass(locationName, true);
+        }
+
+        var nearest = measured[0];
+        var nearestName = locations
+            .FirstOrDefault(l => l.Id == nearest.Fence.AttendanceLocationId)?.Name
+            ?? nearest.Fence.Name
+            ?? "approved work location";
+
+        if (request.AccuracyMeters is > 250)
+            return MobileGeoResult.Fail(
+                "Location accuracy is too low to verify attendance. Move to an open area and try again.");
+
+        return MobileGeoResult.Fail(
+            $"You are outside the allowed attendance area for {nearestName}. " +
+            $"Nearest distance is {Math.Round(nearest.DistanceMeters)} m; " +
+            $"allowed radius is {nearest.Fence.RadiusMeters} m.");
+    }
+
+    internal static double HaversineMeters(
+        double latitude1,
+        double longitude1,
+        double latitude2,
+        double longitude2)
+    {
+        const double earthRadiusMeters = 6_371_000d;
+        static double ToRadians(double degrees) => degrees * Math.PI / 180d;
+
+        var lat1 = ToRadians(latitude1);
+        var lat2 = ToRadians(latitude2);
+        var deltaLat = ToRadians(latitude2 - latitude1);
+        var deltaLon = ToRadians(longitude2 - longitude1);
+
+        var a = Math.Sin(deltaLat / 2) * Math.Sin(deltaLat / 2)
+            + Math.Cos(lat1) * Math.Cos(lat2)
+            * Math.Sin(deltaLon / 2) * Math.Sin(deltaLon / 2);
+        var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+        return earthRadiusMeters * c;
+    }
+
+    private static string AppendVerification(string? current, string token)
+    {
+        if (string.IsNullOrWhiteSpace(current)) return token;
+        return current.Contains(token, StringComparison.OrdinalIgnoreCase)
+            ? current
+            : $"{current} + {token}";
+    }
+
+    private sealed record MobileGeoResult(
+        bool Ok,
+        string? Error,
+        string? LocationName,
+        bool GeofenceVerified)
+    {
+        public static MobileGeoResult Fail(string error) =>
+            new(false, error, null, false);
+
+        public static MobileGeoResult Pass(string? locationName, bool geofenceVerified) =>
+            new(true, null, locationName, geofenceVerified);
+    }
+
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
 

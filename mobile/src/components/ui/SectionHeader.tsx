@@ -36,5 +36,11 @@ export function SectionHeader({ title, subtitle, actionLabel, onAction }: Props)
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 },
   copy: { flex: 1 },
-  action: { paddingHorizontal: 8, paddingVertical: 6, borderRadius: 10 },
+  action: {
+    minHeight: 44,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+  },
 });

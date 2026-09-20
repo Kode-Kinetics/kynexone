@@ -101,6 +101,21 @@ export function GlassSurface({
           style={StyleSheet.absoluteFill}
         />
 
+        {elevated || interactive ? (
+          <LinearGradient
+            pointerEvents="none"
+            colors={
+              theme.isDark
+                ? ['rgba(255,255,255,0.26)', 'rgba(255,255,255,0.04)', 'transparent']
+                : ['rgba(255,255,255,0.96)', 'rgba(255,255,255,0.20)', 'transparent']
+            }
+            locations={[0, 0.32, 1]}
+            start={{ x: 0.08, y: 0 }}
+            end={{ x: 0.92, y: 0 }}
+            style={styles.specularRim}
+          />
+        ) : null}
+
         <View style={[styles.content, contentStyle]}>{children}</View>
       </View>
     </View>
@@ -112,6 +127,13 @@ const styles = StyleSheet.create({
     flex: 1,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  specularRim: {
+    position: 'absolute',
+    top: 0,
+    right: 12,
+    left: 12,
+    height: StyleSheet.hairlineWidth,
   },
   content: {
     flex: 1,

@@ -1,19 +1,33 @@
 import React, { useState } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, TextInput,
-  ActivityIndicator, Alert,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
 } from 'react-native';
-import { useRoute, useNavigation } from '@react-navigation/native';
-import { useForm, Controller } from 'react-hook-form';
+import { Ionicons } from '@expo/vector-icons';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import { Controller, useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { attendanceApi } from '@/api/adapters';
-import { COLORS } from '@/config';
+import {
+  GlassSurface,
+  GlassTextField,
+  LiquidBackdrop,
+  LiquidButton,
+  ScreenHero,
+} from '@/components/ui';
+import { useTheme } from '@/theme/ThemeProvider';
 
 const schema = z.object({
   date: z.string().min(1, 'Date required'),
-  requestedClockIn: z.string().regex(/^\d{2}:\d{2}$/, 'Format HH:MM').optional().or(z.literal('')),
-  requestedClockOut: z.string().regex(/^\d{2}:\d{2}$/, 'Format HH:MM').optional().or(z.literal('')),
+  requestedClockIn: z.string().regex(/^\d{2}:\d{2}$/, 'Use HH:MM').optional().or(z.literal('')),
+  requestedClockOut: z.string().regex(/^\d{2}:\d{2}$/, 'Use HH:MM').optional().or(z.literal('')),
   reason: z.string().min(5, 'Reason must be at least 5 characters'),
 });
 type FormData = z.infer<typeof schema>;
@@ -21,15 +35,15 @@ type FormData = z.infer<typeof schema>;
 export default function AttendanceCorrectionScreen() {
   const route = useRoute<any>();
   const navigation = useNavigation();
+  const { theme } = useTheme();
+  const { width, fontScale } = useWindowDimensions();
+  const stackTimes = width < 390 || fontScale > 1.15;
   const [submitting, setSubmitting] = useState(false);
-
-  // Pre-fill date from navigation params if coming from attendance history
-  const prefillDate: string = route.params?.date ?? '';
 
   const { control, handleSubmit, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: {
-      date: prefillDate,
+      date: route.params?.date ?? '',
       requestedClockIn: '',
       requestedClockOut: '',
       reason: '',
@@ -46,150 +60,173 @@ export default function AttendanceCorrectionScreen() {
         reason: data.reason,
       });
       Alert.alert(
-        'Submitted',
-        'Attendance correction request submitted. Your supervisor will review it.',
-        [{ text: 'OK', onPress: () => navigation.goBack() }]
+        'Request submitted',
+        'Your attendance correction was sent for review.',
+        [{ text: 'Done', onPress: () => navigation.goBack() }],
       );
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to submit correction request');
+    } catch (error: any) {
+      Alert.alert('Could not submit request', error?.message || 'Please try again.');
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-      {/* Header */}
-      <View style={{ backgroundColor: COLORS.navy, paddingTop: 56, paddingBottom: 16, paddingHorizontal: 20 }}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={{ marginBottom: 10 }}>
-          <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700' }}>Attendance Correction</Text>
-        <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, marginTop: 2 }}>
-          Request a missing punch or correction
-        </Text>
-      </View>
+    <KeyboardAvoidingView
+      style={[styles.root, { backgroundColor: theme.colors.canvas }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      <LiquidBackdrop subtle />
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHero
+          eyebrow="Attendance"
+          title="Correct a punch"
+          subtitle="Request a missing or incorrect clock-in or clock-out."
+          onBack={() => navigation.goBack()}
+        />
 
-      <ScrollView contentContainerStyle={{ padding: 20 }} keyboardShouldPersistTaps="handled">
-        <View style={{
-          backgroundColor: '#FFF7ED', borderRadius: 12, padding: 14, marginBottom: 20,
-          borderLeftWidth: 4, borderLeftColor: '#F59E0B',
-        }}>
-          <Text style={{ fontWeight: '700', color: '#92400E', fontSize: 14 }}>📋 How it works</Text>
-          <Text style={{ color: '#92400E', fontSize: 13, marginTop: 4, lineHeight: 18 }}>
-            Submit this form if you have a missing punch or incorrect attendance record. Your supervisor will review and approve the correction.
+        <View style={styles.content}>
+          <GlassSurface
+            elevated={false}
+            radius={theme.radius.xl}
+            contentStyle={styles.infoCard}
+            tintColor={theme.isDark ? 'rgba(245,158,11,0.12)' : 'rgba(255,247,237,0.72)'}
+          >
+            <View style={[styles.infoIcon, { backgroundColor: theme.colors.warning + '18' }]}>
+              <Ionicons name="information-circle-outline" size={21} color={theme.colors.warning} />
+            </View>
+            <View style={styles.infoCopy}>
+              <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
+                Reviewed before payroll
+              </Text>
+              <Text style={[theme.typography.caption, styles.infoText, { color: theme.colors.textSecondary }]}>
+                Add only the punch that needs correction. Your manager and HR can review it before the attendance period is locked.
+              </Text>
+            </View>
+          </GlassSurface>
+
+          <GlassSurface radius={theme.radius.xl} contentStyle={styles.formCard}>
+            <Controller
+              control={control}
+              name="date"
+              render={({ field: { onChange, value, onBlur } }) => (
+                <GlassTextField
+                  label="Date"
+                  icon="calendar-outline"
+                  value={value}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                  placeholder="YYYY-MM-DD"
+                  autoCapitalize="none"
+                  keyboardType="numbers-and-punctuation"
+                  error={errors.date?.message}
+                />
+              )}
+            />
+
+            <Text style={[theme.typography.caption, styles.helper, { color: theme.colors.textMuted }]}>
+              Leave a time blank when that punch is already correct.
+            </Text>
+
+            <View style={[styles.timeRow, stackTimes && styles.timeRowStacked]}>
+              <Controller
+                control={control}
+                name="requestedClockIn"
+                render={({ field: { onChange, value, onBlur } }) => (
+                  <GlassTextField
+                    containerStyle={styles.timeField}
+                    label="Clock-in"
+                    icon="log-in-outline"
+                    value={value}
+                    onChangeText={onChange}
+                    onBlur={onBlur}
+                    placeholder="09:00"
+                    keyboardType="numbers-and-punctuation"
+                    error={errors.requestedClockIn?.message}
+                  />
+                )}
+              />
+              <Controller
+                control={control}
+                name="requestedClockOut"
+                render={({ field: { onChange, value, onBlur } }) => (
+                  <GlassTextField
+                    containerStyle={styles.timeField}
+                    label="Clock-out"
+                    icon="log-out-outline"
+                    value={value}
+                    onChangeText={onChange}
+                    onBlur={onBlur}
+                    placeholder="18:00"
+                    keyboardType="numbers-and-punctuation"
+                    error={errors.requestedClockOut?.message}
+                  />
+                )}
+              />
+            </View>
+
+            <Controller
+              control={control}
+              name="reason"
+              render={({ field: { onChange, value, onBlur } }) => (
+                <GlassTextField
+                  label="Reason"
+                  icon="chatbox-ellipses-outline"
+                  value={value}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                  placeholder="What happened and what should be corrected?"
+                  multiline
+                  textAlignVertical="top"
+                  error={errors.reason?.message}
+                  style={styles.reasonInput}
+                />
+              )}
+            />
+
+            <LiquidButton
+              label="Submit correction"
+              icon="paper-plane-outline"
+              onPress={handleSubmit(onSubmit)}
+              loading={submitting}
+              disabled={submitting}
+            />
+          </GlassSurface>
+
+          <Text style={[theme.typography.micro, styles.footer, { color: theme.colors.textMuted }]}>
+            Corrections remain auditable and may require manager and HR approval.
           </Text>
         </View>
-
-        {/* Date */}
-        <Text style={{ fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6 }}>Date *</Text>
-        <Controller
-          control={control}
-          name="date"
-          render={({ field: { onChange, value } }) => (
-            <TextInput
-              value={value}
-              onChangeText={onChange}
-              placeholder="YYYY-MM-DD"
-              style={{
-                borderWidth: 1, borderColor: errors.date ? '#DC2626' : '#D1D5DB',
-                borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
-                fontSize: 15, backgroundColor: '#fff', marginBottom: 4,
-              }}
-            />
-          )}
-        />
-        {errors.date && <Text style={{ color: '#DC2626', fontSize: 12, marginBottom: 8 }}>{errors.date.message}</Text>}
-
-        {/* Clock times */}
-        <Text style={{ fontSize: 13, color: '#6B7280', marginBottom: 12, marginTop: 4 }}>
-          Leave blank if no correction needed for that punch
-        </Text>
-        <View style={{ flexDirection: 'row', gap: 12 }}>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6 }}>Requested Clock-In</Text>
-            <Controller
-              control={control}
-              name="requestedClockIn"
-              render={({ field: { onChange, value } }) => (
-                <TextInput
-                  value={value}
-                  onChangeText={onChange}
-                  placeholder="09:00"
-                  style={{
-                    borderWidth: 1, borderColor: errors.requestedClockIn ? '#DC2626' : '#D1D5DB',
-                    borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
-                    fontSize: 15, backgroundColor: '#fff',
-                  }}
-                />
-              )}
-            />
-            {errors.requestedClockIn && (
-              <Text style={{ color: '#DC2626', fontSize: 12, marginTop: 2 }}>{errors.requestedClockIn.message}</Text>
-            )}
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6 }}>Requested Clock-Out</Text>
-            <Controller
-              control={control}
-              name="requestedClockOut"
-              render={({ field: { onChange, value } }) => (
-                <TextInput
-                  value={value}
-                  onChangeText={onChange}
-                  placeholder="18:00"
-                  style={{
-                    borderWidth: 1, borderColor: errors.requestedClockOut ? '#DC2626' : '#D1D5DB',
-                    borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
-                    fontSize: 15, backgroundColor: '#fff',
-                  }}
-                />
-              )}
-            />
-            {errors.requestedClockOut && (
-              <Text style={{ color: '#DC2626', fontSize: 12, marginTop: 2 }}>{errors.requestedClockOut.message}</Text>
-            )}
-          </View>
-        </View>
-
-        {/* Reason */}
-        <Text style={{ fontSize: 13, fontWeight: '600', color: '#374151', marginTop: 16, marginBottom: 6 }}>Reason *</Text>
-        <Controller
-          control={control}
-          name="reason"
-          render={({ field: { onChange, value } }) => (
-            <TextInput
-              value={value}
-              onChangeText={onChange}
-              placeholder="Explain why this correction is needed (e.g. forgot to punch in, system outage, working from client site)"
-              multiline
-              numberOfLines={5}
-              textAlignVertical="top"
-              style={{
-                borderWidth: 1, borderColor: errors.reason ? '#DC2626' : '#D1D5DB',
-                borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
-                fontSize: 15, backgroundColor: '#fff', minHeight: 120,
-              }}
-            />
-          )}
-        />
-        {errors.reason && <Text style={{ color: '#DC2626', fontSize: 12, marginTop: 2 }}>{errors.reason.message}</Text>}
-
-        <TouchableOpacity
-          onPress={handleSubmit(onSubmit)}
-          disabled={submitting}
-          style={{
-            backgroundColor: submitting ? '#93C5FD' : COLORS.blue,
-            borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 24,
-          }}
-        >
-          {submitting ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Submit Correction Request</Text>
-          )}
-        </TouchableOpacity>
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  scroll: { flexGrow: 1, paddingBottom: 34 },
+  content: { paddingHorizontal: 16, paddingTop: 12, gap: 12 },
+  infoCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 11, padding: 14 },
+  infoIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoCopy: { flex: 1, minWidth: 0 },
+  infoText: { marginTop: 4, lineHeight: 18 },
+  formCard: { padding: 18 },
+  helper: { marginTop: -4, marginBottom: 12 },
+  timeRow: { flexDirection: 'row', gap: 10 },
+  timeRowStacked: { flexDirection: 'column', gap: 0 },
+  timeField: { flex: 1 },
+  reasonInput: { minHeight: 100, paddingTop: 14 },
+  footer: { textAlign: 'center', paddingHorizontal: 18, marginTop: 2 },
+});

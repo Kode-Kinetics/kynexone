@@ -21,10 +21,12 @@ export function GlassIconButton({ icon, onPress, label, badge, style, accent }: 
     <MotionPressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityValue={badge && badge > 0 ? { text: `${badge} unread` } : undefined}
       onPress={onPress}
       style={style}
       contentStyle={styles.pressable}
       haptic="selection"
+      dimensional
     >
       <GlassSurface
         elevated={false}
@@ -34,13 +36,14 @@ export function GlassIconButton({ icon, onPress, label, badge, style, accent }: 
         style={styles.surface}
       >
         <Ionicons
+          accessible={false}
           name={icon}
           size={21}
           color={accent ? theme.colors.cyan : theme.colors.text}
         />
         {!!badge && badge > 0 ? (
           <View style={[styles.badge, { backgroundColor: theme.colors.danger }]}>
-            <Ionicons name="ellipse" size={5} color="#FFFFFF" />
+            <Ionicons accessible={false} name="ellipse" size={5} color="#FFFFFF" />
           </View>
         ) : null}
       </GlassSurface>

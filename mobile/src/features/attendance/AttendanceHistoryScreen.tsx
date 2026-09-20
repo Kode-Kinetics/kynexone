@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  RefreshControl,
+  FlatList,
   ScrollView,
   StyleSheet,
   Text,
@@ -108,113 +108,116 @@ export default function AttendanceHistoryScreen({ navigation }: Props) {
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
       <LiquidBackdrop subtle />
-      <ScrollView
+      <FlatList
+        data={!loading && !error ? records : []}
+        keyExtractor={(item) => item.date}
+        renderItem={({ item }) => (
+          <View style={styles.recordItem}>
+            <AttendanceRecordCard
+              record={item}
+              onCorrection={() => openCorrection(item.date)}
+            />
+          </View>
+        )}
+        ItemSeparatorComponent={() => <View style={styles.recordGap} />}
         contentContainerStyle={styles.content}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={() => void load(true)}
-            tintColor={theme.colors.primary}
-            colors={[theme.colors.primary]}
-          />
-        }
+        refreshing={refreshing}
+        onRefresh={() => void load(true)}
         showsVerticalScrollIndicator={false}
-      >
-        <ScreenHero
-          eyebrow="Time & attendance"
-          title="Attendance history"
-          subtitle="Monthly punches, status and exceptions"
-          actions={
-            <View style={styles.heroActions}>
-              {navigation.canGoBack() ? (
-                <GlassIconButton icon="arrow-back" label="Go back" onPress={() => navigation.goBack()} />
-              ) : null}
-              <GlassIconButton
-                icon="create-outline"
-                label="Request attendance correction"
-                accent
-                onPress={() => openCorrection()}
+        ListHeaderComponent={
+          <>
+            <ScreenHero
+              eyebrow="Time & attendance"
+              title="Attendance history"
+              subtitle="Monthly punches, status and exceptions"
+              actions={
+                <View style={styles.heroActions}>
+                  {navigation.canGoBack() ? (
+                    <GlassIconButton icon="arrow-back" label="Go back" onPress={() => navigation.goBack()} />
+                  ) : null}
+                  <GlassIconButton
+                    icon="create-outline"
+                    label="Request attendance correction"
+                    accent
+                    onPress={() => openCorrection()}
+                  />
+                </View>
+              }
+            />
+            <View style={styles.section}>
+              <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.monthPicker}>
+                <MotionPressable
+                  onPress={previousMonth}
+                  haptic="selection"
+                  contentStyle={styles.monthArrow}
+                  accessibilityLabel="Previous month"
+                >
+                  <Ionicons name="chevron-back" size={20} color={theme.colors.text} />
+                </MotionPressable>
+                <View style={styles.monthCopy}>
+                  <Text style={[theme.typography.h3, { color: theme.colors.text }]}>{monthLabel}</Text>
+                  <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>
+                    {records.length} recorded day{records.length === 1 ? '' : 's'}
+                  </Text>
+                </View>
+                <MotionPressable
+                  onPress={nextMonth}
+                  haptic="selection"
+                  contentStyle={styles.monthArrow}
+                  accessibilityLabel="Next month"
+                >
+                  <Ionicons name="chevron-forward" size={20} color={theme.colors.text} />
+                </MotionPressable>
+              </GlassSurface>
+            </View>
+
+            <View style={styles.section}>
+              <SectionHeader title="Month summary" subtitle="Your attendance at a glance" />
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.summaryRail}>
+                <SummaryChip label="Present" value={summary.present} accent={theme.colors.success} icon="checkmark-circle-outline" />
+                <SummaryChip label="Absent" value={summary.absent} accent={theme.colors.danger} icon="close-circle-outline" />
+                <SummaryChip label="Late" value={summary.late} accent={theme.colors.warning} icon="time-outline" />
+                <SummaryChip label="Leave" value={summary.onLeave} accent={theme.colors.primary} icon="airplane-outline" />
+                <SummaryChip label="Hours" value={formatWorkHours(summary.totalHours)} accent={theme.colors.violet} icon="hourglass-outline" />
+              </ScrollView>
+            </View>
+
+            <View style={styles.section}>
+              <SectionHeader title="Daily record" subtitle="Punches and exceptions" />
+            </View>
+          </>
+        }
+        ListEmptyComponent={
+          <View style={styles.section}>
+            {loading ? (
+              <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+                <ActivityIndicator color={theme.colors.primary} />
+                <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading attendance…</Text>
+              </GlassSurface>
+            ) : error ? (
+              <StateCard
+                icon="alert-circle-outline"
+                title="Attendance unavailable"
+                subtitle={error}
+                accent={theme.colors.danger}
+                actionLabel="Try again"
+                onAction={() => void load()}
               />
-            </View>
-          }
-        />
-        <View style={styles.section}>
-          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.monthPicker}>
-            <MotionPressable
-              onPress={previousMonth}
-              haptic="selection"
-              contentStyle={styles.monthArrow}
-              accessibilityLabel="Previous month"
-            >
-              <Ionicons name="chevron-back" size={20} color={theme.colors.text} />
-            </MotionPressable>
-            <View style={styles.monthCopy}>
-              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>{monthLabel}</Text>
-              <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>
-                {records.length} recorded day{records.length === 1 ? '' : 's'}
-              </Text>
-            </View>
-            <MotionPressable
-              onPress={nextMonth}
-              haptic="selection"
-              contentStyle={styles.monthArrow}
-              accessibilityLabel="Next month"
-            >
-              <Ionicons name="chevron-forward" size={20} color={theme.colors.text} />
-            </MotionPressable>
-          </GlassSurface>
-        </View>
-
-        <View style={styles.section}>
-          <SectionHeader title="Month summary" subtitle="Your attendance at a glance" />
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.summaryRail}>
-            <SummaryChip label="Present" value={summary.present} accent={theme.colors.success} icon="checkmark-circle-outline" />
-            <SummaryChip label="Absent" value={summary.absent} accent={theme.colors.danger} icon="close-circle-outline" />
-            <SummaryChip label="Late" value={summary.late} accent={theme.colors.warning} icon="time-outline" />
-            <SummaryChip label="Leave" value={summary.onLeave} accent={theme.colors.primary} icon="airplane-outline" />
-            <SummaryChip label="Hours" value={formatWorkHours(summary.totalHours)} accent={theme.colors.violet} icon="hourglass-outline" />
-          </ScrollView>
-        </View>
-
-        <View style={styles.section}>
-          <SectionHeader title="Daily record" subtitle="Punches and exceptions" />
-          {loading ? (
-            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
-              <ActivityIndicator color={theme.colors.primary} />
-              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading attendance…</Text>
-            </GlassSurface>
-          ) : error ? (
-            <StateCard
-              icon="alert-circle-outline"
-              title="Attendance unavailable"
-              subtitle={error}
-              accent={theme.colors.danger}
-              actionLabel="Try again"
-              onAction={() => void load()}
-            />
-          ) : records.length === 0 ? (
-            <StateCard
-              icon="calendar-outline"
-              title="No attendance recorded"
-              subtitle="There are no attendance records for this month."
-              accent={theme.colors.textMuted}
-            />
-          ) : (
-            <View style={styles.recordsList}>
-              {records.map((record) => (
-                <AttendanceRecordCard
-                  key={record.date}
-                  record={record}
-                  onCorrection={() => openCorrection(record.date)}
-                />
-              ))}
-            </View>
-          )}
-        </View>
-        <View style={styles.bottomSpacer} />
-      </ScrollView>
+            ) : (
+              <StateCard
+                icon="calendar-outline"
+                title="No attendance recorded"
+                subtitle="There are no attendance records for this month."
+                accent={theme.colors.textMuted}
+              />
+            )}
+          </View>
+        }
+        ListFooterComponent={<View style={styles.bottomSpacer} />}
+      />
     </View>
   );
+
 }
 function SummaryChip({
   label,
@@ -380,6 +383,8 @@ const styles = StyleSheet.create({
   content: { paddingBottom: 36 },
   heroActions: { flexDirection: 'row', gap: 8 },
   section: { paddingHorizontal: 16, marginTop: 16 },
+  recordItem: { paddingHorizontal: 16 },
+  recordGap: { height: 9 },
   monthPicker: {
     minHeight: 74,
     flexDirection: 'row',

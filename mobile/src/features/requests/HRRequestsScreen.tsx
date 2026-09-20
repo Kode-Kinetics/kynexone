@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, { FadeInDown, FadeOutUp } from 'react-native-reanimated';
 import * as DocumentPicker from 'expo-document-picker';
 import { documentsApi, hrRequestsApi } from '@/api/adapters';
 import { normalizePickedFile, type PickedFile } from '@/api/services';
@@ -46,9 +47,10 @@ const requestTypes: {
 
 export default function HRRequestsScreen() {
   const navigation = useNavigation<any>();
-  const { theme } = useTheme();
+  const { theme, reduceMotion } = useTheme();
   const [requests, setRequests] = useState<HRRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [createModal, setCreateModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -59,13 +61,15 @@ export default function HRRequestsScreen() {
   });
   const [attachment, setAttachment] = useState<PickedFile | null>(null);
   const [typePickerOpen, setTypePickerOpen] = useState(false);
+  const [completionMessage, setCompletionMessage] = useState<string | null>(null);
 
   const fetchRequests = useCallback(async () => {
+    setLoadError(null);
     try {
       const data = await hrRequestsApi.getMy({ page: 1, limit: 50 });
       setRequests(data.items || []);
     } catch (error: any) {
-      Alert.alert('HR requests unavailable', error.message || 'Failed to load requests.');
+      setLoadError(error.message || 'Failed to load requests.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -134,7 +138,7 @@ export default function HRRequestsScreen() {
       setCreateModal(false);
       setForm({ requestType: requestTypes[0].key, subject: '', description: '' });
       setAttachment(null);
-      Alert.alert('Request submitted', 'HR has received your request and its SLA clock has started.');
+      setCompletionMessage('Request submitted. HR has received it and the SLA clock has started.');
       await fetchRequests();
     } catch (error: any) {
       Alert.alert('Submission failed', error.message || 'Could not submit this request.');
@@ -174,6 +178,36 @@ export default function HRRequestsScreen() {
             />
           }
         />
+
+        {completionMessage ? (
+          <Animated.View
+            entering={reduceMotion ? undefined : FadeInDown.duration(220)}
+            exiting={reduceMotion ? undefined : FadeOutUp.duration(160)}
+            style={styles.completionWrap}
+          >
+            <GlassSurface
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
+              elevated={false}
+              radius={theme.radius.lg}
+              contentStyle={styles.completionBanner}
+            >
+              <Ionicons name="checkmark-circle" size={22} color={theme.colors.success} />
+              <Text style={[theme.typography.caption, styles.completionText, { color: theme.colors.text }]}>
+                {completionMessage}
+              </Text>
+              <MotionPressable
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss request confirmation"
+                onPress={() => setCompletionMessage(null)}
+                haptic="selection"
+                contentStyle={styles.completionDismiss}
+              >
+                <Ionicons name="close" size={18} color={theme.colors.textMuted} />
+              </MotionPressable>
+            </GlassSurface>
+          </Animated.View>
+        ) : null}
 
         {!loading ? (
           <View style={styles.section}>
@@ -217,6 +251,13 @@ export default function HRRequestsScreen() {
             <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
               <ActivityIndicator color={theme.colors.primary} />
               <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading HR tickets…</Text>
+            </GlassSurface>
+          ) : loadError ? (
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <Ionicons name="cloud-offline-outline" size={28} color={theme.colors.danger} />
+              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>HR requests unavailable</Text>
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, textAlign: 'center' }]}>{loadError}</Text>
+              <LiquidButton label="Try again" onPress={() => void fetchRequests()} />
             </GlassSurface>
           ) : requests.length === 0 ? (
             <EmptyRequests onCreate={() => beginRequest()} />
@@ -498,7 +539,7 @@ function CreateRequestModal({
                       <Text numberOfLines={1} style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{attachment.name}</Text>
                       <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>Ready to upload</Text>
                     </View>
-                    <MotionPressable onPress={onRemoveFile} haptic="selection" contentStyle={styles.removeFile}>
+                    <MotionPressable onPress={onRemoveFile} haptic="selection" contentStyle={styles.removeFile} accessibilityRole="button" accessibilityLabel={`Remove ${attachment.name}`}>
                       <Ionicons name="close" size={19} color={theme.colors.danger} />
                     </MotionPressable>
                   </View>
@@ -566,6 +607,10 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   content: { paddingBottom: 36 },
   section: { paddingHorizontal: 16, marginTop: 16 },
+  completionWrap: { paddingHorizontal: 16, marginTop: 12 },
+  completionBanner: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 14, paddingRight: 6, paddingVertical: 6 },
+  completionText: { flex: 1 },
+  completionDismiss: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   metricRail: { gap: 9, paddingRight: 4 },
   metricCard: { width: 116, minHeight: 124 },
   metricContent: { padding: 14, justifyContent: 'space-between' },
@@ -609,7 +654,7 @@ const styles = StyleSheet.create({
   fileSelected: { minHeight: 72, borderRadius: 17, flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 12 },
   fileIcon: { width: 43, height: 43, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
   fileCopy: { flex: 1, minWidth: 0 },
-  removeFile: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  removeFile: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   modalActions: { flexDirection: 'row', gap: 10, marginTop: 18 },
   modalSecondaryShell: { flex: 1 },
   modalSecondary: { minHeight: 56, borderRadius: 18, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },

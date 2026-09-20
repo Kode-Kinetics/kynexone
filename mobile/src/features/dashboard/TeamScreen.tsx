@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -14,6 +13,7 @@ import { teamApi } from '@/api/adapters';
 import { formatDate, toISODate } from '@/utils/date';
 import { useTheme } from '@/theme/ThemeProvider';
 import {
+  EmployeeAvatar,
   GlassSurface,
   LiquidBackdrop,
   MotionPressable,
@@ -34,16 +34,18 @@ export default function TeamScreen() {
   const { theme } = useTheme();
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState('ALL');
   const [search, setSearch] = useState('');
 
   const fetchTeam = useCallback(async () => {
+    setLoadError(null);
     try {
       const data = await teamApi.getTeam({ date: toISODate(new Date()) });
       setMembers(data.items || []);
     } catch (error: any) {
-      Alert.alert('Team unavailable', error.message || 'Failed to load your team.');
+      setLoadError(error.message || 'Failed to load your team.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -174,6 +176,15 @@ export default function TeamScreen() {
               <ActivityIndicator color={theme.colors.primary} />
               <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading team…</Text>
             </GlassSurface>
+          ) : loadError ? (
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <Ionicons name="cloud-offline-outline" size={28} color={theme.colors.danger} />
+              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Team unavailable</Text>
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, textAlign: 'center' }]}>{loadError}</Text>
+              <MotionPressable onPress={() => void fetchTeam()} contentStyle={[styles.retryButton, { backgroundColor: theme.colors.primary }]}>
+                <Text style={[theme.typography.bodyStrong, { color: '#FFFFFF' }]}>Try again</Text>
+              </MotionPressable>
+            </GlassSurface>
           ) : filtered.length === 0 ? (
             <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
               <View style={[styles.emptyIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
@@ -222,18 +233,13 @@ function TeamStat({
 function MemberCard({ member }: { member: TeamMember }) {
   const { theme } = useTheme();
   const meta = getStatusMeta(member.todayStatus ?? 'UNKNOWN', theme);
-  const initials = member.fullName
-    .split(' ')
-    .map((part) => part[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase();
-
   return (
     <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.memberCard}>
-      <View style={[styles.avatar, { backgroundColor: `${theme.colors.primary}20` }]}>
-        <Text style={[styles.initials, { color: theme.colors.primary }]}>{initials}</Text>
-      </View>
+      <EmployeeAvatar
+        name={member.fullName}
+        photoUrl={member.profilePhotoUrl}
+        size={48}
+      />
       <View style={styles.memberCopy}>
         <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{member.fullName}</Text>
         <Text numberOfLines={1} style={[theme.typography.caption, { color: theme.colors.textSecondary, marginTop: 2 }]}>
@@ -295,6 +301,7 @@ const styles = StyleSheet.create({
   statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 999 },
   statusDot: { width: 6, height: 6, borderRadius: 3 },
   stateCard: { minHeight: 180, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 22 },
+  retryButton: { minHeight: 44, paddingHorizontal: 20, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   emptyCard: { minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 24 },
   emptyIcon: { width: 60, height: 60, borderRadius: 21, alignItems: 'center', justifyContent: 'center', marginBottom: 3 },
   emptyText: { textAlign: 'center', maxWidth: 280 },

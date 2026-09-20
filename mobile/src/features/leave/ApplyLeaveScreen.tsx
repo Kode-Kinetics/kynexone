@@ -29,6 +29,7 @@ import {
   MotionPressable,
   ScreenHero,
   SectionHeader,
+  SwipeDeck,
 } from '@/components/ui';
 import type { LeaveBalance } from '@/types';
 
@@ -184,8 +185,11 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
           }
         />
 
-        <View style={styles.section}>
-          <SectionHeader title="Leave type" subtitle="Available balances are shown live" />
+        <View style={styles.deckSection}>
+          <SectionHeader title="Leave request" subtitle="Swipe through the three steps" />
+          <SwipeDeck minHeight={545}>
+            <View style={styles.formPage}>
+              <SectionHeader title="1 · Leave type" subtitle="Choose a balance to use" />
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.typeRail}>
             {leaveTypes.map((leaveType) => {
               const balance = balances.find((item) => item.leaveTypeId === leaveType.id);
@@ -229,9 +233,8 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
               );
             })}
           </ScrollView>
-        </View>
         {selectedBalance ? (
-          <View style={styles.section}>
+          <View style={styles.pageBlock}>
             <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.balanceCard}>
               <BalanceMetric label="Available" value={selectedBalance.available} accent={theme.colors.success} />
               <View style={[styles.balanceDivider, { backgroundColor: theme.colors.divider }]} />
@@ -241,9 +244,10 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
             </GlassSurface>
           </View>
         ) : null}
+            </View>
 
-        <View style={styles.section}>
-          <SectionHeader title="Duration" subtitle="Choose full-day or half-day leave" />
+            <View style={styles.formPage}>
+              <SectionHeader title="2 · Duration" subtitle="Choose days and dates" />
           <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.durationCard}>
             <View style={styles.switchRow}>
               <View style={styles.switchCopy}>
@@ -297,8 +301,7 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
               </View>
             ) : null}
           </GlassSurface>
-        </View>
-        <View style={styles.section}>
+        <View style={styles.pageBlock}>
           <SectionHeader title="Dates" subtitle={isHalfDay ? 'Select the day' : 'Select the start and end dates'} />
           <View style={styles.dateGrid}>
             <DateField
@@ -335,7 +338,7 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
           ) : null}
         </View>
 
-        <View style={styles.section}>
+        <View style={styles.pageBlock}>
           <GlassSurface
             elevated={false}
             radius={theme.radius.xl}
@@ -361,8 +364,10 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
             )}
           </GlassSurface>
         </View>
-        <View style={styles.section}>
-          <SectionHeader title="Additional details" subtitle="Optional context for your approver" />
+            </View>
+
+            <View style={styles.formPage}>
+              <SectionHeader title="3 · Details" subtitle="Add context and submit" />
           <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.detailsCard}>
             <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>Reason</Text>
             <TextInput
@@ -430,9 +435,8 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
               </View>
             ) : null}
           </GlassSurface>
-        </View>
 
-        <View style={styles.submitSection}>
+        <View style={styles.pageBlock}>
           <LiquidButton
             label={submitting ? 'Submitting request…' : 'Submit leave request'}
             icon="paper-plane-outline"
@@ -443,6 +447,9 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
           <Text style={[theme.typography.micro, styles.submitNote, { color: theme.colors.textMuted }]}>
             Your manager and HR will be notified through the configured approval workflow.
           </Text>
+        </View>
+            </View>
+          </SwipeDeck>
         </View>
       </ScrollView>
     </View>
@@ -492,6 +499,9 @@ const styles = StyleSheet.create({
   loadingCard: { width: '100%', maxWidth: 320, minHeight: 170 },
   loadingContent: { alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
   section: { paddingHorizontal: 16, marginTop: 16 },
+  deckSection: { marginTop: 16 },
+  formPage: { paddingHorizontal: 16, paddingTop: 2 },
+  pageBlock: { marginTop: 16 },
   typeRail: { gap: 9, paddingRight: 4 },
   typeChip: {
     minWidth: 164,

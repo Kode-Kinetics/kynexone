@@ -72,6 +72,159 @@ public class AttendanceScopeAndApprovalQueueTests
     }
 
     [Fact]
+    public async Task MobilePunch_RejectsOutsideRequiredGeofence()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var branchId = Guid.NewGuid();
+        var employee = await AddEmployee(db, tenantId, "E-GEO");
+        employee.BranchId = branchId;
+
+        var location = new AttendanceLocation
+        {
+            TenantId = tenantId,
+            BranchId = branchId,
+            Name = "Main Office",
+            IsActive = true
+        };
+        db.AttendanceLocations.Add(location);
+        db.AttendanceGeofences.Add(new AttendanceGeofence
+        {
+            TenantId = tenantId,
+            AttendanceLocationId = location.Id,
+            Name = "Main Office",
+            Latitude = 38.7500000m,
+            Longitude = -77.6000000m,
+            RadiusMeters = 100,
+            ClockInRequiredInside = true,
+            IsActive = true
+        });
+        await db.SaveChangesAsync();
+
+        var controller = CreateAttendanceController(db, tenantId, new FixedScope(employee.Id));
+        var result = await controller.MobilePunch(
+            new WebPunchRequest(
+                employee.Id,
+                "In",
+                "Mobile GPS",
+                38.7600000m,
+                -77.6000000m,
+                null,
+                "Mobile GPS + Selfie",
+                null,
+                10m,
+                false,
+                true),
+            CancellationToken.None);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result.Result);
+        Assert.Contains("outside the allowed attendance area", bad.Value!.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(db.AttendanceRawEvents);
+    }
+
+    [Fact]
+    public async Task MobilePunch_AcceptsInsideRequiredGeofence()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var branchId = Guid.NewGuid();
+        var employee = await AddEmployee(db, tenantId, "E-GEO-IN");
+        employee.BranchId = branchId;
+
+        var location = new AttendanceLocation
+        {
+            TenantId = tenantId,
+            BranchId = branchId,
+            Name = "Main Office",
+            IsActive = true
+        };
+        db.AttendanceLocations.Add(location);
+        db.AttendanceGeofences.Add(new AttendanceGeofence
+        {
+            TenantId = tenantId,
+            AttendanceLocationId = location.Id,
+            Name = "Main Office",
+            Latitude = 38.7500000m,
+            Longitude = -77.6000000m,
+            RadiusMeters = 150,
+            ClockInRequiredInside = true,
+            IsActive = true
+        });
+        await db.SaveChangesAsync();
+
+        var controller = CreateAttendanceController(db, tenantId, new FixedScope(employee.Id));
+        var result = await controller.MobilePunch(
+            new WebPunchRequest(
+                employee.Id,
+                "In",
+                "Mobile GPS",
+                38.7501000m,
+                -77.6000000m,
+                "tenant/selfie.jpg",
+                "Mobile GPS + Selfie + Device Face",
+                null,
+                8m,
+                false,
+                true),
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var raw = Assert.IsType<AttendanceRawEvent>(ok.Value);
+        Assert.Equal("Main Office", raw.LocationName);
+        Assert.Contains("Geofence", raw.VerificationMethod, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(db.AttendanceRawEvents);
+    }
+
+    [Fact]
+    public async Task MobilePunch_RejectsMockedLocation_WhenSpoofingCheckEnabled()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = await AddEmployee(db, tenantId, "E-MOCK");
+
+        var location = new AttendanceLocation
+        {
+            TenantId = tenantId,
+            Name = "Global Site",
+            IsActive = true
+        };
+        db.AttendanceLocations.Add(location);
+        db.AttendanceGeofences.Add(new AttendanceGeofence
+        {
+            TenantId = tenantId,
+            AttendanceLocationId = location.Id,
+            Name = "Global Site",
+            Latitude = 38.7500000m,
+            Longitude = -77.6000000m,
+            RadiusMeters = 150,
+            ClockInRequiredInside = true,
+            SpoofingRiskCheckEnabled = true,
+            IsActive = true
+        });
+        await db.SaveChangesAsync();
+
+        var controller = CreateAttendanceController(db, tenantId, new FixedScope(employee.Id));
+        var result = await controller.MobilePunch(
+            new WebPunchRequest(
+                employee.Id,
+                "In",
+                "Mobile GPS",
+                38.7500000m,
+                -77.6000000m,
+                null,
+                "Mobile GPS",
+                null,
+                5m,
+                true,
+                false),
+            CancellationToken.None);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result.Result);
+        Assert.Contains("Mocked", bad.Value!.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(db.AttendanceRawEvents);
+    }
+
+    [Fact]
     public async Task MineQueue_MatchesRoleCaseInsensitively()
     {
         await using var db = CreateDb();

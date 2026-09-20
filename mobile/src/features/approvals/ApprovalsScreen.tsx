@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Modal,
-  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,6 +11,11 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import { approvalsApi } from '@/api/services';
 import { formatDate } from '@/utils/date';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -32,12 +37,14 @@ interface Props {
 
 type ApprovalTab = 'PENDING' | 'HISTORY';
 type ApprovalAction = 'APPROVE' | 'REJECT' | 'SEND_BACK';
+type DecisionFeedback = { action: ApprovalAction; title: string };
 
 export default function ApprovalsScreen({ navigation, route }: Props) {
   const { theme } = useTheme();
   const [tab, setTab] = useState<ApprovalTab>('PENDING');
   const [items, setItems] = useState<ApprovalItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [filterType, setFilterType] = useState<ApprovalItemType | 'ALL'>(
     route?.params?.filterType ?? 'ALL',
@@ -47,6 +54,7 @@ export default function ApprovalsScreen({ navigation, route }: Props) {
   const [modalAction, setModalAction] = useState<ApprovalAction>('APPROVE');
   const [comment, setComment] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
+  const [decisionFeedback, setDecisionFeedback] = useState<DecisionFeedback | null>(null);
 
   const typeConfig = useMemo<Record<string, {
     label: string;
@@ -66,6 +74,7 @@ export default function ApprovalsScreen({ navigation, route }: Props) {
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
+    setLoadError(null);
     try {
       if (tab === 'PENDING') {
         setItems(await approvalsApi.getPendingApprovals());
@@ -74,7 +83,7 @@ export default function ApprovalsScreen({ navigation, route }: Props) {
         setItems(history.data);
       }
     } catch (error: any) {
-      Alert.alert('Approvals unavailable', error?.response?.data?.message ?? 'Could not load approvals.');
+      setLoadError(error?.response?.data?.message ?? 'Could not load approvals.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -122,7 +131,7 @@ export default function ApprovalsScreen({ navigation, route }: Props) {
         await approvalsApi.sendBack(selectedItem.taskId, comment.trim());
       }
       setModalVisible(false);
-      Alert.alert('Decision recorded', 'The workflow has been updated and the requester will be notified.');
+      setDecisionFeedback({ action: modalAction, title: selectedItem.title });
       await load(true);
     } catch (error: any) {
       Alert.alert('Action failed', error?.response?.data?.message ?? 'Please try again.');
@@ -139,157 +148,167 @@ export default function ApprovalsScreen({ navigation, route }: Props) {
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
       <LiquidBackdrop subtle />
-      <ScrollView
+      <FlatList
+        data={!loading && !loadError ? filteredItems : []}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <View style={styles.listItem}>
+            <ApprovalCard
+              item={item}
+              pending={tab === 'PENDING'}
+              meta={typeConfig[item.type] ?? {
+                label: item.type,
+                icon: 'document-outline',
+                color: theme.colors.textMuted,
+              }}
+              onApprove={() => openAction(item, 'APPROVE')}
+              onReject={() => openAction(item, 'REJECT')}
+              onSendBack={() => openAction(item, 'SEND_BACK')}
+            />
+          </View>
+        )}
+        ItemSeparatorComponent={() => <View style={styles.listGap} />}
         contentContainerStyle={styles.content}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={() => {
-              setRefreshing(true);
-              void load(true);
-            }}
-            tintColor={theme.colors.primary}
-            colors={[theme.colors.primary]}
-          />
-        }
+        refreshing={refreshing}
+        onRefresh={() => {
+          setRefreshing(true);
+          void load(true);
+        }}
         showsVerticalScrollIndicator={false}
-      >
-        <ScreenHero
-          eyebrow="Manager workspace"
-          title="Approval center"
-          subtitle={tab === 'PENDING' ? `${items.length} pending decision${items.length === 1 ? '' : 's'}` : 'Completed workflow decisions'}
-          actions={
-            navigation.canGoBack() ? (
-              <GlassIconButton icon="arrow-back" label="Go back" onPress={() => navigation.goBack()} />
-            ) : undefined
-          }
-        />
+        ListHeaderComponent={
+          <>
+            <ScreenHero
+              eyebrow="Manager workspace"
+              title="Approval center"
+              subtitle={tab === 'PENDING' ? items.length + ' pending decision' + (items.length === 1 ? '' : 's') : 'Completed workflow decisions'}
+              actions={
+                navigation.canGoBack() ? (
+                  <GlassIconButton icon="arrow-back" label="Go back" onPress={() => navigation.goBack()} />
+                ) : undefined
+              }
+            />
 
-        <View style={styles.section}>
-          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.tabContainer}>
-            {(['PENDING', 'HISTORY'] as const).map((nextTab) => {
-              const selected = tab === nextTab;
-              return (
-                <MotionPressable
-                  key={nextTab}
-                  onPress={() => setTab(nextTab)}
-                  haptic="selection"
-                  style={styles.tabShell}
-                  contentStyle={[
-                    styles.tabButton,
-                    { backgroundColor: selected ? `${theme.colors.primary}1F` : 'transparent' },
-                  ]}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected }}
-                >
-                  <Ionicons
-                    name={nextTab === 'PENDING' ? 'hourglass-outline' : 'time-outline'}
-                    size={18}
-                    color={selected ? theme.colors.primary : theme.colors.textMuted}
-                  />
-                  <Text
-                    style={[
-                      theme.typography.bodyStrong,
-                      { color: selected ? theme.colors.primary : theme.colors.textSecondary },
-                    ]}
-                  >
-                    {nextTab === 'PENDING' ? 'Pending' : 'History'}
-                  </Text>
-                  {nextTab === 'PENDING' && items.length > 0 ? (
-                    <View style={[styles.tabCount, { backgroundColor: theme.colors.primary }]}>
-                      <Text style={styles.tabCountText}>{items.length}</Text>
-                    </View>
-                  ) : null}
-                </MotionPressable>
-              );
-            })}
-          </GlassSurface>
-        </View>
-
-        <View style={styles.filterSection}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRail}>
-            {availableTypes.map((type) => {
-              const selected = filterType === type;
-              const meta = type === 'ALL'
-                ? { label: 'All', icon: 'apps-outline' as const, color: theme.colors.primary }
-                : typeConfig[type] ?? { label: type, icon: 'document-outline' as const, color: theme.colors.textMuted };
-              const count = type === 'ALL' ? items.length : pendingByType[type] ?? 0;
-              return (
-                <MotionPressable
-                  key={type}
-                  onPress={() => setFilterType(type)}
-                  haptic="selection"
-                  contentStyle={[
-                    styles.filterChip,
-                    {
-                      backgroundColor: selected ? `${meta.color}20` : theme.colors.surface,
-                      borderColor: selected ? meta.color : theme.colors.border,
-                    },
-                  ]}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected }}
-                >
-                  <Ionicons name={meta.icon} size={15} color={selected ? meta.color : theme.colors.textMuted} />
-                  <Text
-                    style={[
-                      theme.typography.caption,
-                      { color: selected ? meta.color : theme.colors.textSecondary, fontWeight: selected ? '700' : '500' },
-                    ]}
-                  >
-                    {meta.label}{count ? ` · ${count}` : ''}
-                  </Text>
-                </MotionPressable>
-              );
-            })}
-          </ScrollView>
-        </View>
-
-        <View style={styles.section}>
-          <SectionHeader
-            title={tab === 'PENDING' ? 'Decisions waiting' : 'Decision history'}
-            subtitle={`${filteredItems.length} item${filteredItems.length === 1 ? '' : 's'}`}
-          />
-          {loading ? (
-            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
-              <ActivityIndicator color={theme.colors.primary} />
-              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading approval workflow…</Text>
-            </GlassSurface>
-          ) : filteredItems.length === 0 ? (
-            <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
-              <View style={[styles.emptyIcon, { backgroundColor: `${theme.colors.success}18` }]}>
-                <Ionicons name="checkmark-done-circle-outline" size={32} color={theme.colors.success} />
-              </View>
-              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>
-                {tab === 'PENDING' ? 'You are all caught up' : 'No decisions yet'}
-              </Text>
-              <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
-                {tab === 'PENDING'
-                  ? 'New requests that require your authority will appear here.'
-                  : 'Completed approvals and rejections will be recorded here.'}
-              </Text>
-            </GlassSurface>
-          ) : (
-            <View style={styles.list}>
-              {filteredItems.map((item) => (
-                <ApprovalCard
-                  key={item.id}
-                  item={item}
-                  pending={tab === 'PENDING'}
-                  meta={typeConfig[item.type] ?? {
-                    label: item.type,
-                    icon: 'document-outline',
-                    color: theme.colors.textMuted,
-                  }}
-                  onApprove={() => openAction(item, 'APPROVE')}
-                  onReject={() => openAction(item, 'REJECT')}
-                  onSendBack={() => openAction(item, 'SEND_BACK')}
-                />
-              ))}
+            <View style={styles.section}>
+              <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.tabContainer}>
+                {(['PENDING', 'HISTORY'] as const).map((nextTab) => {
+                  const selected = tab === nextTab;
+                  return (
+                    <MotionPressable
+                      key={nextTab}
+                      onPress={() => setTab(nextTab)}
+                      haptic="selection"
+                      style={styles.tabShell}
+                      contentStyle={[
+                        styles.tabButton,
+                        { backgroundColor: selected ? theme.colors.primary + '1F' : 'transparent' },
+                      ]}
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected }}
+                    >
+                      <Ionicons
+                        name={nextTab === 'PENDING' ? 'hourglass-outline' : 'time-outline'}
+                        size={18}
+                        color={selected ? theme.colors.primary : theme.colors.textMuted}
+                      />
+                      <Text
+                        style={[
+                          theme.typography.bodyStrong,
+                          { color: selected ? theme.colors.primary : theme.colors.textSecondary },
+                        ]}
+                      >
+                        {nextTab === 'PENDING' ? 'Pending' : 'History'}
+                      </Text>
+                      {nextTab === 'PENDING' && items.length > 0 ? (
+                        <View style={[styles.tabCount, { backgroundColor: theme.colors.primary }]}>
+                          <Text style={styles.tabCountText}>{items.length}</Text>
+                        </View>
+                      ) : null}
+                    </MotionPressable>
+                  );
+                })}
+              </GlassSurface>
             </View>
-          )}
-        </View>
-        <View style={styles.bottomSpacer} />
-      </ScrollView>
+
+            <View style={styles.filterSection}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRail}>
+                {availableTypes.map((type) => {
+                  const selected = filterType === type;
+                  const meta = type === 'ALL'
+                    ? { label: 'All', icon: 'apps-outline' as const, color: theme.colors.primary }
+                    : typeConfig[type] ?? { label: type, icon: 'document-outline' as const, color: theme.colors.textMuted };
+                  const count = type === 'ALL' ? items.length : pendingByType[type] ?? 0;
+                  return (
+                    <MotionPressable
+                      key={type}
+                      onPress={() => setFilterType(type)}
+                      haptic="selection"
+                      contentStyle={[
+                        styles.filterChip,
+                        {
+                          backgroundColor: selected ? meta.color + '20' : theme.colors.surface,
+                          borderColor: selected ? meta.color : theme.colors.border,
+                        },
+                      ]}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                    >
+                      <Ionicons name={meta.icon} size={15} color={selected ? meta.color : theme.colors.textMuted} />
+                      <Text
+                        style={[
+                          theme.typography.caption,
+                          { color: selected ? meta.color : theme.colors.textSecondary, fontWeight: selected ? '700' : '500' },
+                        ]}
+                      >
+                        {meta.label}{count ? ' · ' + count : ''}
+                      </Text>
+                    </MotionPressable>
+                  );
+                })}
+              </ScrollView>
+            </View>
+
+            <View style={styles.section}>
+              {decisionFeedback ? <DecisionOutcome feedback={decisionFeedback} /> : null}
+              <SectionHeader
+                title={tab === 'PENDING' ? 'Decisions waiting' : 'Decision history'}
+                subtitle={filteredItems.length + ' item' + (filteredItems.length === 1 ? '' : 's')}
+              />
+            </View>
+          </>
+        }
+        ListEmptyComponent={
+          <View style={styles.section}>
+            {loading ? (
+              <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+                <ActivityIndicator color={theme.colors.primary} />
+                <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading approval workflow…</Text>
+              </GlassSurface>
+            ) : loadError ? (
+              <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+                <Ionicons name="cloud-offline-outline" size={28} color={theme.colors.danger} />
+                <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Approvals unavailable</Text>
+                <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, textAlign: 'center' }]}>{loadError}</Text>
+                <LiquidButton label="Try again" onPress={() => void load()} />
+              </GlassSurface>
+            ) : (
+              <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
+                <View style={[styles.emptyIcon, { backgroundColor: theme.colors.success + '18' }]}>
+                  <Ionicons name="checkmark-done-circle-outline" size={32} color={theme.colors.success} />
+                </View>
+                <Text style={[theme.typography.h3, { color: theme.colors.text }]}>
+                  {tab === 'PENDING' ? 'You are all caught up' : 'No decisions yet'}
+                </Text>
+                <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
+                  {tab === 'PENDING'
+                    ? 'New requests that require your authority will appear here.'
+                    : 'Completed approvals and rejections will be recorded here.'}
+                </Text>
+              </GlassSurface>
+            )}
+          </View>
+        }
+        ListFooterComponent={<View style={styles.bottomSpacer} />}
+      />
 
       <DecisionModal
         visible={modalVisible}
@@ -302,6 +321,43 @@ export default function ApprovalsScreen({ navigation, route }: Props) {
         onSubmit={() => void submitAction()}
       />
     </View>
+  );
+}
+
+function DecisionOutcome({ feedback }: { feedback: DecisionFeedback }) {
+  const { theme, reduceMotion } = useTheme();
+  const progress = useSharedValue(0);
+  useEffect(() => {
+    progress.value = reduceMotion ? 1 : withSpring(1, { damping: 18, stiffness: 260 });
+  }, [progress, reduceMotion, feedback]);
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: progress.value,
+    transform: [{ scale: reduceMotion ? 1 : 0.94 + (progress.value * 0.06) }],
+  }));
+  const approved = feedback.action === 'APPROVE';
+  const sentBack = feedback.action === 'SEND_BACK';
+  const color = approved ? theme.colors.success : sentBack ? theme.colors.warning : theme.colors.danger;
+  const verb = approved ? 'Approved' : sentBack ? 'Sent back' : 'Rejected';
+  const explanation = approved
+    ? 'It moved forward and the requester will be notified.'
+    : sentBack
+      ? 'It returned to the requester for changes.'
+      : 'It left your pending queue and the requester will be notified.';
+
+  return (
+    <Animated.View
+      accessible
+      accessibilityLiveRegion="polite"
+      style={[styles.decisionOutcome, { backgroundColor: `${color}18`, borderColor: `${color}40` }, animatedStyle]}
+    >
+      <Ionicons name={approved ? 'checkmark-circle' : sentBack ? 'return-down-back' : 'close-circle'} size={22} color={color} />
+      <View style={styles.decisionOutcomeCopy}>
+        <Text numberOfLines={1} style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
+          {verb}: {feedback.title}
+        </Text>
+        <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>{explanation}</Text>
+      </View>
+    </Animated.View>
   );
 }
 
@@ -515,15 +571,19 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   content: { paddingBottom: 36 },
   section: { paddingHorizontal: 16, marginTop: 16 },
+  listItem: { paddingHorizontal: 16 },
+  listGap: { height: 10 },
   filterSection: { marginTop: 11 },
   tabContainer: { flexDirection: 'row', padding: 5 },
   tabShell: { flex: 1 },
   tabButton: { minHeight: 48, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   tabCount: { minWidth: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
-  tabCountText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
+  tabCountText: { color: '#FFFFFF', fontSize: 11, lineHeight: 15, fontWeight: '800' },
   filterRail: { paddingHorizontal: 16, gap: 8 },
-  filterChip: { minHeight: 40, borderRadius: 999, borderWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
+  filterChip: { minHeight: 44, borderRadius: 999, borderWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
   stateCard: { minHeight: 180, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
+  decisionOutcome: { flexDirection: 'row', alignItems: 'center', gap: 11, padding: 13, borderRadius: 18, borderWidth: StyleSheet.hairlineWidth, marginBottom: 14 },
+  decisionOutcomeCopy: { flex: 1, gap: 2 },
   emptyCard: { minHeight: 230, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 24 },
   emptyIcon: { width: 64, height: 64, borderRadius: 22, alignItems: 'center', justifyContent: 'center', marginBottom: 3 },
   emptyText: { textAlign: 'center', maxWidth: 290 },
@@ -541,10 +601,10 @@ const styles = StyleSheet.create({
   detailRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
   detailLabel: { textTransform: 'uppercase', letterSpacing: 0.45, maxWidth: '43%' },
   actions: { borderTopWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 15, paddingTop: 13 },
-  returnButton: { minHeight: 43, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, borderRadius: 13 },
+  returnButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, borderRadius: 13 },
   actionRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  rejectButton: { minHeight: 43, minWidth: 76, borderRadius: 14, borderWidth: 1.2, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
-  approveButton: { minHeight: 43, minWidth: 94, borderRadius: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingHorizontal: 13 },
+  rejectButton: { minHeight: 44, minWidth: 76, borderRadius: 14, borderWidth: 1.2, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
+  approveButton: { minHeight: 44, minWidth: 94, borderRadius: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingHorizontal: 13 },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end' },
   modalSheet: { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
   modalContent: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 30 },

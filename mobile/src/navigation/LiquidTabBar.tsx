@@ -58,7 +58,7 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
           return (
             <MotionPressable
               key={route.key}
-              accessibilityRole="button"
+              accessibilityRole="tab"
               accessibilityState={focused ? { selected: true } : {}}
               accessibilityLabel={descriptor.options.tabBarAccessibilityLabel ?? meta.label}
               onPress={onPress}
@@ -79,7 +79,7 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
                 />
               </View>
               <Text
-                numberOfLines={1}
+                numberOfLines={2}
                 style={[
                   styles.label,
                   {
@@ -105,5 +105,5 @@ const styles = StyleSheet.create({
   item: { flex: 1 },
   itemPressable: { alignItems: 'center', justifyContent: 'center', minHeight: 54, gap: 2 },
   iconWrap: { width: 38, height: 32, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  label: { fontSize: 10.5, lineHeight: 13 },
+  label: { fontSize: 11, lineHeight: 14, textAlign: 'center' },
 });

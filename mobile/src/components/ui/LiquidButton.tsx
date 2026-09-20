@@ -42,10 +42,12 @@ export function LiquidButton({
     <MotionPressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled: Boolean(disabled || loading), busy: Boolean(loading) }}
       testID={testID}
       onPress={onPress}
       disabled={disabled || loading}
       haptic="medium"
+      dimensional
       style={[styles.shell, theme.shadows.soft, style]}
       contentStyle={styles.pressable}
     >
@@ -59,9 +61,9 @@ export function LiquidButton({
           <ActivityIndicator color="#FFFFFF" size="small" />
         ) : (
           <>
-            {icon ? <Ionicons name={icon} size={19} color="#FFFFFF" /> : null}
+            {icon ? <Ionicons accessible={false} name={icon} size={19} color="#FFFFFF" /> : null}
             <Text style={styles.label}>{label}</Text>
-            <Ionicons name="arrow-forward" size={18} color="rgba(255,255,255,0.92)" />
+            <Ionicons accessible={false} name="arrow-forward" size={18} color="rgba(255,255,255,0.92)" />
           </>
         )}
       </LinearGradient>

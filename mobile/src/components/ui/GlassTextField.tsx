@@ -32,6 +32,7 @@ export function GlassTextField({
 }: Props) {
   const { theme } = useTheme();
   const [focused, setFocused] = useState(false);
+  const multiline = Boolean(inputProps.multiline);
 
   return (
     <View style={[styles.group, containerStyle]}>
@@ -53,16 +54,24 @@ export function GlassTextField({
         <GlassSurface
           elevated={false}
           radius={16}
-          contentStyle={styles.inputRow}
-          style={styles.surface}
+          contentStyle={[styles.inputRow, multiline && styles.inputRowMultiline]}
+          style={[styles.surface, multiline && styles.surfaceMultiline]}
         >
           <Ionicons
+            accessible={false}
             name={icon}
             size={19}
             color={focused ? theme.colors.primary : theme.colors.textMuted}
+            style={multiline ? styles.iconMultiline : undefined}
           />
           <TextInput
             {...inputProps}
+            accessibilityLabel={inputProps.accessibilityLabel ?? label}
+            accessibilityHint={inputProps.accessibilityHint}
+            accessibilityState={{
+              ...inputProps.accessibilityState,
+              disabled: Boolean(inputProps.editable === false),
+            }}
             selectionColor={theme.colors.primary}
             placeholderTextColor={theme.colors.textMuted}
             onFocus={(event) => {
@@ -84,7 +93,11 @@ export function GlassTextField({
         </GlassSurface>
       </View>
       {error ? (
-        <Text style={[theme.typography.caption, styles.error, { color: theme.colors.danger }]}>
+        <Text
+          accessibilityLiveRegion="polite"
+          role="alert"
+          style={[theme.typography.caption, styles.error, { color: theme.colors.danger }]}
+        >
           {error}
         </Text>
       ) : null}
@@ -96,8 +109,11 @@ const styles = StyleSheet.create({
   group: { marginBottom: 16 },
   label: { marginBottom: 7, fontWeight: '700' },
   focusRing: { borderWidth: 1.5, borderRadius: 18, padding: 1 },
-  surface: { minHeight: 54 },
+  surface: { minHeight: 56 },
+  surfaceMultiline: { minHeight: 120 },
   inputRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, gap: 10 },
-  input: { flex: 1, minHeight: 50, paddingVertical: 12 },
+  inputRowMultiline: { alignItems: 'flex-start' },
+  iconMultiline: { marginTop: 17 },
+  input: { flex: 1, minHeight: 52, paddingVertical: 12 },
   error: { marginTop: 5, marginLeft: 4 },
 });

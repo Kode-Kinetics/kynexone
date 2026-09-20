@@ -43,15 +43,17 @@ export default function NotificationsScreen() {
   const { theme } = useTheme();
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [markingAll, setMarkingAll] = useState(false);
 
   const fetchNotifications = useCallback(async () => {
+    setLoadError(null);
     try {
       const data = await notificationsApi.getAll({ page: 1, limit: 50 });
       setNotifications(data.items || []);
     } catch (error: any) {
-      Alert.alert('Notifications unavailable', error.message || 'Failed to load notifications.');
+      setLoadError(error.message || 'Failed to load notifications.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -141,6 +143,17 @@ export default function NotificationsScreen() {
             <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
               <ActivityIndicator color={theme.colors.primary} />
               <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading updates…</Text>
+            </GlassSurface>
+          </View>
+        ) : loadError ? (
+          <View style={styles.section}>
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <Ionicons name="cloud-offline-outline" size={28} color={theme.colors.danger} />
+              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Notifications unavailable</Text>
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, textAlign: 'center' }]}>{loadError}</Text>
+              <MotionPressable onPress={() => void fetchNotifications()} contentStyle={[styles.retryButton, { backgroundColor: theme.colors.primary }]}>
+                <Text style={[theme.typography.bodyStrong, { color: '#FFFFFF' }]}>Try again</Text>
+              </MotionPressable>
             </GlassSurface>
           </View>
         ) : notifications.length === 0 ? (
@@ -271,6 +284,7 @@ const styles = StyleSheet.create({
   list: { gap: 9 },
   rounded: { borderRadius: 24 },
   stateCard: { minHeight: 170, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 22 },
+  retryButton: { minHeight: 44, paddingHorizontal: 20, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   notificationCard: { minHeight: 94, flexDirection: 'row', alignItems: 'flex-start', gap: 13, padding: 14 },
   notificationIcon: { width: 46, height: 46, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   notificationCopy: { flex: 1, minWidth: 0 },

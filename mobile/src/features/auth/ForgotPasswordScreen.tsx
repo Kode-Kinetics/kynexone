@@ -1,223 +1,322 @@
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity,
-  ActivityIndicator, Alert, ScrollView,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { authApi } from '@/api/adapters';
-import { COLORS } from '@/config';
 import { appStorage } from '@/storage';
+import {
+  GlassSurface,
+  GlassTextField,
+  LiquidBackdrop,
+  LiquidButton,
+  MotionPressable,
+  ScreenHero,
+} from '@/components/ui';
+import { useTheme } from '@/theme/ThemeProvider';
 
-// Backend ResetPasswordRequest/AcceptInvitationRequest enforce MinLength(10).
 const MIN_PASSWORD_LENGTH = 10;
 
 export default function ForgotPasswordScreen() {
   const navigation = useNavigation<any>();
+  const { theme } = useTheme();
   const [step, setStep] = useState<'email' | 'reset'>('email');
   const [email, setEmail] = useState('');
   const [tenantSlug, setTenantSlug] = useState('');
-
-  // The reset is tenant-scoped; reuse the Company ID remembered from the last sign-in.
-  useEffect(() => {
-    appStorage.get<string>('zayra_tenant_id').then((t) => t && setTenantSlug(t)).catch(() => undefined);
-  }, []);
   const [token, setToken] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPw, setShowPw] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  useEffect(() => {
+    appStorage
+      .get<string>('zayra_tenant_id')
+      .then((tenant) => tenant && setTenantSlug(tenant))
+      .catch(() => undefined);
+  }, []);
 
   const requestReset = async () => {
-    if (!email.trim()) return Alert.alert('Required', 'Please enter your work email');
-    if (!tenantSlug.trim()) return Alert.alert('Required', 'Please enter your Company ID');
+    if (!email.trim()) return Alert.alert('Work email required', 'Enter your work email.');
+    if (!tenantSlug.trim()) return Alert.alert('Company ID required', 'Enter your Company ID.');
+
     setLoading(true);
     try {
-      await authApi.forgotPassword({ email: email.trim(), tenantSlug: tenantSlug.trim() });
+      await authApi.forgotPassword({
+        email: email.trim(),
+        tenantSlug: tenantSlug.trim(),
+      });
       setStep('reset');
-      Alert.alert('Sent', 'If this account exists, a reset link/code has been sent to your registered email.');
-    } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.message || e.message || 'Failed to send reset request');
+      Alert.alert(
+        'Check your email',
+        'If the account exists, a password-reset code has been sent to the registered email address.',
+      );
+    } catch (error: any) {
+      Alert.alert(
+        'Could not send reset code',
+        error?.response?.data?.message || error?.message || 'Please try again.',
+      );
     } finally {
       setLoading(false);
     }
   };
 
   const submitReset = async () => {
-    if (!token.trim()) return Alert.alert('Required', 'Please enter the reset code');
-    if (newPassword.length < MIN_PASSWORD_LENGTH)
-      return Alert.alert('Weak Password', `Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
-    if (newPassword !== confirmPassword) return Alert.alert('Mismatch', 'Passwords do not match');
+    if (!token.trim()) return Alert.alert('Reset code required', 'Enter the code from your email.');
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      return Alert.alert(
+        'Password is too short',
+        'Use at least ' + MIN_PASSWORD_LENGTH + ' characters.',
+      );
+    }
+    if (newPassword !== confirmPassword) {
+      return Alert.alert('Passwords do not match', 'Re-enter the same new password.');
+    }
+
     setLoading(true);
     try {
-      await authApi.resetPassword({ email: email.trim(), token: token.trim(), newPassword, tenantSlug: tenantSlug.trim() });
+      await authApi.resetPassword({
+        email: email.trim(),
+        token: token.trim(),
+        newPassword,
+        tenantSlug: tenantSlug.trim(),
+      });
       Alert.alert(
-        'Password Reset',
-        'Your password has been reset successfully. Please log in with your new password.',
-        [{ text: 'Login', onPress: () => navigation.navigate('Login') }]
+        'Password reset',
+        'Your new password is ready. Sign in to continue.',
+        [{ text: 'Sign in', onPress: () => navigation.navigate('Login') }],
       );
-    } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.message || 'Failed to reset password. The code may have expired.');
+    } catch (error: any) {
+      Alert.alert(
+        'Could not reset password',
+        error?.response?.data?.message || 'The code may be invalid or expired.',
+      );
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.navy }}>
-      <ScrollView contentContainerStyle={{ flexGrow: 1, padding: 24, paddingTop: 80 }} keyboardShouldPersistTaps="handled">
-        {/* Back */}
-        <TouchableOpacity onPress={() => navigation.goBack()} style={{ marginBottom: 32 }}>
-          <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>← Back to Login</Text>
-        </TouchableOpacity>
+    <KeyboardAvoidingView
+      style={[styles.root, { backgroundColor: theme.colors.canvas }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      <LiquidBackdrop />
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHero
+          eyebrow="Account recovery"
+          title={step === 'email' ? 'Reset your password' : 'Set a new password'}
+          subtitle={
+            step === 'email'
+              ? 'We’ll verify your Company ID and work email before sending a reset code.'
+              : 'Enter the code from your email and choose a new password.'
+          }
+          onBack={() => navigation.goBack()}
+          backLabel="Back to sign in"
+        />
 
-        {/* Logo */}
-        <View style={{ alignItems: 'center', marginBottom: 40 }}>
-          <View style={{
-            width: 64, height: 64, borderRadius: 16, backgroundColor: COLORS.blue,
-            alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Text style={{ color: '#fff', fontSize: 28, fontWeight: '800' }}>K</Text>
-          </View>
-          <Text style={{ color: '#fff', fontSize: 24, fontWeight: '800', marginTop: 14 }}>
-            {step === 'email' ? 'Reset Password' : 'Set New Password'}
-          </Text>
-          <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 14, marginTop: 6, textAlign: 'center', lineHeight: 20 }}>
-            {step === 'email'
-              ? 'Enter your Company ID and work email and we\'ll send a reset code'
-              : 'Enter the code from your email and choose a new password'}
-          </Text>
-        </View>
+        <View style={styles.content}>
+          <GlassSurface radius={theme.radius.xl} contentStyle={styles.form}>
+            {step === 'email' ? (
+              <>
+                <GlassTextField
+                  label="Company ID"
+                  icon="business-outline"
+                  value={tenantSlug}
+                  onChangeText={setTenantSlug}
+                  placeholder="e.g. acme-corp"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="organization"
+                />
+                <GlassTextField
+                  label="Work email"
+                  icon="mail-outline"
+                  value={email}
+                  onChangeText={setEmail}
+                  placeholder="you@company.com"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  autoComplete="email"
+                  textContentType="emailAddress"
+                />
+                <LiquidButton
+                  label="Send reset code"
+                  icon="mail-unread-outline"
+                  onPress={() => void requestReset()}
+                  loading={loading}
+                  disabled={loading}
+                />
+              </>
+            ) : (
+              <>
+                <GlassSurface
+                  elevated={false}
+                  radius={16}
+                  contentStyle={styles.deliveryNote}
+                >
+                  <View style={[styles.deliveryIcon, { backgroundColor: theme.colors.success + '18' }]}>
+                    <Ionicons name="checkmark" size={18} color={theme.colors.success} />
+                  </View>
+                  <View style={styles.deliveryCopy}>
+                    <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
+                      Code requested
+                    </Text>
+                    <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>
+                      Use the newest reset code sent to {email || 'your work email'}.
+                    </Text>
+                  </View>
+                </GlassSurface>
 
-        <View style={{ backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: 20, padding: 20 }}>
-          {step === 'email' ? (
-            <>
-              <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13, fontWeight: '600', marginBottom: 6 }}>
-                Company ID
-              </Text>
-              <TextInput
-                value={tenantSlug}
-                onChangeText={setTenantSlug}
-                placeholder="e.g. acme-corp"
-                placeholderTextColor="rgba(255,255,255,0.3)"
-                autoCapitalize="none"
-                autoCorrect={false}
-                style={{
-                  backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12,
-                  paddingHorizontal: 14, paddingVertical: 14, fontSize: 15,
-                  color: '#fff', marginBottom: 16,
-                }}
-              />
-              <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13, fontWeight: '600', marginBottom: 6 }}>
-                Work Email
-              </Text>
-              <TextInput
-                value={email}
-                onChangeText={setEmail}
-                placeholder="you@company.com"
-                placeholderTextColor="rgba(255,255,255,0.3)"
-                autoCapitalize="none"
-                keyboardType="email-address"
-                style={{
-                  backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12,
-                  paddingHorizontal: 14, paddingVertical: 14, fontSize: 15,
-                  color: '#fff', marginBottom: 20,
-                }}
-              />
-              <TouchableOpacity
-                onPress={requestReset}
-                disabled={loading}
-                style={{
-                  backgroundColor: loading ? 'rgba(47,107,255,0.5)' : COLORS.blue,
-                  borderRadius: 12, padding: 16, alignItems: 'center',
-                }}
-              >
-                {loading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Send Reset Code</Text>
-                )}
-              </TouchableOpacity>
-            </>
-          ) : (
-            <>
-              <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13, fontWeight: '600', marginBottom: 6 }}>
-                Reset Code
-              </Text>
-              <TextInput
-                value={token}
-                onChangeText={setToken}
-                placeholder="Enter reset code from email"
-                placeholderTextColor="rgba(255,255,255,0.3)"
-                autoCapitalize="none"
-                style={{
-                  backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12,
-                  paddingHorizontal: 14, paddingVertical: 14, fontSize: 15,
-                  color: '#fff', marginBottom: 16,
-                }}
-              />
-
-              <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13, fontWeight: '600', marginBottom: 6 }}>
-                New Password
-              </Text>
-              <View style={{ position: 'relative', marginBottom: 16 }}>
-                <TextInput
+                <GlassTextField
+                  label="Reset code"
+                  icon="keypad-outline"
+                  value={token}
+                  onChangeText={setToken}
+                  placeholder="Enter reset code"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <GlassTextField
+                  label="New password"
+                  icon="key-outline"
                   value={newPassword}
                   onChangeText={setNewPassword}
                   placeholder="Minimum 10 characters"
-                  placeholderTextColor="rgba(255,255,255,0.3)"
                   secureTextEntry={!showPw}
-                  style={{
-                    backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12,
-                    paddingHorizontal: 14, paddingVertical: 14, paddingRight: 50,
-                    fontSize: 15, color: '#fff',
-                  }}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="new-password"
+                  textContentType="newPassword"
+                  trailing={
+                    <VisibilityToggle
+                      visible={showPw}
+                      onPress={() => setShowPw((current) => !current)}
+                    />
+                  }
                 />
-                <TouchableOpacity
-                  onPress={() => setShowPw(!showPw)}
-                  style={{ position: 'absolute', right: 14, top: 14 }}
+                <GlassTextField
+                  label="Confirm password"
+                  icon="checkmark-circle-outline"
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  placeholder="Re-enter new password"
+                  secureTextEntry={!showConfirm}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="new-password"
+                  textContentType="newPassword"
+                  trailing={
+                    <VisibilityToggle
+                      visible={showConfirm}
+                      onPress={() => setShowConfirm((current) => !current)}
+                    />
+                  }
+                />
+
+                <LiquidButton
+                  label="Reset password"
+                  icon="shield-checkmark-outline"
+                  onPress={() => void submitReset()}
+                  loading={loading}
+                  disabled={loading}
+                />
+
+                <MotionPressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Request another reset code"
+                  onPress={() => setStep('email')}
+                  haptic="selection"
+                  contentStyle={styles.resendButton}
                 >
-                  <Text style={{ fontSize: 18 }}>{showPw ? '🙈' : '👁️'}</Text>
-                </TouchableOpacity>
-              </View>
+                  <Ionicons name="refresh-outline" size={17} color={theme.colors.primary} />
+                  <Text style={[theme.typography.caption, styles.resendText, { color: theme.colors.primary }]}>
+                    Request another code
+                  </Text>
+                </MotionPressable>
+              </>
+            )}
+          </GlassSurface>
 
-              <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13, fontWeight: '600', marginBottom: 6 }}>
-                Confirm Password
-              </Text>
-              <TextInput
-                value={confirmPassword}
-                onChangeText={setConfirmPassword}
-                placeholder="Re-enter new password"
-                placeholderTextColor="rgba(255,255,255,0.3)"
-                secureTextEntry
-                style={{
-                  backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12,
-                  paddingHorizontal: 14, paddingVertical: 14, fontSize: 15,
-                  color: '#fff', marginBottom: 20,
-                }}
-              />
-
-              <TouchableOpacity
-                onPress={submitReset}
-                disabled={loading}
-                style={{
-                  backgroundColor: loading ? 'rgba(47,107,255,0.5)' : COLORS.blue,
-                  borderRadius: 12, padding: 16, alignItems: 'center',
-                }}
-              >
-                {loading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>Reset Password</Text>
-                )}
-              </TouchableOpacity>
-
-              <TouchableOpacity onPress={() => setStep('email')} style={{ alignItems: 'center', marginTop: 14 }}>
-                <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>Resend code</Text>
-              </TouchableOpacity>
-            </>
-          )}
+          <Text style={[theme.typography.micro, styles.footer, { color: theme.colors.textMuted }]}>
+            For your privacy, KynexOne does not confirm whether an email address exists.
+          </Text>
         </View>
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
+
+function VisibilityToggle({ visible, onPress }: { visible: boolean; onPress: () => void }) {
+  const { theme } = useTheme();
+  return (
+    <MotionPressable
+      accessibilityRole="button"
+      accessibilityLabel={visible ? 'Hide password' : 'Show password'}
+      onPress={onPress}
+      haptic="selection"
+      contentStyle={styles.visibilityButton}
+    >
+      <Ionicons
+        name={visible ? 'eye-off-outline' : 'eye-outline'}
+        size={20}
+        color={theme.colors.textMuted}
+      />
+    </MotionPressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  scroll: { flexGrow: 1, paddingBottom: 34 },
+  content: { paddingHorizontal: 16, paddingTop: 12, gap: 12 },
+  form: { padding: 18 },
+  deliveryNote: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    padding: 12,
+    marginBottom: 16,
+  },
+  deliveryIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deliveryCopy: { flex: 1, minWidth: 0, gap: 2 },
+  visibilityButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resendButton: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 10,
+  },
+  resendText: { fontWeight: '700' },
+  footer: { textAlign: 'center', paddingHorizontal: 18 },
+});

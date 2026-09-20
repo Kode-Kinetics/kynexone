@@ -215,14 +215,12 @@ export default function SettingsScreen() {
           <SettingRow
             icon="lock-closed-outline"
             title="Privacy policy"
-            subtitle="How KynexOne protects workforce data"
-            onPress={() => Alert.alert('Privacy policy', 'The published privacy-policy URL will be linked before store submission.')}
+            subtitle="Ask your organization for its current privacy policy"
           />
           <SettingRow
             icon="help-buoy-outline"
             title="Support"
-            subtitle="Contact your HR support team"
-            onPress={() => Alert.alert('Support', 'Contact your HR department or organization support desk.')}
+            subtitle="Contact your HR department or organization support desk"
           />
           <SettingRow
             icon="options-outline"
@@ -295,6 +293,7 @@ function ThemeSelector({
               },
             ]}
             accessibilityRole="radio"
+            accessibilityLabel={`${option.label} appearance`}
             accessibilityState={{ selected }}
           >
             <Ionicons
@@ -350,6 +349,7 @@ function SettingRow({
       haptic={onPress ? 'selection' : 'none'}
       contentStyle={styles.rowPressable}
       accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityLabel={onPress ? [title, subtitle].filter(Boolean).join('. ') : undefined}
     >
       <View
         style={[

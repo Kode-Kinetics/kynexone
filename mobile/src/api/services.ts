@@ -710,6 +710,15 @@ export const dashboardApi = {
       () => fallbackTodayAttendance
     );
     return {
+      profile: data.profile
+        ? {
+            employeeId: String(data.profile.employeeId ?? ''),
+            fullName: data.profile.fullName ?? 'Employee',
+            jobTitle: data.profile.jobTitle ?? undefined,
+            department: data.profile.department ?? undefined,
+            profilePhotoUrl: data.profile.profilePhotoUrl || undefined,
+          }
+        : undefined,
       todayAttendance,
       leaveBalances: (data.leaveBalances ?? []).map(mapLeaveBalance),
       pendingRequestsCount: Number(data.pendingRequests ?? 0),
@@ -780,8 +789,15 @@ export const attendanceApi = {
       locationName: payload.location ? 'Mobile GPS' : 'Mobile',
       latitude: payload.location?.latitude,
       longitude: payload.location?.longitude,
+      accuracyMeters: payload.location?.accuracy,
+      locationMocked: payload.location?.mocked,
       photoReference: payload.selfiePhotoReference,
-      verificationMethod: payload.selfiePhotoReference ? 'Mobile GPS + Selfie' : 'Mobile GPS',
+      clientBiometricVerified: payload.deviceFaceVerified,
+      verificationMethod: payload.selfiePhotoReference
+        ? payload.deviceFaceVerified
+          ? 'Mobile GPS + Selfie + Device Face'
+          : 'Mobile GPS + Selfie'
+        : 'Mobile GPS',
     });
     return { recordId: String(result.id ?? ''), message: `${direction} punch recorded` };
   },
@@ -1082,8 +1098,14 @@ export const profileApi = {
 
   /** An <Image source> for a profile photo route: needs the bearer token, like any API call. */
   async photoSource(photoUrl?: string | null): Promise<{ uri: string; headers: Record<string, string> } | null> {
-    if (!photoUrl || !photoUrl.startsWith('/api/')) return null;
-    return { uri: `${apiOrigin()}${photoUrl}`, headers: await authHeaders() };
+    if (!photoUrl) return null;
+    if (photoUrl.startsWith('/api/')) {
+      return { uri: `${apiOrigin()}${photoUrl}`, headers: await authHeaders() };
+    }
+    if (/^https:\/\//i.test(photoUrl)) {
+      return { uri: photoUrl, headers: {} };
+    }
+    return null;
   },
 };
 
@@ -1350,6 +1372,7 @@ export const teamApi = {
           fullName: m.fullName ?? 'Employee',
           jobTitle: m.jobTitle ?? '',
           department: m.department ?? undefined,
+          profilePhotoUrl: m.profilePhotoUrl || undefined,
           todayStatus: mapStatus(m.todayStatus),
           clockIn: m.clockInUtc ?? undefined,
           clockOut: m.clockOutUtc ?? undefined,
@@ -1375,6 +1398,9 @@ export const teamApi = {
           fullName: e.fullName ?? 'Employee',
           jobTitle: e.designation ?? '',
           department: e.department,
+          profilePhotoUrl: e.profilePhotoUrl
+            ? `/api/employees/${e.id}/photo`
+            : undefined,
           todayStatus: a ? (a.missingPunch ? 'MISSING_PUNCH' : mapStatus(a.status)) : 'ABSENT',
           clockIn: a?.firstInUtc ?? undefined,
           clockOut: a?.lastOutUtc ?? undefined,

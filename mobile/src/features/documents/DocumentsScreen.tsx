@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, { FadeInDown, FadeOutUp } from 'react-native-reanimated';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -49,9 +50,10 @@ function daysUntilExpiry(date?: string | null): number | null {
 }
 
 export default function DocumentsScreen() {
-  const { theme } = useTheme();
+  const { theme, reduceMotion } = useTheme();
   const [documents, setDocuments] = useState<EmployeeDocument[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [uploadModal, setUploadModal] = useState(false);
   const [uploadData, setUploadData] = useState({
@@ -63,13 +65,15 @@ export default function DocumentsScreen() {
   const [uploading, setUploading] = useState(false);
   const [typePickerOpen, setTypePickerOpen] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [completionMessage, setCompletionMessage] = useState<string | null>(null);
 
   const fetchDocuments = useCallback(async () => {
+    setLoadError(null);
     try {
       const data = await documentsApi.getDocuments();
       setDocuments(Array.isArray(data) ? data : (data as { items?: EmployeeDocument[] }).items || []);
     } catch (error: any) {
-      Alert.alert('Documents unavailable', error.message || 'Failed to load documents.');
+      setLoadError(error.message || 'Failed to load documents.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -149,7 +153,7 @@ export default function DocumentsScreen() {
       setUploadModal(false);
       setSelectedFile(null);
       setUploadData({ documentType: documentTypes[0], expiryDate: '', documentNumber: '' });
-      Alert.alert('Document uploaded', 'HR can now verify the new document.');
+      setCompletionMessage('Document uploaded. HR can now verify it.');
       await fetchDocuments();
     } catch (error: any) {
       Alert.alert('Upload failed', error.message || 'Please try again.');
@@ -192,6 +196,36 @@ export default function DocumentsScreen() {
           }
         />
 
+        {completionMessage ? (
+          <Animated.View
+            entering={reduceMotion ? undefined : FadeInDown.duration(220)}
+            exiting={reduceMotion ? undefined : FadeOutUp.duration(160)}
+            style={styles.completionWrap}
+          >
+            <GlassSurface
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
+              elevated={false}
+              radius={theme.radius.lg}
+              contentStyle={styles.completionBanner}
+            >
+              <Ionicons name="checkmark-circle" size={22} color={theme.colors.success} />
+              <Text style={[theme.typography.caption, styles.completionText, { color: theme.colors.text }]}>
+                {completionMessage}
+              </Text>
+              <MotionPressable
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss upload confirmation"
+                onPress={() => setCompletionMessage(null)}
+                haptic="selection"
+                contentStyle={styles.completionDismiss}
+              >
+                <Ionicons name="close" size={18} color={theme.colors.textMuted} />
+              </MotionPressable>
+            </GlassSurface>
+          </Animated.View>
+        ) : null}
+
         {!loading ? (
           <View style={styles.section}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.metricRail}>
@@ -224,6 +258,13 @@ export default function DocumentsScreen() {
             <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
               <ActivityIndicator color={theme.colors.primary} />
               <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading document vault…</Text>
+            </GlassSurface>
+          ) : loadError ? (
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <Ionicons name="cloud-offline-outline" size={28} color={theme.colors.danger} />
+              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Documents unavailable</Text>
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, textAlign: 'center' }]}>{loadError}</Text>
+              <LiquidButton label="Try again" onPress={() => void fetchDocuments()} />
             </GlassSurface>
           ) : documents.length === 0 ? (
             <EmptyDocuments onUpload={FEATURES.FILE_UPLOAD ? () => setUploadModal(true) : undefined} />
@@ -545,7 +586,7 @@ function UploadDocumentModal({
                   <Text numberOfLines={1} style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{file.name}</Text>
                   <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>Ready to upload securely</Text>
                 </View>
-                <MotionPressable onPress={onRemoveFile} haptic="selection" contentStyle={styles.removeFile}>
+                <MotionPressable onPress={onRemoveFile} haptic="selection" contentStyle={styles.removeFile} accessibilityRole="button" accessibilityLabel={`Remove ${file.name}`}>
                   <Ionicons name="close" size={19} color={theme.colors.danger} />
                 </MotionPressable>
               </View>
@@ -617,6 +658,10 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   content: { paddingBottom: 36 },
   section: { paddingHorizontal: 16, marginTop: 16 },
+  completionWrap: { paddingHorizontal: 16, marginTop: 12 },
+  completionBanner: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 14, paddingRight: 6, paddingVertical: 6 },
+  completionText: { flex: 1 },
+  completionDismiss: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   metricRail: { gap: 9, paddingRight: 4 },
   metricCard: { width: 122, minHeight: 126 },
   metricContent: { padding: 14, justifyContent: 'space-between' },
@@ -656,7 +701,7 @@ const styles = StyleSheet.create({
   fileSelected: { minHeight: 74, borderRadius: 17, flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 12 },
   fileIcon: { width: 43, height: 43, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
   fileCopy: { flex: 1, minWidth: 0 },
-  removeFile: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  removeFile: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   modalActions: { flexDirection: 'row', gap: 10, marginTop: 18 },
   modalSecondaryShell: { flex: 1 },
   modalSecondary: { minHeight: 56, borderRadius: 18, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },

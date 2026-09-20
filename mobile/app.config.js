@@ -27,12 +27,28 @@ function readDotEnv() {
 
 const fileEnv = readDotEnv();
 const value = (key) => process.env[key] || fileEnv[key] || undefined;
-const appEnvironment = value('EXPO_PUBLIC_APP_ENV') || 'development';
-const apiBaseUrl = value('EXPO_PUBLIC_API_BASE_URL') || 'http://localhost:5117/api';
+const configuredEnvironment = value('EXPO_PUBLIC_APP_ENV');
+const isPackagedBuild = Boolean(process.env.EAS_BUILD_PROFILE) || process.env.NODE_ENV === 'production';
+const isProductionRelease =
+  configuredEnvironment === 'production' ||
+  process.env.EAS_BUILD_PROFILE === 'production' ||
+  (process.env.NODE_ENV === 'production' && !configuredEnvironment);
+const appEnvironment = configuredEnvironment || (isProductionRelease ? 'production' : 'development');
+const configuredApiBaseUrl = value('EXPO_PUBLIC_API_BASE_URL');
+// Native builds should remain connected to the shared backend even when Metro
+// is launched outside a shell that exports the Expo public environment.
+const apiBaseUrl = configuredApiBaseUrl || 'https://zayra-ai-workforce.onrender.com/api';
 const easProjectId = value('EXPO_PUBLIC_EAS_PROJECT_ID');
 
 function assertSafeReleaseConfig() {
-  if (appEnvironment !== 'production') return;
+  if (!isPackagedBuild && !isProductionRelease) return;
+
+  if (isProductionRelease && appEnvironment !== 'production') {
+    throw new Error('Release builds require EXPO_PUBLIC_APP_ENV=production.');
+  }
+  if (!apiBaseUrl) {
+    throw new Error('Release builds require EXPO_PUBLIC_API_BASE_URL.');
+  }
 
   let parsed;
   try {

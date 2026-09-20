@@ -591,6 +591,15 @@ public class AttendanceService : IAttendanceService
             ? (isMobile && !string.IsNullOrWhiteSpace(request.PhotoReference) ? "Mobile GPS + Selfie" : isMobile ? "Mobile GPS" : "Web")
             : request.VerificationMethod;
 
+        var rawPayload = isMobile
+            ? JsonSerializer.Serialize(new
+            {
+                accuracyMeters = request.AccuracyMeters,
+                locationMocked = request.LocationMocked,
+                clientBiometricVerified = request.ClientBiometricVerified
+            })
+            : null;
+
         return PushEventAsync(
             tenantId,
             new AttendanceRawEventRequest(
@@ -605,7 +614,7 @@ public class AttendanceService : IAttendanceService
                 request.Longitude,
                 context.IpAddress,
                 request.PhotoReference,
-                null,
+                rawPayload,
                 "",
                 verificationMethod,
                 request.ConfidenceScore),

@@ -1,5 +1,5 @@
-import React from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useNavigation } from '@react-navigation/native';
@@ -65,10 +65,29 @@ interface MoreItem {
   accent: string;
 }
 function MoreHomeScreen() {
-  const { user } = useAuthStore();
+  const { user, logout } = useAuthStore();
   const navigation = useNavigation<any>();
   const { theme } = useTheme();
+  const [loggingOut, setLoggingOut] = useState(false);
   const manager = isManagerUser(user);
+
+  const confirmLogout = () => {
+    Alert.alert('Sign out', 'End this secure session on this device?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: async () => {
+          setLoggingOut(true);
+          try {
+            await logout();
+          } finally {
+            setLoggingOut(false);
+          }
+        },
+      },
+    ]);
+  };
 
   const items: MoreItem[] = [
     ...(manager
@@ -197,6 +216,43 @@ function MoreHomeScreen() {
             </MotionPressable>
           ))}
         </View>
+
+        <View style={styles.sessionSection}>
+          <Text style={[theme.typography.micro, styles.sessionLabel, { color: theme.colors.textMuted }]}>SESSION</Text>
+          <MotionPressable
+            accessibilityRole="button"
+            accessibilityLabel="Sign out of KynexOne"
+            accessibilityState={{ busy: loggingOut, disabled: loggingOut }}
+            onPress={confirmLogout}
+            disabled={loggingOut}
+            haptic="medium"
+            contentStyle={styles.signOutPressable}
+          >
+            <GlassSurface
+              elevated={false}
+              radius={theme.radius.xl}
+              tintColor={`${theme.colors.danger}0D`}
+              contentStyle={styles.signOutCard}
+            >
+              <View style={[styles.signOutIcon, { backgroundColor: `${theme.colors.danger}18` }]}>
+                <Ionicons name="log-out-outline" size={22} color={theme.colors.danger} />
+              </View>
+              <View style={styles.signOutCopy}>
+                <Text style={[theme.typography.bodyStrong, { color: theme.colors.danger }]}>
+                  {loggingOut ? 'Signing out…' : 'Sign out'}
+                </Text>
+                <Text style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 2 }]}>
+                  Remove the secure session from this device
+                </Text>
+              </View>
+              {loggingOut ? (
+                <ActivityIndicator color={theme.colors.danger} size="small" />
+              ) : (
+                <Ionicons name="chevron-forward" size={20} color={theme.colors.danger} />
+              )}
+            </GlassSurface>
+          </MotionPressable>
+        </View>
       </ScrollView>
     </View>
   );
@@ -303,5 +359,36 @@ const styles = StyleSheet.create({
   moreTileCopy: {
     marginTop: 15,
     marginBottom: 10,
+  },
+  sessionSection: {
+    paddingHorizontal: 16,
+    paddingTop: 26,
+  },
+  sessionLabel: {
+    fontWeight: '800',
+    letterSpacing: 1.1,
+    marginBottom: 9,
+    marginLeft: 4,
+  },
+  signOutPressable: {
+    borderRadius: 24,
+  },
+  signOutCard: {
+    minHeight: 82,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  signOutIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  signOutCopy: {
+    flex: 1,
+    marginHorizontal: 13,
   },
 });

@@ -9,6 +9,11 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import * as Location from 'expo-location';
 import { useTranslation } from 'react-i18next';
 import { AttendanceSelfieModal } from '@/features/attendance/AttendanceSelfieModal';
@@ -19,6 +24,7 @@ import { daysUntil, formatDate, formatTime } from '@/utils/date';
 import { navigateTo, isManagerUser, type AppRoute } from '@/navigation/routes';
 import { useTheme } from '@/theme/ThemeProvider';
 import {
+  EmployeeAvatar,
   GlassIconButton,
   GlassSurface,
   LiquidBackdrop,
@@ -26,6 +32,7 @@ import {
   MotionPressable,
   ScreenHero,
   SectionHeader,
+  SwipeDeck,
 } from '@/components/ui';
 import type {
   EmployeeDashboard,
@@ -44,16 +51,20 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
   const { theme } = useTheme();
   const { user } = useAuthStore();
   const [dashboard, setDashboard] = useState<EmployeeDashboard | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [punchLoading, setPunchLoading] = useState(false);
   const [pendingPunchType, setPendingPunchType] = useState<PunchType | null>(null);
+  const [punchFeedback, setPunchFeedback] = useState<PunchType | null>(null);
   const loadDashboard = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
+    setLoadError(null);
     try {
       setDashboard(await dashboardApi.getEmployeeDashboard());
     } catch (error) {
       console.error('[Dashboard] Load error:', error);
+      setLoadError('We couldn’t load your dashboard. Check your connection and try again.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -72,6 +83,7 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
   const submitPunch = useCallback(async (
     punchType: PunchType,
     selfiePhotoReference?: string,
+    verification?: { deviceFaceVerified: boolean; faceCapabilityAvailable: boolean },
   ) => {
     setPunchLoading(true);
     try {
@@ -89,6 +101,7 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
         longitude: location.coords.longitude,
         accuracy: location.coords.accuracy ?? undefined,
         timestamp: location.timestamp,
+        mocked: (location as any).mocked ?? false,
       };
 
       await attendanceApi.punch({
@@ -97,12 +110,11 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
         location: geoLocation,
         deviceInfo: await getDeviceInfo(),
         selfiePhotoReference,
+        deviceFaceVerified: verification?.deviceFaceVerified,
+        faceCapabilityAvailable: verification?.faceCapabilityAvailable,
       });
       await loadDashboard(true);
-      Alert.alert(
-        'Attendance recorded',
-        punchType === 'CLOCK_IN' ? 'You are clocked in.' : 'You are clocked out.',
-      );
+      setPunchFeedback(punchType);
     } catch (error: any) {
       Alert.alert(
         'Could not record attendance',
@@ -118,11 +130,14 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
     setPendingPunchType(punchType);
   }, []);
 
-  const handleSelfieConfirm = useCallback(async (uri: string) => {
+  const handleSelfieConfirm = useCallback(async (
+    uri: string,
+    verification: { deviceFaceVerified: boolean; faceCapabilityAvailable: boolean },
+  ) => {
     if (!pendingPunchType) return;
     try {
       const evidence = await attendanceApi.uploadSelfie(uri);
-      await submitPunch(pendingPunchType, evidence.photoReference);
+      await submitPunch(pendingPunchType, evidence.photoReference, verification);
       setPendingPunchType(null);
     } catch {
       // submitPunch shows the user-facing error and the selfie modal remains open for retry.
@@ -135,7 +150,6 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
   const greeting = getGreeting();
   const go = (route: AppRoute, params?: Record<string, unknown>) =>
     navigateTo(navigation, route, isManagerUser(user), params);
-
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
       <LiquidBackdrop subtle />
@@ -158,6 +172,20 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
           subtitle={`${formatDate(new Date().toISOString(), 'date')} · ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}`}
           actions={
             <View style={styles.heroActions}>
+              <MotionPressable
+                onPress={() => go('Profile')}
+                haptic="selection"
+                accessibilityRole="button"
+                accessibilityLabel="Open employee profile"
+                contentStyle={styles.profileAvatarButton}
+              >
+                <EmployeeAvatar
+                  name={dashboard?.profile?.fullName ?? user?.fullName ?? 'Employee'}
+                  photoUrl={dashboard?.profile?.profilePhotoUrl ?? user?.profilePhotoUrl}
+                  size={44}
+                  ring
+                />
+              </MotionPressable>
               <GlassIconButton
                 icon="notifications-outline"
                 label="Notifications"
@@ -176,6 +204,15 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
 
         {loading && !dashboard ? (
           <LoadingDashboard />
+        ) : loadError ? (
+          <View style={styles.section}>
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.errorCard}>
+              <Ionicons name="cloud-offline-outline" size={28} color={theme.colors.danger} />
+              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Dashboard unavailable</Text>
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, textAlign: 'center' }]}>{loadError}</Text>
+              <LiquidButton label="Try again" onPress={() => void loadDashboard()} />
+            </GlassSurface>
+          </View>
         ) : (
           <>
             <View style={styles.section}>
@@ -187,193 +224,197 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
                 onClockIn={() => void handlePunch('CLOCK_IN')}
                 onClockOut={() => void handlePunch('CLOCK_OUT')}
                 onViewHistory={() => go('AttendanceHistory')}
+                feedback={punchFeedback}
               />
             </View>
-            <View style={styles.section}>
-              <SectionHeader title="Quick actions" subtitle="The things you use most" />
-              <View style={styles.actionGrid}>
-                <QuickAction
-                  icon="calendar-outline"
-                  title="Apply leave"
-                  subtitle="Time off request"
-                  accent={theme.colors.primary}
-                  onPress={() => go('ApplyLeave')}
-                />
-                <QuickAction
-                  icon="time-outline"
-                  title="Overtime"
-                  subtitle="Submit hours"
-                  accent={theme.colors.violet}
-                  onPress={() => go('Overtime')}
-                />
-                <QuickAction
-                  icon="wallet-outline"
-                  title="Payslips"
-                  subtitle="Salary history"
-                  accent={theme.colors.success}
-                  onPress={() => go('Payslips')}
-                />
-                <QuickAction
-                  icon="chatbubble-ellipses-outline"
-                  title="HR request"
-                  subtitle="Get support"
-                  accent={theme.colors.warning}
-                  onPress={() => go('HRRequests')}
-                />
-              </View>
-            </View>
-
-            {(dashboard?.leaveBalances?.length ?? 0) > 0 ? (
-              <View style={styles.section}>
-                <SectionHeader
-                  title={t('dashboard.leaveBalance')}
-                  subtitle="Current entitlement"
-                  actionLabel="See all"
-                  onAction={() => go('ApplyLeave')}
-                />
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.horizontalRail}
+            <View style={styles.deckSection}>
+              <SectionHeader
+                title="Your workspace"
+                subtitle="Swipe between actions, balances and updates"
+              />
+              <SwipeDeck minHeight={322}>
+                <GlassSurface
+                  elevated={false}
+                  radius={theme.radius.xl}
+                  contentStyle={styles.deckPage}
                 >
-                  {dashboard!.leaveBalances.slice(0, 4).map((balance) => (
-                    <LeaveBalanceCard key={balance.leaveTypeId} balance={balance} />
-                  ))}
-                </ScrollView>
-              </View>
-            ) : null}
-            {(dashboard?.pendingRequestsCount ?? 0) > 0 ? (
-              <View style={styles.section}>
-                <MotionPressable
-                  onPress={() => go('HRRequests')}
-                  haptic="selection"
-                  contentStyle={styles.fullRadius}
-                >
-                  <GlassSurface
-                    elevated={false}
-                    radius={theme.radius.xl}
-                    contentStyle={styles.pendingCard}
-                  >
-                    <View style={[styles.pendingIcon, { backgroundColor: `${theme.colors.warning}1F` }]}>
-                      <Ionicons name="hourglass-outline" size={22} color={theme.colors.warning} />
+                  <View style={styles.deckHeading}>
+                    <View style={[styles.deckIcon, { backgroundColor: theme.colors.primary + '18' }]}>
+                      <Ionicons name="flash-outline" size={21} color={theme.colors.primary} />
                     </View>
-                    <View style={styles.pendingCopy}>
-                      <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
-                        {dashboard!.pendingRequestsCount} pending request
-                        {dashboard!.pendingRequestsCount === 1 ? '' : 's'}
-                      </Text>
-                      <Text style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 2 }]}>
-                        Review status and recent updates
+                    <View style={styles.deckHeadingCopy}>
+                      <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Quick actions</Text>
+                      <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                        The tasks you use most
                       </Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={19} color={theme.colors.textMuted} />
-                  </GlassSurface>
-                </MotionPressable>
-              </View>
-            ) : null}
-
-            {(dashboard?.expiringDocuments?.length ?? 0) > 0 ? (
-              <View style={styles.section}>
-                <SectionHeader
-                  title="Document alerts"
-                  subtitle="Items needing attention"
-                  actionLabel="Open documents"
-                  onAction={() => go('Documents')}
-                />
-                <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.listCard}>
-                  {dashboard!.expiringDocuments.map((document, index) => (
-                    <DocumentAlert
-                      key={document.id}
-                      name={document.documentType}
-                      expiryDate={document.expiryDate}
-                      isLast={index === dashboard!.expiringDocuments.length - 1}
-                      onPress={() => go('Documents')}
+                  </View>
+                  <View style={styles.actionGrid}>
+                    <QuickAction
+                      icon="calendar-outline"
+                      title="Apply leave"
+                      subtitle="Time off request"
+                      accent={theme.colors.primary}
+                      onPress={() => go('ApplyLeave')}
                     />
-                  ))}
+                    <QuickAction
+                      icon="time-outline"
+                      title="Overtime"
+                      subtitle="Submit hours"
+                      accent={theme.colors.violet}
+                      onPress={() => go('Overtime')}
+                    />
+                    <QuickAction
+                      icon="wallet-outline"
+                      title="Payslips"
+                      subtitle="Salary history"
+                      accent={theme.colors.success}
+                      onPress={() => go('Payslips')}
+                    />
+                    <QuickAction
+                      icon="chatbubble-ellipses-outline"
+                      title="HR request"
+                      subtitle="Get support"
+                      accent={theme.colors.warning}
+                      onPress={() => go('HRRequests')}
+                    />
+                  </View>
                 </GlassSurface>
-              </View>
-            ) : null}
-            {dashboard?.latestPayslip ? (
-              <View style={styles.section}>
-                <SectionHeader title="Latest payslip" subtitle="Your most recent salary statement" />
-                <MotionPressable
-                  onPress={() => go('PayslipDetail', { id: dashboard.latestPayslip!.id })}
-                  haptic="selection"
-                  contentStyle={styles.fullRadius}
+
+                <GlassSurface
+                  elevated={false}
+                  radius={theme.radius.xl}
+                  contentStyle={styles.deckPage}
                 >
-                  <GlassSurface
-                    radius={theme.radius.xl}
-                    tintColor={theme.isDark ? 'rgba(16,63,93,0.30)' : 'rgba(255,255,255,0.50)'}
-                    contentStyle={styles.payslipCard}
-                  >
-                    <View style={styles.payslipTop}>
-                      <View>
-                        <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>Net salary</Text>
-                        <Text style={[styles.payslipAmount, { color: theme.colors.text }]}>
-                          {dashboard.latestPayslip.currency}{' '}
-                          {dashboard.latestPayslip.netSalary.toLocaleString('en-US', {
-                            minimumFractionDigits: 2,
-                          })}
-                        </Text>
-                      </View>
-                      <View style={[styles.statusPill, { backgroundColor: `${theme.colors.success}20` }]}>
-                        <View style={[styles.statusDot, { backgroundColor: theme.colors.success }]} />
-                        <Text style={[theme.typography.micro, { color: theme.colors.success }]}>
-                          {dashboard.latestPayslip.paymentStatus}
-                        </Text>
-                      </View>
+                  <View style={styles.deckHeading}>
+                    <View style={[styles.deckIcon, { backgroundColor: theme.colors.success + '18' }]}>
+                      <Ionicons name="calendar-clear-outline" size={21} color={theme.colors.success} />
                     </View>
-                    <View style={[styles.payslipDivider, { backgroundColor: theme.colors.divider }]} />
-                    <View style={styles.payslipBottom}>
-                      <View>
-                        <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>Period</Text>
-                        <Text style={[theme.typography.bodyStrong, { color: theme.colors.textSecondary, marginTop: 2 }]}>
-                          {dashboard.latestPayslip.periodLabel}
-                        </Text>
-                      </View>
-                      <View style={[styles.payslipArrow, { backgroundColor: `${theme.colors.primary}18` }]}>
-                        <Ionicons name="arrow-forward" size={20} color={theme.colors.primary} />
-                      </View>
+                    <View style={styles.deckHeadingCopy}>
+                      <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Time off</Text>
+                      <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                        Balances and pending requests
+                      </Text>
                     </View>
-                  </GlassSurface>
-                </MotionPressable>
-              </View>
-            ) : null}
-            {(dashboard?.upcomingHolidays?.length ?? 0) > 0 ? (
-              <View style={styles.section}>
-                <SectionHeader title="Upcoming holidays" subtitle="Plan ahead" />
-                <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.listCard}>
-                  {dashboard!.upcomingHolidays.slice(0, 3).map((holiday, index) => (
-                    <View
-                      key={`${holiday.date}-${holiday.name}`}
-                      style={[
-                        styles.holidayRow,
-                        index < Math.min(dashboard!.upcomingHolidays.length, 3) - 1 && {
-                          borderBottomColor: theme.colors.divider,
-                          borderBottomWidth: StyleSheet.hairlineWidth,
-                        },
-                      ]}
+                    <MotionPressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Open leave"
+                      onPress={() => go('ApplyLeave')}
+                      haptic="selection"
+                      contentStyle={styles.deckLink}
                     >
-                      <View style={[styles.holidayDate, { backgroundColor: `${theme.colors.primary}18` }]}>
-                        <Text style={[styles.holidayDay, { color: theme.colors.primary }]}>
-                          {new Date(holiday.date).toLocaleDateString('en-US', { day: '2-digit' })}
-                        </Text>
-                        <Text style={[theme.typography.micro, { color: theme.colors.primary }]}>
-                          {new Date(holiday.date).toLocaleDateString('en-US', { month: 'short' })}
-                        </Text>
-                      </View>
-                      <View style={styles.holidayCopy}>
-                        <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{holiday.name}</Text>
-                        <Text style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 2 }]}>
-                          {holiday.type.toLowerCase().replace('_', ' ')} holiday
-                        </Text>
-                      </View>
-                      <Ionicons name="calendar-clear-outline" size={20} color={theme.colors.textMuted} />
+                      <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>
+                        Open
+                      </Text>
+                    </MotionPressable>
+                  </View>
+
+                  {(dashboard?.leaveBalances?.length ?? 0) > 0 ? (
+                    <View style={styles.deckLeaveRow}>
+                      {dashboard!.leaveBalances.slice(0, 2).map((balance) => (
+                        <LeaveBalanceCard key={balance.leaveTypeId} balance={balance} />
+                      ))}
                     </View>
-                  ))}
+                  ) : (
+                    <View style={styles.deckEmpty}>
+                      <Ionicons name="calendar-outline" size={26} color={theme.colors.textMuted} />
+                      <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                        No leave balances available yet.
+                      </Text>
+                    </View>
+                  )}
+
+                  {(dashboard?.pendingRequestsCount ?? 0) > 0 ? (
+                    <MotionPressable
+                      onPress={() => go('HRRequests')}
+                      haptic="selection"
+                      contentStyle={styles.fullRadius}
+                    >
+                      <View style={[styles.deckPendingRow, { backgroundColor: theme.colors.surfaceSoft }]}>
+                        <View style={[styles.pendingIcon, { backgroundColor: theme.colors.warning + '1F' }]}>
+                          <Ionicons name="hourglass-outline" size={20} color={theme.colors.warning} />
+                        </View>
+                        <View style={styles.pendingCopy}>
+                          <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
+                            {dashboard!.pendingRequestsCount} pending request
+                            {dashboard!.pendingRequestsCount === 1 ? '' : 's'}
+                          </Text>
+                          <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                            Tap to review status
+                          </Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
+                      </View>
+                    </MotionPressable>
+                  ) : null}
                 </GlassSurface>
-              </View>
-            ) : null}
+
+                <GlassSurface
+                  elevated={false}
+                  radius={theme.radius.xl}
+                  contentStyle={styles.deckPage}
+                >
+                  <View style={styles.deckHeading}>
+                    <View style={[styles.deckIcon, { backgroundColor: theme.colors.violet + '18' }]}>
+                      <Ionicons name="wallet-outline" size={21} color={theme.colors.violet} />
+                    </View>
+                    <View style={styles.deckHeadingCopy}>
+                      <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Pay & documents</Text>
+                      <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                        Latest payroll and document alerts
+                      </Text>
+                    </View>
+                  </View>
+
+                  {dashboard?.latestPayslip ? (
+                    <MotionPressable
+                      onPress={() => go('PayslipDetail', { id: dashboard.latestPayslip!.id })}
+                      haptic="selection"
+                      contentStyle={styles.fullRadius}
+                    >
+                      <View style={[styles.deckPayslip, { backgroundColor: theme.colors.surfaceSoft }]}>
+                        <View style={styles.deckPayslipCopy}>
+                          <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>NET SALARY</Text>
+                          <Text style={[styles.deckPayAmount, { color: theme.colors.text }]}>
+                            {dashboard.latestPayslip.currency}{' '}
+                            {dashboard.latestPayslip.netSalary.toLocaleString('en-US', {
+                              minimumFractionDigits: 2,
+                            })}
+                          </Text>
+                          <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>
+                            {dashboard.latestPayslip.periodLabel}
+                          </Text>
+                        </View>
+                        <View style={[styles.payslipArrow, { backgroundColor: theme.colors.primary + '18' }]}>
+                          <Ionicons name="arrow-forward" size={20} color={theme.colors.primary} />
+                        </View>
+                      </View>
+                    </MotionPressable>
+                  ) : null}
+
+                  {(dashboard?.expiringDocuments?.length ?? 0) > 0 ? (
+                    <View style={[styles.deckDocs, { borderTopColor: theme.colors.divider }]}>
+                      {dashboard!.expiringDocuments.slice(0, 2).map((document, index, items) => (
+                        <DocumentAlert
+                          key={document.id}
+                          name={document.documentType}
+                          expiryDate={document.expiryDate}
+                          isLast={index === items.length - 1}
+                          onPress={() => go('Documents')}
+                        />
+                      ))}
+                    </View>
+                  ) : (
+                    <View style={styles.deckEmpty}>
+                      <Ionicons name="checkmark-circle-outline" size={26} color={theme.colors.success} />
+                      <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                        No document alerts need your attention.
+                      </Text>
+                    </View>
+                  )}
+                </GlassSurface>
+              </SwipeDeck>
+            </View>
           </>
         )}
 
@@ -410,7 +451,7 @@ function LoadingDashboard() {
   );
 }
 
-interface AttendanceCardProps {
+export interface AttendanceCardProps {
   attendance?: TodayAttendance;
   canClockIn: boolean;
   canClockOut: boolean;
@@ -418,9 +459,10 @@ interface AttendanceCardProps {
   onClockIn: () => void;
   onClockOut: () => void;
   onViewHistory: () => void;
+  feedback: PunchType | null;
 }
 
-function AttendanceCard({
+export function AttendanceCard({
   attendance,
   canClockIn,
   canClockOut,
@@ -428,8 +470,23 @@ function AttendanceCard({
   onClockIn,
   onClockOut,
   onViewHistory,
+  feedback,
 }: AttendanceCardProps) {
-  const { theme } = useTheme();
+  const { theme, reduceMotion } = useTheme();
+  const feedbackProgress = useSharedValue(feedback ? 1 : 0);
+  useEffect(() => {
+    if (!feedback) {
+      feedbackProgress.value = 0;
+      return;
+    }
+    feedbackProgress.value = reduceMotion
+      ? 1
+      : withSpring(1, { damping: 18, stiffness: 260 });
+  }, [feedback, feedbackProgress, reduceMotion]);
+  const feedbackStyle = useAnimatedStyle(() => ({
+    opacity: feedbackProgress.value,
+    transform: [{ scale: reduceMotion ? 1 : 0.94 + (feedbackProgress.value * 0.06) }],
+  }));
   const statusColor = getAttendanceStatusColor(attendance?.status, theme);
   const statusText = attendance?.status?.replaceAll('_', ' ') ?? 'Not recorded';
 
@@ -495,6 +552,22 @@ function AttendanceCard({
             {attendance.workLocation}
           </Text>
         </View>
+      ) : null}
+
+      {feedback ? (
+        <Animated.View
+          accessible
+          accessibilityLiveRegion="polite"
+          style={[styles.attendanceFeedback, { backgroundColor: `${theme.colors.success}18` }, feedbackStyle]}
+        >
+          <Ionicons name="checkmark-circle" size={20} color={theme.colors.success} />
+          <View style={styles.feedbackCopy}>
+            <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>Attendance updated</Text>
+            <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>
+              {feedback === 'CLOCK_IN' ? 'You’re clocked in and your shift is active.' : 'You’re clocked out and today’s hours are recorded.'}
+            </Text>
+          </View>
+        </Animated.View>
       ) : null}
 
       <View style={styles.punchRow}>
@@ -697,7 +770,36 @@ const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: 'transparent' },
   content: { paddingBottom: 34 },
   heroActions: { flexDirection: 'row', gap: 8 },
+  profileAvatarButton: { width: 44, height: 44, borderRadius: 15 },
   section: { paddingHorizontal: 16, marginTop: 16 },
+  deckSection: { marginTop: 16 },
+  deckPage: { flex: 1, padding: 16 },
+  deckHeading: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14 },
+  deckHeadingCopy: { flex: 1, minWidth: 0 },
+  deckIcon: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  deckLink: { minHeight: 44, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
+  deckLeaveRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  deckPendingRow: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    borderRadius: 18,
+  },
+  deckPayslip: {
+    minHeight: 108,
+    borderRadius: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+  },
+  deckPayslipCopy: { flex: 1, minWidth: 0 },
+  deckPayAmount: { fontSize: 25, lineHeight: 30, fontWeight: '800', marginVertical: 3 },
+  deckDocs: { marginTop: 10, borderTopWidth: StyleSheet.hairlineWidth },
+  deckEmpty: { flex: 1, minHeight: 160, alignItems: 'center', justifyContent: 'center', gap: 8 },
+  errorCard: { minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
   loadingCard: {
     minHeight: 150,
     alignItems: 'center',
@@ -748,6 +850,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   punchRow: { flexDirection: 'row', gap: 10, marginTop: 17 },
+  attendanceFeedback: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 16, marginTop: 14 },
+  feedbackCopy: { flex: 1, gap: 2 },
   flexButton: { flex: 1 },
   actionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   actionShell: { width: '48%', minHeight: 118 },

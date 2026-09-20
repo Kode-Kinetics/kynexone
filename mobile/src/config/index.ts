@@ -7,7 +7,7 @@ import Constants from 'expo-constants';
 const configuredApiBaseUrl =
   process.env.EXPO_PUBLIC_API_BASE_URL ||
   (Constants.expoConfig?.extra?.apiBaseUrl as string | undefined) ||
-  'http://localhost:5117/api';
+  'https://zayra-ai-workforce.onrender.com/api';
 
 const ENV = {
   development: {

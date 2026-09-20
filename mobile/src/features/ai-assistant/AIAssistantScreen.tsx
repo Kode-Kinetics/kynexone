@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, { FadeIn, FadeInDown, FadeOut } from 'react-native-reanimated';
 import { aiApi } from '@/api/services';
 import { useAuthStore } from '@/auth/authStore';
 import { isManagerUser } from '@/navigation/routes';
@@ -42,7 +43,7 @@ const managerSuggestions = [
 
 export default function AIAssistantScreen() {
   const { user } = useAuthStore();
-  const { theme } = useTheme();
+  const { theme, reduceMotion } = useTheme();
   const [messages, setMessages] = useState<AIMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -63,7 +64,6 @@ export default function AIAssistantScreen() {
     setMessages((current) => [...current, userMessage]);
     setInput('');
     setLoading(true);
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
     try {
       const response = await aiApi.ask({ question });
@@ -89,9 +89,14 @@ export default function AIAssistantScreen() {
       ]);
     } finally {
       setLoading(false);
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
     }
   }, [loading]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollToEnd({ animated: !reduceMotion });
+    });
+  }, [loading, messages, reduceMotion]);
 
   const firstName = (user?.fullName ?? user?.name ?? 'there').split(' ')[0];
 
@@ -184,8 +189,10 @@ export default function AIAssistantScreen() {
         ) : (
           <View style={styles.section}>
             <View style={styles.chatList}>
-              {messages.map((message) => <ChatBubble key={message.id} message={message} />)}
-              {loading ? <TypingIndicator /> : null}
+              {messages.map((message) => (
+                <ChatBubble key={message.id} message={message} reduceMotion={reduceMotion} />
+              ))}
+              {loading ? <TypingIndicator reduceMotion={reduceMotion} /> : null}
             </View>
           </View>
         )}
@@ -210,6 +217,7 @@ export default function AIAssistantScreen() {
             style={[theme.typography.body, styles.input, { color: theme.colors.text }]}
             returnKeyType="send"
             onSubmitEditing={() => void send(input)}
+            accessibilityLabel="Message to KynexOne AI"
           />
           <MotionPressable
             onPress={() => void send(input)}
@@ -224,6 +232,8 @@ export default function AIAssistantScreen() {
               },
             ]}
             accessibilityLabel="Send message"
+            accessibilityRole="button"
+            accessibilityState={{ busy: loading, disabled: loading || !input.trim() }}
           >
             {loading ? (
               <ActivityIndicator size="small" color="#FFFFFF" />
@@ -241,12 +251,15 @@ export default function AIAssistantScreen() {
   );
 }
 
-function ChatBubble({ message }: { message: AIMessage }) {
+function ChatBubble({ message, reduceMotion }: { message: AIMessage; reduceMotion: boolean }) {
   const { theme } = useTheme();
   const userMessage = message.role === 'user';
 
   return (
-    <View style={[styles.messageWrap, { alignItems: userMessage ? 'flex-end' : 'flex-start' }]}>
+    <Animated.View
+      entering={reduceMotion ? undefined : FadeInDown.duration(200)}
+      style={[styles.messageWrap, { alignItems: userMessage ? 'flex-end' : 'flex-start' }]}
+    >
       {!userMessage ? (
         <View style={styles.assistantLabel}>
           <View style={[styles.assistantMark, { backgroundColor: `${theme.colors.primary}1F` }]}>
@@ -261,6 +274,8 @@ function ChatBubble({ message }: { message: AIMessage }) {
         </View>
       ) : (
         <GlassSurface
+          accessibilityLiveRegion="polite"
+          accessibilityLabel={`KynexOne AI: ${message.content}`}
           elevated={false}
           radius={20}
           style={styles.assistantBubble}
@@ -272,14 +287,21 @@ function ChatBubble({ message }: { message: AIMessage }) {
       <Text style={[theme.typography.micro, styles.timestamp, { color: theme.colors.textMuted }]}>
         {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
       </Text>
-    </View>
+    </Animated.View>
   );
 }
 
-function TypingIndicator() {
+function TypingIndicator({ reduceMotion }: { reduceMotion: boolean }) {
   const { theme } = useTheme();
   return (
-    <View style={styles.typingWrap}>
+    <Animated.View
+      entering={reduceMotion ? undefined : FadeIn.duration(140)}
+      exiting={reduceMotion ? undefined : FadeOut.duration(120)}
+      accessibilityRole="progressbar"
+      accessibilityLabel="KynexOne AI is preparing a response"
+      accessibilityLiveRegion="polite"
+      style={styles.typingWrap}
+    >
       <View style={styles.assistantLabel}>
         <View style={[styles.assistantMark, { backgroundColor: `${theme.colors.primary}1F` }]}>
           <Ionicons name="sparkles" size={14} color={theme.colors.primary} />
@@ -297,7 +319,7 @@ function TypingIndicator() {
           />
         ))}
       </GlassSurface>
-    </View>
+    </Animated.View>
   );
 }
 

@@ -42,7 +42,7 @@ const typography = {
   body: { fontSize: 15, lineHeight: 21, fontWeight: '400' as const },
   bodyStrong: { fontSize: 15, lineHeight: 21, fontWeight: '600' as const },
   caption: { fontSize: 12, lineHeight: 17, fontWeight: '500' as const },
-  micro: { fontSize: 10, lineHeight: 14, fontWeight: '600' as const, letterSpacing: 0.2 },
+  micro: { fontSize: 11, lineHeight: 15, fontWeight: '600' as const, letterSpacing: 0.15 },
 };
 
 const lightColors = {

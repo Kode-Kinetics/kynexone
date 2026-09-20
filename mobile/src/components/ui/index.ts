@@ -1,3 +1,4 @@
+export * from './EmployeeAvatar';
 export * from './GlassIconButton';
 export * from './GlassSurface';
 export * from './GlassTextField';
@@ -6,3 +7,4 @@ export * from './LiquidButton';
 export * from './MotionPressable';
 export * from './ScreenHero';
 export * from './SectionHeader';
+export * from './SwipeDeck';
