@@ -5,10 +5,11 @@ import {
   MessageSquareText, Loader2, CalendarOff, Send, FileText, Clock,
   ChevronRight, Megaphone, CheckCircle2, AlertCircle,
   Zap, ClipboardList, TrendingUp, CreditCard, Banknote,
-  Star, Target, Calendar, BadgeCheck, User, X,
+  Star, Target, Calendar, BadgeCheck, User, X, Package,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { essApi, type EssDashboard, type EssHrRequest, type EssHrRequestDetail, type EssRosterEntry } from '../api/ess';
+import { assetsApi, type EmployeeAssets } from '../api/assets';
 import { useAuth } from '../contexts/AuthContext';
 import { StatusChip } from '../components/StatusChip';
 
@@ -198,6 +199,87 @@ function MyShiftsCard() {
 }
 
 // ── Upcoming item row ─────────────────────────────────────────────────────────
+
+// ── My assets (W2-C: api/ess/assets — only ever the caller's own custody rows) ─
+
+function MyAssetsCard() {
+  const [assets, setAssets] = useState<EmployeeAssets | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [showHistory, setShowHistory] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    assetsApi.mine()
+      .then((a) => { if (!cancelled) setAssets(a); })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const e = err as { response?: { status?: number; data?: { message?: string } } };
+        // 404 = user not linked to an employee record; 403 = no ESS permission. Both are "nothing to show".
+        if (e.response?.status === 404 || e.response?.status === 403) setAssets({ employeeId: 0, current: [], history: [] });
+        else setError(e.response?.data?.message ?? 'Could not load your assets.');
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const fmt = (s: string | null) => (s ? formatDate(s) : '—');
+  const overdue = assets?.current.filter((a) => a.isOverdue).length ?? 0;
+
+  return (
+    <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
+      <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
+        <p className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+          <Package className="h-4 w-4 text-slate-400" /> My Assets
+          {overdue > 0 && (
+            <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[10px] font-bold text-rose-600 dark:text-rose-400">{overdue} overdue</span>
+          )}
+        </p>
+        {assets && assets.history.length > 0 && (
+          <button type="button" onClick={() => setShowHistory((v) => !v)} className="text-[11px] font-medium text-sapphire hover:underline dark:text-cyanAccent">
+            {showHistory ? 'Hide history' : `History (${assets.history.length})`}
+          </button>
+        )}
+      </div>
+      <div className="p-5">
+        {loading ? (
+          <div className="space-y-2"><Skeleton className="h-4 w-2/3" /><Skeleton className="h-4 w-1/2" /></div>
+        ) : error ? (
+          <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>
+        ) : !assets || assets.current.length === 0 ? (
+          <p className="text-sm text-slate-400 dark:text-slate-500">No company equipment is issued to you right now.</p>
+        ) : (
+          <ul className="divide-y divide-slate-100 dark:divide-white/[0.06]">
+            {assets.current.map((a) => (
+              <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
+                <div className="min-w-0">
+                  <span className="font-mono text-xs font-semibold text-slate-800 dark:text-slate-100">{a.assetTag}</span>
+                  <span className="ml-2 text-slate-700 dark:text-slate-200">{a.assetName || a.categoryCode}</span>
+                  <div className="text-xs text-slate-400">Issued {fmt(a.issuedOn)}{a.issuedByName ? ` by ${a.issuedByName}` : ''}{a.conditionOnIssue ? ` · ${a.conditionOnIssue.toLowerCase()} condition` : ''}</div>
+                </div>
+                <span className={`text-xs ${a.isOverdue ? 'font-semibold text-rose-600 dark:text-rose-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                  {a.expectedReturnDate ? (a.isOverdue ? `Was due ${fmt(a.expectedReturnDate)}` : `Due back ${fmt(a.expectedReturnDate)}`) : 'No return date'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {showHistory && assets && assets.history.length > 0 && (
+          <div className="mt-3 border-t border-slate-100 pt-3 dark:border-white/[0.07]">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Previously held</p>
+            <ul className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
+              {assets.history.map((a) => (
+                <li key={a.id}>
+                  <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">{a.assetTag}</span> {a.assetName || a.categoryCode} · {fmt(a.issuedOn)} → {fmt(a.returnedOn)} · {a.status === 'WrittenOff' ? 'written off' : a.status.toLowerCase()}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
 
 function UpcomingRow({
   dot, label, sub, badge, badgeColor,
@@ -682,6 +764,9 @@ export function EmployeeSelfServicePage() {
 
       {/* ═══ My Roster (own shifts only) ═══════════════════════════════════ */}
       <MyShiftsCard />
+
+      {/* ═══ My Assets (own custody rows only) ═════════════════════════════ */}
+      <MyAssetsCard />
 
       {/* ═══ ROW 4: Announcements + Action items / AI + HR Request ══════════ */}
       <div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]">

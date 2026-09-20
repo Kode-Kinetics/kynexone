@@ -189,7 +189,7 @@ function AnalyticsDashboard() {
 
 // ── Report Library & Runner ───────────────────────────────────────────────────
 
-const CATEGORIES = ['HR', 'Attendance', 'Leave', 'Overtime', 'Payroll', 'Recruitment', 'Compliance', 'Finance'];
+const CATEGORIES = ['HR', 'Attendance', 'Leave', 'Overtime', 'Payroll', 'Recruitment', 'Compliance', 'Finance', 'Assets'];
 
 function ReportLibrary() {
   const searchParams = useSearchParams();

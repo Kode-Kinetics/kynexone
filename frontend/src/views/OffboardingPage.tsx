@@ -2,9 +2,11 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { UserMinus, X, CheckCircle2, Clock, Star, Undo2, AlertTriangle } from 'lucide-react';
+import { UserMinus, X, CheckCircle2, Clock, Star, Undo2, AlertTriangle, Package, ExternalLink } from 'lucide-react';
 import { offboardingApi, type Offboarding, type OffboardingSummary } from '../api/offboarding';
 import { employeesApi } from '../api/employees';
+import { assetsApi, type AssetClearance } from '../api/assets';
+import { notifyApiError } from '../api/client';
 
 const SEPARATION_TYPES = ['Resignation', 'Termination', 'End of Contract', 'Retirement', 'Other'];
 const EXIT_REASONS = ['Compensation', 'Career Growth', 'Management', 'Work-Life Balance', 'Relocation', 'Job Content', 'Company Culture', 'Better Offer', 'Personal', 'Other'];
@@ -109,10 +111,12 @@ function OffboardingCard({ o, onChange }: { o: Offboarding; onChange: () => void
   const isProgress = o.status === 'InProgress';
   const daysLeft = isProgress ? daysBetween(new Date(), new Date(o.lastWorkingDay)) : null;
 
-  const toggle = async (k: string, v: boolean) => { setBusy(true); await offboardingApi.checklist(o.id, { [k]: v }).catch(() => {}); setBusy(false); onChange(); };
-  const saveEi = async () => { setBusy(true); await offboardingApi.exitInterview(o.id, ei).catch(() => {}); setBusy(false); setEditEi(false); onChange(); };
-  const complete = async () => { setBusy(true); await offboardingApi.complete(o.id).catch(() => {}); setBusy(false); onChange(); };
-  const cancel = async () => { setBusy(true); await offboardingApi.cancel(o.id).catch(() => {}); setBusy(false); onChange(); };
+  // W2-C: the checklist PATCH and Complete now refuse (409 assets_outstanding) while the register says the
+  // leaver still holds items. Those refusals carry the reason, so they must reach the user, not be swallowed.
+  const toggle = async (k: string, v: boolean) => { setBusy(true); await offboardingApi.checklist(o.id, { [k]: v }).catch(e => notifyApiError(e, 'Could not update the checklist.')); setBusy(false); onChange(); };
+  const saveEi = async () => { setBusy(true); await offboardingApi.exitInterview(o.id, ei).catch(e => notifyApiError(e, 'Could not save the exit interview.')); setBusy(false); setEditEi(false); onChange(); };
+  const complete = async () => { setBusy(true); await offboardingApi.complete(o.id).catch(e => notifyApiError(e, 'Could not complete the offboarding.')); setBusy(false); onChange(); };
+  const cancel = async () => { setBusy(true); await offboardingApi.cancel(o.id).catch(e => notifyApiError(e, 'Could not rescind the offboarding.')); setBusy(false); onChange(); };
 
   return (
     <div className="surface p-4">
@@ -138,6 +142,8 @@ function OffboardingCard({ o, onChange }: { o: Offboarding; onChange: () => void
       </div>
 
       {o.reason && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">“{o.reason}”</p>}
+
+      {isProgress && <AssetsPanel employeeId={o.employeeId} employeeName={o.employeeName} refreshKey={`${o.assetsReturned}-${busy}`} />}
 
       <div className="mt-3 grid gap-4 lg:grid-cols-2">
         {/* Checklist */}
@@ -195,6 +201,77 @@ function OffboardingCard({ o, onChange }: { o: Offboarding; onChange: () => void
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * W2-C — what the leaver still holds, straight from the asset register. The archive is blocked until every
+ * item here is returned (recorded in the register) or written off with an approved request; the
+ * "Assets returned" checkbox cannot override this list.
+ */
+function AssetsPanel({ employeeId, employeeName, refreshKey }: { employeeId: number; employeeName: string; refreshKey: string }) {
+  const [clearance, setClearance] = useState<AssetClearance | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError('');
+    assetsApi.clearance(employeeId)
+      .then(c => { if (!cancelled) setClearance(c); })
+      .catch((e: unknown) => { if (!cancelled) setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not load the asset clearance.'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [employeeId, refreshKey]);
+
+  const fmt = (s: string | null) => fmtDate(s);
+
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300">
+          <Package className="h-3.5 w-3.5" /> Company assets
+          {clearance && (
+            clearance.clear
+              ? <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400">Clear</span>
+              : <span className="rounded-full bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{clearance.outstandingCount} outstanding</span>
+          )}
+        </p>
+        <a href={`/assets?employeeId=${employeeId}`} className="flex items-center gap-1 text-xs text-sapphire hover:underline dark:text-cyanAccent">
+          Open in Asset Register <ExternalLink className="h-3 w-3" />
+        </a>
+      </div>
+      {loading ? (
+        <p className="text-xs text-slate-400">Checking the register…</p>
+      ) : error ? (
+        <p className="text-xs text-rose-500">{error}</p>
+      ) : !clearance || clearance.clear ? (
+        <p className="text-xs text-slate-400">{employeeName} holds no items in the asset register{clearance && clearance.pendingWriteOffs.length > 0 ? '' : '.'}</p>
+      ) : (
+        <ul className="divide-y divide-slate-100 text-xs dark:divide-white/[0.06]">
+          {clearance.outstanding.map(a => (
+            <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5">
+              <div>
+                <span className="font-mono font-semibold text-slate-800 dark:text-slate-100">{a.assetTag}</span>
+                <span className="ml-1.5 text-slate-600 dark:text-slate-300">{a.assetName || a.categoryCode}</span>
+                <span className="ml-1.5 text-slate-400">issued {fmt(a.issuedOn)}</span>
+              </div>
+              <span className={a.isOverdue ? 'font-semibold text-rose-600 dark:text-rose-400' : 'text-slate-500 dark:text-slate-400'}>
+                {a.expectedReturnDate ? `due ${fmt(a.expectedReturnDate)}${a.isOverdue ? ' · overdue' : ''}` : 'no due date'}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {clearance && clearance.pendingWriteOffs.length > 0 && (
+        <p className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+          {clearance.pendingWriteOffs.length} write-off request{clearance.pendingWriteOffs.length === 1 ? '' : 's'} awaiting approval — the item clears only once the final approver approves it.
+        </p>
+      )}
+      {clearance && !clearance.clear && (
+        <p className="mt-1.5 text-[11px] text-slate-400">Record each return (or an approved write-off) in the Asset Register; the “Assets returned” box ticks itself once nothing is outstanding.</p>
+      )}
     </div>
   );
 }

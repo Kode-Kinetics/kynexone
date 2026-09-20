@@ -22,6 +22,7 @@ import {
   WalletCards,
   KeyRound,
   CheckSquare2,
+  Package,
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 
@@ -53,6 +54,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Loans & Advances', icon: Landmark, path: '/loans', requiredPermissions: ['loans.read', 'loans.write'] },
       { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },
       { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.read', 'employees.write'] },
+      { label: 'Assets', icon: Package, path: '/assets', requiredPermissions: ['employees.read', 'employees.write'] },
       { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: ['performance.read', 'performance.write'], requiredFeatureKey: 'performance' },
       { label: 'Compliance', icon: ShieldCheck, path: '/compliance', requiredPermissions: ['compliance.read', 'compliance.write'], requiredFeatureKey: 'compliance' },
     ],
