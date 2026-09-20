@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { notifyApiError } from '../api/client';
 import { useSearchParams } from 'next/navigation';
 import {
-  BarChart2, BookOpen, Clock, Download, Play, Plus, RefreshCw, Save, Trash2, ToggleLeft, ToggleRight,
+  AlertTriangle, BarChart2, BookOpen, Clock, Download, Play, Plus, RefreshCw, Save, Trash2, ToggleLeft, ToggleRight,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { reportsApi, analyticsApi } from '../api/reports';
@@ -26,7 +26,7 @@ const ReportsLeaveTrendChart = dynamic(
   { ssr: false },
 );
 import type {
-  ReportCatalogItem, ReportFilters, ReportResult, SavedReport,
+  ReportCatalogItem, ReportExportFormat, ReportFilters, ReportResult, SavedReport,
   ReportSchedule, ReportExecutionLog, AnalyticsKPIs,
 } from '../api/reports';
 import { Modal } from '../components/Modal';
@@ -245,6 +245,24 @@ function ReportLibrary() {
     finally { setSaving(false); }
   };
 
+  const [exporting, setExporting] = useState<ReportExportFormat | null>(null);
+  const [exportNote, setExportNote] = useState('');
+  const exportReport = async (format: ReportExportFormat) => {
+    if (!selectedReport) return;
+    setExporting(format);
+    setExportNote('');
+    setRunError('');
+    try {
+      const { filename, rowCount } = await reportsApi.export(selectedReport.key, format, filters);
+      setExportNote(`Downloaded ${filename} — ${rowCount.toLocaleString()} rows.`);
+    } catch (e) {
+      notifyApiError(e);
+      setRunError('The export could not be produced. You may not have the Export Reports permission.');
+    } finally {
+      setExporting(null);
+    }
+  };
+
   const columns = result && result.data.length > 0 ? Object.keys(result.data[0] as object) : [];
 
   return (
@@ -285,9 +303,19 @@ function ReportLibrary() {
             </div>
             <div className="flex gap-2">
               {result && (
-                <button type="button" onClick={() => { setSaveName(selectedReport.name); setSaveShared(false); setSaveModal(true); }} className="btn-secondary h-8 px-3 text-sm">
-                  <Save className="h-3.5 w-3.5" /> Save
-                </button>
+                <>
+                  {/* The on-screen table stops at 200 rows; these download all of them.
+                      Only CSV and XLSX are offered because only CSV and XLSX exist. */}
+                  <button type="button" onClick={() => exportReport('csv')} disabled={exporting !== null} className="btn-secondary h-8 px-3 text-sm disabled:opacity-60">
+                    {exporting === 'csv' ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} CSV
+                  </button>
+                  <button type="button" onClick={() => exportReport('xlsx')} disabled={exporting !== null} className="btn-secondary h-8 px-3 text-sm disabled:opacity-60">
+                    {exporting === 'xlsx' ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Excel
+                  </button>
+                  <button type="button" onClick={() => { setSaveName(selectedReport.name); setSaveShared(false); setSaveModal(true); }} className="btn-secondary h-8 px-3 text-sm">
+                    <Save className="h-3.5 w-3.5" /> Save
+                  </button>
+                </>
               )}
               <button type="button" onClick={runReport} disabled={running} className="btn-primary h-8 px-3 text-sm disabled:opacity-60">
                 {running ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
@@ -322,6 +350,7 @@ function ReportLibrary() {
           </div>
 
           {runError && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">{runError}</p>}
+          {exportNote && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">{exportNote}</p>}
 
           {result && (
             <div className="space-y-2">
@@ -476,7 +505,7 @@ function ScheduledReportsTab() {
   const [catalog, setCatalog] = useState<ReportCatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [createModal, setCreateModal] = useState(false);
-  const [form, setForm] = useState({ reportKey: '', reportName: '', category: '', frequency: 'Daily', deliveryMethod: 'Email', recipients: '', exportFormat: 'Excel' });
+  const [form, setForm] = useState({ reportKey: '', reportName: '', category: '', frequency: 'Daily', deliveryMethod: 'Email', recipients: '', exportFormat: 'xlsx' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [toggling, setToggling] = useState<string | null>(null);
@@ -519,7 +548,7 @@ function ScheduledReportsTab() {
     <>
       <div className="space-y-4">
         <div className="flex justify-end">
-          <button type="button" onClick={() => { setForm({ reportKey: catalog[0]?.key ?? '', reportName: catalog[0]?.name ?? '', category: catalog[0]?.category ?? '', frequency: 'Daily', deliveryMethod: 'Email', recipients: '', exportFormat: 'Excel' }); setError(''); setCreateModal(true); }} className="btn-primary">
+          <button type="button" onClick={() => { setForm({ reportKey: catalog[0]?.key ?? '', reportName: catalog[0]?.name ?? '', category: catalog[0]?.category ?? '', frequency: 'Daily', deliveryMethod: 'Email', recipients: '', exportFormat: 'xlsx' }); setError(''); setCreateModal(true); }} className="btn-primary">
             <Plus className="h-4 w-4" /> New Schedule
           </button>
         </div>
@@ -527,16 +556,16 @@ function ScheduledReportsTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {['Report', 'Frequency', 'Delivery', 'Recipients', 'Format', 'Next Run', 'Active', ''].map((h) => (
+                {['Report', 'Frequency', 'Delivery', 'Recipients', 'Format', 'Next Run', 'Health', 'Active', ''].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
-                <tr><td colSpan={8} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+                <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={8} className="py-12 text-center text-slate-400">No schedules configured</td></tr>
+                <tr><td colSpan={9} className="py-12 text-center text-slate-400">No schedules configured</td></tr>
               ) : items.map((s) => (
                 <tr key={s.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                   <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{s.reportName}</td>
@@ -545,6 +574,24 @@ function ScheduledReportsTab() {
                   <td className="px-4 py-3 text-slate-500 text-xs max-w-[150px] truncate">{s.recipients}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{s.exportFormat}</td>
                   <td className="px-4 py-3 text-slate-500 text-xs">{s.nextRunAtUtc ? new Date(s.nextRunAtUtc).toLocaleDateString() : '—'}</td>
+                  {/* A broken schedule used to be visible only in an execution log nobody opens. */}
+                  <td className="px-4 py-3">
+                    {s.consecutiveFailureCount > 0 ? (
+                      <span
+                        title={s.lastFailureReason}
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${
+                          s.ownerInvalidatedAtUtc
+                            ? 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400'
+                            : 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400'
+                        }`}
+                      >
+                        <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                        {s.ownerInvalidatedAtUtc ? 'No valid owner' : `Failed ${s.consecutiveFailureCount}×`}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-400">OK</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <button type="button" onClick={() => toggle(s.id)} disabled={toggling === s.id} aria-label="Toggle schedule" className="text-slate-400 hover:text-sapphire disabled:opacity-50 transition">
                       {s.isActive ? <ToggleRight className="h-5 w-5 text-emerald-500" /> : <ToggleLeft className="h-5 w-5" />}
@@ -579,14 +626,18 @@ function ScheduledReportsTab() {
               {['Daily', 'Weekly', 'Monthly', 'Quarterly'].map((v) => <option key={v}>{v}</option>)}
             </select>
           </FormField>
+          {/* Delivery was Email / SFTP / Portal and only Email ever validated server-side, so
+              picking either of the others failed after the form was filled in — and the UI
+              swallowed the reason into "Failed to create schedule." SFTP and Portal are gone
+              until they exist. Same for PDF, which used to be delivered as a .csv. */}
           <FormField label="Delivery Method">
-            <select value={form.deliveryMethod} onChange={(e) => setForm(x => ({ ...x, deliveryMethod: e.target.value }))} className="select w-full" title="Delivery Method">
-              {['Email', 'SFTP', 'Portal'].map((v) => <option key={v}>{v}</option>)}
-            </select>
+            <input value="Email" readOnly disabled className="input w-full" title="Delivery Method" aria-label="Delivery Method" />
           </FormField>
           <FormField label="Export Format">
             <select value={form.exportFormat} onChange={(e) => setForm(x => ({ ...x, exportFormat: e.target.value }))} className="select w-full" title="Export Format">
-              {['Excel', 'CSV', 'PDF'].map((v) => <option key={v}>{v}</option>)}
+              <option value="xlsx">Excel (.xlsx)</option>
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
             </select>
           </FormField>
           <div className="col-span-2">

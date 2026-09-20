@@ -11,6 +11,7 @@ import {
   Headphones,
   Landmark,
   Layers3,
+  FileSignature,
   Network,
   Settings2,
   ShieldCheck,
@@ -39,6 +40,7 @@ export const navigationGroups: NavGroup[] = [
     items: [
       { label: 'People', icon: UsersRound, path: '/people', requiredPermissions: ['employees.read'] },
       { label: 'Org Chart', icon: Network, path: '/org-chart', requiredPermissions: ['employees.read'] },
+      { label: 'HR Letters', icon: FileSignature, path: '/hr-letters', requiredPermissions: ['employees.read', 'employees.write'] },
       { label: 'Attendance', icon: Clock3, path: '/attendance', requiredPermissions: ['attendance.read', 'attendance.write', 'attendance.kiosk'] },
       { label: 'Leave', icon: ClipboardList, path: '/leave', requiredPermissions: ['leave.read', 'leave.write'] },
       { label: 'Shifts & Rosters', icon: CalendarCheck, path: '/shifts', requiredPermissions: ['attendance.read'], requiredFeatureKey: 'shifts' },

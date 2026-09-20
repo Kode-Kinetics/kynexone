@@ -52,7 +52,15 @@ export interface ReportSchedule {
   lastRunAtUtc?: string;
   nextRunAtUtc?: string;
   createdAtUtc: string;
+  // F3: a schedule whose creator was deactivated used to fail every period in silence.
+  consecutiveFailureCount: number;
+  lastFailureAtUtc?: string;
+  lastFailureReason: string;
+  ownerInvalidatedAtUtc?: string;
 }
+
+/** The formats the API will actually produce. PDF is deliberately absent — see ReportExportFormats. */
+export type ReportExportFormat = 'csv' | 'xlsx';
 
 export interface ReportExecutionLog {
   id: string;
@@ -88,6 +96,28 @@ export const reportsApi = {
 
   run: (reportKey: string, filters?: ReportFilters) =>
     client.post<ReportResult>('/api/reports/run', { reportKey, filters }).then(r => r.data),
+
+  /**
+   * Downloads the WHOLE result, not the 200 rows the table shows. Returns the filename the
+   * server chose so the caller can report what landed.
+   */
+  export: async (reportKey: string, format: ReportExportFormat, filters?: ReportFilters) => {
+    const response = await client.post(
+      '/api/reports/export',
+      { reportKey, filters, format },
+      { responseType: 'blob' },
+    );
+    const disposition = String(response.headers['content-disposition'] ?? '');
+    const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+    const filename = match ? decodeURIComponent(match[1]) : `${reportKey}.${format}`;
+    const url = URL.createObjectURL(new Blob([response.data], { type: String(response.headers['content-type'] ?? '') }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    return { filename, rowCount: Number(response.headers['x-report-row-count'] ?? 0) };
+  },
 
   listSaved: () =>
     client.get<SavedReport[]>('/api/reports/saved').then(r => r.data),
