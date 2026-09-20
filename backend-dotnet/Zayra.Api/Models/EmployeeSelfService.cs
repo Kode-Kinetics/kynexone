@@ -65,6 +65,8 @@ public class HRRequest : ITenantOwned
     public DateTime DueAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
+    /// <summary>W2-D (S1) — an EmployeeDocument the requesting employee owns, attached at creation.</summary>
+    public Guid? AttachmentDocumentId { get; set; }
 }
 
 public class HRRequestComment : ITenantOwned

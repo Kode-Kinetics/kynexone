@@ -131,6 +131,30 @@ public class LeaveRequestsController : ControllerBase
         if (req.EndDate < req.StartDate)
             return BadRequest(new { message = "End date must be after start date." });
 
+        // W2-D (S1): AttachmentPath holds a STORAGE KEY, never file bytes, and only the key of a
+        // document the leave's employee owns. The app sends AttachmentDocumentId (the id returned by
+        // POST /api/ess/documents) and the key is resolved here, server-side, so it never travels to
+        // the client. A raw AttachmentPath is accepted only if it IS such a document's key.
+        var attachmentPath = string.Empty;
+        if (req.AttachmentDocumentId is { } attachmentDocumentId)
+        {
+            var key = await _db.EmployeeDocuments.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.Id == attachmentDocumentId && !d.IsDeleted)
+                .Select(d => d.StorageUrl).FirstOrDefaultAsync(ct);
+            if (string.IsNullOrWhiteSpace(key))
+                return BadRequest(new { message = "The attachment was not found among the employee's documents." });
+            attachmentPath = key;
+        }
+        else if (!string.IsNullOrWhiteSpace(req.AttachmentPath))
+        {
+            var candidate = req.AttachmentPath.Trim();
+            var owned = candidate.Length <= 1024 && await _db.EmployeeDocuments.AsNoTracking()
+                .AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.StorageUrl == candidate && !d.IsDeleted, ct);
+            if (!owned)
+                return BadRequest(new { message = "attachmentPath must reference an uploaded document. Upload the file first (POST /api/ess/documents) and send its id as attachmentDocumentId." });
+            attachmentPath = candidate;
+        }
+
         Employee? delegateEmployee = null;
         if (req.DelegateEmployeeId.HasValue)
         {
@@ -158,7 +182,7 @@ public class LeaveRequestsController : ControllerBase
             HoursRequested = req.HoursRequested ?? 0,
             Reason = req.Reason ?? string.Empty,
             IsEmergency = req.IsEmergency,
-            AttachmentPath = req.AttachmentPath ?? string.Empty,
+            AttachmentPath = attachmentPath,
             DelegateEmployeeId = delegateEmployee?.Id,
             DelegateEmployeeName = delegateEmployee?.FullName ?? string.Empty,
             PayrollImpact = leaveType.IsPaid ? "Full" : "None"
@@ -668,7 +692,9 @@ public record SubmitLeaveRequestRequest(
     bool IsEmergency,
     string? AttachmentPath,
     int? DelegateEmployeeId = null,
-    string? DelegateEmployeeName = null);
+    string? DelegateEmployeeName = null,
+    // W2-D (S1): id of an EmployeeDocument owned by the leave's employee; resolved to AttachmentPath.
+    Guid? AttachmentDocumentId = null);
 
 public record ApproveLeaveRequest(string? Notes);
 public record RejectLeaveRequestBody(string Reason);

@@ -29,5 +29,10 @@
     <PackageReference Include="MailKit" Version="4.16.0" />
     <PackageReference Include="StackExchange.Redis" Version="2.8.16" />
     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.11" />
+    <!-- W2-D (S3): profile-photo re-encode (decode JPEG/PNG, orient, downscale to 512px, re-encode
+         JPEG with NO metadata). MIT-licensed. The NoDependencies Linux asset bundles libSkiaSharp for
+         the Debian aspnet:8.0 runtime image without needing fontconfig/libfreetype apt packages. -->
+    <PackageReference Include="SkiaSharp" Version="3.119.2" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.2" />
   </ItemGroup>
 </Project>

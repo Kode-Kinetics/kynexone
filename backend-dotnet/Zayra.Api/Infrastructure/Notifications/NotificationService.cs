@@ -213,11 +213,13 @@ public class NotificationService : INotificationService
         if (!isBroadcast)
         {
             var preference = await LoadPreferenceAsync(db, request.TenantId, recipient!.EmployeeId, ct);
+            // W2-D (S4): the employee's per-category opt-outs, consulted per channel below.
+            var optedOut = await LoadCategoryOptOutsAsync(db, request.TenantId, recipient.EmployeeId, ct);
 
             foreach (var channel in new[] { NotificationChannels.Email, NotificationChannels.Sms,
                          NotificationChannels.WhatsApp, NotificationChannels.Push })
             {
-                var row = SelectChannel(channel, recipient, templates, preference, request, now);
+                var row = SelectChannel(channel, recipient, templates, preference, request, now, optedOut);
                 if (row is not null) deliveries.Add(row);
             }
         }
@@ -280,7 +282,7 @@ public class NotificationService : INotificationService
     /// </summary>
     private static NotificationDelivery? SelectChannel(string channel, NotificationRecipient recipient,
         IReadOnlyList<NotificationTemplate> templates, EmployeeNotificationPreference? preference,
-        NotificationRequest request, DateTime now)
+        NotificationRequest request, DateTime now, IReadOnlySet<string>? categoryOptOuts = null)
     {
         var template = templates.FirstOrDefault(t =>
             t.Channel.Equals(channel, StringComparison.OrdinalIgnoreCase) && t.IsActive);
@@ -294,6 +296,10 @@ public class NotificationService : INotificationService
             var destination = recipient.Email;
             var (subject, body, unresolved) = RenderForChannel(channel, request, template, templates);
             var row = NewDelivery(request, recipient, channel, subject, body, now);
+
+            if (recipient.EmployeeId.HasValue && IsCategoryOptedOut(channel, request, categoryOptOuts, out var emailCategory))
+                return Terminal(row, DeliveryOutcomes.Suppressed, now, "employee_opted_out",
+                    $"The employee has turned off {emailCategory} notifications on email. Delivered in-app instead.");
 
             if (string.IsNullOrWhiteSpace(destination))
                 return Terminal(row, DeliveryOutcomes.NoContact, now, "no_contact",
@@ -334,6 +340,12 @@ public class NotificationService : INotificationService
 
         var (shortSubject, shortBody, shortUnresolved) = RenderForChannel(channel, request, template, templates);
         var shortRow = NewDelivery(request, recipient, channel, shortSubject, shortBody, now);
+
+        // W2-D (S4): the channel is on, but the employee turned this CATEGORY off for it. A visible
+        // suppressed row (not silence): an admin can see the reach did not happen and why.
+        if (IsCategoryOptedOut(channel, request, categoryOptOuts, out var shortCategory))
+            return Terminal(shortRow, DeliveryOutcomes.Suppressed, now, "employee_opted_out",
+                $"The employee has turned off {shortCategory} notifications on {channel}. Delivered in-app instead.");
 
         if (shortUnresolved)
             return Terminal(shortRow, DeliveryOutcomes.Failed, now, "unresolved_placeholder",
@@ -556,6 +568,34 @@ public class NotificationService : INotificationService
         // IgnoreQueryFilters is intentional: as above — tenant pinned in the WHERE.
         return await db.EmployeeNotificationPreferences.IgnoreQueryFilters().AsNoTracking()
             .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == employeeId.Value, ct);
+    }
+
+    /// <summary>
+    /// W2-D (S4) — true when the request's category is opted out for this channel. Uncategorised
+    /// events and mandatory categories (security) are never blocked.
+    /// </summary>
+    internal static bool IsCategoryOptedOut(string channel, NotificationRequest request,
+        IReadOnlySet<string>? optOuts, out string category)
+    {
+        category = NotificationCategories.Classify(request.EventCode, request.EntityName) ?? string.Empty;
+        if (optOuts is null || optOuts.Count == 0 || category.Length == 0) return false;
+        if (NotificationCategories.IsMandatory(category)) return false;
+        var key = NotificationCategories.ChannelKeyFor(channel);
+        return key is not null && optOuts.Contains($"{key}:{category}");
+    }
+
+    /// <summary>"channel:category" keys the employee explicitly disabled. Absent rows mean enabled.</summary>
+    private static async Task<IReadOnlySet<string>> LoadCategoryOptOutsAsync(ZayraDbContext db,
+        Guid tenantId, int? employeeId, CancellationToken ct)
+    {
+        if (employeeId is null) return new HashSet<string>();
+        var rows = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(db.EmployeeNotificationCategoryPreferences,
+                tenantId, "Notification enqueue runs on a child scope with no ambient tenant; tenant re-applied, employee pinned below.")
+            .AsNoTracking()
+            .Where(p => p.EmployeeId == employeeId.Value && !p.Enabled)
+            .Select(p => new { p.Channel, p.Category })
+            .ToListAsync(ct);
+        return rows.Select(r => $"{r.Channel}:{r.Category}").ToHashSet(StringComparer.Ordinal);
     }
 
     internal static bool IsUniqueViolation(DbUpdateException ex)
