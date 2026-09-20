@@ -664,7 +664,7 @@ function BrandingTab({ tenant, onRefresh }: { tenant: PlatformTenantDetail; onRe
         <div className="bg-[#161b22] border border-white/[0.07] rounded-xl p-4">
           <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-3">Preview</p>
           <div className="flex items-center gap-3">
-            {form.logoUrl && <img src={form.logoUrl} alt="Logo preview" className="h-8 object-contain" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
+            {form.logoUrl && <img src={form.logoUrl} alt="Logo preview" loading="lazy" decoding="async" className="h-8 object-contain" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
             {form.portalTitle && <span className="text-sm text-white">{form.portalTitle}</span>}
           </div>
         </div>
