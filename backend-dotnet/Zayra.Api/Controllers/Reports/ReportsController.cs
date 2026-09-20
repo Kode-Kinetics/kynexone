@@ -22,11 +22,16 @@ public class ReportsController : ControllerBase
     public ReportsController(
         ZayraDbContext db,
         IDataScopeService scopeService,
-        Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService nitaqat)
+        Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService? nitaqat = null)
     {
         _db = db;
         _scopeService = scopeService;
-        _nitaqat = nitaqat;
+        // Optional so the many call sites that construct this controller directly (the
+        // scheduled-report worker and a dozen scope tests) keep working; DI and the worker
+        // pass the scoped instance, everyone else gets an equivalent one over the same
+        // DbContext. There is no per-request state in it beyond the context.
+        _nitaqat = nitaqat ?? new Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService(
+            db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db));
     }
 
     private Guid GetTenantId() =>
