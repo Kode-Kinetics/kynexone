@@ -8,6 +8,7 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Leave;
+using Zayra.Api.Infrastructure.Timesheets;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Approvals;
@@ -327,12 +328,17 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             approval.Status = "Rejected";
             approval.CompletedAtUtc = DateTime.UtcNow;
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
+            await TimesheetApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else if (step.IsFinalStep)
         {
             approval.Status = "Approved";
             approval.CompletedAtUtc = DateTime.UtcNow;
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
+            // Timesheets: project the decision onto the timesheet and, on approval, write the
+            // attendance reconciliation its hours feed — in THIS SaveChanges, so a decision taken
+            // in the Approval Center and one taken on the timesheet screen are the same write.
+            await TimesheetApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else
         {

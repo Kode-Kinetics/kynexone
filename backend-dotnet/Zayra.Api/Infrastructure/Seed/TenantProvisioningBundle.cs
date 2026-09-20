@@ -352,6 +352,9 @@ public static class TenantProvisioningBundle
         (nameof(LeaveRequest), "LEAVE-DEFAULT", "Default Leave Approval"),
         (nameof(OvertimeRequest), "OVERTIME-DEFAULT", "Default Overtime Approval"),
         ("PayrollRun", "PAYROLL-DEFAULT", "Default Payroll Approval"),
+        // Without this row the first timesheet a tenant submits 422s with
+        // approval_route_not_configured — the module would look shipped and be unusable.
+        (TimesheetConstants.ApprovalEntityName, "TIMESHEET-DEFAULT", "Default Timesheet Approval"),
     };
 
     private static async Task<int> InstallDefaultApprovalWorkflowsAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)

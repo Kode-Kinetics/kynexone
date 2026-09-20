@@ -364,6 +364,7 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IProrationPolicyReso
 builder.Services.AddScoped<IHrmHierarchyService, HrmHierarchyService>();
 builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
 builder.Services.AddScoped<IApprovalRouter, ApprovalRouter>();
+builder.Services.AddScoped<Zayra.Api.Application.Timesheets.ITimesheetService, Zayra.Api.Infrastructure.Timesheets.TimesheetService>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
 builder.Services.AddScoped<IEmployeeModuleSchemaBootstrapper, EmployeeModuleSchemaBootstrapper>();
 // P0-5: config-selected durable storage with a Production fail-fast (Render dyno disk is

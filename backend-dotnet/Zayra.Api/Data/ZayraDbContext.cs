@@ -993,6 +993,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<ApprovalWorkflowStep> ApprovalWorkflowSteps => Set<ApprovalWorkflowStep>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
+
+    // ── Timesheets: weekly time entry, approved through the ONE approval engine, reconciled
+    //    against attendance. See Models/Timesheets.cs for the module note. ────────────────
+    public DbSet<Timesheet> Timesheets => Set<Timesheet>();
+    public DbSet<TimesheetEntry> TimesheetEntries => Set<TimesheetEntry>();
+    public DbSet<TimesheetDayReconciliation> TimesheetDayReconciliations => Set<TimesheetDayReconciliation>();
     public DbSet<ReportingLine> ReportingLines => Set<ReportingLine>();
     public DbSet<ApprovalPolicy> ApprovalPolicies => Set<ApprovalPolicy>();
     public DbSet<ApprovalPolicyStep> ApprovalPolicySteps => Set<ApprovalPolicyStep>();
@@ -4091,6 +4097,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Category).HasMaxLength(32).IsRequired();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Channel, x.Category }).IsUnique();
         });
+
+        // Timesheets keep their fluent configuration next to their model so this file stays
+        // append-only for the module (the convention Models/Timesheets.cs documents).
+        TimesheetModelConfiguration.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);
