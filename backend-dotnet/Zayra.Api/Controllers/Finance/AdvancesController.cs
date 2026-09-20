@@ -7,6 +7,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -186,10 +187,18 @@ public class AdvancesController : ControllerBase
 
     [HttpPatch("{id:guid}/approve")]
     [Authorize(Roles = "Admin,HR Manager,Finance,Manager")]
-    public async Task<IActionResult> Approve(Guid id, [FromBody] AdvanceApproveRequest req, CancellationToken ct)
+    public Task<IActionResult> Approve(Guid id, [FromBody] AdvanceApproveRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        // Cash is already out the door on this path: the disbursement journal and the whole
+        // installment schedule are written here. The Pending check below is a read-then-write guard
+        // and closes only a sequential replay — two simultaneous approvals both read Pending, both
+        // pass, and both disburse. Serialized on the advance for the same reasons, and by the same
+        // mechanism, as LoansController.DecideApproval.
+        return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
+        {
         var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (adv == null) return NotFound();
         if (adv.Status != "Pending") return BadRequest("Advance is not in Pending status.");
@@ -222,14 +231,21 @@ public class AdvancesController : ControllerBase
             JsonSerializer.Serialize(new { Status = oldStatus }),
             JsonSerializer.Serialize(new { Status = "Active", ApprovedAmount = req.ApprovedAmount }), ct);
         return Ok(SalaryAdvanceDto.Project(adv));
+        }, ct);
     }
 
     [HttpPatch("{id:guid}/reject")]
     [Authorize(Roles = "Admin,HR Manager,Finance,Manager")]
-    public async Task<IActionResult> Reject(Guid id, [FromBody] RejectRequest req, CancellationToken ct)
+    public Task<IActionResult> Reject(Guid id, [FromBody] RejectRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        // Same lock as Approve, so an approve and a reject racing on one advance cannot both win:
+        // without it the reject can land after the approve has disbursed, leaving a Rejected header
+        // over a live GL entry and a live installment schedule.
+        return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
+        {
         var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (adv == null) return NotFound();
         // The same hole this batch closed on LoansController.DecideApproval, on the sibling
@@ -251,6 +267,7 @@ public class AdvancesController : ControllerBase
             JsonSerializer.Serialize(new { Status = oldStatus }),
             JsonSerializer.Serialize(new { Status = "Rejected", Reason = req.Reason }), ct);
         return Ok(SalaryAdvanceDto.Project(adv));
+        }, ct);
     }
 
     [HttpPatch("{id:guid}/installments/{installmentId:guid}/pay")]

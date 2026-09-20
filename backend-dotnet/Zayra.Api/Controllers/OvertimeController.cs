@@ -457,41 +457,38 @@ public class OvertimeController : ControllerBase
             .Select(x => x.Multiplier).FirstOrDefaultAsync(ct);
         var multiplier = otContext.EffectiveMultiplier(configuredMultiplier, dayCategory);
 
-        // Art. 107's 50% is expressly "of his BASIC wage", so basic hourly is always the uplift
-        // base. Only the FIRST term follows the jurisdiction's ot.hourly_base — or the tenant's
-        // own GrossSalary policy, which is a contractual improvement on a statutory floor and so
-        // is honoured wherever it is the more generous of the two.
+        // Art. 107's 50% is expressly "of his BASIC wage", so basic hourly is always the statutory
+        // uplift base; only the FIRST term follows the jurisdiction's ot.hourly_base.
         //
-        // FixedHourlyRate policies are left on the fixed rate for both terms: the payroll run has
-        // no concept of a fixed OT rate at all (it always divides basic by the monthly hours), so
-        // this is a KNOWN remaining divergence rather than one this change introduces.
-        decimal basicHourly, baseHourly;
-        if (policy.HourlyRateBasis == "FixedHourlyRate")
-        {
-            basicHourly = baseHourly = policy.FixedHourlyRate;
-        }
-        else
-        {
-            basicHourly = basic / standardMonthlyHours;
-            var wageHourly = gross / standardMonthlyHours;
-            baseHourly = otContext.BaseIsFullWage || policy.HourlyRateBasis == "GrossSalary"
-                ? wageHourly
-                : basicHourly;
-        }
+        // The tenant's own HourlyRateBasis (GrossSalary, or FixedHourlyRate + FixedHourlyRate) is a
+        // CONTRACTUAL rate and is honoured only where it is worth at least the Art. 107 hour —
+        // resolved by the SHARED OvertimeStatutoryCalculator.ResolveHourRate, which the payroll run
+        // now calls with the same policy. Before that, FixedHourlyRate was honoured here and read by
+        // nothing in payroll: the module displayed a number the payroll engine would never pay.
+        var basicHourly = basic / standardMonthlyHours;
+        var wageHourly = gross / standardMonthlyHours;
+        var hourRate = OvertimeStatutoryCalculator.ResolveHourRate(
+            policy.HourlyRateBasis, policy.FixedHourlyRate,
+            otContext.BaseIsFullWage ? wageHourly : basicHourly,
+            wageHourly, basicHourly, multiplier);
+        var baseHourly = hourRate.BaseHourly;
 
         var approvedHours = Math.Round(request.ApprovedMinutes / 60m, 2);
         // Rounded once at the end, from the unrounded hourly rates — the same shape as the payroll
         // run, which rounds only the summed overtime line. Rounding the hourly rate first (as this
         // method used to) put the controller a cent away from payroll on any salary that does not
         // divide evenly by the monthly hours.
-        var amount = Math.Round(approvedHours * OvertimeStatutoryCalculator.HourPay(baseHourly, basicHourly, multiplier), 2);
+        var amount = Math.Round(approvedHours * hourRate.HourPay, 2);
         var currency = !string.IsNullOrWhiteSpace(salary?.Currency) ? salary.Currency : await _db.ResolveTenantCurrencyAsync(tenantId, ct);
         var calculationJson =
             $"{{\"dayCategory\":\"{dayCategory}\",\"basis\":\"{policy.HourlyRateBasis}\"," +
             $"\"otHourlyBase\":\"{(otContext.BaseIsFullWage ? "wage" : "basic")}\"," +
             $"\"standardMonthlyHours\":{standardMonthlyHours}," +
-            $"\"basicHourly\":{Math.Round(basicHourly, 4).ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
+            $"\"basicHourly\":{Math.Round(hourRate.UpliftBasisHourly, 4).ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
             $"\"baseHourly\":{Math.Round(baseHourly, 4).ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
+            // Whether the tenant's configured base (GrossSalary / FixedHourlyRate) beat the Art. 107
+            // hour and is therefore what payroll will pay, or whether the statutory floor applied.
+            $"\"policyRateHonoured\":{(hourRate.PolicyHonoured ? "true" : "false")}," +
             $"\"statutoryFloor\":{otContext.FloorFor(dayCategory).ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
             $"\"configuredMultiplier\":{configuredMultiplier.ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
             $"\"effectiveMultiplier\":{multiplier.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}";
