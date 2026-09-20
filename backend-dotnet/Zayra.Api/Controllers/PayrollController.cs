@@ -3028,6 +3028,13 @@ public class PayrollController : ControllerBase
             // than this run in isolation. Derived from the same priorStatutoryByEmp map the incremental
             // netting above used, so the figure Rule 2 credits is exactly the figure that was netted off.
             PriorPeriodGosiEeByEmployee             = BuildPriorPeriodGosiEe(priorStatutoryByEmp),
+            // S1/A2(c) — the ONE ceiling: the same effective-dated rule the country pack caps on,
+            // instead of a compiled 45,000 the validator would keep warning on after GOSI moves it.
+            // statutoryCeiling is decimal.MaxValue when no rule exists (the arrears delta wants "no
+            // cap" there). Zero means "not supplied" to the engine, which then applies its own
+            // default — so an unseeded tenant keeps the 45,000 warning it has always had rather than
+            // silently losing it.
+            GosiCoveredWageCeiling                  = statutoryCeiling == decimal.MaxValue ? 0m : statutoryCeiling,
         };
         foreach (var r in PayrollValidationEngine.Run(validationCtx))
             _db.PayrollValidationResults.Add(r);
@@ -3824,6 +3831,12 @@ public class PayrollController : ControllerBase
             // run had already reported statutory for these employees, which is exactly this condition.
             StatutoryComputedIncrementally          = valPriorStatutory.Count > 0,
             PriorPeriodGosiEeByEmployee             = BuildPriorPeriodGosiEe(valPriorStatutory),
+            // S1/A2(c) — same ceiling source as Process. /validate REPLACES the stored results
+            // wholesale, so a version that read a different ceiling here would flip the warning on
+            // and off depending on which endpoint last ran.
+            GosiCoveredWageCeiling                  = await _ruleReader.GetDecimalAsync(
+                "SAU", "KSA-mainland", "gosi.covered_wage_ceiling_sar",
+                new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 45_000m,
         };
         var results = PayrollValidationEngine.Run(ctx);
 

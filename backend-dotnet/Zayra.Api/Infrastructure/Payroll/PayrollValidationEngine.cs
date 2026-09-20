@@ -24,7 +24,14 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// </summary>
 public static class PayrollValidationEngine
 {
-    private const decimal GosiCoveredWageCeiling = 45_000m;
+    /// <summary>
+    /// S1/A2(c) — the LAST-RESORT default only. The ceiling was a compiled constant checked against a
+    /// tenant-overridable statutory rule: when GOSI moves the ceiling, the rule updates and a compiled
+    /// constant keeps warning on the old number forever. Callers now pass the resolved
+    /// <c>gosi.covered_wage_ceiling_sar</c> through <see cref="PayrollValidationContext"/>, so there is
+    /// one ceiling in the system rather than a third store of it.
+    /// </summary>
+    private const decimal DefaultGosiCoveredWageCeiling = 45_000m;
     private const int GosiRateStalenessThresholdMonths = 18;
 
     public static List<PayrollValidationResult> Run(PayrollValidationContext ctx)
@@ -305,10 +312,11 @@ public static class PayrollValidationEngine
 
                     // 45 k ceiling warning
                     var coveredWage = slip.BasicSalary + slip.HousingAllowance;
-                    if (coveredWage > GosiCoveredWageCeiling)
+                    var ceiling = ctx.GosiCoveredWageCeiling > 0m ? ctx.GosiCoveredWageCeiling : DefaultGosiCoveredWageCeiling;
+                    if (coveredWage > ceiling)
                         Warn("GOSI_CEILING_EXCEEDED",
-                            $"Employee {slip.EmployeeCode} covered wage (Basic + Housing = {coveredWage:N2} SAR) exceeds the GOSI 45,000 SAR ceiling. " +
-                            "Verify that contributions were calculated on 45,000 SAR, not {coveredWage:N2} SAR.",
+                            $"Employee {slip.EmployeeCode} covered wage (Basic + Housing = {coveredWage:N2} SAR) exceeds the GOSI {ceiling:N0} SAR ceiling. " +
+                            $"Verify that contributions were calculated on {ceiling:N0} SAR, not {coveredWage:N2} SAR.",
                             slip.EmployeeId);
                 }
                 else  // NonSaudi / expat
@@ -589,6 +597,14 @@ public sealed record PayrollValidationContext(
     /// informational warning so the preparer knows the per-run GOSI figure is a period delta.
     /// </summary>
     public bool StatutoryComputedIncrementally { get; init; }
+
+    /// <summary>
+    /// S1/A2(c) — the GOSI covered-wage ceiling actually in force for this run's period, resolved from
+    /// the same effective-dated <c>gosi.covered_wage_ceiling_sar</c> rule the country pack caps on.
+    /// Zero means "not supplied" and the engine falls back to its compiled default, so a caller that
+    /// has not been updated behaves exactly as before.
+    /// </summary>
+    public decimal GosiCoveredWageCeiling { get; init; }
 }
 
 /// <summary>

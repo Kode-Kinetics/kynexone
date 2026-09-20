@@ -21,7 +21,29 @@ public sealed class UaeDeductionCalculator : IStatutoryDeductionCalculator
             return new(0m, 0m, Array.Empty<StatutoryDeductionLine>());
 
         var eff = new DateOnly(input.PeriodYear, input.PeriodMonth, 1);
+
+        // ── S1/A10: the GPSSA contribution account salary has a FLOOR and a CEILING ───────────────
+        // This calculator applied 5%/12.5% to the whole of basic + housing with no bound read at all,
+        // in contrast to KsaDeductionCalculator two directories away, which has always applied the
+        // 45,000 GOSI ceiling. An Emirati executive on AED 120,000 basic + housing had 5% deducted
+        // from the entire amount — an OVER-deduction from the employee's net pay, which under Art. 25
+        // of Decree-Law 33/2021 is an unlawful deduction. That is the rarer and worse direction of
+        // error: the employee is out of pocket this month, not in thirty years.
+        //
+        // [COUNSEL] on the exact figures — the widely published Law 7/1999 private-sector bounds are
+        // AED 1,000 and AED 50,000, and Decree-Law 57/2023 carries its own. They are effective-dated
+        // rules, not literals, so a circular can be back-dated when counsel supplies it. A rule set to
+        // zero or absent means "no bound", which preserves the pre-S1 behaviour for a tenant the
+        // seeder has not reached.
         decimal gpssaBase = input.Salary.GpssaBase;
+        decimal floor = await _rules.GetDecimalAsync(
+            CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "gpssa.contribution_salary_min", eff, null, ct) ?? 0m;
+        decimal cap = await _rules.GetDecimalAsync(
+            CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "gpssa.contribution_salary_max", eff, null, ct) ?? 0m;
+        if (floor > 0m && gpssaBase < floor) gpssaBase = floor;
+        if (cap   > 0m && gpssaBase > cap)   gpssaBase = cap;
 
         decimal empRate = await _rules.GetDecimalAsync(
             CountryCodes.UAE, Jurisdictions.UAEMainland,

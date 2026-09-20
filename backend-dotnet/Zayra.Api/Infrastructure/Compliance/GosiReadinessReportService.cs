@@ -61,8 +61,11 @@ public sealed class GosiReadinessReportService
 
             if (readiness.IsReady)
             {
+                // S1/A2(b) — basic + housing is the GOSI contributory wage for a Saudi national, and
+                // is what the payroll run's country pack has always deducted on. Passing basic alone
+                // here made this report under-state every contribution against the actual payslip.
                 var calc = GosiCalculationService.Calculate(
-                    emp.Nationality, salary!.BasicSalary, rules, periodDate, tenantId);
+                    emp.Nationality, salary!.BasicSalary + salary.HousingAllowance, rules, periodDate, tenantId);
 
                 employeeTotal = calc.EmployeeTotal;
                 employerTotal = calc.EmployerTotal;

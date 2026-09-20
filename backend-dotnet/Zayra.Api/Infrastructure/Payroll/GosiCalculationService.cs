@@ -116,13 +116,23 @@ public static class GosiCalculationService
     /// Calculates GOSI contributions for a single employee for one pay period.
     /// </summary>
     /// <param name="nationality">Raw nationality string from the Employee record.</param>
-    /// <param name="basicSalary">Contributory wage (basic salary only).</param>
+    /// <param name="contributoryWage">
+    /// S1/A2(b) — the GOSI CONTRIBUTORY WAGE, which for a Saudi national is <b>basic + housing</b>
+    /// (cash or in-kind), not basic alone.
+    ///
+    /// <para>This parameter used to be named <c>basicSalary</c> and every caller passed basic. The
+    /// country-pack engine (<c>KsaDeductionCalculator</c>, via <c>SalaryBreakdown.GosiCoveredWage</c>)
+    /// has always used basic + housing, so the two engines disagreed by the whole housing allowance:
+    /// the payslip deducted one number and the GOSI readiness report, the Saudi compliance dashboard
+    /// and the GOSI preview all showed a smaller one. The dashboard is the figure a customer's finance
+    /// team reconciles against the GOSI portal, so it was the wrong one that got trusted.</para>
+    /// </param>
     /// <param name="allRules">All active rules for the tenant — preloaded once per run.</param>
     /// <param name="periodDate">The last date of the pay period (used for effective-date selection).</param>
     /// <param name="tenantId">The tenant ID for override precedence resolution.</param>
     public static GosiContributionResult Calculate(
         string?                             nationality,
-        decimal                             basicSalary,
+        decimal                             contributoryWage,
         IReadOnlyList<GosiContributionRule> allRules,
         DateOnly                            periodDate,
         Guid                                tenantId)
@@ -137,7 +147,7 @@ public static class GosiCalculationService
             if (rule.Rate <= 0m) continue;
 
             // Apply contributory wage caps if set on the rule
-            var wage = basicSalary;
+            var wage = contributoryWage;
             if (rule.MinContributoryWage.HasValue && wage < rule.MinContributoryWage.Value)
                 wage = rule.MinContributoryWage.Value;
             if (rule.MaxContributoryWage.HasValue && wage > rule.MaxContributoryWage.Value)

@@ -183,6 +183,19 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
             "gpssa.national_employer_rate", "0.125", "decimal", eff22,
             "VERIFY: GPSSA employer 12.5% — confirm current rate with GPSSA"));
+        // S1/A10 — GPSSA contribution-salary bounds. [COUNSEL] on the exact figures; the mechanism is
+        // certain and the absence of ANY bound was producing an unlawful over-deduction from the
+        // employee's net pay (Art. 25, Decree-Law 33/2021). Effective-dated from Law 7/1999 so a
+        // current circular can supersede them without touching code. Set a rule to 0 to disable it.
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "gpssa.contribution_salary_min", "1000", "decimal", new DateTime(1999, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            "[COUNSEL] GPSSA contribution-salary FLOOR, AED 1,000 (Law 7/1999, private sector). Confirm the " +
+            "current figure and the Decree-Law 57/2023 equivalent before filing."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "gpssa.contribution_salary_max", "50000", "decimal", new DateTime(1999, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            "[COUNSEL] GPSSA contribution-salary CEILING, AED 50,000 (Law 7/1999, private sector). Without a " +
+            "ceiling the product over-deducts from senior Emirati employees, which is an unlawful deduction. " +
+            "Confirm the current figure and the Decree-Law 57/2023 equivalent before filing."));
         list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
             "emiratisation.target_ratio", "0.10", "decimal", eff22,
             "VERIFY: Emiratisation 10% target varies by sector — confirm with Nafis/MOHRE"));
@@ -204,6 +217,14 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
             "grsia.national_employer_rate", "0.14", "decimal", eff22,
             "VERIFY: GRSIA employer 14% — Qatar Law 24/2002 and amendments"));
+        // S1/A11 — Law 1/2022 contribution salary = basic + social + housing, from January 2023.
+        // Effective-dated so a pre-2023 period still reproduces the Law 24/2002 basic-only base it was
+        // actually filed on. A SOCIAL allowance has no field in this data model — see the pack.
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "grsia.include_housing_in_contribution_salary", "true", "bool", new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            "[CONF] Social Insurance Law No.1 of 2022 (in force Jan 2023, superseding Law 24/2002): the " +
+            "contribution salary for Qatari nationals is basic + social allowance + housing allowance, not " +
+            "basic alone. [COUNSEL] confirm the treatment of housing provided IN KIND."));
         list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
             "qatarization.target_ratio", "0.20", "decimal", eff22,
             "VERIFY: Qatarization 20% directional — confirm sector targets with Ministry of Labor"));

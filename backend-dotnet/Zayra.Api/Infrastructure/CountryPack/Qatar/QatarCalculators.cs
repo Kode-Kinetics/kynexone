@@ -3,10 +3,12 @@ using Zayra.Api.Application.CountryPack;
 namespace Zayra.Api.Infrastructure.CountryPack.Qatar;
 
 // ── Qatar GRSIA deduction calculator ─────────────────────────────────────────
-// Qatar nationals: employee 7% + employer 14% on basic salary.
+// Qatar nationals: employee 7% + employer 14%.
 // Expatriates: no statutory social insurance contribution.
-// Source: Qatar Law 24/2002 (GRSIA) and amendments.
-// VERIFY: confirm current rates with GRSIA / HUKOOMI before use in production.
+// S1/A11 — Source is Social Insurance Law No. 1 of 2022 (in force January 2023), NOT Law 24/2002,
+// which this header cited and which was superseded. The rates were right; the contribution-salary
+// BASE was wrong (basic only, where Law 1/2022 uses basic + social + housing) and there was neither
+// a floor nor a cap. VERIFY the floor and cap, and the treatment of in-kind housing, with GRSIA.
 
 public sealed class QatarDeductionCalculator : IStatutoryDeductionCalculator
 {
@@ -20,18 +22,47 @@ public sealed class QatarDeductionCalculator : IStatutoryDeductionCalculator
             return new(0m, 0m, Array.Empty<StatutoryDeductionLine>());
 
         var eff = new DateOnly(input.PeriodYear, input.PeriodMonth, 1);
-        decimal basicSalary = input.Salary.Basic;  // GRSIA base = basic only
+
+        // ── S1/A11: the contribution salary under Law 1/2022 ─────────────────────────────────────
+        // The 7%/14% rates were right; the BASE and the citation were wrong. Social Insurance Law
+        // No. 1 of 2022 (in force January 2023, replacing Law 24/2002, which this file's header still
+        // cited) defines the contribution salary for Qatari nationals as basic salary plus the social
+        // allowance plus the housing allowance — so a flat basic-only base under-contributes for
+        // essentially every Qatari national, all of whom have a housing allowance. [CONF] on the base
+        // composition; [COUNSEL] on in-kind housing and on the current floor and cap.
+        //
+        // Effective-dated rather than switched: pre-2023 periods stay on Law 24/2002's basic-only
+        // base, so re-running an old period still reproduces what was filed at the time. A SOCIAL
+        // allowance has no field in this data model — the breakdown carries basic/housing/transport/
+        // other — so only housing is added. A tenant that pays a social allowance must model it as
+        // housing or as its own component; noted as an open gap rather than silently approximated.
+        bool useLaw2022Base = await StatutoryFlag.ReadAsync(
+            _rules, CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "grsia.include_housing_in_contribution_salary", eff, eff >= new DateOnly(2023, 1, 1), ct);
+        decimal contributionSalary = useLaw2022Base
+            ? input.Salary.Basic + input.Salary.HousingAllowance
+            : input.Salary.Basic;
+
+        // [COUNSEL] statutory floor and cap. Absent / zero means "no bound", i.e. pre-S1 behaviour.
+        decimal floor = await _rules.GetDecimalAsync(
+            CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "grsia.contribution_salary_min", eff, null, ct) ?? 0m;
+        decimal cap = await _rules.GetDecimalAsync(
+            CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "grsia.contribution_salary_max", eff, null, ct) ?? 0m;
+        if (floor > 0m && contributionSalary < floor) contributionSalary = floor;
+        if (cap   > 0m && contributionSalary > cap)   contributionSalary = cap;
 
         decimal empRate = await _rules.GetDecimalAsync(
             CountryCodes.Qatar, Jurisdictions.QatarMainland,
-            "grsia.national_employee_rate", eff, null, ct) ?? 0.07m;   // VERIFY: 7%
+            "grsia.national_employee_rate", eff, null, ct) ?? 0.07m;   // 7% — correct and current
 
         decimal erRate = await _rules.GetDecimalAsync(
             CountryCodes.Qatar, Jurisdictions.QatarMainland,
-            "grsia.national_employer_rate", eff, null, ct) ?? 0.14m;   // VERIFY: 14%
+            "grsia.national_employer_rate", eff, null, ct) ?? 0.14m;   // 14% — correct and current
 
-        decimal empContrib = Math.Round(basicSalary * empRate, 2);
-        decimal erContrib  = Math.Round(basicSalary * erRate, 2);
+        decimal empContrib = Math.Round(contributionSalary * empRate, 2);
+        decimal erContrib  = Math.Round(contributionSalary * erRate, 2);
 
         var lines = new List<StatutoryDeductionLine>
         {
