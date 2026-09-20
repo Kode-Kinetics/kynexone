@@ -23,7 +23,11 @@ export default {
         'kpi': '0 2px 8px rgba(15, 23, 42, 0.06)',
       },
       fontFamily: {
-        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        // 'IBM Plex Sans Arabic' sits after Inter so Latin text is unchanged and only the
+        // codepoints Inter cannot draw — i.e. Arabic — fall through to it. This is a font
+        // *stack*, not a locale switch: mixed Arabic/Latin strings render correctly in both
+        // directions without needing a separate `font-ar` class anywhere.
+        sans: ['Inter', 'IBM Plex Sans Arabic', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
       borderRadius: {
         xl: '12px',

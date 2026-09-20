@@ -519,7 +519,7 @@ function AiPlanModal({ onClose, onDone }: AiPlanModalProps) {
                 )}
 
                 <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-200 dark:border-white/10">
-                  <table className="w-full text-left text-xs">
+                  <table className="w-full text-start text-xs">
                     <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
                       <tr>
                         <th className="px-3 py-2 font-medium">Employee</th>
@@ -667,7 +667,7 @@ function RosterTab({ definitions }: RosterTabProps) {
         <table className="min-w-full border-collapse text-sm">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/[0.03]">
-              <th className="w-48 px-4 py-3 text-left text-xs font-semibold text-slate-500 dark:text-slate-400">Employee</th>
+              <th className="w-48 px-4 py-3 text-start text-xs font-semibold text-slate-500 dark:text-slate-400">Employee</th>
               {days.map((d, i) => {
                 const ds = toDateString(d);
                 const isToday = ds === today;
@@ -719,7 +719,7 @@ function RosterTab({ definitions }: RosterTabProps) {
                             type="button"
                             aria-label="Remove shift assignment"
                             onClick={() => removeAssignment(a.id)}
-                            className="ml-0.5 hidden rounded-full bg-white/20 p-0.5 hover:bg-white/40 group-hover/cell:inline-flex"
+                            className="ms-0.5 hidden rounded-full bg-white/20 p-0.5 hover:bg-white/40 group-hover/cell:inline-flex"
                           >
                             <X className="h-2.5 w-2.5" />
                           </button>
@@ -908,7 +908,7 @@ function MyScheduleTab({ definitions }: { definitions: ShiftDefinition[] }) {
                   <div className="h-3 w-1 rounded-full shrink-0" style={{ backgroundColor: a.shiftColor }} />
                   <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{a.shiftName}</p>
                   {def && (
-                    <p className="ml-auto text-xs text-slate-400 font-mono">
+                    <p className="ms-auto text-xs text-slate-400 font-mono">
                       {fmt12(def.startTime)} – {fmt12(def.endTime)}
                     </p>
                   )}
@@ -1114,7 +1114,7 @@ function PolicyTab({ definitions }: { definitions: ShiftDefinition[] }) {
                   <option value="required">must work</option>
                   <option value="preferred">prefers</option>
                 </select>
-                <button type="button" aria-label="Remove rule" className="ml-auto grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"
+                <button type="button" aria-label="Remove rule" className="ms-auto grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"
                   onClick={() => setPolicy(p => p ? { ...p, genderRules: p.genderRules.filter((_, i) => i !== idx) } : p)}>
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>

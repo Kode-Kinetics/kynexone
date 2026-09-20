@@ -689,7 +689,7 @@ function FindingGroup({ title, icon, groups, tone }: { title: string; icon: Reac
   return (
     <div className={`mt-3 rounded-lg p-3 ${bg}`}>
       <p className={`flex items-center gap-2 font-semibold ${text}`}>{icon}{title}</p>
-      <div className="mt-2 max-h-56 space-y-2 overflow-auto pr-1">
+      <div className="mt-2 max-h-56 space-y-2 overflow-auto pe-1">
         {entries.slice(0, 8).map(([section, findings]) => (
           <div key={section}>
             <p className="font-semibold capitalize text-slate-800 dark:text-white">{section}</p>
@@ -763,7 +763,7 @@ function DraftSection({ title, rows, onRemove }: { title: string; rows: [string,
             <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-600 dark:bg-white/10 dark:text-slate-300">{code}</span>
             <span className="text-slate-700 dark:text-slate-200">{desc}</span>
             <button type="button" aria-label={`Remove ${code}`} onClick={() => onRemove(i)}
-              className="ml-auto grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10">
+              className="ms-auto grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10">
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           </li>

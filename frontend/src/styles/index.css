@@ -4,7 +4,9 @@
 
 :root {
   color-scheme: light;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* 'IBM Plex Sans Arabic' is a fallback, not a switch — Inter still draws every Latin
+     glyph; only Arabic codepoints, which Inter does not cover, fall through to it. */
+  font-family: Inter, 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: #f0f4ff;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -98,7 +100,7 @@ textarea:focus-visible {
   /* ─── Sidebar nav items ────────────────────────────────── */
   .nav-item {
     @apply relative flex w-full items-center gap-2.5 rounded-lg border border-transparent
-      px-2 py-1.5 text-left font-medium transition-all duration-150 ease-out;
+      px-2 py-1.5 text-start font-medium transition-all duration-150 ease-out;
   }
 
   /* Active — glass blue pill with left accent */
@@ -110,7 +112,7 @@ textarea:focus-visible {
 
   .nav-item-active::before {
     content: '';
-    @apply absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-sapphire dark:bg-[#7AABFF];
+    @apply absolute start-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-e-full bg-sapphire dark:bg-[#7AABFF];
   }
 
   /* Idle — glass hover: faint grey-blue tint */
@@ -266,4 +268,93 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
 .platform-shell .text-slate-700,
 .platform-shell .placeholder-slate-600::placeholder {
   color: #94a3b8 !important; /* slate-400 */
+}
+
+/* ── Arabic / RTL ─────────────────────────────────────────────────────────
+ * Layout direction itself is handled by logical Tailwind utilities (ms-/me-/
+ * ps-/pe-/start-/end-/text-start/text-end/border-s/border-e), which flip with
+ * `dir` and need no rules here. What is left are the three things a logical
+ * utility cannot express, and they live together so the next person can see
+ * the whole RTL contract in one place:
+ *   1. runs of text that must stay left-to-right INSIDE an RTL paragraph,
+ *   2. icons whose glyph carries a direction,
+ *   3. the handful of icons that look directional but are not.
+ */
+
+/* 1 ── LTR-locked runs.
+ * Arabic already renders digits left-to-right, so a bare number needs nothing.
+ * What breaks is a MIXED run: "SA44 2000 0001 2345 6789 1234" or "+971 50 123 4567"
+ * is reordered by the bidi algorithm because it contains both letters/signs and
+ * digits, so an IBAN is displayed with its country code stranded at the far end.
+ * `unicode-bidi: isolate` makes each such run its own bidi paragraph. It does NOT
+ * change alignment — the cell still aligns to the reading edge. */
+[dir='rtl'] .font-mono,
+[dir='rtl'] code,
+[dir='rtl'] kbd,
+[dir='rtl'] .field-ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Inputs whose CONTENT is an identifier rather than prose. `text-align: right`
+ * here is the inline-START edge of an RTL form, so the caret still begins where
+ * the eye does, while the characters themselves type out left-to-right. */
+[dir='rtl'] input[type='number'],
+[dir='rtl'] input[type='tel'],
+[dir='rtl'] input[type='email'],
+[dir='rtl'] input[type='url'],
+[dir='rtl'] input[type='date'],
+[dir='rtl'] input[type='time'],
+[dir='rtl'] input[type='datetime-local'],
+[dir='rtl'] input.field-ltr,
+[dir='rtl'] textarea.field-ltr {
+  direction: ltr;
+  text-align: right;
+  unicode-bidi: isolate;
+}
+
+/* 2 ── Icons that carry a direction.
+ * lucide-react stamps `lucide-<icon-name>` on every svg, so this mirrors the
+ * whole app without touching a single call site. Uses the `scale` PROPERTY, not
+ * `transform`, so it composes with Tailwind's translate/rotate utilities
+ * (group-hover:translate-x-0.5 on a chevron keeps working) instead of erasing them. */
+[dir='rtl'] .lucide-chevron-left,
+[dir='rtl'] .lucide-chevron-right,
+[dir='rtl'] .lucide-chevrons-left,
+[dir='rtl'] .lucide-chevrons-right,
+[dir='rtl'] .lucide-arrow-left,
+[dir='rtl'] .lucide-arrow-right,
+[dir='rtl'] .lucide-arrow-up-right,
+[dir='rtl'] .lucide-arrow-up-left,
+[dir='rtl'] .lucide-arrow-down-right,
+[dir='rtl'] .lucide-arrow-down-left,
+[dir='rtl'] .lucide-arrow-left-right,
+[dir='rtl'] .lucide-corner-down-left,
+[dir='rtl'] .lucide-corner-down-right,
+[dir='rtl'] .lucide-corner-up-left,
+[dir='rtl'] .lucide-corner-up-right,
+[dir='rtl'] .lucide-move-left,
+[dir='rtl'] .lucide-move-right,
+[dir='rtl'] .lucide-external-link,
+[dir='rtl'] .lucide-log-in,
+[dir='rtl'] .lucide-log-out,
+[dir='rtl'] .lucide-reply,
+[dir='rtl'] .lucide-send,
+[dir='rtl'] .lucide-undo-2,
+[dir='rtl'] .lucide-redo-2,
+[dir='rtl'] .rtl-mirror {
+  scale: -1 1;
+}
+
+/* 3 ── Icons that must NOT mirror, stated rather than merely omitted, because
+ * "add it to the mirror list" is the obvious wrong next edit:
+ *   toggle-left / toggle-right  — the side IS the state; mirroring inverts on/off
+ *   play, play-circle, stop-circle, monitor-play — media transport is never mirrored
+ *   rotate-ccw, refresh-cw, history, timer-reset — a literal rotation direction
+ *   trending-up / trending-down — data, mirrored by the chart library or not at all
+ *   clock, clock-3 — a clock face is a clock face
+ *   search — magnifier handle is conventionally left alone (Material, HIG)
+ * The opt-out below is for a one-off inside an already-mirrored group. */
+[dir='rtl'] .rtl-no-mirror {
+  scale: 1 1;
 }

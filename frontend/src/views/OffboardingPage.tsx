@@ -86,7 +86,7 @@ export function OffboardingPage() {
                   <div className="h-2 flex-1 rounded-full bg-slate-100 dark:bg-white/10">
                     <div className="h-2 rounded-full bg-sapphire dark:bg-cyanAccent" style={{ width: `${(r.count / max) * 100}%` }} />
                   </div>
-                  <span className="w-6 text-right font-medium text-slate-500">{r.count}</span>
+                  <span className="w-6 text-end font-medium text-slate-500">{r.count}</span>
                 </div>
               );
             })}
@@ -167,8 +167,8 @@ function OffboardingCard({ o, onChange }: { o: Offboarding; onChange: () => void
           </div>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
             {o.separationType} · {o.designation || '—'} · {o.department || '—'} · Last day {fmtDate(o.lastWorkingDay)}
-            {daysLeft !== null && <span className={`ml-1 font-medium ${daysLeft < 0 ? 'text-rose-500' : daysLeft <= 7 ? 'text-amber-500' : 'text-slate-400'}`}>({daysLeft < 0 ? `${-daysLeft}d overdue` : `${daysLeft}d left`})</span>}
-            {!o.rehireEligible && <span className="ml-1 text-rose-500">· Not rehire-eligible</span>}
+            {daysLeft !== null && <span className={`ms-1 font-medium ${daysLeft < 0 ? 'text-rose-500' : daysLeft <= 7 ? 'text-amber-500' : 'text-slate-400'}`}>({daysLeft < 0 ? `${-daysLeft}d overdue` : `${daysLeft}d left`})</span>}
+            {!o.rehireEligible && <span className="ms-1 text-rose-500">· Not rehire-eligible</span>}
           </p>
         </div>
         {isProgress && (
@@ -223,7 +223,7 @@ function OffboardingCard({ o, onChange }: { o: Offboarding; onChange: () => void
         <div>
           <div className="mb-1.5 flex items-center justify-between">
             <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">Exit interview
-              <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] ${o.exitInterviewStatus === 'Completed' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10' : 'bg-slate-100 text-slate-500 dark:bg-white/10'}`}>{o.exitInterviewStatus}</span>
+              <span className={`ms-1.5 rounded-full px-1.5 py-0.5 text-[10px] ${o.exitInterviewStatus === 'Completed' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10' : 'bg-slate-100 text-slate-500 dark:bg-white/10'}`}>{o.exitInterviewStatus}</span>
             </p>
             {isProgress && !editEi && <button type="button" className="text-xs text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setEditEi(true)}>Record</button>}
           </div>
@@ -431,9 +431,9 @@ function InitiateModal({ onClose, onDone }: { onClose: () => void; onDone: () =>
           <div>
             <label htmlFor="off-employee" className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Employee *</label>
             <div className="relative mb-1.5">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <Search className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <input
-                className="input w-full pl-8"
+                className="input w-full ps-8"
                 placeholder="Search by name or code…"
                 value={search}
                 onChange={e => setSearch(e.target.value)}

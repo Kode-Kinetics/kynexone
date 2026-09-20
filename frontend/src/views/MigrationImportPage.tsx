@@ -639,10 +639,10 @@ function PreviewStep({
           <div className="overflow-x-auto">
             <table className="w-full min-w-[32rem] text-sm">
               <thead>
-                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                  <th scope="col" className="py-2 pr-4 font-semibold">Section</th>
-                  <th scope="col" className="py-2 pr-4 text-right font-semibold">Rows</th>
-                  <th scope="col" className="py-2 text-right font-semibold">Control total</th>
+                <tr className="border-b border-slate-200 text-start text-xs uppercase tracking-wide text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                  <th scope="col" className="py-2 pe-4 font-semibold">Section</th>
+                  <th scope="col" className="py-2 pe-4 text-end font-semibold">Rows</th>
+                  <th scope="col" className="py-2 text-end font-semibold">Control total</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -651,9 +651,9 @@ function PreviewStep({
                   const total = totals[key] ?? 0;
                   return (
                     <tr key={key}>
-                      <td className="py-2 pr-4 text-slate-800 dark:text-slate-200">{meta?.label ?? key}</td>
-                      <td className="py-2 pr-4 text-right tabular-nums text-slate-800 dark:text-slate-200">{preview.sectionCounts[key]}</td>
-                      <td className="py-2 text-right tabular-nums text-slate-800 dark:text-slate-200">
+                      <td className="py-2 pe-4 text-slate-800 dark:text-slate-200">{meta?.label ?? key}</td>
+                      <td className="py-2 pe-4 text-end tabular-nums text-slate-800 dark:text-slate-200">{preview.sectionCounts[key]}</td>
+                      <td className="py-2 text-end tabular-nums text-slate-800 dark:text-slate-200">
                         {total === 0 ? <span className="text-slate-400 dark:text-slate-500">—</span> : money(total)}
                       </td>
                     </tr>
@@ -662,8 +662,8 @@ function PreviewStep({
               </tbody>
               <tfoot>
                 <tr className="border-t border-slate-200 font-semibold dark:border-slate-700">
-                  <td className="py-2 pr-4 text-slate-900 dark:text-white">Total received</td>
-                  <td className="py-2 pr-4 text-right tabular-nums text-slate-900 dark:text-white">{preview.receivedRows}</td>
+                  <td className="py-2 pe-4 text-slate-900 dark:text-white">Total received</td>
+                  <td className="py-2 pe-4 text-end tabular-nums text-slate-900 dark:text-white">{preview.receivedRows}</td>
                   <td className="py-2" />
                 </tr>
               </tfoot>

@@ -179,7 +179,7 @@ export default function PlatformTeamPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Member', 'Role', 'Status', 'Last Login', ''].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -221,7 +221,7 @@ export default function PlatformTeamPage() {
                       {m.lastLoginAtUtc
                         ? new Date(m.lastLoginAtUtc).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
                         : '—'}
-                      {m.lastLoginIp && <span className="text-slate-700 font-mono ml-1">· {m.lastLoginIp}</span>}
+                      {m.lastLoginIp && <span className="text-slate-700 font-mono ms-1">· {m.lastLoginIp}</span>}
                     </td>
                     <td className="px-3 py-3">
                       {m.role !== 'Owner' && (

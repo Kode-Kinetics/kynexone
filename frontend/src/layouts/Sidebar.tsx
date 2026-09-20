@@ -86,9 +86,15 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
         aria-hidden="true"
       />
 
+      {/*
+        The off-canvas position is a transform, and transforms stay physical even when the panel
+        is anchored logically (`start-0`). Without the rtl: variant, a negative X translation
+        hides the drawer off the LEFT edge in both directions — in Arabic that slides it straight
+        across the viewport instead of off-screen.
+      */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200/70 bg-white/[0.93] backdrop-blur-xl transition-all duration-300 dark:border-white/[0.06] dark:bg-[#0c1120]/[0.90] lg:static lg:translate-x-0 ${
-          isOpen ? 'translate-x-0' : '-translate-x-full'
+        className={`fixed inset-y-0 start-0 z-40 flex flex-col border-e border-slate-200/70 bg-white/[0.93] backdrop-blur-xl transition-all duration-300 dark:border-white/[0.06] dark:bg-[#0c1120]/[0.90] lg:static lg:translate-x-0 ${
+          isOpen ? 'translate-x-0' : '-translate-x-full max-lg:rtl:translate-x-full'
         } ${isCollapsed ? 'lg:w-[60px]' : 'lg:w-[240px]'} w-[240px]`}
       >
         {/* Logo / header */}
@@ -220,7 +226,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                             )}
 
                             {item.badge != null && isCollapsed && (
-                              <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-sapphire" />
+                              <span className="absolute end-2 top-2 h-1.5 w-1.5 rounded-full bg-sapphire" />
                             )}
                           </button>
                         );
@@ -259,7 +265,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
             <div className="p-3">
               <div className="flex items-center gap-2.5 rounded-lg border border-transparent px-2 py-2 transition hover:border-slate-200/70 hover:bg-white/70 dark:hover:border-white/[0.07] dark:hover:bg-white/[0.05]">
                 <Avatar name={user?.fullName ?? 'User'} size="sm" />
-                <div className="min-w-0 flex-1 text-left">
+                <div className="min-w-0 flex-1 text-start">
                   <p className="truncate text-[13px] font-semibold text-slate-800 dark:text-slate-100">
                     {user?.fullName ?? 'User'}
                   </p>

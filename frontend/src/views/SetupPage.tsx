@@ -228,7 +228,7 @@ function CompaniesTab() {
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{c.tradeName || '—'}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
               {c.countryCode || '—'}
-              {c.jurisdiction && <span className="ml-1 text-xs text-slate-400">({c.jurisdiction})</span>}
+              {c.jurisdiction && <span className="ms-1 text-xs text-slate-400">({c.jurisdiction})</span>}
             </td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{c.defaultCurrency}</td>
             <td className="px-4 py-3">
@@ -271,7 +271,7 @@ function CompaniesTab() {
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                   Statutory Pack Profile — {statutorySummary.countryNameEn}
-                  {statutorySummary.jurisdiction && <span className="ml-1 text-xs font-normal text-slate-500">({statutorySummary.jurisdiction})</span>}
+                  {statutorySummary.jurisdiction && <span className="ms-1 text-xs font-normal text-slate-500">({statutorySummary.jurisdiction})</span>}
                 </h3>
                 <button type="button" onClick={() => setStatutorySummary(null)} className="text-xs text-slate-400 hover:text-slate-600">Dismiss</button>
               </div>
@@ -1203,7 +1203,7 @@ function MasterDataTab() {
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {['Code', 'Value (EN)', 'Value (AR)', 'Sort', 'Default', 'Status', ''].map((h) => (
-                      <th key={h} className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                      <th key={h} className="px-4 py-2.5 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1883,7 +1883,7 @@ function AdminAuditLogsTab() {
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/[0.07]">
               {['Time', 'Entity', 'Action', 'By', 'Details'].map((h) => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
@@ -2081,7 +2081,7 @@ function TableShell({
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {columns.map((col) => (
-                  <th key={col} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                  <th key={col} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">
                     {col}
                   </th>
                 ))}

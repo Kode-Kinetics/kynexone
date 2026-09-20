@@ -437,10 +437,10 @@ export function LoginPage() {
                     <div className="relative">
                       <input id="li-pw" type={showPw ? 'text' : 'password'} value={password}
                         onChange={e => setPassword(e.target.value)}
-                        className="auth-input pr-11" placeholder="••••••••••"
+                        className="auth-input pe-11" placeholder="••••••••••"
                         autoComplete="current-password" required />
                       <button type="button" onClick={() => setShowPw(v => !v)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                        className="absolute end-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
                         aria-label={showPw ? 'Hide password' : 'Show password'} aria-pressed={showPw}
                         title={showPw ? 'Hide password' : 'Show password'}>
                         {showPw ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}

@@ -63,7 +63,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
         {kpis.map(k => (
           <button key={k.label} type="button" onClick={() => onNavigate(k.tab)}
-            className="surface flex flex-col gap-2 p-4 text-left hover:ring-2 hover:ring-sapphire/20 transition">
+            className="surface flex flex-col gap-2 p-4 text-start hover:ring-2 hover:ring-sapphire/20 transition">
             <div className={`h-8 w-8 shrink-0 rounded-lg grid place-items-center ${k.color}`}>
               <k.icon className="h-4 w-4" />
             </div>
@@ -96,7 +96,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
                   <p className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">{a.employeeName}</p>
                   <p className="text-xs text-slate-500 dark:text-slate-400">{a.type} · {a.subType}</p>
                 </div>
-                <div className="shrink-0 text-right">
+                <div className="shrink-0 text-end">
                   <ExpiryBadge daysLeft={a.daysLeft} />
                   <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">{a.expiryDate}</p>
                 </div>
@@ -170,7 +170,7 @@ function ContractsTab() {
           {['Draft', 'PendingApproval', 'Active', 'Expired', 'Terminated', 'Superseded'].map(s => <option key={s}>{s}</option>)}
         </select>
         <button type="button" onClick={() => setShowCreate(v => !v)}
-          className="ml-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white hover:bg-sapphire/90">
+          className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white hover:bg-sapphire/90">
           <Plus className="h-3.5 w-3.5" /> New Contract
         </button>
       </div>
@@ -227,7 +227,7 @@ function ContractsTab() {
             <thead>
               <tr className="border-b border-slate-200 dark:border-white/10">
                 {['Contract #', 'Employee', 'Type', 'Start', 'End', 'Salary', 'Version', 'Status', 'Actions'].map(h => (
-                  <th key={h} className="p-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
+                  <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -308,7 +308,7 @@ function VisaPassportTab() {
           </button>
         ))}
         <select title="Filter by expiry" value={expiringFilter} onChange={e => setExpiringFilter(e.target.value)}
-          className="ml-auto rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-xs text-slate-800 dark:text-slate-200">
+          className="ms-auto rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-xs text-slate-800 dark:text-slate-200">
           <option value="">All Records</option>
           <option value="30">Expiring ≤ 30 days</option>
           <option value="60">Expiring ≤ 60 days</option>
@@ -322,7 +322,7 @@ function VisaPassportTab() {
             <table className="w-full text-sm">
               <thead><tr className="border-b border-slate-200 dark:border-white/10">
                 {['Employee', 'Type', 'Visa #', 'Country', 'Issue', 'Expiry', 'Status'].map(h => (
-                  <th key={h} className="p-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
+                  <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr></thead>
               <tbody className="divide-y divide-slate-100 dark:divide-white/5">
@@ -335,7 +335,7 @@ function VisaPassportTab() {
                     <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{v.issueDate}</td>
                     <td className="p-3 text-xs">
                       <ExpiryBadge daysLeft={daysUntil(v.expiryDate + 'T00:00:00Z')} />
-                      <span className="ml-1.5 text-slate-400">{v.expiryDate}</span>
+                      <span className="ms-1.5 text-slate-400">{v.expiryDate}</span>
                     </td>
                     <td className="p-3"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[v.status] ?? ''}`}>{v.status}</span></td>
                   </tr>
@@ -348,7 +348,7 @@ function VisaPassportTab() {
             <table className="w-full text-sm">
               <thead><tr className="border-b border-slate-200 dark:border-white/10">
                 {['Employee', 'Passport #', 'Nationality', 'Issue', 'Expiry', 'Held by Co.', 'Status'].map(h => (
-                  <th key={h} className="p-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
+                  <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr></thead>
               <tbody className="divide-y divide-slate-100 dark:divide-white/5">
@@ -360,7 +360,7 @@ function VisaPassportTab() {
                     <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{p.issueDate}</td>
                     <td className="p-3 text-xs">
                       <ExpiryBadge daysLeft={daysUntil(p.expiryDate + 'T00:00:00Z')} />
-                      <span className="ml-1.5 text-slate-400">{p.expiryDate}</span>
+                      <span className="ms-1.5 text-slate-400">{p.expiryDate}</span>
                     </td>
                     <td className="p-3">{p.isHeldByCompany ? <span className="text-xs font-medium text-amber-600 dark:text-amber-400">⚠ Yes</span> : <span className="text-xs text-slate-400">No</span>}</td>
                     <td className="p-3"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[p.status] ?? ''}`}>{p.status}</span></td>
@@ -374,7 +374,7 @@ function VisaPassportTab() {
             <table className="w-full text-sm">
               <thead><tr className="border-b border-slate-200 dark:border-white/10">
                 {['Employee', 'Permit #', 'Type', 'Country', 'Issue', 'Expiry', 'Status'].map(h => (
-                  <th key={h} className="p-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
+                  <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr></thead>
               <tbody className="divide-y divide-slate-100 dark:divide-white/5">
@@ -387,7 +387,7 @@ function VisaPassportTab() {
                     <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{p.issueDate}</td>
                     <td className="p-3 text-xs">
                       <ExpiryBadge daysLeft={daysUntil(p.expiryDate + 'T00:00:00Z')} />
-                      <span className="ml-1.5 text-slate-400">{p.expiryDate}</span>
+                      <span className="ms-1.5 text-slate-400">{p.expiryDate}</span>
                     </td>
                     <td className="p-3"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[p.status] ?? ''}`}>{p.status}</span></td>
                   </tr>
@@ -518,7 +518,7 @@ function ExpiryAlertsTab() {
             <thead>
               <tr className="border-b border-slate-200 dark:border-white/10">
                 {['Employee', 'Document Type', 'Sub-type', 'Expiry Date', 'Days Left'].map(h => (
-                  <th key={h} className="p-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
+                  <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -712,19 +712,19 @@ function ComplianceAITab() {
   useEffect(() => { load(); }, []);
 
   const SEV_COLORS: Record<string, string> = {
-    Critical: 'border-l-rose-600 bg-rose-50 dark:bg-rose-500/5',
-    High: 'border-l-rose-500 bg-rose-50 dark:bg-rose-500/5',
-    Medium: 'border-l-amber-500 bg-amber-50 dark:bg-amber-500/5',
-    Low: 'border-l-blue-400 bg-blue-50 dark:bg-blue-500/5',
+    Critical: 'border-s-rose-600 bg-rose-50 dark:bg-rose-500/5',
+    High: 'border-s-rose-500 bg-rose-50 dark:bg-rose-500/5',
+    Medium: 'border-s-amber-500 bg-amber-50 dark:bg-amber-500/5',
+    Low: 'border-s-blue-400 bg-blue-50 dark:bg-blue-500/5',
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/5 px-4 py-3 text-xs text-amber-700 dark:text-amber-400 flex-1 mr-3">
-          <Lightbulb className="inline h-3.5 w-3.5 mr-1.5" />
+        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/5 px-4 py-3 text-xs text-amber-700 dark:text-amber-400 flex-1 me-3">
+          <Lightbulb className="inline h-3.5 w-3.5 me-1.5" />
           All compliance insights are <strong>advisory only</strong> and must not automatically approve compliance, reject employees, or make legal decisions.
-          {genTime && <span className="ml-2 opacity-60">Generated: {new Date(genTime).toLocaleString()}</span>}
+          {genTime && <span className="ms-2 opacity-60">Generated: {new Date(genTime).toLocaleString()}</span>}
         </div>
         <button type="button" onClick={load} className="shrink-0 flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-white/10 px-3 py-1.5 text-xs text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5">
           <RefreshCw className="h-3.5 w-3.5" /> Refresh
@@ -736,7 +736,7 @@ function ComplianceAITab() {
       ) : (
         <div className="space-y-3">
           {insights.map((ins, i) => (
-            <div key={i} className={`rounded-xl border-l-4 p-4 ${SEV_COLORS[ins.severity] ?? 'border-l-slate-400 bg-slate-50'}`}>
+            <div key={i} className={`rounded-xl border-s-4 p-4 ${SEV_COLORS[ins.severity] ?? 'border-s-slate-400 bg-slate-50'}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-1">

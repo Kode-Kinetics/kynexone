@@ -120,9 +120,9 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
       )}
 
       <aside
-        className={`fixed top-0 left-0 z-40 h-screen w-60 bg-[#0d1117] border-r border-white/[0.06] flex flex-col
+        className={`fixed top-0 start-0 z-40 h-screen w-60 bg-[#0d1117] border-e border-white/[0.06] flex flex-col
           transition-transform duration-200 lg:translate-x-0
-          ${open ? 'translate-x-0' : '-translate-x-full'}`}
+          ${open ? 'translate-x-0' : '-translate-x-full max-lg:rtl:translate-x-full'}`}
       >
         {/* Logo + env */}
         <div className="h-[52px] flex items-center gap-2.5 px-4 border-b border-white/[0.06] shrink-0">
@@ -161,7 +161,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
                   >
                     <Icon className={`h-3.5 w-3.5 shrink-0 transition-colors ${active ? 'text-blue-400' : ''}`} />
                     <span className="truncate">{item.label}</span>
-                    {active && <ChevronRight className="h-3 w-3 ml-auto text-blue-400/60" />}
+                    {active && <ChevronRight className="h-3 w-3 ms-auto text-blue-400/60" />}
                   </Link>
                 );
               })}
@@ -192,7 +192,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
               type="button"
               onClick={logout}
               title="Sign out"
-              className="text-slate-600 hover:text-rose-400 transition-colors ml-auto"
+              className="text-slate-600 hover:text-rose-400 transition-colors ms-auto"
             >
               <LogOut className="h-3.5 w-3.5" />
             </button>
@@ -241,7 +241,7 @@ function CommandBar({ onMenuOpen }: { onMenuOpen: () => void }) {
   }, []);
 
   return (
-    <header className="fixed top-0 left-0 right-0 lg:left-60 h-[52px] z-20 bg-[#0d1117]/95 border-b border-white/[0.06] backdrop-blur-sm flex items-center gap-3 px-4">
+    <header className="fixed top-0 start-0 end-0 lg:start-60 h-[52px] z-20 bg-[#0d1117]/95 border-b border-white/[0.06] backdrop-blur-sm flex items-center gap-3 px-4">
       {/* Mobile menu button */}
       <button type="button" onClick={onMenuOpen} aria-label="Open navigation menu" className="lg:hidden text-slate-500 hover:text-white transition-colors">
         <Menu className="h-5 w-5" />
@@ -250,21 +250,21 @@ function CommandBar({ onMenuOpen }: { onMenuOpen: () => void }) {
       {/* Search */}
       <div className="relative flex-1 max-w-sm" ref={ref}>
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
+          <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
           <input
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
             onFocus={() => setSearchOpen(true)}
             placeholder="Search tenants…"
-            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg pl-8 pr-3 py-1.5 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-sapphire/60 focus:bg-white/[0.06] transition-colors"
+            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg ps-8 pe-3 py-1.5 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-sapphire/60 focus:bg-white/[0.06] transition-colors"
           />
           {searching && (
-            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 border border-t-transparent border-sapphire rounded-full animate-spin" />
+            <div className="absolute end-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 border border-t-transparent border-sapphire rounded-full animate-spin" />
           )}
         </div>
         {searchOpen && (search.trim() || searchResults.length > 0) && (
-          <div className="absolute top-full left-0 right-0 mt-1.5 bg-[#161b22] border border-white/10 rounded-xl overflow-hidden shadow-2xl shadow-black/60 z-50">
+          <div className="absolute top-full start-0 end-0 mt-1.5 bg-[#161b22] border border-white/10 rounded-xl overflow-hidden shadow-2xl shadow-black/60 z-50">
             {searchResults.length === 0 && search.trim() && !searching && (
               <p className="px-4 py-3 text-xs text-slate-500">No tenants match &ldquo;{search}&rdquo;</p>
             )}
@@ -272,7 +272,7 @@ function CommandBar({ onMenuOpen }: { onMenuOpen: () => void }) {
               <button
                 key={t.id}
                 type="button"
-                className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.05] transition-colors text-left"
+                className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.05] transition-colors text-start"
                 onClick={() => {
                   setSearchOpen(false);
                   setSearch('');
@@ -287,7 +287,7 @@ function CommandBar({ onMenuOpen }: { onMenuOpen: () => void }) {
                   <p className="text-[11px] text-slate-600 font-mono">/{t.slug}</p>
                 </div>
                 {t.plan && (
-                  <span className="ml-auto text-[10px] text-slate-500 bg-white/5 px-1.5 py-0.5 rounded">
+                  <span className="ms-auto text-[10px] text-slate-500 bg-white/5 px-1.5 py-0.5 rounded">
                     {t.plan}
                   </span>
                 )}
@@ -297,7 +297,7 @@ function CommandBar({ onMenuOpen }: { onMenuOpen: () => void }) {
         )}
       </div>
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ms-auto flex items-center gap-2">
         {/* Status indicator */}
         <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/8 border border-emerald-500/15">
           <span className="relative flex h-1.5 w-1.5 shrink-0">
@@ -345,7 +345,7 @@ function PlatformShell({ children }: { children: React.ReactNode }) {
       <div className="platform-shell min-h-screen bg-[#0a0e14] text-white">
         <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
         <CommandBar onMenuOpen={() => setSidebarOpen(true)} />
-        <main className="lg:pl-60 pt-[52px] min-h-screen">
+        <main className="lg:ps-60 pt-[52px] min-h-screen">
           <div className="max-w-[1440px] mx-auto px-5 py-6 animate-fade-in">
             <PlatformErrorBoundary fallbackRoute="/platform/dashboard">
               {children}

@@ -399,7 +399,7 @@ function MyWeekTab() {
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {['Day', 'Cost centre', 'Hours', 'Notes', ''].map((h) => (
-                      <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">
+                      <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">
                         {h}
                       </th>
                     ))}
@@ -470,7 +470,7 @@ function MyWeekTab() {
                             onChange={(e) => patchRow(row.key, { notes: e.target.value })}
                           />
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3 py-2 text-end">
                           {editable && (
                             <button
                               type="button"
@@ -501,7 +501,7 @@ function MyWeekTab() {
               </button>
             </div>
           ) : (
-            <p className="text-right text-xs text-slate-400">
+            <p className="text-end text-xs text-slate-400">
               {sheet.status === 'Submitted'
                 ? `Awaiting ${sheet.approval?.currentApproverRole || 'approval'} — submitted ${fmtDateTime(sheet.submittedAtUtc)}`
                 : `Decided ${fmtDateTime(sheet.decidedAtUtc)}`}
@@ -539,7 +539,7 @@ function MyHistoryTab() {
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/[0.07]">
               {['Period', 'Hours', 'Status', 'Submitted', 'Decided'].map((h) => (
-                <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
@@ -679,7 +679,7 @@ function ApprovalsTab() {
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                       {['Day', 'Logged', 'Attendance', 'Variance'].map((h) => (
-                        <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                        <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -792,7 +792,7 @@ function RegisterTab() {
               <thead>
                 <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                   {['Employee', 'Period', 'Hours', 'Status', 'Submitted', 'Decided'].map((h) => (
-                    <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                    <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -886,7 +886,7 @@ function VarianceTab() {
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                       {['Employee', 'Day', 'Logged', 'Attendance', 'Variance', 'Attendance status'].map((h) => (
-                        <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                        <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                       ))}
                     </tr>
                   </thead>

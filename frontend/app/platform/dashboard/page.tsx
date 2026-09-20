@@ -143,7 +143,7 @@ function PlanBar({ plans, total, loading }: {
             <div className="flex-1 h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
               <div className={`h-full rounded-full transition-all duration-700 ${r.cls} ${pctClass(pct)}`} />
             </div>
-            <span className="text-xs text-slate-500 tabular-nums w-4 text-right">{r.value}</span>
+            <span className="text-xs text-slate-500 tabular-nums w-4 text-end">{r.value}</span>
           </div>
         );
       })}
@@ -223,7 +223,7 @@ function RiskRow({ t }: { t: PlatformTenantSummary }) {
         <p className="text-sm text-white font-medium truncate group-hover:text-blue-300 transition-colors">{t.name}</p>
         <p className="text-[11px] text-slate-600 font-mono">/{t.slug}</p>
       </div>
-      <div className="text-right shrink-0">
+      <div className="text-end shrink-0">
         <p className={`text-xs font-semibold ${riskCls}`}>{riskLabel}</p>
         {t.subscription?.plan && (
           <p className="text-[11px] text-slate-600 capitalize">{t.subscription.plan}</p>
@@ -503,7 +503,7 @@ export default function CommandCenter() {
                 <span className={`text-[11px] font-medium ${health.status === 'healthy' ? 'text-emerald-400' : 'text-amber-400'}`}>
                   {health.status === 'healthy' ? 'All systems operational' : 'Degraded'}
                 </span>
-                <span className="ml-auto text-[10px] text-slate-700 font-mono">{health.version}</span>
+                <span className="ms-auto text-[10px] text-slate-700 font-mono">{health.version}</span>
               </div>
             </div>
           )}

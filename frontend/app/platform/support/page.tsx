@@ -188,10 +188,10 @@ export default function SupportPage() {
 
       <div className="flex items-center gap-3">
         <div className="relative flex-1 max-w-xs">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
+          <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search sessions…"
-            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg pl-8 pr-3 py-1.5 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-sapphire/60 transition-colors" />
+            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg ps-8 pe-3 py-1.5 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-sapphire/60 transition-colors" />
         </div>
         <Link href="/platform/support-sessions"
           className="text-xs text-sapphire hover:text-blue-300 transition-colors">

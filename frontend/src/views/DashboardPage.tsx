@@ -121,7 +121,7 @@ function Card({
       <button
         type="button"
         onClick={onClick}
-        className={`${base} text-left transition-shadow hover:shadow-md ${className}`}
+        className={`${base} text-start transition-shadow hover:shadow-md ${className}`}
       >
         {title && <CardHead title={title} right={titleRight} />}
         {children}
@@ -283,7 +283,7 @@ function KpiCard({ kpi, loading, router }: { kpi: KpiDef; loading: boolean; rout
     <button
       type="button"
       onClick={() => router.push(kpi.to)}
-      className={`group relative flex flex-col gap-3 overflow-hidden rounded-2xl border bg-gradient-to-b to-transparent p-5 text-left transition hover:-translate-y-0.5 hover:shadow-lg dark:bg-[#0e1729]/80 dark:hover:shadow-black/40 ${ACCENT[kpi.tone]} ${kpi.primary ? 'col-span-2' : ''}`}
+      className={`group relative flex flex-col gap-3 overflow-hidden rounded-2xl border bg-gradient-to-b to-transparent p-5 text-start transition hover:-translate-y-0.5 hover:shadow-lg dark:bg-[#0e1729]/80 dark:hover:shadow-black/40 ${ACCENT[kpi.tone]} ${kpi.primary ? 'col-span-2' : ''}`}
       aria-label={`${kpi.label}: ${kpi.value}`}
     >
       <div className="flex items-center justify-between">
@@ -300,7 +300,7 @@ function KpiCard({ kpi, loading, router }: { kpi: KpiDef; loading: boolean; rout
         {kpi.trend === 'down' && <TrendingDown className="mb-1 h-4 w-4 shrink-0 text-rose-500" />}
       </div>
       <p className="text-[11px] font-medium leading-tight text-slate-500 dark:text-slate-400">{kpi.sub}</p>
-      <ArrowUpRight className="absolute right-3 top-3 h-3.5 w-3.5 text-slate-300 opacity-0 transition-opacity group-hover:opacity-100 dark:text-slate-600" />
+      <ArrowUpRight className="absolute end-3 top-3 h-3.5 w-3.5 text-slate-300 opacity-0 transition-opacity group-hover:opacity-100 dark:text-slate-600" />
     </button>
   );
 }
@@ -896,7 +896,7 @@ export function DashboardPage() {
                                   <span className="font-mono font-bold text-slate-900 dark:text-white">
                                     {item.value}
                                     {workforceTotal > 0 && (
-                                      <span className="ml-1 text-[10px] font-medium text-slate-400">
+                                      <span className="ms-1 text-[10px] font-medium text-slate-400">
                                         {Math.round((item.value / workforceTotal) * 100)}%
                                       </span>
                                     )}
@@ -955,7 +955,7 @@ export function DashboardPage() {
                     key={a.label}
                     type="button"
                     onClick={() => router.push(a.to)}
-                    className="group flex flex-col gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-3 text-left transition hover:-translate-y-0.5 hover:shadow-md dark:border-white/[0.07] dark:bg-white/[0.03] dark:hover:bg-white/[0.06]"
+                    className="group flex flex-col gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-3 text-start transition hover:-translate-y-0.5 hover:shadow-md dark:border-white/[0.07] dark:bg-white/[0.03] dark:hover:bg-white/[0.06]"
                   >
                     <span className={`flex h-7 w-7 items-center justify-center rounded-lg border ${a.cls}`}>
                       <Icon className="h-3.5 w-3.5" aria-hidden />
@@ -1002,7 +1002,7 @@ export function DashboardPage() {
                     key={item.title}
                     type="button"
                     onClick={() => router.push('/compliance')}
-                    className={`mb-2 flex w-full items-center gap-2.5 rounded-xl border p-2.5 text-left transition hover:shadow-sm ${c.bdr}`}
+                    className={`mb-2 flex w-full items-center gap-2.5 rounded-xl border p-2.5 text-start transition hover:shadow-sm ${c.bdr}`}
                   >
                     <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${c.bg}`}>
                       <SevIcon className={`h-3.5 w-3.5 ${c.cls}`} aria-hidden />
