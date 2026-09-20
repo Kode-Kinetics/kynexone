@@ -85,6 +85,71 @@ test.describe('Saudi compliance — API authorization', () => {
   });
 });
 
+// ── Nitaqat / Saudization ────────────────────────────────────────────────────
+// Shape-and-authorization only. The demo tenant may or may not have an MHRSD
+// economic activity configured, and BOTH outcomes are correct product behaviour:
+// a standing, or a named refusal. What must never happen is a 200 carrying
+// neither, or a band with no numbers behind it.
+test.describe('Saudi compliance — Nitaqat', () => {
+  test('platform admin cannot reach tenant Nitaqat standing', async ({ request }) => {
+    const token = await apiPlatformLogin(request);
+    const resp = await request.get('/api/saudi-compliance/nitaqat', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect([401, 403]).toContain(resp.status());
+  });
+
+  test('Nitaqat standing returns either a band with its working, or a named refusal', async ({ request }) => {
+    const token = await apiLogin(request, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
+    const resp = await request.get('/api/saudi-compliance/nitaqat', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(resp.status()).toBe(200);
+    const body = await resp.json();
+    expect(body).toHaveProperty('ok');
+
+    if (body.ok) {
+      const s = body.standing;
+      expect(s).toBeTruthy();
+      // A band is never shown without the numbers that produced it.
+      for (const k of [
+        'saudiWeighted', 'totalWeighted', 'achievedPercent', 'band',
+        'currentBandFloorPercent', 'breakdown', 'scenario',
+        'allInputsVerified', 'unverifiedInputs',
+      ]) {
+        expect(s).toHaveProperty(k);
+      }
+      expect(['Red', 'LowGreen', 'MediumGreen', 'HighGreen', 'Platinum']).toContain(s.band);
+      expect(Array.isArray(s.breakdown)).toBe(true);
+    } else {
+      // A refusal is a designed state: it must name a reason and give a remedy.
+      expect(body.standing).toBeNull();
+      expect(body.refusal).toBeTruthy();
+      expect(body.refusal.reason).toMatch(/^nitaqat_/);
+      expect(body.refusal.remedy.length).toBeGreaterThan(0);
+    }
+  });
+
+  test('the report catalogue offers a Saudization report', async ({ request }) => {
+    const token = await apiLogin(request, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
+    const resp = await request.get('/api/reports/catalog', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(resp.status()).toBe(200);
+    const catalog = await resp.json();
+    expect(catalog.some((r: { key: string }) => r.key === 'compliance.saudization')).toBe(true);
+  });
+
+  test('hire impact requires a nationality', async ({ request }) => {
+    const token = await apiLogin(request, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
+    const resp = await request.get('/api/saudi-compliance/nitaqat/hire-impact?count=1', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(resp.status()).toBe(400);
+    expect((await resp.json()).error).toBe('nationality_required');
+  });
+});
+
 test.describe('Saudi compliance — UI', () => {
   test('saudi-compliance page loads for IntelliFlow admin', async ({ page }) => {
     await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
