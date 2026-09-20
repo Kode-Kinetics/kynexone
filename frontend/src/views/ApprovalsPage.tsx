@@ -71,44 +71,97 @@ export function ApprovalsPage() {
     ]);
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError('');
+  /**
+   * Fetches the queue. `silent` reconciles in the background WITHOUT raising the spinner: the
+   * table body swaps its rows for a spinner whenever `loading` is true, so a non-silent reload
+   * after an optimistic update would flash the very rows the update just settled. A silent
+   * reload also leaves existing rows in place if it fails, rather than blanking the table on a
+   * transient error — the optimistic state stays until an explicit reload contradicts it.
+   */
+  const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (!silent) {
+      setLoading(true);
+      setError('');
+    }
     try {
       const res = await approvalsApi.list({ status: statusFilter || undefined, queue: queueFilter || undefined, page, pageSize: PAGE_SIZE });
       setRequests(res.items);
       setTotal(res.total);
     } catch {
-      setError('Could not load approval requests from the API.');
-      setRequests([]);
-      setTotal(0);
+      if (!silent) {
+        setError('Could not load approval requests from the API.');
+        setRequests([]);
+        setTotal(0);
+      }
     }
-    finally { setLoading(false); }
+    finally { if (!silent) setLoading(false); }
   }, [statusFilter, queueFilter, page]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { void load(); }, [load]);
   useEffect(() => { loadMetrics().catch(() => setMetrics([])); }, [loadMetrics]);
   useEffect(() => { setPage(1); }, [statusFilter, queueFilter]);
 
+  /**
+   * Applies a decision optimistically.
+   *
+   * The server round-trip used to gate the whole UI: decide -> reload list -> reload four metric
+   * queries, so a row only left the queue after three sequential network waves. The decided row is
+   * now removed and the counters decremented immediately, and the authoritative reload runs in the
+   * background purely to reconcile. Any failure restores the exact pre-decision snapshot.
+   */
   const handleDecide = async (decision: 'Approve' | 'Reject') => {
     if (!selected) return;
     if (decision === 'Reject' && comments.trim().length < 5) {
       alert('Please add a clear rejection reason before rejecting.');
       return;
     }
+
+    // Snapshot everything the optimistic update touches so a failure can rewind exactly.
+    const decided = selected;
+    const prevRequests = requests;
+    const prevTotal = total;
+    const prevMetrics = metrics;
+    const prevComments = comments;
+
+    // The decided row only leaves the visible list while the list is showing pending work; on a
+    // "Approved"/"Rejected"/all-status view the row legitimately stays, with its new status.
+    const leavesCurrentList = statusFilter === 'Pending';
+    const decidedStatus = decision === 'Approve' ? 'Approved' : 'Rejected';
+
     setDeciding(true);
+    setSelected(null);
+    setComments('');
+    setRequests(rs => leavesCurrentList
+      ? rs.filter(r => r.id !== decided.id)
+      : rs.map(r => (r.id === decided.id ? { ...r, status: decidedStatus } : r)));
+    if (leavesCurrentList) setTotal(t => Math.max(0, t - 1));
+    // Every counter is a count of PENDING work, so each one this request belonged to drops by one.
+    // "All Pending" always contained it; the queue-specific tiles only if it sat in that queue.
+    setMetrics(ms => ms.map(m => (
+      m.key === '' || m.key === decided.currentQueue
+        ? { ...m, value: Math.max(0, m.value - 1) }
+        : m
+    )));
+
     try {
-      await approvalsApi.decide(selected.id, decision, comments);
-      setSelected(null);
-      setComments('');
-      await Promise.all([load(), loadMetrics()]);
+      await approvalsApi.decide(decided.id, decision, comments);
+      // Reconcile against the server; the user is already looking at the post-decision state.
+      await Promise.all([load({ silent: true }), loadMetrics()]);
     } catch (err: unknown) {
+      // Roll back to the pre-decision snapshot before surfacing anything.
+      setRequests(prevRequests);
+      setTotal(prevTotal);
+      setMetrics(prevMetrics);
+
       const block = establishmentBlockFromError(err);
       if (block) {
         // The approval stays pending — it can be re-approved after a budget raise.
-        setEstablishmentBlock({ block, employeeName: selected.entityName || undefined });
+        setEstablishmentBlock({ block, employeeName: decided.entityName || undefined });
         await Promise.all([load(), loadMetrics()]);
       } else {
+        // Reopen the decision so the reviewer keeps their typed justification and can retry.
+        setSelected(decided);
+        setComments(prevComments);
         const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
         alert(msg ?? 'Failed to submit decision. Please try again.');
       }
