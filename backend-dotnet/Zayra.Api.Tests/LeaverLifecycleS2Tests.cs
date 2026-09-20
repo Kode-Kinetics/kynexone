@@ -296,7 +296,12 @@ public class LeaverLifecycleS2Tests
         var persisted = await db.EmployeeOffboardings.SingleAsync();
         Assert.Equal("Article80", persisted.SeparationType);
 
-        var eosb = new KsaEndOfServiceCalculator(null!);
+        // Wave-25 integration: S2 passed `null!` here because, on S2's base, the calculator never
+        // read a rule. S1 made the [CONF]/[COUNSEL] switches effective-dated StatutoryRule rows, so
+        // the reader is now dereferenced. An EMPTY StubRuleReader seeds nothing, which means every
+        // switch falls back to its statutory default — so this test still asserts exactly what it
+        // always asserted: forfeiture (zero) versus a paid award, never an amount.
+        var eosb = new KsaEndOfServiceCalculator(new StubRuleReader());
         var salary = new SalaryBreakdown(10_000m, 0m, 0m, 0m);
         EndOfServiceInput Input(string reason) => new(
             Guid.NewGuid(), Guid.NewGuid(), salary,

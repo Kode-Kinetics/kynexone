@@ -183,33 +183,37 @@ public class DashboardController : ControllerBase
         // null = the whole tenant (unchanged behaviour); otherwise only these employee ids.
         var ids = population?.ToList();
 
-        // Keep the cold dashboard to one database round-trip. These used to be four sequential
-        // queries; on a hosted Postgres connection the network latency dwarfed the aggregate work.
-        // W2-D: each sub-count also honours `ids` — null means the whole tenant (unchanged), otherwise
-        // only the caller's allowed population. The scoped path is per-caller and bypasses the cache.
+        // Wave-25 integration note. Two streams changed this method and they want different shapes,
+        // so each path keeps the one its own stream designed:
+        //
+        //  * UNSCOPED (ids == null) — the cold, cached, tenant-wide dashboard. Kept as the single
+        //    round-trip introduced on `main`: four sequential queries were latency-bound on hosted
+        //    Postgres. Rooted at Tenants, which is the row that makes it one command.
+        //  * SCOPED (ids != null) — W2-D's per-caller summary. Deliberately NOT folded into the
+        //    aggregate above: that query yields all-zeros whenever the Tenants row is absent, and
+        //    the scoped path never depended on a Tenants row. It is uncached and runs over a small
+        //    population, so the round-trip saving was never what it was for.
+        if (ids is not null)
+            return await BuildScopedSummary(tenantId, ids, today, monthStart, ct);
+
         var aggregate = await _db.Tenants
             .Where(t => t.Id == tenantId)
             .Select(_ => new
             {
-                Total = _db.Employees.Count(e => e.TenantId == tenantId && (ids == null || ids.Contains(e.Id))),
-                Active = _db.Employees.Count(e => e.TenantId == tenantId && e.Status == "Active" && (ids == null || ids.Contains(e.Id))),
-                Present = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today && a.Status == "Present"
-                    && (ids == null || ids.Contains(a.EmployeeId))),
+                Total = _db.Employees.Count(e => e.TenantId == tenantId),
+                Active = _db.Employees.Count(e => e.TenantId == tenantId && e.Status == "Active"),
+                Present = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today && a.Status == "Present"),
                 OnLeave = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today
-                    && (a.Status == "Leave" || a.Status == "On Leave")
-                    && (ids == null || ids.Contains(a.EmployeeId))),
-                Absent = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today && a.Status == "Absent"
-                    && (ids == null || ids.Contains(a.EmployeeId))),
+                    && (a.Status == "Leave" || a.Status == "On Leave")),
+                Absent = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today && a.Status == "Absent"),
                 // Hours are safe to aggregate as REAL as well as NUMERIC; this keeps the query
                 // portable to the SQLite regression harness without changing the decimal API.
                 OvertimeHours = _db.AttendanceRecords
-                    .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today
-                        && (ids == null || ids.Contains(a.EmployeeId)))
+                    .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today)
                     .Sum(a => (double?)a.OvertimeHours) ?? 0d,
                 ChurnRisk = _db.AttendanceRecords
                     .Where(a => a.TenantId == tenantId && a.WorkDate >= today.AddDays(-30)
-                        && (a.Status == "Absent" || a.OvertimeHours >= 4)
-                        && (ids == null || ids.Contains(a.EmployeeId)))
+                        && (a.Status == "Absent" || a.OvertimeHours >= 4))
                     .Select(a => a.EmployeeId)
                     .Distinct()
                     .Count(),
@@ -224,6 +228,48 @@ public class DashboardController : ControllerBase
             aggregate?.Absent ?? 0,
             aggregate is null ? 0m : Convert.ToDecimal(aggregate.OvertimeHours),
             aggregate?.ChurnRisk ?? 0);
+    }
+
+    /// <summary>
+    /// W2-D (S8) — the summary for a data-scoped caller, counted over <paramref name="ids"/> only.
+    /// Kept as W2-D wrote it: separate queries, no Tenants root, so a scoped caller is never
+    /// dependent on a Tenants row being present.
+    /// </summary>
+    private async Task<DashboardSummaryDto> BuildScopedSummary(
+        Guid tenantId, List<int> ids, DateOnly today, DateOnly monthStart, CancellationToken ct)
+    {
+        var empCounts = await _db.Employees
+            .Where(e => e.TenantId == tenantId && ids.Contains(e.Id))
+            .GroupBy(_ => 1)
+            .Select(g => new { Total = g.Count(), Active = g.Count(e => e.Status == "Active") })
+            .FirstOrDefaultAsync(ct);
+
+        var todayBuckets = await _db.AttendanceRecords
+            .Where(a => a.TenantId == tenantId && a.WorkDate == today && ids.Contains(a.EmployeeId))
+            .GroupBy(a => a.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .ToListAsync(ct);
+
+        var present = todayBuckets.Where(b => b.Status == "Present").Sum(b => b.Count);
+        var onLeave = todayBuckets.Where(b => b.Status == "Leave" || b.Status == "On Leave").Sum(b => b.Count);
+        var absent  = todayBuckets.Where(b => b.Status == "Absent").Sum(b => b.Count);
+
+        var overtimeHours = await _db.AttendanceRecords
+            .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today && ids.Contains(a.EmployeeId))
+            .SumAsync(a => (decimal?)a.OvertimeHours, ct) ?? 0m;
+
+        var churnRisk = await _db.AttendanceRecords
+            .Where(a => a.TenantId == tenantId && a.WorkDate >= today.AddDays(-30)
+                && (a.Status == "Absent" || a.OvertimeHours >= 4)
+                && ids.Contains(a.EmployeeId))
+            .Select(a => a.EmployeeId)
+            .Distinct()
+            .CountAsync(ct);
+
+        return new DashboardSummaryDto(
+            empCounts?.Total ?? 0,
+            empCounts?.Active ?? 0,
+            present, onLeave, absent, overtimeHours, churnRisk);
     }
 
     private async Task<IReadOnlyList<DashboardTrendDto>> BuildTrends(Guid tenantId, int months, CancellationToken ct)
