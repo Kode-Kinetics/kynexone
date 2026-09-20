@@ -133,7 +133,7 @@ public class PayComponentGoldenMasterTests
         Assert.Equal(seeded.GlDebits, seeded.GlCredits);
     }
 
-    // ── (3) Qatar — Qatari (GRSIA 7/14 on BASIC ONLY) + expat (zero) ─────────────────────────────
+    // ── (3) Qatar — Qatari (GRSIA 7/14 on BASIC + HOUSING) + expat (zero) ───────────────────────
     [Fact]
     public async Task Qatar_QatariAndExpat_ThreeModes_AreByteIdentical()
     {
@@ -141,9 +141,15 @@ public class PayComponentGoldenMasterTests
             nationalCode: "Qatari", nationalEe: "GRSIA-EE", nationalEr: "GRSIA-ER"));
         AssertIdentical(legacy, fb, seeded);
 
-        var q1 = seeded.Slip("N1"); // Qatari — base is BASIC ONLY (housing excluded), proving the country matrix
-        Assert.Equal(700.00m,  q1.Ded("GRSIA-EE").Amount);   // 10,000 × 7% (NOT 13,000)
-        Assert.Equal(1400.00m, q1.ErStat);                   // 10,000 × 14%
+        // S1/A11 — REBASED. This golden master pinned a BASIC-ONLY contribution salary (700 / 1,400),
+        // which is Law 24/2002 and was superseded. Social Insurance Law No. 1 of 2022, in force from
+        // January 2023, defines the Qatari contribution salary as basic + social allowance + housing
+        // allowance, so the base is 10,000 + 3,000 = QAR 13,000. The rates 7% / 14% were always right.
+        // Note this now matches the UAE GPSSA base above — which is the point: both are basic + housing,
+        // and it was Qatar that was the outlier, not UAE.
+        var q1 = seeded.Slip("N1"); // Qatari — base is BASIC + HOUSING per Law 1/2022
+        Assert.Equal(910.00m,  q1.Ded("GRSIA-EE").Amount);   // 13,000 × 7%
+        Assert.Equal(1820.00m, q1.ErStat);                   // 13,000 × 14%
         var q2 = seeded.Slip("N2");
         Assert.Equal(0m, q2.EeStat);
         Assert.Equal(seeded.GlDebits, seeded.GlCredits);

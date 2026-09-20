@@ -90,12 +90,31 @@ WHERE NOT EXISTS (
 
         /// <summary>F2 — frozen system catalog rows for the existing-tenant backfill: (code, name_en, name_ar,
         /// component_type, calc_method, structure_field, provider_key, gl_driver_key, display_order,
-        /// emit_when_zero, is_family, is_statutory, is_taxable, gosi_subject, wps_included, eosb_included).</summary>
+        /// emit_when_zero, is_family, is_statutory, is_taxable, gosi_subject, wps_included, eosb_included).
+        ///
+        /// <para>S1/A1 — HOUSING's <c>eosb_included</c> changed FALSE → TRUE here. Saudi Labour Law
+        /// Art. 84 awards on the last wage and Art. 2 defines wage as basic plus all due increments, so
+        /// the previous value was wrong as a statement of law. <c>FrozenBackfillValues_MatchTheCompiledCatalog</c>
+        /// requires this constant to track <see cref="PayComponentCatalog"/> exactly, which is why the
+        /// change lands in an already-authored migration rather than a new one.</para>
+        ///
+        /// <para><b>A database migrated BEFORE this change keeps <c>eosb_included = false</c> on its
+        /// HOUSING rows.</b> That costs no money: <c>KsaEndOfServiceCalculator</c> applies basic + housing
+        /// as a NON-CONFIGURABLE statutory floor, and the catalog flag can only ever raise a base above
+        /// statute, never lower it. What a stale row does affect is reporting — the settlement's
+        /// <c>IncludedComponents</c> list will not name HOUSING. Correct it with:
+        /// <code>
+        /// UPDATE pay_components SET eosb_included = TRUE
+        ///  WHERE code = 'HOUSING' AND is_system = TRUE AND is_deleted = FALSE AND eosb_included = FALSE;
+        /// </code>
+        /// Deliberately not issued as a new migration from this stream: it is a data correction with no
+        /// schema change and no money effect, and a model-snapshot touch collides with every branch
+        /// currently in flight.</para></summary>
         public const string BackfillValues = @"
     ('BONUS', 'Bonus', 'مكافأة', 'Earning', 'Integration', NULL, 'Bonus', 'EARN:BONUS', 10, FALSE, TRUE, FALSE, FALSE, FALSE, TRUE, FALSE),
     ('ADJ', 'Adjustment', 'تسوية', 'Earning', 'Integration', NULL, 'Adjustment', NULL, 20, FALSE, TRUE, FALSE, FALSE, FALSE, TRUE, FALSE),
     ('BASIC', 'Basic salary', 'الراتب الأساسي', 'Earning', 'StructureField', 'BasicSalary', NULL, 'EARN:BASIC', 30, TRUE, FALSE, FALSE, TRUE, TRUE, TRUE, TRUE),
-    ('HOUSING', 'Housing allowance', 'بدل السكن', 'Earning', 'StructureField', 'HousingAllowance', NULL, 'EARN:HOUSING', 40, FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, FALSE),
+    ('HOUSING', 'Housing allowance', 'بدل السكن', 'Earning', 'StructureField', 'HousingAllowance', NULL, 'EARN:HOUSING', 40, FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, TRUE),
     ('TRANSPORT', 'Transport allowance', 'بدل النقل', 'Earning', 'StructureField', 'TransportAllowance', NULL, 'EARN:TRANSPORT', 50, FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, FALSE),
     ('OTHER_ALLOWANCES', 'Other allowances', 'بدلات أخرى', 'Earning', 'StructureField', 'OtherAllowancesComposite', NULL, 'EARN:OTHER_ALLOWANCES', 60, FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, FALSE),
     ('OVERTIME', 'Overtime', 'العمل الإضافي', 'Earning', 'Integration', NULL, 'Overtime', 'EARN:OVERTIME', 70, FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, FALSE),
