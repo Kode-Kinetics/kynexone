@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { ApprovalGovernanceToggle } from '../components/ApprovalGovernanceToggle';
 import {
   tenantAdminApi,
   type TenantFeatureFlag,
@@ -17,7 +19,7 @@ import { HelpTextManager } from '../components/HelpTextManager';
 import { useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 
-type Tab = 'subscription' | 'features' | 'invoices' | 'localization' | 'branding' | 'security' | 'country-rules' | 'statutory-rules' | 'help-text';
+type Tab = 'subscription' | 'features' | 'invoices' | 'localization' | 'branding' | 'security' | 'approvals' | 'country-rules' | 'statutory-rules' | 'help-text';
 
 const FEATURE_KEYS = [
   { key: 'ai_assistant', label: 'Workspace Assistant', description: 'Enable natural-language workspace queries' },
@@ -393,6 +395,7 @@ export default function TenantAdminPage() {
     { id: 'localization', label: 'Localization' },
     { id: 'branding', label: 'Branding' },
     { id: 'security', label: 'Security' },
+    { id: 'approvals', label: 'Approvals' },
     { id: 'country-rules', label: 'Country Rules' },
     { id: 'statutory-rules', label: 'Statutory Rules Engine' },
     { id: 'help-text', label: 'Help Text' },
@@ -991,6 +994,20 @@ export default function TenantAdminPage() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* Approvals (W2-E governance) */}
+      {tab === 'approvals' && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5 dark:border-white/10 dark:bg-white/[0.03]">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Approval Governance</h2>
+            <p className="text-xs text-gray-500 dark:text-slate-400">
+              Workflows themselves (who approves what, in which order, for which department or grade) are configured under{' '}
+              <Link href="/approvals/workflows" className="font-medium text-indigo-600 hover:underline dark:text-cyanAccent">Approval Workflows</Link>.
+            </p>
+          </div>
+          <ApprovalGovernanceToggle />
         </div>
       )}
 
