@@ -470,7 +470,14 @@ public class TenantProvisioningTests
                 .Where(w => w.TenantId == tenant.Id && w.IsDefault && w.IsActive)
                 .Select(w => w.EntityName)
                 .ToListAsync())
-            .Should().BeEquivalentTo(new[] { "LeaveRequest", "OvertimeRequest", "PayrollRun", "Timesheet", "ManpowerRequisition" });
+            // OvertimeRequest and PayrollRun are deliberately NOT here any more. Neither has a
+            // producer — nothing in the product creates an ApprovalRequest for an overtime request
+            // (overtime is decided on its own aggregate, through its own PendingManager → PendingHR
+            // chain) or for a payroll run. A tenant could open either seeded workflow, add a second
+            // approver, save it, be shown it back, and have it ignored for ever. Every name below
+            // is asserted against ApprovalEntities.Producers by
+            // ConfigurationConsumerTests.EverySeededDefaultApprovalWorkflow_NamesAnEntityWithAProducer.
+            .Should().BeEquivalentTo(new[] { "LeaveRequest", "Timesheet", "ManpowerRequisition" });
         (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "LeaveRequest" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();
         // Without this one, the first timesheet a tenant submits 422s on approval_route_not_configured.
         (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "Timesheet" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();

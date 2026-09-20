@@ -634,32 +634,14 @@ public class AuthSeeder : IAuthSeeder
             });
         }
 
-        if (!await _db.ApprovalWorkflows.AnyAsync(x => x.TenantId == tenantId && x.Code == "EMPLOYEE-ONBOARDING", cancellationToken))
-        {
-            var onboarding = new ApprovalWorkflow
-            {
-                TenantId = tenantId,
-                Code = "EMPLOYEE-ONBOARDING",
-                Name = "Employee Onboarding Approval",
-                EntityName = "EmployeeDraft"
-            };
-            onboarding.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = onboarding.Id, StepOrder = 1, StepName = "HR Review", ApproverRole = "HR Manager", IsFinalStep = true });
-            _db.ApprovalWorkflows.Add(onboarding);
-        }
-
-        if (!await _db.ApprovalWorkflows.AnyAsync(x => x.TenantId == tenantId && x.Code == "EMPLOYEE-TRANSFER", cancellationToken))
-        {
-            var transfer = new ApprovalWorkflow
-            {
-                TenantId = tenantId,
-                Code = "EMPLOYEE-TRANSFER",
-                Name = "Employee Transfer Approval",
-                EntityName = "EmployeeTransferRequest"
-            };
-            transfer.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = transfer.Id, StepOrder = 1, StepName = "Current Manager Approval", ApproverRole = "Manager" });
-            transfer.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = transfer.Id, StepOrder = 2, StepName = "HR Approval", ApproverRole = "HR Manager", IsFinalStep = true });
-            _db.ApprovalWorkflows.Add(transfer);
-        }
+        // EMPLOYEE-ONBOARDING ("EmployeeDraft") and EMPLOYEE-TRANSFER ("EmployeeTransferRequest")
+        // used to be seeded here and are not any more. Neither entity has a producer: nothing in the
+        // product has ever created an ApprovalRequest for a draft or a transfer, so neither workflow
+        // could route anything. The transfer one was the worst of them — a two-step
+        // "Current Manager → HR Approval" chain, visible in the Approvals configuration, citable in
+        // a security questionnaire, and inert. Transfers are approved inline on the transfer request
+        // by EmployeesController; drafts are activated on the employee record. Both are now refused
+        // by ApprovalWorkflowsController (see ApprovalEntities) rather than offered and ignored.
 
         await _db.SaveChangesAsync(cancellationToken);
 
@@ -1034,20 +1016,17 @@ public class AuthSeeder : IAuthSeeder
         await _db.SaveChangesAsync(ct);
 
         // ── Pending approvals ────────────────────────────────────────────────────
-        var workflowId = (await _db.ApprovalWorkflows.FirstOrDefaultAsync(x => x.TenantId == tenantId, ct))?.Id ?? Guid.NewGuid();
-        var currentPeriod = new DateOnly(today.Year, today.Month, 1);
-        var currentRunId = (await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Year == currentPeriod.Year && x.Month == currentPeriod.Month, ct))?.Id ?? Guid.NewGuid();
         // The four LeaveRequest rows this block used to add pointed at Guid.NewGuid() EntityIds — an
         // Approvals queue whose items opened onto nothing. The leave seed above now writes the real
-        // routing projections, so only the non-leave demo approvals remain here (and the guard no
-        // longer counts those real rows as "already seeded"). CompanyId is stamped for the same
-        // reason it is on the leave rows: ApprovalRequest is ICompanyScopedOperational.
-        if (!await _db.ApprovalRequests.AnyAsync(x => x.TenantId == tenantId && x.Status == "Pending" && x.EntityName != nameof(LeaveRequest), ct))
-        _db.ApprovalRequests.AddRange(
-            new ApprovalRequest { TenantId=tenantId, CompanyId=companyId, WorkflowId=workflowId, EntityName="PayrollRun",           EntityId=currentRunId.ToString(),   Title=$"Payroll approval — {currentPeriod:MMM yyyy}",   Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-20) },
-            new ApprovalRequest { TenantId=tenantId, CompanyId=companyId, WorkflowId=workflowId, EntityName="EmployeeTransferRequest", EntityId=Guid.NewGuid().ToString(), Title=$"Transfer request — {employees[5].FullName}", Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-8) }
-        );
-        await _db.SaveChangesAsync(ct);
+        // routing projections.
+        //
+        // The two remaining demo rows ("PayrollRun" and "EmployeeTransferRequest") have now gone for
+        // the same reason, one step further on: neither entity has a producer, so nothing would ever
+        // have created those rows in a real tenant, and deciding one in the Approval Center changed
+        // nothing anywhere — the transfer row's EntityId was a fresh Guid pointing at no record at
+        // all. A queue item that cannot be acted on is the demo version of dead configuration. Every
+        // item in the Approval Center now opens onto something real.
+        var currentPeriod = new DateOnly(today.Year, today.Month, 1);
 
         // ── Notifications ────────────────────────────────────────────────────────
         var adminUserId = (await _db.Users.FirstOrDefaultAsync(x => x.TenantId == tenantId, ct))?.Id;

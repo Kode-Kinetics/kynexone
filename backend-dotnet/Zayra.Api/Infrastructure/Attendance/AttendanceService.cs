@@ -1227,7 +1227,34 @@ public class AttendanceService : IAttendanceService
 
     private static AttendancePolicy DefaultPolicy(Guid tenantId) => new() { TenantId = tenantId, Code = "DEFAULT", Name = "Default attendance policy" };
 
-    private static AttendancePolicy ResolveAttendancePolicy(Employee employee, IReadOnlyCollection<AttendancePolicy> policies) =>
+    /// <summary>
+    /// Picks the attendance policy that governs one employee's day.
+    ///
+    /// <para><b>The explicit assignment wins.</b> <c>Employee.AttendancePolicyCode</c> is a
+    /// registered employee field labelled "Attendance policy"; it is on the employee form, in the
+    /// DTO, in the CSV import template and in the export — and until now nothing read it. Every
+    /// employee was governed by whichever policy their branch/department/grade happened to match,
+    /// or, failing that, by whichever policy sorted first alphabetically. A client migrating from
+    /// another HRIS mapped an "attendance policy" column because the template offered one, and
+    /// their grace periods, late thresholds and standard hours were then wrong for everyone.
+    /// An assignment a client can make and see is either honoured or it should not be offered.</para>
+    ///
+    /// <para>A code that matches no active policy falls through to the existing tiering rather than
+    /// failing the day's processing: import data is dirty, and refusing to process attendance is a
+    /// worse answer than the behaviour that was there before. The tiering below is unchanged.</para>
+    /// </summary>
+    private static AttendancePolicy ResolveAttendancePolicy(Employee employee, IReadOnlyCollection<AttendancePolicy> policies)
+    {
+        var assigned = (employee.AttendancePolicyCode ?? string.Empty).Trim();
+        if (assigned.Length > 0)
+        {
+            var match = policies.FirstOrDefault(p => string.Equals(p.Code, assigned, StringComparison.OrdinalIgnoreCase));
+            if (match is not null) return match;
+        }
+        return ResolveByOrgTier(employee, policies);
+    }
+
+    private static AttendancePolicy ResolveByOrgTier(Employee employee, IReadOnlyCollection<AttendancePolicy> policies) =>
         policies
             .Where(p =>
                 (!p.BranchId.HasValue || p.BranchId == employee.BranchId) &&

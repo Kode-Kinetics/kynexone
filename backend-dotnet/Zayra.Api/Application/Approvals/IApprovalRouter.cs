@@ -27,6 +27,26 @@ public interface IApprovalRouter
     Task<ApprovalRoute?> TryResolveAsync(Guid tenantId, int? employeeId, string entityName, CancellationToken ct);
 
     /// <summary>
+    /// Resolves the workflow a piece of CONFIGURATION pins for this entity, in preference to the
+    /// specificity match — today, <c>LeavePolicy.ApprovalWorkflowId</c>.
+    ///
+    /// <para><b>Why this exists.</b> A leave policy has carried an <c>ApprovalWorkflowId</c> since
+    /// before F1: it is in the payload, settable on create and on update, and it round-trips. It was
+    /// read by nothing. A client configuring "sick leave is approved by HR only; annual leave goes
+    /// line manager → HR; unpaid leave needs the MD" saw all three save, spot-checked one, and then
+    /// had every leave type route through the single department-level workflow — which for sick
+    /// leave means the line manager sees the request.</para>
+    ///
+    /// <para>Returns null, never throws, when the pin cannot be honoured: the workflow was deleted,
+    /// deactivated, or belongs to another entity. The caller then falls back to
+    /// <see cref="ResolveAsync"/>, so a stale pin degrades to the behaviour that was there before
+    /// rather than blocking the submission. Unlike <see cref="LoadAsync"/> — which loads an
+    /// in-flight request's workflow whether or not it is still active — this is a NEW routing
+    /// decision, so an inactive workflow is not a candidate.</para>
+    /// </summary>
+    Task<ApprovalRoute?> ResolvePinnedAsync(Guid tenantId, Guid workflowId, string entityName, CancellationToken ct);
+
+    /// <summary>
     /// Loads the workflow an in-flight request is pinned to (<c>ApprovalRequest.WorkflowId</c>),
     /// whether or not it is still active — deactivating a workflow stops NEW routing, it does not
     /// strand requests already on it. Returns null when no such workflow exists in the tenant.
