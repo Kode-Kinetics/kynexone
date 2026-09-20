@@ -326,10 +326,12 @@ public sealed partial class MigrationImportController : ControllerBase
     {
         var rows = Csv.Parse(csv);
         var result = new SectionResult { Received = rows.Count, AmountTotal = SectionControlTotal(section, rows) };
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (row, index) in rows.Select((r, i) => (r, i + 2)))
         {
             try
             {
+                GuardDuplicate(section, row, seenKeys);
                 var action = await ValidateRowAsync(section, row, tenantId, cutover, ct);
                 if (action == "updated") result.WouldUpdate++;
                 else result.WouldCreate++;
@@ -344,10 +346,12 @@ public sealed partial class MigrationImportController : ControllerBase
         var parsedRows = Csv.Parse(csv);
         var result = new SectionResult { Received = parsedRows.Count, AmountTotal = SectionControlTotal(section, parsedRows) };
         if (dryRun) return (await ValidateSectionAsync(section, csv, tenantId, cutover, ct)).ToApplyResult();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (row, index) in parsedRows.Select((r, i) => (r, i + 2)))
         {
             try
             {
+                GuardDuplicate(section, row, seenKeys);
                 var action = section switch
                 {
                     "companyCutover" => await UpsertCompanyCutoverAsync(row, tenantId, ct),

@@ -123,6 +123,34 @@ public sealed partial class MigrationImportController
                 $"Status '{status}' is not a cutover status. Use one of: {string.Join(", ", CutoverStatuses.All)}.");
     }
 
+    /// <summary>
+    /// The natural key a row upserts on, for the sections introduced by this stream — or null for a
+    /// section that does not participate.
+    ///
+    /// <para>The upsert lookups below read the DATABASE, and a section's rows are not saved until the
+    /// section finishes. Two rows in one file carrying the same LoanNumber therefore both miss, both
+    /// create, and the employee ends up with the loan twice — deducted twice, every month. A duplicate
+    /// natural key inside one file is always a mistake in the extract, so it is refused by name on the
+    /// second occurrence rather than resolved by guessing which row was meant.</para>
+    /// </summary>
+    private static string? DuplicateGuardKey(string section, Dictionary<string, string> row) => section switch
+    {
+        "loans" => $"loan:{Val(row, "LoanNumber").Trim().ToUpperInvariant()}",
+        "advances" => $"advance:{Val(row, "AdvanceNumber").Trim().ToUpperInvariant()}",
+        "eosbOpeningProvision" => $"eosb:{Val(row, "EmployeeCode").Trim().ToUpperInvariant()}|{Val(row, "AsAtDate").Trim()}",
+        "companyCutover" => $"cutover:{Val(row, "CompanyRegistrationNumber").Trim().ToUpperInvariant()}|{Val(row, "CompanyLegalName").Trim().ToUpperInvariant()}",
+        _ => null,
+    };
+
+    private static void GuardDuplicate(string section, Dictionary<string, string> row, HashSet<string> seen)
+    {
+        var key = DuplicateGuardKey(section, row);
+        if (key is null) return;
+        if (!seen.Add(key))
+            throw new InvalidOperationException(
+                $"This row repeats a key already used earlier in the same file ({key}). Remove the duplicate — importing it twice would create the balance twice.");
+    }
+
     private static string RequireBalanceType(Dictionary<string, string> row)
     {
         var raw = Require(row, "BalanceType").Trim();

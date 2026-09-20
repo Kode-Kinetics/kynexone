@@ -671,6 +671,36 @@ public class OpeningBalanceCutoverTests
         (await db.PayrollOpeningBalances.CountAsync(x => x.TenantId == tid)).Should().Be(0);
     }
 
+    /// <summary>
+    /// Two rows in one file carrying the same loan number. The upsert lookup reads the database and the
+    /// section is not saved until it finishes, so without an in-file guard both rows miss, both create,
+    /// and the employee is deducted for the same loan twice every month.
+    /// </summary>
+    [Fact]
+    public async Task ADuplicateKeyWithinOneFile_IsRefusedRatherThanImportedTwice()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+
+        var res = await Migration(db, tid).Commit(Package("cutover-dupe",
+            ("companyCutover", CutoverCsv),
+            ("loans",
+                "EmployeeCode,LoanNumber,LoanTypeCode,LoanTypeName,OriginalAmount,InstallmentAmount,TotalInstallments,InstallmentsPaid,OutstandingBalance,FirstUnpaidDueDate,DisbursementDate,Currency,SourceSystem,SourceRecordId\n" +
+                "EMP-001,LEG-LN-0001,PERSONAL,Personal Loan,24000,1000,24,7,17000,2026-09-25,2026-02-25,SAR,SAP,LN-001\n" +
+                "EMP-001,LEG-LN-0001,PERSONAL,Personal Loan,24000,1000,24,7,17000,2026-09-25,2026-02-25,SAR,SAP,LN-001\n")),
+            CancellationToken.None);
+
+        var dto = (MigrationReconciliationDto)((OkObjectResult)res.Result!).Value!;
+        dto.Errors.Should().ContainSingle().Which.Should()
+            .Contain("loans row 3").And.Contain("repeats a key already used earlier in the same file");
+        (await db.EmployeeLoans.CountAsync(l => l.TenantId == tid)).Should().Be(1,
+            "the first occurrence imports; the second is refused, not applied on top");
+        (await db.LoanInstallments.CountAsync()).Should().Be(24, "and it did not double the schedule either");
+    }
+
     /// <summary>Opening balances for an entity that has not declared its wave are refused by name —
     /// this is what makes the cutover per legal entity rather than per tenant.</summary>
     [Fact]
