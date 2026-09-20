@@ -1810,10 +1810,20 @@ public class PayrollController : ControllerBase
             .ToDictionaryAsync(p => p.EmployeeId, cancellationToken);
 
         // C4: filter overtime impacts to the current pay period only (via WorkDate on the originating request)
-        var periodOvertimeRequestIds = await _db.OvertimeRequests.AsNoTracking()
+        // S1/A5 — the WorkDate is now KEPT, not discarded. It is what lets the run tell a rest-day or
+        // public-holiday overtime hour from an ordinary one, which is the distinction that made
+        // ot.restday_multiplier and ot.holiday_multiplier dead rules: the seeder wrote them and nothing
+        // in the payroll run could ever have read them, because the run did not know the day type.
+        var periodOvertimeRequests = await _db.OvertimeRequests.AsNoTracking()
             .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployees && r.CompanyId == null)) && r.WorkDate >= periodStart && r.WorkDate <= periodEnd)
-            .Select(r => r.Id)
+            .Select(r => new { r.Id, r.WorkDate })
             .ToListAsync(cancellationToken);
+        var periodOvertimeRequestIds = periodOvertimeRequests.Select(r => r.Id).ToList();
+        var overtimeWorkDates = periodOvertimeRequests.ToDictionary(r => r.Id, r => r.WorkDate);
+        var periodPublicHolidays = (await _db.PublicHolidays.AsNoTracking()
+            .Where(h => h.TenantId == tenantId && !h.IsOptional && h.Date >= periodStart && h.Date <= periodEnd)
+            .Select(h => h.Date)
+            .ToListAsync(cancellationToken)).ToHashSet();
         var overtimeImpacts = await _db.OvertimePayrollImpacts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
             .ToListAsync(cancellationToken);
@@ -1833,6 +1843,32 @@ public class PayrollController : ControllerBase
         // [FLAG-COMPLIANCE-KSA: weekend/holiday OT multipliers may differ — Art.107 baseline only]
         var otMultiplier = await _ruleReader.GetDecimalAsync(
             packCc, packJur, "ot.standard_multiplier", eff, tenantId, cancellationToken) ?? 1.5m;
+        // ── S1/A5: the seeded rest-day and public-holiday rates, finally READ ─────────────────────
+        // StatutoryRuleSeeder has written ot.restday_multiplier and ot.holiday_multiplier at 2.0 since
+        // the pack was built. A repo-wide grep found no reader. The payroll run applied
+        // ot.standard_multiplier to every overtime hour regardless of the day it was worked, so a
+        // Saudi employee working Eid was paid the ordinary-day rate unless somebody happened to have
+        // stamped a higher ApprovedMultiplier on the request at approval time.
+        var otRestDayMultiplier = await _ruleReader.GetDecimalAsync(
+            packCc, packJur, "ot.restday_multiplier", eff, tenantId, cancellationToken) ?? otMultiplier;
+        var otHolidayMultiplier = await _ruleReader.GetDecimalAsync(
+            packCc, packJur, "ot.holiday_multiplier", eff, tenantId, cancellationToken) ?? otMultiplier;
+        // ── S1/A5: the OT hourly BASE ────────────────────────────────────────────────────────────
+        // KSA Labour Law Art. 107: the worker is paid for an overtime hour "an additional amount equal
+        // to the hourly wage plus 50% of his basic wage". The base is the WAGE (Art. 2: basic plus all
+        // due increments); the 50% uplift is on BASIC. The run computed basic/240 × 1.5 for everyone —
+        // on a 60/40 package that is about 30% short on every KSA overtime hour.
+        //
+        // The general form below covers all three jurisdictions with one expression:
+        //     hour pay = baseHourly + basicHourly × (multiplier − 1)
+        //   KSA  base = "wage":  wageHourly + 0.5 × basicHourly           (Art. 107)
+        //   UAE  base = "basic": basicHourly × 1.25                        (basic + 25%)
+        //   QAT  base = "basic": basicHourly × 1.25                        (Art. 74, +25% minimum)
+        // With base = "basic" the expression collapses to basicHourly × multiplier, i.e. EXACTLY the
+        // pre-S1 arithmetic — so nothing moves for UAE or Qatar.
+        var otHourlyBase = (await _ruleReader.GetStringAsync(
+            packCc, packJur, "ot.hourly_base", eff, tenantId, cancellationToken))?.Trim().ToLowerInvariant();
+        var otBaseIsFullWage = OvertimeStatutoryCalculator.BaseIsFullWage(otHourlyBase);
         // Standard monthly hours for hourly-rate divisor (overrides policy value if configured).
         var otMonthlyHoursRule = await _ruleReader.GetDecimalAsync(
             packCc, packJur, "ot.standard_monthly_hours", eff, tenantId, cancellationToken);
@@ -2198,12 +2234,45 @@ public class PayrollController : ControllerBase
             //  Whether OT pay is included in the GOSI covered wage requires sign-off before filing.]
             var empOtImpacts = overtimeImpacts.Where(x => x.EmployeeId == e.Id).ToList();
             var otHours = empOtImpacts.Sum(x => x.Hours);
-            // Use per-impact approved multiplier if set (> 0); fall back to statutory standard multiplier.
-            // This supports holiday/rest-day OT at 2× per KSA Art.107 where ApprovedMultiplier = 2.0.
-            var overtimePay = empOtImpacts.Count > 0 && hourlyRate > 0m
-                ? Math.Round(empOtImpacts.Sum(x =>
-                    x.Hours * hourlyRate * (x.ApprovedMultiplier > 0m ? x.ApprovedMultiplier : otMultiplier)), 2)
+            // ── S1/A5: Art. 107 base + the day-category statutory FLOOR ───────────────────────────
+            // `hourlyRate` above is basic ÷ standardMonthlyHours and stays the uplift base, because
+            // Art. 107's 50% is expressly "of his basic wage". What changes is the FIRST term: for a
+            // jurisdiction whose ot.hourly_base is "wage" it is the full-wage hourly rate, not basic.
+            // The full monthly wage is used for the same reason the basic hourly rate is: a joiner's
+            // overtime must not be paid at a fraction of their real hourly rate.
+            var fullWageForOt = fullBasic + fullHousing + fullTransport + fullOther;
+            var otBaseHourly = standardMonthlyHours > 0
+                ? (otBaseIsFullWage ? fullWageForOt : fullBasic) / standardMonthlyHours
                 : 0m;
+            // A per-request ApprovedMultiplier is honoured only where it is at or above the statutory
+            // floor for the day actually worked. It was previously preferred unconditionally whenever
+            // non-zero, which made it a back door around the statutory rate: an approved request on a
+            // policy configured at 1.0 paid 1.0, with no floor check anywhere in the system.
+            var overtimePay = empOtImpacts.Count > 0 && otBaseHourly > 0m
+                ? Math.Round(empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.HourPay(
+                    otBaseHourly, hourlyRate, OtEffectiveMultiplier(x))), 2)
+                : 0m;
+
+            // The payslip line must describe the arithmetic that actually produced the money. The
+            // weighted-average effective multiplier collapses to otMultiplier exactly when every
+            // impact sits on the ordinary-day floor with no approved override, so an unaffected run's
+            // label is byte-identical; it diverges only where the rate genuinely did.
+            var otEffectiveMultiplier = otHours > 0m
+                ? empOtImpacts.Sum(x => x.Hours * OtEffectiveMultiplier(x)) / otHours
+                : otMultiplier;
+
+            decimal OtEffectiveMultiplier(OvertimePayrollImpact impact)
+            {
+                var floor = otMultiplier;
+                if (overtimeWorkDates.TryGetValue(impact.OvertimeRequestId, out var workDate))
+                    floor = OvertimeStatutoryCalculator.StatutoryFloor(
+                        OvertimeStatutoryCalculator.DayCategory(
+                            workDate,
+                            periodPublicHolidays.Contains(workDate),
+                            workWeekConfig.IsWeekend(workDate.DayOfWeek)),
+                        otMultiplier, otRestDayMultiplier, otHolidayMultiplier);
+                return OvertimeStatutoryCalculator.EffectiveMultiplier(impact.ApprovedMultiplier, floor);
+            }
             // ── F2: CONFIGURED-VALUE PAY COMPONENTS — THE ENGINE IS THE SOLE SOURCE OF THEIR AMOUNTS ─────
             // Every other payslip line re-emits an amount computed HERE (structure columns, tax, attendance,
             // leave, loans, bonus, adjustments, the country pack), so it is already in the aggregates below.
@@ -2611,7 +2680,7 @@ public class PayrollController : ControllerBase
             {
                 var otRateDisplay = Math.Round(hourlyRate * otMultiplier, 2);
                 AddEarning(tenantId, id, e.Id, "OVERTIME",
-                    $"Overtime ({otHours:N2} h × {Math.Round(hourlyRate, 2):N2}/h × {otMultiplier:N2})",
+                    $"Overtime ({otHours:N2} h × {Math.Round(otBaseHourly, 2):N2}/h × {otEffectiveMultiplier:N2})",
                     overtimePay, "Overtime");
             }
             if (fixedDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "FIXED_DEDUCTION",
@@ -2649,7 +2718,7 @@ public class PayrollController : ControllerBase
                 {
                     Basic = basic, Housing = housing, Transport = transport,
                     OtherAllowances = otherAllowances, FixedDeduction = fixedDeduction, Gross = gross,
-                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = hourlyRate, OtMultiplier = otMultiplier,
+                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = otBaseHourly, OtMultiplier = otEffectiveMultiplier,
                     TaxDeduction = taxDeduction, IncomeTaxRate = incomeTaxRate,
                     AttendanceDeduction = attendanceDeduction,
                     LopDeduction = lopDeduction, LopDays = lopDays, LopDayRate = lopDayRate,

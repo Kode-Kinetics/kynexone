@@ -115,6 +115,29 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "ot.restday_multiplier", "2.0", "decimal", eff07,
             "FLAG-COMPLIANCE: Rest-day (weekend) OT 2× per KSA Labour Law Art.107 — VERIFY before filing"));
+        // S1/A5 — the OT hourly BASE. Art.107: "an additional amount equal to the hourly WAGE plus 50%
+        // of his BASIC wage". The base is the wage (Art.2: basic + all due increments); only the 50%
+        // uplift is measured on basic. The payroll run computes
+        //     hour pay = baseHourly + basicHourly × (multiplier − 1)
+        // so "wage" + 1.5 reproduces Art.107 exactly, and "basic" collapses to the pre-S1 arithmetic.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ot.hourly_base", "wage", "string", eff07,
+            "[CERT] KSA Art.107 overtime is the hourly WAGE plus 50% of BASIC. Values: wage | basic. " +
+            "Set to 'basic' only on a written opinion — computing KSA overtime on basic alone under-pays " +
+            "every overtime hour by roughly 30% on a typical 60/40 package."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "ot.hourly_base", "basic", "string", eff22,
+            "[CONF] UAE overtime is basic + 25% (and +50% for 22:00–04:00 work, which is not yet modelled). " +
+            "Basic-only is correct here and is deliberately NOT the KSA rule."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "ot.standard_multiplier", "1.25", "decimal", eff22,
+            "[CONF] UAE ordinary overtime: basic + 25%. VERIFY the 22:00–04:00 night rate (+50%) before filing."));
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "ot.hourly_base", "basic", "string", eff22,
+            "[CONF] Qatar Art.74 overtime is basic + not less than 25% (+50% for night work, not yet modelled)."));
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "ot.standard_multiplier", "1.25", "decimal", eff22,
+            "[CONF] Qatar Art.74 ordinary overtime: basic + not less than 25%. This is a FLOOR."));
 
         // ── S1/A1 + A8 — KSA EOSB wage base and service period ────────────────
         // Art. 84 M/51 awards on the LAST WAGE; Art. 2 defines wage as "the basic wage plus all other

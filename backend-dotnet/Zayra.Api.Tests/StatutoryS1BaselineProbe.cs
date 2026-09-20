@@ -70,4 +70,41 @@ public class StatutoryS1BaselineProbe
 
         Assert.DoesNotContain(result.Lines, l => l.Code == "GOSI-OH-ER");
     }
+
+    [Fact]
+    public void A5_KsaOvertimeBaseIsTheFullWage_AndTheDayRatesAreReadable()
+    {
+        // KSA Art. 107 pays the hourly WAGE plus 50% of BASIC. The product had no way to express
+        // that at all: there was no ot.hourly_base rule, so basic was the only possible base.
+        var build = typeof(Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder).GetMethod(
+            "BuildRules", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var rules = (List<Zayra.Api.Models.StatutoryRule>)build.Invoke(null, null)!;
+
+        var ksaBase = rules.SingleOrDefault(
+            r => r.CountryCode == "SAU" && r.Jurisdiction == "KSA-mainland" && r.RuleKey == "ot.hourly_base");
+        Assert.NotNull(ksaBase);
+        Assert.Equal("wage", ksaBase!.RuleValue);
+    }
+
+    [Fact]
+    public void A5_ThePayrollRunReadsTheSeededRestDayAndHolidayRates()
+    {
+        // StatutoryRuleSeeder has written ot.restday_multiplier and ot.holiday_multiplier at 2.0
+        // since the pack was built, and a repo-wide grep found no reader. A rule the seeder writes
+        // and the money path never consults looks like compliance and is not.
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        string? controller = null;
+        for (var i = 0; i < 6 && controller is null; i++)
+        {
+            if (dir?.Parent is null) break;
+            dir = dir.Parent;
+            var candidate = Path.Combine(dir.FullName, "Zayra.Api", "Controllers", "PayrollController.cs");
+            if (File.Exists(candidate)) controller = candidate;
+        }
+        if (controller is null) return;
+        var source = File.ReadAllText(controller);
+
+        Assert.Contains("ot.restday_multiplier", source, StringComparison.Ordinal);
+        Assert.Contains("ot.holiday_multiplier", source, StringComparison.Ordinal);
+    }
 }
