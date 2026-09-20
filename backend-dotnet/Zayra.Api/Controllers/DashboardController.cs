@@ -25,6 +25,16 @@ public class DashboardController : ControllerBase
 
     private static readonly string[] QiwaRequiredDocs = ["Iqama", "Work Permit", "National ID", "Passport"];
 
+    /// <summary>
+    /// Lower-cased mirror of <see cref="QiwaRequiredDocs"/>, DERIVED from it so the two cannot
+    /// drift when a required document type is added. The coverage check runs in SQL, and
+    /// PostgreSQL string comparison is case-sensitive by default, so it compares
+    /// lower(document_type) to preserve the OrdinalIgnoreCase semantics the previous in-memory
+    /// HashSet had.
+    /// </summary>
+    private static readonly string[] QiwaRequiredDocsLower =
+        QiwaRequiredDocs.Select(d => d.ToLowerInvariant()).ToArray();
+
     public DashboardController(ZayraDbContext db, IDistributedCache cache, IDataScopeService scopeService)
     {
         _db = db;
@@ -432,21 +442,20 @@ public class DashboardController : ControllerBase
 
         var empQ = _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted && x.Status == "Active");
         if (!isUnrestricted) empQ = empQ.Where(x => scopeIds.Contains(x.Id));
-        var activeEmployeeIds = await empQ.Select(x => x.Id).ToListAsync(ct);
-
-        int missingDocuments = 0;
-        if (activeEmployeeIds.Count > 0)
-        {
-            var uploadedDocs = await _db.EmployeeDocuments
-                .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.EmployeeId != null && activeEmployeeIds.Contains(x.EmployeeId!.Value))
-                .Select(x => new { x.EmployeeId, x.DocumentType })
-                .ToListAsync(ct);
-            var byEmployee = uploadedDocs.GroupBy(x => x.EmployeeId!.Value)
-                .ToDictionary(g => g.Key, g => g.Select(d => d.DocumentType).ToHashSet(StringComparer.OrdinalIgnoreCase));
-            missingDocuments = activeEmployeeIds.Count(id =>
-                !byEmployee.TryGetValue(id, out var docs) ||
-                QiwaRequiredDocs.Any(req => !docs.Contains(req)));
-        }
+        // Required-document coverage is aggregated in SQL rather than in memory. The previous
+        // implementation pulled EVERY active employee id and EVERY one of their document rows
+        // across the wire on each request -- and this method is deliberately uncached, so a
+        // tenant with 5k employees paid an O(employees x documents) transfer on every dashboard
+        // load. The correlated COUNT(DISTINCT ...) below returns a single integer instead.
+        var missingDocuments = await empQ
+            .CountAsync(e => _db.EmployeeDocuments
+                .Where(d => d.TenantId == tenantId
+                    && !d.IsDeleted
+                    && d.EmployeeId == e.Id
+                    && QiwaRequiredDocsLower.Contains(d.DocumentType.ToLower()))
+                .Select(d => d.DocumentType.ToLower())
+                .Distinct()
+                .Count() < QiwaRequiredDocsLower.Length, ct);
 
         return new DashboardKpisDto(
             counters?.PendingLeave ?? 0,
