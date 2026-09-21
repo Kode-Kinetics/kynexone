@@ -3,7 +3,7 @@
  * verify-login.mjs — reusable verification harness for the KynexOne login page.
  *
  * Run from the frontend dir so playwright/sharp resolve:
- *   cd /Users/zackkhan/Downloads/KynexOne/frontend && node /tmp/verify-login.mjs [url]
+ *   cd /Users/zackkhan/Downloads/KynexOne/frontend && node scripts/verify-login.mjs [url]
  *
  * Env knobs:
  *   VERIFY_BASE=/path/to/frontend        where to resolve playwright + sharp from
@@ -11,13 +11,14 @@
  *   VERIFY_ALLOW_VSCROLL=1               treat vertical scroll as OK (still reported)
  *   VERIFY_RAF_MS=8000  VERIFY_RM_MS=5000
  *   VERIFY_HEADED=1                      watch it run
- *   VERIFY_ARTIFACTS=/tmp/verify-login-out   where PNGs are written
+ *   VERIFY_ARTIFACTS=<dir>  where PNGs go (default: a fresh mkdtemp dir, printed on start)
  */
 
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 // ---------------------------------------------------------------- module load
 const BASE = process.env.VERIFY_BASE || process.cwd();
@@ -41,8 +42,12 @@ const sharp = sharpMod.default || sharpMod;
 
 // ---------------------------------------------------------------------- setup
 const URL_ = process.argv[2] || process.env.VERIFY_URL || 'http://localhost:3111/login';
-const OUT = process.env.VERIFY_ARTIFACTS || '/tmp/verify-login-out';
-fs.mkdirSync(OUT, { recursive: true });
+// A fixed path under the OS temp dir is world-predictable: on a shared machine
+// another user can pre-create it as a symlink and every screenshot below is
+// written through it. mkdtemp creates a uniquely-named directory with 0700.
+const OUT = process.env.VERIFY_ARTIFACTS
+  ? (fs.mkdirSync(process.env.VERIFY_ARTIFACTS, { recursive: true }), process.env.VERIFY_ARTIFACTS)
+  : fs.mkdtempSync(path.join(os.tmpdir(), 'verify-login-'));
 const HEADED = process.env.VERIFY_HEADED === '1';
 const RAF_MS = Number(process.env.VERIFY_RAF_MS || 8000);
 const RM_MS = Number(process.env.VERIFY_RM_MS || 5000);
