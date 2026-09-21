@@ -1,9 +1,21 @@
 using Microsoft.EntityFrameworkCore.Migrations;
+using Zayra.Api.Data;
 
 #nullable disable
 
 namespace Zayra.Api.Migrations
 {
+    // See 20260713061000 for why these attributes are load-bearing. Written by hand in 15148d0
+    // (2026-07-13) without them; invisible to EF for 70 days.
+    //
+    // GENUINELY UNAPPLIED IN PRODUCTION (verified 2026-09-21: absent from __EFMigrationsHistory).
+    // Restoring visibility means the next `--migrate` runs it for real. That is intended and safe:
+    // every statement is guarded — CREATE EXTENSION/INDEX IF NOT EXISTS, ADD COLUMN IF NOT EXISTS,
+    // NOT EXISTS on the workflow inserts, and `approval_request_id IS NULL` on the backfill itself —
+    // so it is idempotent and only touches rows it has not already fixed. At time of writing that is
+    // exactly one row: 1 of 9 PendingApproval employee_change_requests has a NULL approval_request_id.
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContextAttribute(typeof(ZayraDbContext))]
+    [Migration("20260713062000_BackfillEmployeeChangeApprovalRequests")]
     public partial class BackfillEmployeeChangeApprovalRequests : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

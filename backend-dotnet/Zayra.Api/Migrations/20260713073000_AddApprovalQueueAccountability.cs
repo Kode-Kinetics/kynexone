@@ -1,9 +1,21 @@
 using Microsoft.EntityFrameworkCore.Migrations;
+using Zayra.Api.Data;
 
 #nullable disable
 
 namespace Zayra.Api.Migrations
 {
+    // See 20260713061000 for why these attributes are load-bearing. Written by hand in 15148d0
+    // (2026-07-13) without them; invisible to EF for 70 days.
+    //
+    // GENUINELY UNAPPLIED IN PRODUCTION (verified 2026-09-21: absent from __EFMigrationsHistory),
+    // but its columns and indexes are already there — 20260816013100_RepairMigrationModelParity
+    // created them independently. So on the next `--migrate` the DDL half is all IF NOT EXISTS and
+    // no-ops, and only the routing UPDATE does work: it re-derives current_approver_* / due_at_utc
+    // for Pending EmployeeChangeRequest approvals from current employee data. Re-derivation is
+    // idempotent (COALESCE on the timestamps, CASE on priority), so a second run is a no-op.
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContextAttribute(typeof(ZayraDbContext))]
+    [Migration("20260713073000_AddApprovalQueueAccountability")]
     public partial class AddApprovalQueueAccountability : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

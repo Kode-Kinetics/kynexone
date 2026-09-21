@@ -54,6 +54,23 @@ jobs:
           name: backend-test-results
           path: backend-dotnet/Zayra.Api.Tests/TestResults/test-results.trx
 
+  # ── Deploy preflight: the env-var gate's own tests ────────────────────────────
+  # Runs on every push and PR, needs no secret and no network. It proves the gate still CATCHES
+  # the historical input — render.yaml's `sync: false` list diffed against the real key list the
+  # Render service had during the 2026-09-21 outage, with Proxy__KnownNetworks absent. The live
+  # comparison happens in migrate-backend, where the credential lives; this is the half that
+  # guarantees the check still works before anyone relies on it.
+  #
+  # A gate that has never been seen to fail is not a gate. This repo has already shipped a lint
+  # that passed vacuously and a health check that always returned zero.
+  deploy-preflight:
+    name: Deploy Preflight (required env vars — gate self-test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self-test the required-env-var gate
+        run: ./scripts/check_render_env.py --self-test
+
   # ── Frontend: typecheck ───────────────────────────────────────────────────────
   frontend-typecheck:
     name: Frontend Typecheck
@@ -325,6 +342,17 @@ jobs:
       - name: Build API
         run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Debug
 
+      # This gate asks the FILESYSTEM what the migrations are, then asks EF, and fails if they
+      # disagree. Every other migration check in this pipeline — the drift gate below, the fresh
+      # deploy gate, migrate-backend, the Render pre-deploy `--migrate`, /health/ready — is
+      # dotnet-ef-based, so all of them share EF's blind spot and none of them can catch a
+      # migration EF cannot see. Three such files (2026-07-13, commit 15148d0) were hand-written
+      # without a [Migration] attribute and stayed invisible for 70 days: 72 files on disk, 69
+      # visible to EF, and `dotnet ef database update` exited 0 having silently skipped them.
+      # It runs FIRST because a discrepancy here invalidates every gate after it.
+      - name: Gate — every migration on disk is visible to EF
+        run: ./scripts/check-migration-visibility.sh backend-dotnet/Zayra.Api/Zayra.Api.csproj
+
       - name: Gate — no EF model/migration drift
         working-directory: backend-dotnet/Zayra.Api
         env:
@@ -558,7 +586,7 @@ jobs:
     # chrome-security-gate added: it is the lane written to be un-fakeable (retries 0, forbidOnly,
     # positive controls), while browser-pilot is CI-safe by design and can go green against a dead
     # backend. Gating the deploy on the fakeable lane and not the strict one was backwards.
-    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate]
+    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate, deploy-preflight]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     # WAVE 1 A4 — this job writes to the PRODUCTION DATABASE. It now runs only inside the protected
     # `production` GitHub environment, which requires a named reviewer's approval and is restricted to
@@ -585,6 +613,26 @@ jobs:
             exit 1
           fi
           echo "This run is main HEAD ($head)."
+
+      # Verify the target service actually HAS every key render.yaml marks `sync: false`, before
+      # migrating or deploying. `sync: false` means "a human set this in the dashboard" — Render
+      # does not enforce it and, until this step existed, nothing did. Proxy__KnownNetworks was
+      # declared required, was never set, and the app's proxy guard then killed the pre-deploy
+      # migration job ~10s in, twice, before it reached the database: the backend could neither
+      # ship nor roll back over one unset dashboard field.
+      #
+      # FAILS CLOSED. No RENDER_API_KEY, an API error, or an empty key list all block the deploy
+      # rather than skipping the check — a gate that turns itself off when its credential is
+      # missing is a gate that is off, and nobody notices which.
+      #
+      # REQUIRES: a RENDER_API_KEY secret on the `production` GitHub environment (a Render API key
+      # with read access to srv-d8slkb77f7vs73d2k92g). Putting it on the environment rather than
+      # the repository means the approval gate protects the credential too — which is NOT true of
+      # PROD_DATABASE_URL or RENDER_DEPLOY_HOOK_URL today; both are repository-wide.
+      - name: Gate — required env vars are set on the Render service
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: ./scripts/check_render_env.py --service-id srv-d8slkb77f7vs73d2k92g
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -615,7 +663,7 @@ jobs:
     # chrome-security-gate added: it is the lane written to be un-fakeable (retries 0, forbidOnly,
     # positive controls), while browser-pilot is CI-safe by design and can go green against a dead
     # backend. Gating the deploy on the fakeable lane and not the strict one was backwards.
-    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate]
+    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate, deploy-preflight]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: read
