@@ -75,8 +75,48 @@ public class EmployeeLeaveBalance : ITenantOwned
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 
+    /// <summary>
+    /// The days GRANTED to this employee for this leave year — the single "you have been given this
+    /// much" term that <see cref="Available"/> is built on.
+    ///
+    /// <para><b><see cref="Entitled"/> and <see cref="Accrued"/> are two representations of the SAME
+    /// grant, not two grants.</b> A front-loaded policy (<c>LeavePolicy.AccrualMethod == "Yearly"</c>)
+    /// puts the whole year's allocation in <see cref="Entitled"/> and leaves <see cref="Accrued"/> at
+    /// zero. A monthly-accrual policy grows <see cref="Accrued"/> month by month
+    /// (<c>LeaveService.AccrueMonthlyAsync</c>, the only writer of it in production) and leaves
+    /// <see cref="Entitled"/> at zero. <see cref="Available"/> used to ADD them, so any row carrying
+    /// both — which is every demo/pilot tenant and every CSV-imported tenant, because
+    /// <c>MigrationImportController</c>'s legacy-balance template makes both columns mandatory —
+    /// counted the same entitlement twice. Evostel's annual-leave row (Entitled 30, Accrued 17.50,
+    /// Used 10) showed 37.50 days available against a 30-day entitlement.</para>
+    ///
+    /// <para><b>Why MAX and not one field or the other.</b> Picking a single field would be a silent
+    /// data migration: a tenant whose figure lives in <see cref="Entitled"/> would be zeroed by an
+    /// accrued-only reading, and vice versa. MAX is a no-op for every row that populates exactly one of
+    /// them — it changes nothing for the coherent shapes — and for a row carrying both it recognises the
+    /// larger of the two representations, which is the employee-favourable non-double-counting answer
+    /// (it is by construction &gt;= either field alone). It also needs no migration and no backfill of
+    /// live data.</para>
+    ///
+    /// <para>[FLAG-COMPLIANCE-KSA] Art. 109 sets the QUANTUM of annual leave (21 days, 30 from five
+    /// years of continuous service) and the tiering is applied by <c>KsaAnnualLeaveScale</c> into
+    /// <see cref="Accrued"/> at 21/12 = 1.75 or 30/12 = 2.5 days a month. Art. 109 does NOT say whether
+    /// that quantum is front-loaded at the start of the leave year or earned month by month — that is a
+    /// policy choice, and it is the one <c>LeavePolicy.AccrualMethod</c> records. On a row that carries
+    /// both fields MAX front-loads, so mid-year the tiering is not visible in the balance until
+    /// <see cref="Accrued"/> overtakes <see cref="Entitled"/>. See the counsel question in
+    /// scratchpad/leave-attendance-figures.md: whether an accrual-method tenant's balance should show
+    /// the earned-to-date figure instead is a product decision, not an arithmetic one.</para>
+    /// </summary>
+    public decimal Granted => Math.Max(Entitled, Accrued);
+
+    /// <summary>
+    /// THE definition of a leave balance. Every screen, report, sufficiency check and settlement must
+    /// read this property rather than re-spell the expression — the re-spelt copies had already drifted
+    /// into four different answers for the same employee.
+    /// </summary>
     public decimal Available =>
-        Entitled + Accrued + CarriedForward + ManualAdjustment - Used - Pending - Encashed - Expired;
+        Granted + CarriedForward + ManualAdjustment - Used - Pending - Encashed - Expired;
 }
 
 public class LeaveBalanceTransaction : ITenantOwned, ICompanyScopedOperational

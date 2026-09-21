@@ -68,6 +68,14 @@ export interface EmployeeLeaveBalance {
   expired: number;
   manualAdjustment: number;
   negativeAllowed: boolean;
+  /**
+   * The days granted for the year: max(entitled, accrued), NOT entitled + accrued. The two columns
+   * are alternative representations of one grant — a front-loaded policy fills `entitled`, a monthly
+   * accrual policy grows `accrued` — and rows carrying both used to have them summed.
+   * Optional because an older API build may not serialise it.
+   */
+  granted?: number;
+  /** THE balance. Always read this rather than recomputing it from the components. */
   available: number;
   createdAtUtc: string;
   updatedAtUtc: string | null;

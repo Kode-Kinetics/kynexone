@@ -2000,6 +2000,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Expired).HasPrecision(7,2);
             entity.Property(x => x.ManualAdjustment).HasPrecision(7,2);
             entity.Ignore(x => x.Available);
+            // Computed from Entitled/Accrued, like Available. Ignored for the same reason: it is a
+            // reading of the stored columns, not a column, so there is nothing to migrate.
+            entity.Ignore(x => x.Granted);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.LeaveTypeId, x.Year }).IsUnique();
         });
         modelBuilder.Entity<LeaveBalanceTransaction>(entity => {

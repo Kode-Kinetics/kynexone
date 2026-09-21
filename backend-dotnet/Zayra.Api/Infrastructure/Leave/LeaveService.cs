@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
+using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.WorkWeek;
@@ -797,8 +798,15 @@ public class LeaveService : ILeaveService
             await ApplyKsaSickLeaveScaleAsync(tenantId, request, leaveType, ct);
         }
 
+        // An approved leave day is not an absence. Staged BEFORE the audit line so the audit can say
+        // what it did. See ReconcileAttendanceForApprovedLeaveAsync.
+        var attendanceNote = await ReconcileAttendanceForApprovedLeaveAsync(tenantId, request, ct);
+
         await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "Approved",
-            previousStatus, "Approved", notes ?? string.Empty, approverName, ct);
+            previousStatus, "Approved",
+            string.IsNullOrEmpty(attendanceNote) ? notes ?? string.Empty
+                : $"{notes}{(string.IsNullOrWhiteSpace(notes) ? "" : " | ")}{attendanceNote}",
+            approverName, ct);
 
         // Notify the employee in their self-service feed (EmployeeNotification was a dead
         // table — read by ESS but never written, so employees never saw any updates).
@@ -811,6 +819,120 @@ public class LeaveService : ILeaveService
 
         await _db.SaveChangesAsync(ct);
         return request;
+    }
+
+    /// <summary>
+    /// AN APPROVED LEAVE DAY IS NOT AN ABSENCE. Clears the loss-of-pay charge standing against any day
+    /// inside a newly approved leave request that attendance had already marked <c>Absent</c>.
+    ///
+    /// <para><b>The defect.</b> <c>AttendanceService.ProcessEmployeeDay</c> reads approved leave ONCE,
+    /// at the moment the day is processed, and writes <c>Status = "Absent"</c> plus an
+    /// <c>AttendancePayrollImpact{ImpactType = "Absence deduction", Minutes = 480}</c> when it finds
+    /// none. Approval is the other order of events and nothing reconciled it: leave approval wrote the
+    /// balance, the leave payroll impact and the notification, and never looked at attendance. The
+    /// stale impact row stays <c>PendingPayroll</c>, the next run picks it up
+    /// (<c>PayrollController</c>'s <c>Status != "Processed"</c> load) and docks a day's basic as LOP
+    /// for a day the employer had approved off. There is no scheduled attendance worker, so nothing
+    /// self-heals it; a manual reprocess is the only cure and is refused once the period is locked.</para>
+    ///
+    /// <para>Backdated leave is the ordinary case, not an edge: <c>SubmitRequestCoreAsync</c> has no
+    /// past-date guard, and sick leave — the archetypal "tell them afterwards" type — is exactly what
+    /// arrives late. A future-dated request hits it too whenever attendance for the period is
+    /// processed before the last approval step lands.</para>
+    ///
+    /// <para><b>Why this is written here rather than delegated to <c>IAttendanceService</c>.</b> A full
+    /// reprocess would be the wrong instrument three times over. <c>ValidateProcessRangeAsync</c>
+    /// THROWS on a payroll-locked period, which would make a lock refuse the leave approval itself —
+    /// a correctness fix must not become a new way to fail. <c>UpsertImpacts</c> deletes every impact
+    /// for the day regardless of <c>Status</c>, so it would silently un-consume rows a closed payroll
+    /// run had already processed and whose reversal depends on the <c>PayrollRunConsumption</c>
+    /// witnesses. And it would re-derive punches, shifts and policies that approving leave did not
+    /// change. This does one thing: the transition <c>Absent → On leave</c> that the approval itself
+    /// causes, and the removal of the charge that transition invalidates.</para>
+    ///
+    /// <para><b>What it deliberately will not do.</b> A day whose record is <c>IsPayrollLocked</c>, or
+    /// whose absence impact has already been marked <c>Processed</c> by a run, is LEFT ALONE and
+    /// reported in the returned note. Money already paid out on a closed period is unwound through the
+    /// void/arrears path with its audit trail, never by deleting the evidence underneath it.</para>
+    ///
+    /// <para>Idempotent under <c>NpgsqlRetryingExecutionStrategy</c>: it asserts a target state
+    /// (status is "On leave", the pending absence charge is gone) rather than applying a delta, so a
+    /// retried body reaches the same place. It stages only — the caller's single
+    /// <c>SaveChangesAsync</c> commits it atomically with the approval.</para>
+    /// </summary>
+    /// <returns>A human-readable note for the audit line, or empty if there was nothing to do.</returns>
+    private async Task<string> ReconcileAttendanceForApprovedLeaveAsync(
+        Guid tenantId, LeaveRequest request, CancellationToken ct)
+    {
+        var days = await _db.AttendanceDailyRecords
+            .Where(d => d.TenantId == tenantId && d.EmployeeId == request.EmployeeId
+                     && d.WorkDate >= request.StartDate && d.WorkDate <= request.EndDate
+                     && !d.IsDeleted && d.Status == AttendanceStatuses.Absent)
+            .ToListAsync(ct);
+        if (days.Count == 0) return string.Empty;
+
+        var dates = days.Select(d => d.WorkDate).ToList();
+        var impacts = await _db.AttendancePayrollImpacts
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId
+                     && dates.Contains(x.WorkDate)
+                     && x.ImpactType == AttendanceImpactTypes.AbsenceDeduction)
+            .ToListAsync(ct);
+        var legacy = await _db.AttendanceRecords
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId
+                     && dates.Contains(x.WorkDate))
+            .ToListAsync(ct);
+
+        var cleared = 0;
+        var lockedDates = new List<DateOnly>();
+        var settledDates = new List<DateOnly>();
+
+        foreach (var day in days)
+        {
+            var charge = impacts.FirstOrDefault(x => x.WorkDate == day.WorkDate);
+
+            if (day.IsPayrollLocked)
+            {
+                lockedDates.Add(day.WorkDate);
+                continue;
+            }
+            if (charge is not null && charge.Status == "Processed")
+            {
+                settledDates.Add(day.WorkDate);
+                continue;
+            }
+
+            // Mirror exactly what ProcessEmployeeDay writes for an approved-leave day, so a later
+            // reprocess of the same day is a no-op instead of a second, different answer.
+            day.Status = AttendanceStatuses.OnLeave;
+            day.MissingPunch = false;
+            day.LateMinutes = day.EarlyExitMinutes = day.UndertimeMinutes = 0;
+            day.ProcessedAtUtc = DateTime.UtcNow;
+            day.UpdatedAtUtc = DateTime.UtcNow;
+
+            if (charge is not null) _db.AttendancePayrollImpacts.Remove(charge);
+
+            // The legacy attendance_records projection is what the dashboard still reads; leaving it
+            // saying "Absent" would keep the day counted against the employee on that screen.
+            var legacyRow = legacy.FirstOrDefault(x => x.WorkDate == day.WorkDate);
+            if (legacyRow is not null) legacyRow.Status = AttendanceStatuses.OnLeave;
+
+            cleared++;
+        }
+
+        var parts = new List<string>();
+        if (cleared > 0)
+            parts.Add($"Attendance reconciled: {cleared} day(s) changed from Absent to On leave and their " +
+                      "pending absence deduction removed.");
+        if (settledDates.Count > 0)
+            parts.Add($"[FLAG-PAYROLL] {settledDates.Count} day(s) ({string.Join(", ", settledDates.Select(d => d.ToString("yyyy-MM-dd")))}) " +
+                      "were already charged as loss of pay by a processed payroll run and were NOT altered. " +
+                      "Refund them through a payroll adjustment or a void/re-run; the employee has been " +
+                      "under-paid for those days.");
+        if (lockedDates.Count > 0)
+            parts.Add($"[FLAG-PAYROLL] {lockedDates.Count} day(s) ({string.Join(", ", lockedDates.Select(d => d.ToString("yyyy-MM-dd")))}) " +
+                      "fall in a payroll-locked period and were NOT altered. Unlock the period or raise an " +
+                      "adjustment; the absence deduction for those days still stands.");
+        return string.Join(" ", parts);
     }
 
     /// <summary>
