@@ -246,6 +246,110 @@ test.describe('Login contract (must hold before AND after the rebrand)', () => {
     await expect(page.locator(WORKSPACE)).toBeVisible();
   });
 
+  /**
+   * The sign-in card must come to rest in BOUNDED WALL TIME after the pointer moves.
+   *
+   * The aurora scene applies a parallax to `.lx-pane` from inside its rAF loop, easing the
+   * pointer signal toward its target. That ease used to close a fixed fraction per FRAME, so
+   * it took a fixed ~68 frames to settle and its DURATION was whatever the machine's frame
+   * interval happened to be. The scene is fill-rate-bound WebGL: with no GPU — CI's
+   * SwiftShader, a VM, a Chrome install with the GPU blocklisted, which is the hardware a
+   * customer is most likely to be on — it draws at 4-10fps, and 68 frames became 7-25
+   * SECONDS of the credential card sliding under the cursor.
+   *
+   * That is what timed out this file and e2e/tenant-auth.spec.ts in the Browser Pilot lane:
+   * a click cannot be delivered to a control that is still moving. It is a customer-facing
+   * defect first and a test failure second.
+   *
+   * The budget is deliberately expressed against the MEASURED frame interval rather than as
+   * a flat number of milliseconds, because that is the difference the bug is made of:
+   *
+   *   - a wall-time-bounded ease costs ~1.6s plus a few frames of granularity, at ANY rate;
+   *   - a frame-bounded one costs ~68 frames, so its cost IS the frame interval times 68.
+   *
+   * `SETTLE_FIXED_MS + SETTLE_FRAMES × interval` sits above the first and under the second
+   * at every interval slow enough for the defect to reach a customer. A flat budget cannot:
+   * make it loose enough for a 700ms/frame machine and it stops catching a 100ms/frame one.
+   *
+   * On a developer machine with real GPU acceleration the scene runs at 60fps, 68 frames is
+   * ~1.1s, and there is no defect to find — this passes either way. CI has no GPU, so the
+   * lane that gates the release is the one that always exercises it. It does NOT assert a
+   * frame rate, a duration a designer may retune, or that the scene exists at all.
+   */
+  test('the sign-in card stops moving within a bounded time, whatever the frame rate', async ({ page }) => {
+    /** The wall-clock part of the ease: what it costs when frames are free. */
+    const SETTLE_FIXED_MS = 2_500;
+    /** Frames of slack for granularity — the final step, plus the two identical frames an
+     *  actionability check needs to see before it will call the element stable. */
+    const SETTLE_FRAMES = 5;
+    /** Hard stop on the measurement itself, well inside the 30s test timeout so a failure
+     *  reports these numbers instead of dying as an unexplained timeout. */
+    const MEASURE_CAP_MS = 20_000;
+
+    // The scene is code-split and never server-rendered, so it is not driving the pane the
+    // instant the form is visible. Measuring before its first draw would compare '' to ''
+    // and call that settled. Wait for it to actually own the transform.
+    //
+    // Below SCENE_MIN_WIDTH, or once the frame-budget watchdog has retired it, the scene is
+    // gone and the pane is never transformed at all — which is the outcome this test wants,
+    // so there is nothing left to assert. That is a pass, not a skip.
+    const driving = await page
+      .waitForFunction(
+        () => {
+          const el = document.querySelector('.lx-pane') as HTMLElement | null;
+          return !!el && el.style.transform !== '';
+        },
+        null,
+        { timeout: 15_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    if (!driving) return;
+
+    const submit = submitControl(page);
+    const box = await submit.boundingBox();
+    expect(box, 'the submit control must have a box to aim at').not.toBeNull();
+    // Exactly what click() does first: put the pointer on the control. That is the input the
+    // parallax responds to, and the moment from which the customer is waiting.
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+
+    const settle = await page.evaluate(async (budget: number) => {
+      const el = document.querySelector('.lx-pane') as HTMLElement | null;
+      if (!el) return { settled: true, ms: 0, frames: 0, meanFrameMs: 0 };
+      const t0 = performance.now();
+      let frames = 0, lastChangeMs = 0, run = 0, last = el.style.transform;
+      return await new Promise<{ settled: boolean; ms: number; frames: number; meanFrameMs: number }>((resolve) => {
+        const tick = (): void => {
+          frames += 1;
+          const now = performance.now();
+          const t = el.style.transform;
+          if (t !== last) { last = t; lastChangeMs = now - t0; run = 0; } else run += 1;
+          // Two consecutive identical frames is the same condition a click's actionability
+          // check waits on before it will dispatch.
+          if (run >= 2) {
+            resolve({ settled: true, ms: Math.round(lastChangeMs), frames, meanFrameMs: Math.round((now - t0) / frames) });
+          } else if (now - t0 > budget) {
+            resolve({ settled: false, ms: Math.round(now - t0), frames, meanFrameMs: Math.round((now - t0) / frames) });
+          } else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+    }, MEASURE_CAP_MS);
+
+    const budget = SETTLE_FIXED_MS + SETTLE_FRAMES * settle.meanFrameMs;
+    const detail =
+      `.lx-pane took ${settle.settled ? `${settle.ms}ms` : `over ${settle.ms}ms`} to come to rest `
+      + `after the pointer stopped — ${settle.frames} frames at ~${settle.meanFrameMs}ms/frame, `
+      + `against a budget of ${Math.round(budget)}ms. The parallax ease must be frame-rate `
+      + 'INDEPENDENT. If the settle is costing a fixed number of frames again, then every '
+      + 'machine that cannot draw this scene quickly — which is most of them, with no GPU — '
+      + 'holds the customer in front of a sign-in card that is still moving, for proportionally '
+      + 'longer the slower it is.';
+
+    expect(settle.settled, detail).toBe(true);
+    expect(settle.ms, detail).toBeLessThan(budget);
+  });
+
   test('submitting shows a busy/disabled state, then releases it', async ({ page }) => {
     // Hold the login response open so the in-flight state is observable, and answer it ourselves:
     // no real credentials are spent and the API's 10-per-60s login limiter is untouched.

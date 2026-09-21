@@ -617,10 +617,27 @@ export interface LoginAuroraSceneProps {
    contention all land there), then take a rolling mean. If the scene cannot
    beat ~22fps over a full sample window, it retires and the static CSS field
    — which is the same composition — is what the customer sees. One shot: it
-   never oscillates, because retiring is permanent for the life of the page. */
+   never oscillates, because retiring is permanent for the life of the page.
+
+   A budget counted only in FRAMES decides slowest on exactly the machines it
+   exists to rescue: 30 + 45 = 75 animated frames is 1.2s at 60fps, but 10.6s at
+   7fps and ~25s at 3fps. The customer whose machine cannot draw this waits the
+   longest to be let off it — backwards. Every window below therefore has a
+   wall-clock twin, and whichever arrives first ends that phase. On a machine
+   that holds frame rate the frame counts always win and nothing changes; on a
+   slow one the scene now retires in about three seconds. */
 const WARMUP_FRAMES = 30;
 const SAMPLE_FRAMES = 45;
 const SLOW_FRAME_MS = 45;
+/** Wall-clock twin of WARMUP_FRAMES. 30 frames is 0.5s at 60fps, so this only
+ *  binds when frames are already slower than ~50ms — which is itself the
+ *  signal, and still leaves room for shader compile and first-paint contention. */
+const WARMUP_MS = 1500;
+/** Wall-clock twin of SAMPLE_FRAMES, with a floor on how few frames may decide:
+ *  a mean over fewer than this is noise, not a measurement. 45 frames is 0.75s
+ *  at 60fps, well inside SAMPLE_MS, so the fast path is untouched. */
+const SAMPLE_MS = 1500;
+const MIN_SAMPLE_FRAMES = 8;
 
 export function LoginAuroraScene({
   slotRef, paneRef, markRef, stateKey, onTooSlow,
@@ -633,7 +650,13 @@ export function LoginAuroraScene({
   /** Set whenever the slot or the mark can have moved; consumed in draw(). */
   const dirty = useRef(true);
   /** Frame-budget watchdog state. */
-  const budget = useRef({ seen: 0, acc: 0, n: 0, last: 0, retired: false });
+  const budget = useRef({
+    seen: 0, acc: 0, n: 0, last: 0, retired: false,
+    /** performance.now() of the first counted frame — starts the warmup clock. */
+    firstAt: 0,
+    /** performance.now() at which the current sample window opened. */
+    sampleAt: 0,
+  });
   /* Held in a ref so a caller passing an inline arrow cannot rebuild the
      scene, matching how useRenderCanvas treats its own callbacks. */
   const tooSlow = useRef(onTooSlow);
@@ -717,10 +740,17 @@ export function LoginAuroraScene({
           const gap = b.last ? now - b.last : 0;
           b.last = now;
           b.seen += 1;
-          if (b.seen > WARMUP_FRAMES && gap > 0) {
+          if (!b.firstAt) b.firstAt = now;
+          const warmedUp = b.seen > WARMUP_FRAMES || now - b.firstAt > WARMUP_MS;
+          if (warmedUp && gap > 0) {
+            if (!b.sampleAt) b.sampleAt = now;
             b.acc += gap;
             b.n += 1;
-            if (b.n >= SAMPLE_FRAMES) {
+            // Whichever window closes first: enough frames, or enough time with
+            // enough frames to mean anything.
+            const decide = b.n >= SAMPLE_FRAMES
+              || (b.n >= MIN_SAMPLE_FRAMES && now - b.sampleAt >= SAMPLE_MS);
+            if (decide) {
               if (b.acc / b.n > SLOW_FRAME_MS) {
                 b.retired = true;
                 // eslint-disable-next-line no-console
@@ -732,8 +762,10 @@ export function LoginAuroraScene({
                 tooSlow.current?.();
                 return;
               }
+              // Survived this window — open a fresh one, clock included.
               b.acc = 0;
               b.n = 0;
+              b.sampleAt = 0;
             }
           }
         }
