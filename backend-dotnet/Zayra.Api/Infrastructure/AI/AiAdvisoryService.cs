@@ -236,7 +236,10 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         var configured = _options.EffectiveProvider;
         if (configured == "anthropic" && !string.IsNullOrWhiteSpace(_options.AnthropicApiKey)) return "anthropic";
         if (configured == "openai" && !string.IsNullOrWhiteSpace(_options.OpenAIApiKey)) return "openai";
-        if (configured == "ollama") return "ollama";
+        // Unlike the other two, this must check the base URL. Without it LlmClient falls back
+        // to http://localhost:11434, which on a hosted deployment is nothing — the request
+        // hangs for HttpClient's 100s default instead of degrading to the rules-based path.
+        if (configured == "ollama" && !string.IsNullOrWhiteSpace(_options.OllamaBaseUrl)) return "ollama";
         if (!string.IsNullOrWhiteSpace(_options.AnthropicApiKey)) return "anthropic";
         if (!string.IsNullOrWhiteSpace(_options.OpenAIApiKey)) return "openai";
         if (!string.IsNullOrWhiteSpace(_options.OllamaBaseUrl)) return "ollama";

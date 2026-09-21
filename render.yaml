@@ -130,9 +130,21 @@ services:
       - key: CORS_EXTRA_ORIGINS
         value: ""
 
-      # AI provider — set to "none" to disable AI features entirely.
+      # AI provider. "none" disables AI entirely; "ollama" uses Ollama Cloud.
+      # The live service runs Ollama Cloud, so this must NOT say "none" — a blueprint
+      # sync would silently switch the assistant off and the product would correctly
+      # report enabled=false with nobody having asked for that.
       - key: AI_PROVIDER
-        value: none
+        value: ollama
+      # Ollama Cloud base URL. AiAdvisoryService trusts AI_PROVIDER=ollama without
+      # checking this, so an empty value means a 100s hang against localhost:11434.
+      - key: OLLAMA_BASE_URL
+        value: https://ollama.com
+      # Secrets — set in the Render dashboard, never in the blueprint.
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: AI_MODEL
+        sync: false
 
       # ── DOCUMENT STORAGE (P0-5) ─────────────────────────────────────────────────────
       # The dyno filesystem is EPHEMERAL on EVERY Render plan without a mounted persistent disk,
