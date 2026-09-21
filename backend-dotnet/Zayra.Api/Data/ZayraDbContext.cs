@@ -1030,6 +1030,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     // ── F3: durable background jobs + per-item checkpoints ────────────────────
     public DbSet<BackgroundJob> BackgroundJobs => Set<BackgroundJob>();
     public DbSet<BackgroundJobItem> BackgroundJobItems => Set<BackgroundJobItem>();
+    // ── D3: data-retention decisions (one row per record per sweep, purged or not) ──
+    public DbSet<RetentionPurgeAudit> RetentionPurgeAudits => Set<RetentionPurgeAudit>();
     // ── GOSI ───────────────────────────────────────────────────────────────────
     public DbSet<GosiContributionRule> GosiContributionRules => Set<GosiContributionRule>();
     // ── Qiwa Integration ───────────────────────────────────────────────────────
@@ -3752,6 +3754,26 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.JobId, x.ItemKey }).IsUnique().HasDatabaseName("ux_background_job_items_job_item");
             entity.HasIndex(x => new { x.TenantId, x.JobId }).HasDatabaseName("ix_background_job_items_tenant_job");
             entity.HasOne<BackgroundJob>().WithMany().HasForeignKey(x => x.JobId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ── D3: retention decisions ───────────────────────────────────────────────
+        modelBuilder.Entity<RetentionPurgeAudit>(entity =>
+        {
+            entity.ToTable("retention_purge_audits");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.RuleKey).HasMaxLength(100).IsRequired();
+            entity.Property(x => x.EntityName).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.EntityId).HasMaxLength(100).IsRequired();
+            entity.Property(x => x.Disposition).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.Outcome).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.Reason).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.DetailsJson).HasColumnType("jsonb");
+            // Deliberately NO foreign key to background_jobs: the tenant-erasure rule deletes almost
+            // everything the tenant owns, and an evidence row that cascades away with the job it
+            // describes is not evidence. The JobId is a reference, not a constraint.
+            entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc }).HasDatabaseName("ix_retention_purge_audits_tenant_created");
+            entity.HasIndex(x => new { x.TenantId, x.RuleKey, x.CreatedAtUtc }).HasDatabaseName("ix_retention_purge_audits_tenant_rule");
+            entity.HasIndex(x => new { x.EntityName, x.EntityId }).HasDatabaseName("ix_retention_purge_audits_entity");
         });
 
         // ── Company governance (Phase 1B: per-legal-entity policy foundation) ─────

@@ -504,7 +504,22 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.AttendanceProcess
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobTypeRegistry>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Jobs.BackgroundJobStore>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobRunner>();
+builder.Services.AddSingleton(Zayra.Api.Infrastructure.Retention.DataRetentionSweepJobHandler.Descriptor);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.DataRetentionSweepJobHandler>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Jobs.BackgroundJobWorker>();
+
+// D3 — data retention. EVERY SWITCH IS OFF BY DEFAULT and the defaults are the safe ones:
+// DataRetention__ScheduleEnabled=true starts producing a daily DRY-RUN report and nothing else;
+// DataRetention__ApplyDeletions=true is what actually lets a record be anonymised or deleted;
+// DataRetention__AllowTenantErasure=true is additionally required before a soft-deleted tenant's data
+// is erased. See scratchpad/data-retention.md for the per-entity policy and the enable procedure.
+var dataRetentionOptions = builder.Configuration.GetSection(Zayra.Api.Infrastructure.Retention.DataRetentionOptions.SectionName)
+    .Get<Zayra.Api.Infrastructure.Retention.DataRetentionOptions>() ?? new Zayra.Api.Infrastructure.Retention.DataRetentionOptions();
+builder.Services.AddSingleton(dataRetentionOptions);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.ExpiredEmployeeRecordRule>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.ExpiredRefreshTokenRule>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.SoftDeletedTenantRule>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Retention.DataRetentionScheduler>();
 
 builder.Services.AddHttpClient<ILlmClient, LlmClient>();
 builder.Services.AddHttpContextAccessor();
