@@ -29,15 +29,24 @@ namespace Zayra.Api.Tests.Security;
 /// followed — this test makes it expensive to stop. Removing an entity, or giving one a consumer,
 /// should remove its line from <see cref="PinnedOrphans"/> in the same change.</para>
 ///
-/// <para><b>Method.</b> Every <c>public DbSet&lt;T&gt;</c> declared in <c>Data/</c>, counted by
+/// <para><b>Method.</b> Every <c>public DbSet&lt;T&gt;</c> declared in <c>Data/</c>, matched by
 /// <b>substring</b> against a blob of every <c>.cs</c> file under <c>Zayra.Api</c> outside
-/// <c>Models/</c>, <c>Data/</c> and <c>Migrations/</c>. Substring, not a word boundary, is
-/// deliberate: an entity is normally reached through its plural DbSet accessor
-/// (<c>db.AttendanceLockPeriods</c>), so a <c>\b</c>-anchored match would report five live
-/// entities — <c>AttendanceLockPeriod</c>, <c>ComplianceRequirement</c>,
+/// <c>Models/</c>, <c>Data/</c> and <c>Migrations/</c>, with comments stripped first.</para>
+///
+/// <para>Substring, not a word boundary, is deliberate: an entity is normally reached through its
+/// plural DbSet accessor (<c>db.AttendanceLockPeriods</c>), so a <c>\b</c>-anchored match would
+/// report five live entities — <c>AttendanceLockPeriod</c>, <c>ComplianceRequirement</c>,
 /// <c>EmployeeActionItem</c>, <c>HRRequestAttachment</c>, <c>NitaqatEmployeeWeightOverride</c> —
-/// as dead. The measure is therefore conservative: it can miss an orphan, it cannot invent one,
-/// which is the right direction for a guard whose failure mode is a false accusation.</para>
+/// as dead.</para>
+///
+/// <para><b>And substring alone is not enough</b>, which this guard learned the hard way: an
+/// entity ending in <i>y</i> pluralises to <i>ies</i>, so <c>RoleCompetency</c> does NOT appear
+/// inside <c>db.RoleCompetencies</c>. A name-only scan would accuse any such entity that is
+/// reached solely through its accessor — inventing an orphan, which is the one direction a guard
+/// like this must never fail in. The <i>y → ies</i> form is therefore accepted as a reference too.
+/// Re-measured with the rule in place, the orphan set is unchanged at 29 (<c>RoleCompetency</c> has
+/// no <c>RoleCompetencies</c> reference either), so the rule costs nothing today and protects the
+/// next <c>…y</c> entity somebody adds.</para>
 /// </summary>
 public class OrphanEntityRatchetTests
 {
@@ -133,7 +142,7 @@ public class OrphanEntityRatchetTests
         blob.Length.Should().BeGreaterThan(1_000_000,
             "the consumer blob is empty or truncated, so every entity would look like an orphan.");
 
-        var orphans = declared.Where(name => !blob.Contains(name, StringComparison.Ordinal))
+        var orphans = declared.Where(name => !IsReferenced(blob, name))
             .OrderBy(x => x, StringComparer.Ordinal)
             .ToList();
 
@@ -156,7 +165,7 @@ public class OrphanEntityRatchetTests
         declared.Should().HaveCountGreaterThan(200,
             "the DbSet declarations could not be read, so this guard would be inert.");
 
-        var orphanCount = declared.Count(name => !blob.Contains(name, StringComparison.Ordinal));
+        var orphanCount = declared.Count(name => !IsReferenced(blob, name));
 
         orphanCount.Should().BeLessThanOrEqualTo(PinnedOrphans.Count,
             $"the orphan surface may only shrink. Pinned {PinnedOrphans.Count}, found {orphanCount}. "
@@ -164,7 +173,7 @@ public class OrphanEntityRatchetTests
             + "in the same change.");
 
         // The other direction: a stale pin is a guard that has quietly stopped guarding that name.
-        var stale = PinnedOrphans.Where(name => blob.Contains(name, StringComparison.Ordinal))
+        var stale = PinnedOrphans.Where(name => IsReferenced(blob, name))
             .OrderBy(x => x, StringComparer.Ordinal)
             .ToList();
         stale.Should().BeEmpty(
@@ -173,6 +182,19 @@ public class OrphanEntityRatchetTests
     }
 
     // ── Scanning ─────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Whether the consumer blob mentions this entity. Accepts the type name, and — for a name
+    /// ending in <c>y</c> — its <c>ies</c> plural, because that is how the DbSet accessor for such
+    /// an entity is spelled and the type name is NOT a substring of it
+    /// (<c>RoleCompetencies</c> does not contain <c>RoleCompetency</c>). Without this clause the
+    /// scan invents orphans; the ordinary plural (<c>…Periods</c>) needs no clause because the
+    /// singular is already a substring of it.
+    /// </summary>
+    internal static bool IsReferenced(string blob, string entityName)
+        => blob.Contains(entityName, StringComparison.Ordinal)
+           || (entityName.EndsWith('y')
+               && blob.Contains(string.Concat(entityName.AsSpan(0, entityName.Length - 1), "ies"), StringComparison.Ordinal));
 
     private static readonly Regex DbSetDeclaration =
         new(@"public\s+(?:virtual\s+)?DbSet<\s*([A-Za-z0-9_.]+)\s*>", RegexOptions.Compiled);
@@ -280,6 +302,34 @@ public class OrphanEntityRatchetTests
             i++;
         }
         return output.ToString();
+    }
+
+    /// <summary>
+    /// Self-test for the detection half. The ratchet is at its pinned count today, so nothing in
+    /// the repository can demonstrate that it would actually catch a thirtieth orphan — a scan that
+    /// returned "no orphans" for any input would sit green for ever. This drives the same substring
+    /// rule over a synthetic model and proves both directions: an unreferenced entity is detected,
+    /// and one reached only through its plural DbSet accessor is not falsely accused.
+    /// </summary>
+    [Fact]
+    public void TheDetectionRuleCatchesAnOrphanAndDoesNotInventOne()
+    {
+        var declared = new[] { "LiveEntity", "AttendanceLockPeriod", "RoleCompetency", "BrandNewOrphan" };
+        var blob = StripComments("""
+            // BrandNewOrphan is planned for next quarter.
+            var x = db.LiveEntity.Where(e => e.Id == id);
+            var y = db.AttendanceLockPeriods.ToList();
+            var z = db.RoleCompetencies.ToList();
+            """);
+
+        var orphans = declared.Where(n => !IsReferenced(blob, n)).ToList();
+
+        orphans.Should().BeEquivalentTo(new[] { "BrandNewOrphan" },
+            "an entity named only in a comment is an orphan; one reached through a plain plural "
+            + "accessor (AttendanceLockPeriods) is not, which is why this counts substrings; and "
+            + "one reached through an -ies plural (RoleCompetencies) is not either, which is why "
+            + "the y-to-ies form counts as a reference. Getting that last case wrong would INVENT "
+            + "an orphan, the one direction this guard must never fail in");
     }
 
     /// <summary>
