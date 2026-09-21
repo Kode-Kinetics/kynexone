@@ -1,0 +1,1324 @@
+/* ──────────────────────────────────────────────────────────────────────────
+ * LOGIN — AURORA GLASS
+ *
+ * /login is the first screen both a prospect and a returning customer see, so
+ * it is a landing page that also signs people in. It earns that only with a
+ * hierarchy you can read in half a second:
+ *
+ *   1. the KynexOne mark, and the light leaving it   — the anchor
+ *   2. the sign-in form                              — the primary task
+ *   3. ONE rotating proof panel                      — the evidence
+ *   4. one quiet tertiary group                      — breadth, mobile, legal
+ *
+ * Exactly one thing moves in the content layer, plus the ambient scene. The
+ * composition is three full-width bands, and the same shader lights all of it:
+ * the rays leave the mark in band 1 and cross every column of band 2, so
+ * nothing here is a marketing panel bolted beside a form.
+ *
+ * The background is a shader (src/components/LoginAuroraScene.tsx) whose key
+ * light IS the KynexOne mark — the shader reads that element's live rect. This
+ * file owns only what HTML must own: composition, type, and the text floor over
+ * a field that moves.
+ *
+ * NO Tailwind colour utility appears on this page, deliberately.
+ * src/styles/index.css force-overrides `.tenant-login-shell .text-slate-400`
+ * (and friends) to light-theme values with !important, which would silently
+ * destroy any dark surface inside the login shell. Custom properties give those
+ * overrides nothing to bite on.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+.tenant-login-shell.lx-shell {
+  /* ── ink. Every one of these is measured against the rendered PNG. ──── */
+  --lx-ink:        #FFFFFF;
+  --lx-body:       #D6E2F7;
+  --lx-label:      #DCE8FB;
+  --lx-trust:      #C9D9F2;
+  --lx-muted:      #B6C8E6;
+  --lx-legal:      #B2C4E1;
+  --lx-placeholder:#94A9CC;
+
+  /* ── brand light ─────────────────────────────────────────────────── */
+  --lx-cyan:      #5EEBFF;
+  --lx-cyan-soft: #9FF2FF;
+  --lx-sapphire:  #2F6BFF;
+  --lx-sapphire-l:#7FA8FF;
+  --lx-emerald:   #00C896;
+  --lx-emerald-l: #4BE3C6;
+  --lx-gold:      #FFC981;
+  --lx-warn:      #FFCE7A;
+
+  /* ── surfaces ────────────────────────────────────────────────────── */
+  --lx-veil-a:  rgba(8, 18, 42, 0.42);
+  --lx-veil-b:  rgba(3, 8, 19, 0.70);
+  --lx-glassy:  linear-gradient(158deg, rgba(10, 20, 44, 0.54) 0%, rgba(4, 9, 21, 0.72) 100%);
+  --lx-hair:    rgba(190, 232, 255, 0.16);
+  --lx-rule:    rgba(140, 186, 255, 0.16);
+  --lx-edge:    rgba(132, 180, 255, 0.22);
+  --lx-input:   rgba(3, 7, 17, 0.82);
+  --lx-input-2: rgba(6, 12, 26, 0.70);
+  --lx-input-br:rgba(128, 174, 242, 0.32);
+  --lx-fault:   #FFB4A8;
+  --lx-fault-bg:rgba(120, 28, 20, 0.34);
+  --lx-ok:      #8BF2CE;
+  --lx-ok-bg:   rgba(6, 74, 58, 0.36);
+
+  /* the mark's rendered size — everything about the emitter derives from it */
+  --lx-mark: clamp(64px, 6.6vw, 124px);
+
+  /* ══════════════════════════════════════════════════════════════════════
+     THE TYPE SCALE — five steps, one ratio, no exceptions.
+
+     This page previously rendered ELEVEN distinct sizes at 1440x900 (44, 42,
+     23, 20, 17, 16, 15, 14, 13, 12, 11). Eleven sizes is not a scale, it is
+     eleven separate decisions, and it is why the page read as congested long
+     before anyone counted the words: at 15px, 16px and 17px the eye cannot
+     tell whether two runs are meant to rank differently or not, so it treats
+     everything as equally important and gives up.
+
+     Five steps, each 1.31x the last, from a single fluid root:
+
+        --lx-f1   12.0–13.2   mono micro   labels, packs, the chip, the footer
+        --lx-f2   15.7–17.3   body         names, inputs, links, the button
+        --lx-f3   20.6–22.7   figure       612 · 431 · 205 · 1,248
+        --lx-f4   27.0–29.7   title        "Sign in", and the claim when short
+        --lx-f5   35.4–38.9   display      the claim
+
+     1.31 is wide enough that two adjacent steps are never mistaken for each
+     other — which is the entire job of a scale on a page this dense with
+     small type. Every font-size below is one of these five. The ONLY size on
+     the page that is not is the wordmark, which is derived from the mark and
+     is locked; it sits roughly one further step up, so it still lands on the
+     scale by eye even though it is not computed from it.
+
+     On a short viewport the display drops a step rather than being given a
+     size of its own (see the max-height rule): stepping down the scale is
+     what a scale is for.
+     ══════════════════════════════════════════════════════════════════════ */
+  --lx-f1: clamp(12px, 0.87vw, 13.2px);
+  --lx-f2: calc(var(--lx-f1) * 1.31);
+  --lx-f3: calc(var(--lx-f2) * 1.31);
+  --lx-f4: calc(var(--lx-f3) * 1.31);
+  --lx-f5: calc(var(--lx-f4) * 1.31);
+
+  position: fixed;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: #05080F;
+  color: var(--lx-body);
+  font-family: var(--lx-sans), var(--font-kx-sans), Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.lx-canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
+
+/* Keeps the brand side legible over a field that can go near-white, and
+   deepens the frame so the glass reads as the brightest object on screen. */
+.lx-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(74% 66% at 0% 18%, rgba(2, 5, 12, 0.72) 0%, rgba(2, 5, 12, 0.30) 38%, rgba(2, 5, 12, 0) 68%),
+    linear-gradient(180deg, rgba(3, 6, 14, 0.44) 0%, rgba(3, 6, 14, 0) 20%, rgba(3, 6, 14, 0) 68%, rgba(3, 6, 14, 0.70) 100%),
+    /* The field's brightest core sat in the gap between the register and the
+       sign-in card, pulling the eye before the claim — the attention order read
+       mark -> button -> claim instead of mark -> claim -> button. This knocks
+       that band back without touching the rays or the field's character. */
+    radial-gradient(44% 48% at 62% 51%, rgba(2, 5, 12, 0.26) 0%, rgba(2, 5, 12, 0.11) 54%, rgba(2, 5, 12, 0) 100%),
+    radial-gradient(150% 124% at 50% 50%, rgba(0, 0, 0, 0) 50%, rgba(2, 4, 10, 0.56) 100%);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   THE PAGE — three full-width bands
+   ══════════════════════════════════════════════════════════════════════ */
+/* min-height: 100% (not min-content) so the three bands own the whole shell
+   and the footer sits on the floor of the viewport. The shell scrolls only if
+   this page exceeds it — and it no longer does at any supported size, which is
+   what removed the ~42px of phantom scroll the old composition carried. */
+.lx-page {
+  position: relative;
+  z-index: 2;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(18px, 2.4vh, 30px) clamp(20px, 3vw, 58px) clamp(14px, 1.8vh, 22px);
+}
+
+/* A 717px-tall laptop is the binding constraint on this page, so the generous
+   rhythm above is what a normal desktop gets and everything tightens on a
+   short viewport. Growing the form on a 900px screen and letting it scroll on
+   a 717px one would be the wrong trade: the form must be reachable without
+   scrolling on the smallest supported height. */
+@media (max-height: 859px) {
+  .lx-page { padding: 12px clamp(20px, 3vw, 58px) 10px; }
+  .lx-rail-top { padding-bottom: 10px; }
+  .lx-stage { padding: 0; row-gap: 9px; }
+  .lx-rail-bottom { padding-top: 8px; }
+  /* "SECURE ACCESS" is decorative chrome above a heading that already says
+     Sign in — the first thing to go when the card needs the room. */
+  .lx-kicker { display: none; }
+}
+
+/* ── band 1: identity, and nothing else ───────────────────────────────
+   The right-hand pill (two links + a dual-calendar clock) is deleted. It was
+   a filled, bordered, shadowed object at the top right — the second-brightest
+   thing on the page after the sign-in button — and it was carrying a clock.
+   The lockup now has the whole band, and the rays leaving the mark cross a
+   field with nothing in it. The hairline underneath stays: it is one line, it
+   costs nothing, and it is what makes the emptiness to the right read as
+   composition rather than as an element that failed to load. */
+.lx-rail-top {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding-bottom: clamp(14px, 1.8vh, 22px);
+  border-bottom: 0;
+  position: relative;
+}
+/* The masthead rule is lit from the left like every other hairline on this
+   page — brightest under the mark, falling away across the empty half. A
+   uniform rule running 1,300px into nothing read as an element that had failed
+   to load; a rule that fades reads as light. */
+.lx-rail-top::after {
+  content: '';
+  position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+  background: linear-gradient(90deg,
+    rgba(150, 214, 255, 0.34) 0%, rgba(150, 214, 255, 0.18) 30%,
+    rgba(150, 214, 255, 0.08) 66%, rgba(150, 214, 255, 0.02) 100%);
+  pointer-events: none;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   THE BRAND LOCKUP — and the emitter.
+   The mark is the shipped asset (src/components/Logo.tsx), untouched: its
+   viewBox is 0 0 40 40, so the wrapper sizes it and the vector scales
+   losslessly. What is added here is LIGHT. The shader reads this element's
+   live centre as the scene's key light, and every layer below derives its
+   radius from --lx-mark, so the glow grows WITH the mark and it keeps reading
+   as the source rather than as something sitting in front of a glow.
+   ══════════════════════════════════════════════════════════════════════ */
+.lx-lockup { display: flex; align-items: center; gap: clamp(16px, 1.5vw, 24px); min-width: 0; }
+
+/* The capability marquee that used to run beneath the lockup is deleted. It
+   was fifteen module names, duplicated for the loop, scrolling behind a mask
+   that clipped a word mid-letter at almost every instant — the cheapest object
+   on an otherwise expensive page, and the one piece of it that failed its own
+   contrast check. It also duplicated the register: a reader who can see that
+   three jurisdictions close as one run does not need "OVERTIME" as well. */
+
+.lx-lockup-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--lx-mark);
+  height: var(--lx-mark);
+  flex: 0 0 auto;
+  border-radius: 26%;
+  /* the emitter. Every radius is a multiple of the mark, so the bloom grows
+     WITH it and the mark never looks like it is sitting in front of a glow. */
+  box-shadow:
+    0 0 calc(var(--lx-mark) * 0.30) rgba(94, 235, 255, 0.30),
+    0 0 calc(var(--lx-mark) * 0.72) rgba(47, 107, 255, 0.40),
+    0 0 calc(var(--lx-mark) * 1.50) rgba(47, 107, 255, 0.22);
+}
+/* Logo.tsx wraps its svg in a flex div and sets width/height ATTRIBUTES on the
+   svg itself, so a percentage here resolves against a shrink-to-fit box and
+   collapses. Both are pinned in absolute units instead, off the same custom
+   property the glow radii use, so the mark and its light always scale together.
+   The mark's geometry is untouched — viewBox 0 0 40 40 scales losslessly. */
+.lx-lockup-mark > div {
+  width: 100%; height: 100%;
+  display: grid; place-items: center; gap: 0;
+}
+.lx-lockup-mark svg {
+  width: calc(var(--lx-mark) * 0.98) !important;
+  height: calc(var(--lx-mark) * 0.98) !important;
+  filter:
+    drop-shadow(0 0 calc(var(--lx-mark) * 0.12) rgba(94, 235, 255, 0.72))
+    drop-shadow(0 0 calc(var(--lx-mark) * 0.30) rgba(47, 107, 255, 0.48));
+}
+
+.lx-lockup-type {
+  position: relative;
+  display: flex; flex-direction: column; gap: 7px; min-width: 0;
+}
+/* MEASURED FIX. The lockup type sits in the field's brightest zone, where the
+   rays leave the mark: worst case put "One" at 1.83:1 and the descriptor at
+   3.44:1. This backing TRAVELS WITH THE TEXT, so contrast stops being a
+   function of where the aurora happens to be — rather than dimming the scene
+   the client approved. The lockup's arrangement itself is untouched. */
+.lx-lockup-type::before {
+  content: '';
+  position: absolute; z-index: -1;
+  /* Wider and softer than it was. The marquee that used to run beneath the
+     lockup hid this plate's lower edge; with the marquee gone the edge was
+     exposed against the bright field and read as a black rectangle behind the
+     wordmark. Same peak alpha where the glyphs are — the contrast measurement
+     is unchanged — spread over twice the falloff, so it has no edge to see.
+     The lockup itself is not moved, resized or restyled. */
+  inset: -14px -40px -16px -22px;
+  border-radius: 34px;
+  background: rgba(3, 7, 16, 0.88);
+  filter: blur(26px);
+  pointer-events: none;
+}
+.lx-wordmark {
+  font-size: calc(var(--lx-mark) * 0.445);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.033em;
+  color: var(--lx-ink);
+  white-space: nowrap;
+}
+.lx-wordmark em { font-style: normal; font-weight: 600; color: #A6F3FF; }
+/* The descriptor is the one line in the lockup that is copy rather than logo,
+   so it joins the scale at its micro step. Its position is untouched; the mark,
+   the rays and the wordmark are untouched. */
+.lx-descriptor {
+  font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-size: var(--lx-f1);
+  letter-spacing: 0.20em;
+  text-transform: uppercase;
+  color: #E4EDFC;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   BAND 2 — THE STAGE
+   DOM order is form → copy → panel, so the credential fields are the first
+   thing reached by keyboard and by a screen reader; the grid places them
+   left-to-right for the eye. Gutters are wide and equal: most "cluttered" is
+   really "misaligned", and the gap BETWEEN groups is deliberately far larger
+   than any gap within one.
+   ══════════════════════════════════════════════════════════════════════ */
+.lx-stage {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 1860px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(356px, 26vw, 412px);
+  grid-template-areas: 'hero form';
+  grid-template-rows: auto;
+  align-content: center;
+  /* Both columns centre on the SAME horizontal axis, so the register and the
+     card agree about where the middle of the page is. Start-aligned they were
+     two objects that happened to be near each other; centred they are one
+     spread. This is the only alignment that crosses the gutter, so it has to
+     hold. */
+  align-items: center;
+  column-gap: clamp(48px, 5vw, 110px);
+  row-gap: clamp(10px, 1.6vh, 20px);
+  padding: clamp(8px, 1.6vh, 28px) 0;
+}
+/* ══════════════════════════════════════════════════════════════════════
+   THE BRIEF — the content beside the form. THERE IS NO CARD.
+   ══════════════════════════════════════════════════════════════════════
+   This content used to live in a glass rectangle. It does not any more, and
+   the absence is the design: a bordered panel dropped onto a lit field reads
+   as a widget placed on a background, and every attempt to make that panel
+   look considered failed because the container was the problem.
+
+   What holds it together instead is ONE LEFT AXIS — and it is now genuinely
+   one. The 72px monospace column (KSA, UAE, QAT, TOTAL, OUTPUT, CONTROL) is
+   gone with the OUTPUT and CONTROL rows it existed to serve, and with the
+   three ISO codes that were restating the country names printed beside them.
+   Every line in the composition now starts on the SAME edge: the claim, the
+   run bar, each jurisdiction, the total — and that edge is the brand mark's
+   edge in the band above. The page has one spine from the logo to the last
+   figure. Alignment and rhythm are doing the work a border used to do badly.
+
+   Rules are hairlines, not borders: each one is BRIGHTEST AT THE LEFT and
+   falls away to the right, because the light on this page leaves the KynexOne
+   mark at the top left. They read as the same light falling across the
+   content, not as the edge of a box. None of them reaches zero, though — each
+   one still has to carry the eye from a jurisdiction's name at the left to
+   its headcount at the right.
+
+   Legibility over a moving field is handled by shaped light that travels with
+   the text (.lx-brief::before) — a wide, edgeless, heavily blurred darkening
+   that never terminates on a visible boundary. Measured across the animation,
+   not on one frame.
+   ────────────────────────────────────────────────────────────────────────── */
+.lx-brief {
+  grid-area: hero;
+  min-width: 0;
+  align-self: center;
+  position: relative;
+  /* A measure, not a container. The register is a column of text like any
+     other: letting it stretch to the full grid track put 1,100px of dead
+     field between "Saudi Arabia" and "612". The slack to the right of it is
+     the composition breathing, not a gap to be filled. */
+  max-width: clamp(460px, 52vw, 720px);
+  --lx-gut: 24px;
+  --lx-num: 104px;
+}
+/* the shaped light. No radius that can catch the eye, no border, no edge:
+   it is a lighting decision, not a surface. */
+.lx-brief::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  /* Symmetric about the measure, and the gradient reaches full transparency
+     exactly AT the box edge, so there is no boundary anywhere for the eye to
+     read as the edge of a card. Measured across the animation, not on one
+     frame: the aurora's bright phase is what kills small text.
+
+     THE BOTTOM NUMBER IS LOAD-BEARING, AND NOT FOR A VISUAL REASON. This is an
+     absolutely-positioned box, and a descendant that hangs past the block-end
+     of a scroll container adds to that container's scrollable overflow. At
+     -210px it hung 30px below the page at 1440x900 and 72px below it at
+     1288x717 — which is the entire "phantom scroll" on this screen. The
+     document never scrolled; .tenant-login-shell did, because of a shadow
+     nobody can see. Left and top may overhang freely (block-start and
+     inline-start overflow is not scrollable); the bottom may not.
+     If .lx-brief ever grows, re-check this against .ovf — do not just raise it. */
+  inset: -150px -200px -96px -200px;
+  /* A flatter falloff than before, because the box is now shorter at the
+     bottom and the old stops put the last two rows of the register out in the
+     0.34 zone — where the aurora's bright phase measured 3.76:1 on the Qatar
+     pack line. Dense out to 72%, then a long feathered tail, so the whole
+     composition sits on the same floor and the edge is still nowhere. */
+  background: radial-gradient(50% 50% at 50% 56%,
+    rgba(2, 6, 15, 0.90) 0%, rgba(2, 6, 15, 0.86) 52%,
+    rgba(2, 6, 15, 0.74) 72%, rgba(2, 6, 15, 0.42) 86%,
+    rgba(2, 6, 15, 0.13) 95%, rgba(2, 6, 15, 0) 100%);
+  filter: blur(44px);
+  pointer-events: none;
+}
+
+/* ── the claim ─────────────────────────────────────────────────────────── */
+/* The switch sits BESIDE the claim, on its last baseline — not pushed to the
+   far right edge of the measure. Right-aligned it was a bordered pill floating
+   alone in the middle of the page with nothing to belong to; here it reads as
+   what it is, the claim offered in the other language. It is also the only
+   control on this side of the page, so it has to look deliberate. */
+.lx-brief-top {
+  display: flex; align-items: flex-end; justify-content: flex-start;
+  gap: clamp(20px, 2.4vw, 44px);
+  margin-bottom: clamp(26px, 4.6vh, 58px);
+}
+.lx-h1 {
+  margin: 0;
+  max-width: 15ch;
+  font-weight: 300;
+  font-size: var(--lx-f5);
+  line-height: 1.08;
+  letter-spacing: -0.032em;
+  color: var(--lx-ink);
+  /* the type catches the scene's light instead of sitting on top of it */
+  text-shadow: 0 0 46px rgba(120, 198, 255, 0.16);
+  text-wrap: balance;
+}
+/* One display size, not two. The accent used to run at 1.06em, which put
+   43.5px beside 41px — a difference no reader can name and every reader can
+   feel as untidiness. It is now the same size in a different voice. */
+.lx-h1 .lx-accent {
+  display: block;
+  font-family: var(--lx-serif), Georgia, serif;
+  font-style: italic;
+  font-size: 1em;
+  letter-spacing: -0.012em;
+  color: #A9F4FF;
+  text-shadow: 0 0 52px rgba(105, 226, 255, 0.24);
+}
+
+/* The lede is deleted. It read "Saudi Arabia, the UAE and Qatar. Each company
+   is calculated on its own statutory rulebook, and the group closes as one
+   payroll record" — twenty-three words restating the claim above it and
+   pre-announcing the register below it, which names all three jurisdictions,
+   names their statutory packs, and shows them closing as one total. The
+   register is the sentence. */
+
+/* ── the language switch. The one control on this side of the page, and the
+   proof of the one capability that is equally true in every Gulf market:
+   pressing it flips this whole composition to Arabic and to RTL. ──────────
+   It no longer carries a legibility plate of its own. It used to sit out at
+   the right edge of the measure, past where the composition's shaped light
+   ran out, so it needed one — and that plate was visible as a dark smudge
+   floating in open field. Beside the claim it is inside .lx-brief::before
+   already, and it has a border and a fill of its own. */
+.lx-lang {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex; align-items: center;
+  /* sits ON the claim's last baseline rather than under it */
+  margin-bottom: 0.18em;
+}
+/* ONE button, labelled with the language it switches TO. The old pair spent a
+   run of text ("English") telling you which language you were already reading,
+   and needed a separator between the two. A single switch says it once. */
+/* The fill is not decoration. An outline-only pill let whatever the aurora was
+   doing behind it become the text's background, and on a phone — where the
+   switch is ordered above the claim, in the brightest part of the field — that
+   measured 3.12:1. A control should own its own surface anyway. */
+.lx-lang-b {
+  appearance: none; cursor: pointer;
+  padding: 6px 14px 7px;
+  font: inherit; font-size: var(--lx-f2); line-height: 1.2;
+  color: var(--lx-label);
+  background: rgba(4, 9, 20, 0.80);
+  border: 1px solid var(--lx-edge);
+  border-radius: 999px;
+  transition: color .18s ease, border-color .18s ease, background .18s ease;
+  white-space: nowrap;
+}
+.lx-lang-b[lang='ar'] {
+  font-family: var(--lx-ar), 'Noto Sans Arabic', system-ui, sans-serif;
+  font-weight: 500;
+}
+.lx-lang-b:hover {
+  color: var(--lx-ink);
+  border-color: rgba(94, 235, 255, 0.60);
+  background: rgba(8, 26, 38, 0.86);
+}
+
+/* ── the hairline. Lit from the left, like everything else on this page. ── */
+.lx-hair {
+  height: 1px; border: 0; margin: 0; flex: 0 0 1px;
+  background: linear-gradient(90deg,
+    rgba(150, 214, 255, 0.44) 0%, rgba(150, 214, 255, 0.24) 38%,
+    rgba(150, 214, 255, 0.15) 74%, rgba(150, 214, 255, 0.11) 100%);
+}
+[dir='rtl'] .lx-hair { transform: scaleX(-1); }
+.lx-hair.is-key {
+  height: 1px;
+  background: linear-gradient(90deg,
+    rgba(169, 244, 255, 0.70) 0%, rgba(169, 244, 255, 0.34) 42%,
+    rgba(169, 244, 255, 0.19) 78%, rgba(169, 244, 255, 0.14) 100%);
+}
+
+/* ── the run bar: what this is, when it is for, and the sample marker,
+   sitting immediately above the only figures on the page. ──────────────── */
+.lx-runhead { margin-top: 0; }
+.lx-runbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--lx-num);
+  align-items: baseline; gap: 12px var(--lx-gut);
+  margin: clamp(12px, 1.6vh, 20px) 0 0;
+  padding: 0 0 clamp(10px, 1.2vh, 16px);
+  font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-size: var(--lx-f1); letter-spacing: 0.13em; text-transform: uppercase;
+}
+/* Run name and pay period are ONE text node now. Two spans side by side were
+   two runs of text to read where the reader sees one label, and the period is
+   computed on the client — joining them means nothing to its left can be
+   pushed when it arrives. */
+/* NEVER truncated. This line is the only place on the page where the two
+   calendars appear, and an ellipsis lands on the Hijri half first — cutting
+   the exact fact it exists to show. It has no nowrap and no text-overflow;
+   instead the flex row wraps, so the run name and the pay period drop to a
+   second line when the measure is too narrow for one. On the widths where the
+   line fits (1280px and up, including the longest Hijri month name) it never
+   wraps; below that it costs one extra line and cuts nothing. */
+.lx-runbar-k { color: var(--lx-trust); letter-spacing: 0.08em; min-width: 0; }
+.lx-runbar-l {
+  display: flex; align-items: baseline; min-width: 0;
+  flex-wrap: wrap; column-gap: 12px; row-gap: 6px;
+}
+/* the column head for the figures below — right-aligned on the same edge,
+   so the register has a heading without a heading row */
+/* --lx-label, not --lx-trust. This head sits at the FAR right of the measure,
+   which is where .lx-brief::before's shaped light is thinnest and where the
+   aurora's bright phase comes closest to the ink: measured across the
+   animation it was 4.50:1 at 390px, i.e. failing on the worst frame and
+   passing on the next one. The lift is worth about half a point and takes it
+   off the line. Anything placed in this slot inherits that exposure — see
+   .lx-drift, which shares it. */
+.lx-runbar-n {
+  text-align: end; letter-spacing: 0.14em;
+  color: var(--lx-label); white-space: nowrap;
+}
+
+/* ── THE DRIFT CONTROL ──────────────────────────────────────────────────
+   WCAG 2.2.2 wants a pause mechanism for motion that runs past five seconds,
+   and pause-on-hover is a mitigation rather than conformance — so this is a
+   real button, in the tab order, with a real name ("Pause the turning
+   register", the rest of it visually hidden so the visible word is inside the
+   accessible name).
+
+   It lives in the run bar's right-hand slot, sharing that cell with the
+   "Employees" column head: below 1280px there is a figure column to head and
+   no motion to pause, at 1280px and up it is the other way round, so exactly
+   one of the two is ever displayed (see the drum block at the end of this
+   file). Quiet by construction — the run bar's own mono/uppercase/0.13em, no
+   fill, no border until you touch it — because the one thing this control
+   must not become is the sixth thing to look at.
+
+   display:none below the gate is deliberate and not a dodge: where the
+   control is hidden the loop is not running, so there is nothing to pause and
+   nothing to strand in the tab order. */
+.lx-drift {
+  display: none;              /* the drum block turns this on */
+  appearance: none;
+  align-items: center; gap: 7px;
+  margin: 0; padding: 3px 0 3px 2px;
+  font: inherit; font-size: inherit; letter-spacing: 0.14em;
+  text-transform: inherit; white-space: nowrap;
+  /* --lx-label for the same reason as .lx-runbar-n above: this is the most
+     exposed ink in the composition. Quiet is carried by size, tracking and
+     the absence of a fill, not by dimming a control below AA. */
+  color: var(--lx-label);
+  background: none; border: 0; border-radius: 3px;
+  cursor: pointer;
+  transition: color .18s ease, opacity .18s ease;
+}
+.lx-drift:hover { color: var(--lx-ink); }
+.lx-drift:focus-visible {
+  outline: 2px solid var(--lx-cyan);
+  outline-offset: 3px;
+  color: var(--lx-ink);
+}
+.lx-drift-g {
+  display: inline-flex; flex: 0 0 auto;
+  width: 9px; height: 9px;
+  opacity: 0.82;
+}
+.lx-drift-g svg { width: 100%; height: 100%; display: block; }
+
+/* ── THE TWO KINDS OF ROW ───────────────────────────────────────────────
+   Three rows are jurisdictions with a statutory pack and a headcount. Three
+   are capabilities that hold in every Gulf market and have no headcount,
+   because they are not places. The register must not pretend those are the
+   same kind of thing — and specifically must never let a capability face read
+   as a jurisdiction whose number is missing, which is the one way the sum
+   612 + 431 + 205 = 1,248 could be put in doubt. So the second kind is set in
+   the claim's own voice: the serif italic in --lx-cyan-soft that says "One
+   system of record" at the top of this panel.
+
+   TWO SIGNALS, NOT ONE, because one of them does not survive the language
+   switch: Arabic has no italic, so in RTL the family reverts and the COLOUR,
+   the absent figure and the lighter rule carry the distinction alone.
+   ─────────────────────────────────────────────────────────────────────── */
+.lx-reg-row[data-kind='wide'] .lx-reg-name {
+  font-family: var(--lx-serif), Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.008em;
+  color: var(--lx-cyan-soft);
+}
+/* (0,5,0) so it beats the rule above it: the Arabic face is not italic and
+   never renders in a Latin serif. */
+.lx-brief[dir='rtl'] .lx-reg-row[data-kind='wide'] .lx-reg-name {
+  font-family: var(--lx-ar), 'Noto Sans Arabic', system-ui, sans-serif;
+  font-style: normal;
+  letter-spacing: 0;
+}
+.lx-reg-row[data-kind='wide']:hover .lx-reg-name { color: #DFFBFF; }
+/* the stacked fallback: a lighter rule under a lighter kind of row */
+.lx-reg-row[data-kind='wide'] { border-bottom-color: rgba(150, 214, 255, 0.09); }
+/* Not a footnote, and now not second either. The figures below are invented;
+   this says so FIRST, leftmost in the same eyeline, at a size you cannot miss. */
+.lx-samp {
+  flex: 0 0 auto;
+  padding: 3px 9px 4px;
+  border: 1px solid rgba(255, 201, 129, 0.42);
+  border-radius: 3px;
+  letter-spacing: 0.16em; font-weight: 600;
+  color: var(--lx-gold);
+}
+
+/* ── the register ───────────────────────────────────────────────────────
+   A payroll run for a three-country group, typeset as a register rather than
+   drawn as a chart: the jurisdictions are named, the statutory packs are
+   named, and the three headcounts add up to the total. A finance reader
+   checks that addition in about a second, which is the point — a bar chart
+   offers nothing to check.
+   ─────────────────────────────────────────────────────────────────────── */
+/* A real table, laid out by grid. The table semantics are for the screen
+   reader; the grid is so the four figures share one right edge. */
+.lx-reg-t { display: block; width: 100%; border-collapse: collapse; margin: 0; }
+.lx-reg-t > tbody, .lx-reg-t > tfoot { display: block; }
+.lx-reg-t th, .lx-reg-t td { padding: 0; font-weight: inherit; text-align: start; vertical-align: baseline; }
+/* Two columns: who, and how many. The 72px code column is gone — "KSA" beside
+   "Saudi Arabia" was the same fact twice — and with it the vertical hairline
+   that used to separate them. */
+.lx-reg-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--lx-num);
+  align-items: baseline;
+  column-gap: var(--lx-gut);
+  padding: clamp(9px, 1.4vh, 16px) 0;
+  border-bottom: 1px solid rgba(150, 214, 255, 0.15);
+  transition: border-color .2s ease;
+}
+.lx-reg-row:hover { border-bottom-color: rgba(150, 214, 255, 0.32); }
+.lx-reg-row:hover .lx-reg-name { color: #FFFFFF; }
+.lx-reg-main { min-width: 0; }
+.lx-reg-name {
+  display: block;
+  font-size: var(--lx-f2); font-weight: 500;
+  letter-spacing: -0.012em; color: var(--lx-ink);
+  transition: color .2s ease;
+}
+/* --lx-trust, not --lx-muted. These sit at the bottom of the composition where
+   the shaped light is thinnest and the aurora's bright phase is what kills
+   small text: measured worst-case (p5 across the animation) put the Qatar
+   line at 3.76:1 in --lx-muted. */
+.lx-reg-pack {
+  display: block; margin-top: 4px;
+  font-size: var(--lx-f1); line-height: 1.45;
+  color: var(--lx-trust);
+}
+/* The statutory pack is a LIST of named systems, not a string with middots
+   baked into it. Flat, at full measure, they run on one line and the page's
+   own middot separates them. On the drum they stack — see the drum block. */
+.lx-reg-i + .lx-reg-i::before {
+  content: '·';
+  /* The real space in the markup supplies the gap before the middot; this
+     only has to match it on the other side. */
+  padding: 0 0.34em 0 0.04em;
+  color: rgba(201, 217, 242, 0.62);
+}
+/* `.lx-reg-t td` is (0,1,1) and `.lx-reg-n` was (0,1,0), so the generic
+   `text-align: start` above was beating this rule and every figure was sitting
+   against the LEFT of its column: 612, 431, 205 and 1,248 shared a left edge
+   with their hundreds, tens and units staggered, and the rules ran on past
+   them into empty field. A register whose column does not line up is not a
+   register — the whole reason to typeset the proof this way is that a finance
+   reader can add it up at a glance. Qualified so it wins. */
+.lx-reg-t td.lx-reg-n,
+.lx-reg-n {
+  font-size: var(--lx-f3); font-weight: 400;
+  letter-spacing: -0.028em; color: var(--lx-ink);
+  font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1;
+  text-align: end; white-space: nowrap;
+}
+
+/* the total. One heavier rule above it and a stated approval — the line a
+   CFO's auditor reads first. */
+.lx-reg-total {
+  display: grid;
+  position: relative;
+  margin-top: 0;
+  grid-template-columns: minmax(0, 1fr) var(--lx-num);
+  align-items: baseline;
+  column-gap: var(--lx-gut);
+  padding: clamp(14px, 1.9vh, 22px) 0 0;
+}
+.lx-reg-total::before {
+  content: '';
+  position: absolute; inset-inline: 0; top: 0; height: 1px;
+  background: linear-gradient(90deg,
+    rgba(169, 244, 255, 0.70) 0%, rgba(169, 244, 255, 0.34) 42%,
+    rgba(169, 244, 255, 0.19) 78%, rgba(169, 244, 255, 0.14) 100%);
+}
+[dir='rtl'] .lx-reg-total::before { transform: scaleX(-1); }
+.lx-reg-total .lx-reg-n { font-weight: 500; }
+/* "Total ✓ Approved" is ONE line. Stacked, the approval hung below the total's
+   own figure with nothing under it — a loose end at the bottom of a ledger,
+   which is the last place a finance reader will tolerate one. */
+.lx-reg-total .lx-reg-main {
+  display: flex; align-items: baseline; flex-wrap: wrap;
+  column-gap: clamp(14px, 1.4vw, 22px); row-gap: 4px;
+}
+/* --lx-ok rather than --lx-emerald-l: same green, lifted. It is the lowest run
+   of text in the composition and it measured 4.05:1 against the lit field. */
+.lx-reg-ok {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--lx-f1); color: var(--lx-ok);
+}
+.lx-reg-ok .lx-tick { color: var(--lx-ok); }
+
+/* The OUTPUT and CONTROL rows are deleted — thirty-one words of specification
+   printed under a statement. Both facts were true and neither changed a
+   decision at this distance: the WPS/SIF output is implied by three named
+   statutory packs closing as one run, and segregation of duties is a question
+   asked in a security review, where /security answers it. Deleting them also
+   retired the 72px axis column they were the last consumers of. */
+
+/* ── Arabic. The switch sets dir/lang on .lx-brief only: the document's own
+   direction is never touched, so the sign-in form is undisturbed. ──────── */
+.lx-brief[dir='rtl'] { --lx-ar-on: 1; }
+.lx-brief[dir='rtl'] :where(.lx-h1, .lx-reg-name, .lx-reg-pack, .lx-reg-ok) {
+  font-family: var(--lx-ar), 'Noto Sans Arabic', system-ui, sans-serif;
+}
+.lx-brief[dir='rtl'] .lx-h1 { font-weight: 400; letter-spacing: 0; line-height: 1.26; }
+.lx-brief[dir='rtl'] .lx-h1 .lx-accent { font-style: normal; }
+.lx-brief[dir='rtl'] .lx-reg-name { letter-spacing: 0; }
+
+/* ── one entrance, once. Nothing on this page loops except the field. ──── */
+.lx-rise { animation: lx-rise .62s cubic-bezier(.22, .78, .3, 1) both; }
+.lx-rise-1 { animation-delay: .04s }
+.lx-rise-2 { animation-delay: .12s }
+.lx-rise-3 { animation-delay: .19s }
+.lx-rise-4 { animation-delay: .25s }
+.lx-rise-5 { animation-delay: .31s }
+.lx-rise-6 { animation-delay: .37s }
+.lx-rise-7 { animation-delay: .44s }
+.lx-rise-8 { animation-delay: .50s }
+/* the total, last in, after all six faces */
+.lx-rise-9 { animation-delay: .57s }
+@keyframes lx-rise {
+  from { opacity: 0; transform: translate3d(0, 9px, 0); }
+  to   { opacity: 1; transform: none; }
+}
+/* There is no transition on the language flip. The text changes in place and
+   the direction flips with it: instant is honest, it cannot collide with the
+   entrance stagger above, and it is correct under reduced motion for free. */
+
+/* A legibility plate that TRAVELS WITH THE TEXT rather than with the scene.
+   Contrast on an animated field is a function of time — a ray or a bright
+   aurora core drifting under a paragraph is exactly what makes copy vanish —
+   so the runs that sit on open field carry their own soft backing. It has no
+   edge and no border: it reads as depth, not as a panel. */
+.lx-plate { position: relative; }
+.lx-plate::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: -26px -40px -26px -44px;
+  border-radius: 40px;
+  background: radial-gradient(112% 116% at 22% 50%,
+    rgba(3, 7, 16, 0.86) 0%, rgba(3, 7, 16, 0.70) 42%, rgba(3, 7, 16, 0.30) 70%, rgba(3, 7, 16, 0) 86%);
+  filter: blur(6px);
+  pointer-events: none;
+}
+.lx-vendor.lx-plate::before {
+  inset: -16px -32px 0 -32px;
+  border-radius: 28px;
+  background: linear-gradient(180deg,
+    rgba(3, 7, 16, 0) 0%, rgba(3, 7, 16, 0.62) 26%, rgba(3, 7, 16, 0.84) 60%, rgba(3, 7, 16, 0.88) 100%);
+  filter: blur(6px);
+}
+
+.lx-tick { width: 12px; height: 12px; color: currentColor; flex: 0 0 12px; }
+
+/* column chart — 2px surface gap, 3px rounded top, revealed with a transform */
+
+
+/* horizontal bars — value direct-labelled at the end of each bar */
+
+
+/* the Nitaqat scale — status carried by a label and a tick, never by colour */
+
+
+/* the table view every chart stands in for */
+.lx-sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   LEVEL 2 — THE CARD
+   The pane itself is drawn by the shader; this veil only guarantees the text
+   floor, and its inner highlight lines up with the shader bevel.
+   ══════════════════════════════════════════════════════════════════════ */
+.lx-pane { will-change: transform; }
+
+.lx-card {
+  border-radius: 24px;
+  padding: 30px 30px 24px;
+  background: linear-gradient(158deg, var(--lx-veil-a) 0%, var(--lx-veil-b) 100%);
+  box-shadow: inset 0 1px 0 var(--lx-hair), inset 0 -1px 0 rgba(0, 0, 0, 0.32);
+}
+
+.lx-back {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 0 0 10px; padding: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: var(--lx-f1); color: var(--lx-cyan);
+}
+.lx-back:hover { color: var(--lx-cyan-soft); }
+
+.lx-head-block { margin: 0 0 22px; }
+.lx-kicker {
+  margin: 0 0 7px; display: flex; align-items: center; gap: 8px;
+  font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-size: var(--lx-f1); letter-spacing: 0.22em; text-transform: uppercase; color: var(--lx-cyan);
+}
+.lx-kicker svg { width: 13px; height: 13px; stroke-width: 1.6; }
+.lx-title { margin: 0; font-size: var(--lx-f4); font-weight: 500; letter-spacing: -0.02em; line-height: 1.2; color: var(--lx-ink); }
+.lx-sub { margin: 7px 0 0; font-size: var(--lx-f2); line-height: 1.5; color: var(--lx-body); }
+
+.lx-form { display: flex; flex-direction: column; gap: 16px; }
+.lx-field { display: block; }
+.lx-legend { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.lx-legend label,
+.lx-legend > span:first-child {
+  font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-size: var(--lx-f1); letter-spacing: 0.085em; text-transform: uppercase; color: var(--lx-label);
+}
+.lx-link { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; font-size: var(--lx-f1); color: var(--lx-cyan); }
+.lx-link:hover { color: var(--lx-cyan-soft); text-decoration: underline; }
+
+.lx-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-size: var(--lx-f1); letter-spacing: 0.08em; text-transform: uppercase; color: var(--lx-emerald-l);
+}
+.lx-tag svg { width: 11px; height: 11px; stroke-width: 1.8; }
+
+.lx-inwrap { position: relative; display: block; }
+.lx-in {
+  display: block; width: 100%; height: 48px; padding: 0 15px;
+  border-radius: 12px; font: inherit; font-size: var(--lx-f2);
+  color: #F4F8FF; letter-spacing: -0.005em;
+  background: linear-gradient(180deg, var(--lx-input), var(--lx-input-2));
+  border: 1px solid var(--lx-input-br);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55), inset 0 -1px 0 rgba(150, 210, 255, 0.07);
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+  outline: none;
+}
+.lx-in::placeholder { color: var(--lx-placeholder); }
+.lx-in:hover { border-color: rgba(154, 204, 255, 0.46); }
+.lx-in:focus-visible, .lx-in:focus {
+  border-color: rgba(94, 235, 255, 0.85);
+  background: linear-gradient(180deg, rgba(4, 9, 22, 0.88), rgba(7, 14, 30, 0.76));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(47, 107, 255, 0.34), 0 0 22px rgba(94, 235, 255, 0.22);
+}
+.lx-in-pw { padding-right: 46px; }
+.lx-in-mono { font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace; letter-spacing: 0.04em; }
+.lx-in-code { font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace; font-size: var(--lx-f3); letter-spacing: 0.32em; text-align: center; }
+.lx-in-sm { font-size: var(--lx-f1); letter-spacing: 0.06em; }
+
+.lx-reveal {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 36px; height: 36px; display: grid; place-items: center;
+  border: 0; border-radius: 9px; background: transparent; cursor: pointer; color: var(--lx-muted);
+}
+.lx-reveal:hover { color: var(--lx-cyan); background: rgba(94, 235, 255, 0.10); }
+.lx-reveal svg { width: 18px; height: 18px; stroke-width: 1.6; }
+
+.lx-hint { margin: 6px 0 0; font-size: var(--lx-f1); color: var(--lx-muted); }
+.lx-uri {
+  margin: 0; font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-size: var(--lx-f1); line-height: 1.5; word-break: break-all; color: var(--lx-muted);
+}
+
+.lx-submit {
+  margin-top: 12px; width: 100%; height: 50px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  border: 0; border-radius: 12px; cursor: pointer;
+  font: inherit; font-size: var(--lx-f2); font-weight: 650; letter-spacing: -0.005em;
+  color: #031018;
+  background: linear-gradient(96deg, #35C6FF 0%, #5EEBFF 46%, #22D9AE 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 10px 28px rgba(47, 107, 255, 0.42),
+    0 0 30px rgba(94, 235, 255, 0.28);
+  transition: transform .16s ease, filter .16s ease;
+}
+.lx-submit:hover:not(:disabled) { filter: brightness(1.06); }
+.lx-submit:active:not(:disabled) { transform: translateY(1px); }
+.lx-submit:disabled { cursor: default; filter: saturate(0.5) brightness(0.78); }
+
+.lx-spin {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid rgba(3, 16, 24, 0.30); border-top-color: #031018;
+  animation: lx-spin 0.7s linear infinite;
+}
+@keyframes lx-spin { to { transform: rotate(360deg); } }
+
+.lx-fault, .lx-ok {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px 12px; border-radius: 10px; font-size: var(--lx-f1); line-height: 1.45;
+}
+.lx-fault { color: var(--lx-fault); background: var(--lx-fault-bg); border: 1px solid rgba(255, 138, 120, 0.36); }
+.lx-ok { color: var(--lx-ok); background: var(--lx-ok-bg); border: 1px solid rgba(80, 220, 180, 0.34); }
+.lx-fault p, .lx-ok p { margin: 0; }
+.lx-fault svg, .lx-ok svg { width: 15px; height: 15px; flex: 0 0 15px; margin-top: 1px; stroke-width: 1.8; }
+
+/* ONE line under the button — the only thing here that changes what someone
+   does next. The tenant-isolation / audit-trails / MFA strip and the sentence
+   explaining the pricing flow are both deleted. */
+.lx-card-foot {
+  margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--lx-rule);
+  display: flex; justify-content: center;
+}
+/* the secondary path, for someone who is not a customer yet */
+.lx-secondary {
+  font-size: var(--lx-f1); color: var(--lx-cyan); text-decoration: none;
+  display: inline-flex; align-items: center; min-height: 24px;
+}
+.lx-secondary:hover { color: var(--lx-cyan-soft); text-decoration: underline; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   BAND 3 / LEVEL 4 — the quiet tertiary group. No motion of its own.
+   ══════════════════════════════════════════════════════════════════════ */
+/* ONE ROW. The vendor block used to be a name, a seventeen-word explanation of
+   the processor relationship, a three-link nav, two mailto addresses and a
+   copyright line — five clusters and twenty-six words, at the quietest point
+   on the page. The copyright states who operates KynexOne in three words, and
+   the three links go to the pages that say the rest properly. */
+.lx-rail-bottom { border-top: 1px solid var(--lx-rule); padding-top: clamp(12px, 1.6vh, 18px); }
+.lx-vendor {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: clamp(20px, 3vw, 64px); flex-wrap: wrap;
+  max-width: 1860px; margin: 0 auto; width: 100%;
+}
+.lx-vendor-nav { display: flex; align-items: center; gap: clamp(16px, 1.6vw, 28px); }
+/* WCAG 2.2 SC 2.5.8 — a 24x24 target. The row is flex-aligned, so the extra
+   padding costs nothing visually. */
+.lx-vendor-nav a {
+  font-size: var(--lx-f1); font-weight: 500; color: var(--lx-label); text-decoration: none;
+  display: inline-flex; align-items: center; min-height: 24px; padding: 2px 2px;
+}
+.lx-vendor-nav a:hover { color: var(--lx-cyan); }
+.lx-vendor-copy { margin: 0; font-size: var(--lx-f1); color: var(--lx-trust); white-space: nowrap; }
+
+/* ── focus, everywhere ──────────────────────────────────────────────── */
+.lx-shell :where(a, button):focus-visible {
+  outline: 2px solid var(--lx-cyan); outline-offset: 2px; border-radius: 6px;
+}
+
+/* The store-badge overrides that used to live here are gone with the mobile
+   block they styled; StoreBadges.tsx itself is untouched and still ready for
+   the day the listings exist. Nothing on this page renders them, and dead
+   font-size declarations are exactly how a type scale rots back into eleven
+   sizes. */
+
+/* ══════════════════════════════════════════════════════════════════════
+   NARROWER
+   ══════════════════════════════════════════════════════════════════════ */
+/* A 717px-tall laptop is the binding constraint. Nothing here invents a new
+   size: the display and the title each STEP DOWN the scale by one, which is
+   the whole reason for having a scale. */
+@media (max-height: 859px) {
+  .lx-card { padding: 22px 24px 18px; }
+  .lx-head-block { margin: 0 0 14px; }
+  .lx-form { gap: 11px; }
+  .lx-in { height: 44px; }
+  .lx-submit { margin-top: 7px; height: 46px; }
+  .lx-card-foot { margin-top: 14px; padding-top: 12px; }
+  .lx-brief-top { margin-bottom: clamp(14px, 2.2vh, 26px); }
+  .lx-h1 { font-size: var(--lx-f4); }
+  .lx-runbar { margin-top: 12px; padding-bottom: 10px; }
+  .lx-reg-row { padding: 9px 0; }
+  .lx-reg-total { padding-top: 12px; }
+  .lx-title { font-size: var(--lx-f3); }
+  .lx-sub { margin-top: 5px; }
+}
+
+@media (max-width: 1279px) {
+  .tenant-login-shell.lx-shell { --lx-mark: clamp(76px, 7.4vw, 100px); }
+  .lx-stage {
+    grid-template-columns: minmax(0, 1fr) clamp(348px, 36vw, 404px);
+    grid-template-areas: 'hero form';
+    /* The glass the form sits behind is drawn by the shader, and it overhangs
+       .lx-slot by about 36px on the left. A 37px column gap therefore left the
+       register's figures and its "Employees" head sitting ON the glass edge at
+       1024. The gutter here has to clear the pane before it starts being a
+       gutter at all. */
+    column-gap: clamp(72px, 8.5vw, 104px);
+  }
+  .lx-brief { --lx-gut: 18px; --lx-num: 88px; max-width: none; }
+  /* The run bar must stay ONE line here: a "Sample data" chip orphaned onto a
+     line of its own is the ugliest thing this composition can do, and it is
+     also the marker that has to sit in the same eyeline as the figures. */
+  .lx-runbar { letter-spacing: 0.08em; }
+  .lx-runbar-l { column-gap: 10px; }
+  .lx-runbar-k { letter-spacing: 0.03em; }
+  .lx-samp { padding: 3px 6px 4px; letter-spacing: 0.10em; }
+  .lx-h1 { max-width: 17ch; }
+}
+
+@media (max-width: 940px) {
+  .lx-page { padding: 16px 18px 14px; }
+  .lx-stage {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'form' 'hero';
+    row-gap: 32px;
+    padding: 22px 0;
+  }
+  .lx-slot { width: 100%; max-width: 440px; margin: 0 auto; }
+  .lx-brief { max-width: 560px; margin: 0 auto; width: 100%; }
+  .lx-rail-top { flex-wrap: wrap; row-gap: 12px; }
+}
+
+@media (max-width: 620px) {
+  /* On a phone the mark is proportionally smaller — the form still has to be
+     above the fold — but it is still the largest object in the top band and
+     still the thing every ray comes from. */
+  .tenant-login-shell.lx-shell { --lx-mark: 66px; }
+  .lx-lockup { gap: 13px; }
+  .lx-page { padding: 14px 15px 12px; }
+  .lx-rail-top { padding-bottom: 13px; }
+  .lx-descriptor { letter-spacing: 0.16em; }
+  .lx-card { padding: 20px 17px 16px; border-radius: 20px; }
+  .lx-brief { --lx-gut: 14px; --lx-num: 76px; }
+  .lx-brief::before { inset: -30px -26px; filter: blur(18px); }
+  .lx-brief-top { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .lx-lang { margin-top: 0; order: -1; }
+  .lx-runbar-l { row-gap: 7px; }
+  .lx-title { font-size: var(--lx-f3); }
+  .lx-h1 { font-size: var(--lx-f4); }
+  .lx-vendor { gap: 12px; }
+  /* Lift the plated text rather than deepening the plate behind it. */
+  .lx-vendor, .lx-vendor-nav a { color: var(--lx-body); }
+  /* A narrow column means the radial plate above runs out before the text
+     does, and measured worst case on a phone put the vendor line at 2.69:1.
+     At this width it becomes a flat plate instead of a falloff. */
+  .lx-plate::before {
+    inset: -20px -22px;
+    border-radius: 28px;
+    /* Feathered at both ends so it dissolves into the field instead of
+       terminating on a visible edge. Peak alpha is well below opaque; the
+       remaining contrast comes from the brighter ink below. */
+    background: linear-gradient(180deg,
+      rgba(3, 7, 16, 0) 0%, rgba(3, 7, 16, 0.58) 18%,
+      rgba(3, 7, 16, 0.58) 82%, rgba(3, 7, 16, 0) 100%);
+    filter: blur(10px);
+  }
+  .lx-vendor.lx-plate::before {
+    inset: -16px -18px 0 -18px;
+    background: linear-gradient(180deg,
+      rgba(3, 7, 16, 0) 0%, rgba(3, 7, 16, 0.60) 22%, rgba(3, 7, 16, 0.64) 100%);
+    filter: blur(10px);
+  }}
+
+/* ══════════════════════════════════════════════════════════════════════
+   REDUCED MOTION — every loop stops and the frame stays COMPOSED: the shader
+   paints one still frame (useRenderCanvas parks the rAF loop), the panel stops
+   advancing, and every chart is painted in its FINAL state.
+   ══════════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  .lx-in, .lx-submit, .lx-reveal, .lx-back, .lx-link { transition: none; }
+  .lx-submit:active:not(:disabled) { transform: none; }
+  .lx-spin { animation: none; border-top-color: rgba(3, 16, 24, 0.55); }
+  /* The entrance and the language cross-fade are simply absent: every
+     element is already in its final position at its final opacity. */
+  .lx-rise { animation: none; opacity: 1; transform: none; }
+  .lx-lang-b, .lx-reg-row, .lx-reg-name { transition: none; }
+}
+
+/* ── The hero's supporting row: Arabic line + employee app, side by side and
+   compact. A stacked bullet card here was 272px tall and pushed the whole
+   hero 280px past the fold. */
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE DRUM — the register's six rows, turned in space, CONCAVE.
+
+   Last in the file deliberately, and every rule compounded with .lx-rise, so
+   the face transform survives the reduced-motion `transform: none` above it.
+   Under reduced motion the drum still stands at its rest angle: the rest
+   state IS the composed picture, so there is nothing to freeze into and
+   nothing moves. That is free correctness, not a fallback.
+
+   ≤1279px this whole block is absent and the register is exactly what it was:
+   six stacked rows, three of them with a figure. That is not a degradation —
+   with six rows the flat register is now the MORE legible of the two, and the
+   drum has to earn its place above 1280px. The CONTENT is identical at every
+   width: same six rows, same packs, same three figures, same total, same
+   table, same caption.
+
+   ── CONCAVE. THE SIGNS ARE DERIVED, NOT GUESSED ───────────────────────────
+   CSS rotateY(θ) maps (0,0,d) → (d·sinθ, 0, d·cosθ), with +z toward the eye.
+
+     convex  (what this was)   face: rotateY(φ) translateZ(+r)
+                               P = ( r·sinφ, 0, +r·cosφ ), n = ( sinφ,0,cosφ)
+                               — outer faces recede AND turn away.
+     concave (what this is)    face: rotateY(−φ) translateZ(−r)
+                               P = ( r·sinφ, 0, −r·cosφ ), n = (−sinφ,0,cosφ)
+                               — the normal points back at the axis, i.e. at
+                                 the eye. Centre face FURTHEST, edges NEAREST.
+
+   Both signs flip together: translateZ(−r) puts the surface on the far side
+   of the centre of curvature, rotateY(−φ) keeps face i on the side of the
+   composition it was already on, and the drum's own rotateY(−rot) keeps
+   "cursor right shows the right side" true. Change one and you get a mirrored
+   drum that still looks plausible in a still frame and is wrong in motion.
+
+   The ring is then pushed toward the eye by --cyl-park = r − k·sag, where
+   sag = r(1 − cos SPAN) is the depth of the arc: k=0 leaves the centre face
+   on the screen plane with the edges magnified in front of it, k=1 puts the
+   near edges on it, and --cyl-park is computed at k=0.8 in
+   LoginMarketing.tsx. That one number is the difference between a bowl and a
+   fisheye, because everything in front of the screen plane grows by D/(D−z):
+   measured at 1440px, k=0 put the six faces at 116/106/101/101/106/116 px in
+   a 729px band inside a 720px measure, and k=0.8 puts them at
+   96/91/89/89/91/96 in a 624px band.
+
+   ── NO GEOMETRY IS AUTHORED HERE ──────────────────────────────────────────
+   --cyl-w, --cyl-s, --cyl-r, --cyl-park, --cyl-d and --cyl-pitch all arrive
+   as custom properties from DRUM_VARS in LoginMarketing.tsx, derived there
+   from the single PITCH constant. The stylesheet used to carry a literal
+   radius (37.321·f1) that had to be recomputed by hand whenever the pitch
+   moved; it is gone, and with it the failure where the faces silently stop
+   sitting on the drum surface. What is authored here is everything that is
+   NOT geometry: the band height, the type, the rules, and the light.
+
+   MATERIAL: type, and one rule per face. No fill, no border, no radius, no
+   backing — a face with a surface is the glass card this page threw out,
+   re-introduced by the back door. The legibility floor is already handled by
+   .lx-brief::before, the edgeless shaped light over this whole region. What
+   carries the geometry is the RULE: six hairlines at six angles at six depths
+   is the clearest possible statement of a curved surface, and it cannot read
+   as a box because a box needs four sides and this has one. On a concave
+   surface those six rules bow DOWNWARD at the edges (the near faces project
+   taller and lower) while the six top lines bow up — the band opens toward
+   the reader, which is the whole difference from the drum this replaces.
+   ══════════════════════════════════════════════════════════════════════════ */
+@media (min-width: 1280px) {
+  .lx-brief {
+    /* name (up to 2 lines) + 5px + note (up to 2 lines, 3 in Arabic) + a
+       floor + figure. Six narrow faces mean the names and the packs both
+       wrap, which is the price of six; the height is fixed so that they wrap
+       WITHOUT moving the figure, because the three figures have to stay on
+       one baseline for 612 + 431 + 205 to read as a sum. */
+    --cyl-h: calc(var(--lx-f2) * 2.4 + 5px + var(--lx-f1) * 4.2 + var(--lx-f3) * 1.4);
+    --cyl-band: calc(var(--cyl-h) + 52px);
+  }
+
+  /* THE SCENE LIVES ON THE DRUM, NOT ON THE TABLE. perspective() as a
+     transform FUNCTION reaches the faces identically — they sit in the drum's
+     preserve-3d context, so it composes into their matrices — and its origin
+     is the drum's own transform-origin, which is already the band's centre.
+     So this needs no perspective-origin, and it leaves .lx-reg-t an ordinary
+     block rather than a containing block for the absolutely-positioned
+     .lx-sr <caption> and <thead>. Measured identical geometry to ancestor
+     perspective at every viewport and every rotation.
+
+     (It does NOT change what a pixel-sampling contrast audit enumerates: with
+     the rows out of flow, the hidden <thead>'s column heads register as text
+     runs either way. They paint nothing — the thead is a 1x1 box with
+     clip: rect(0 0 0 0), and a crop of the region is blank — so they come
+     back "ink not isolable". That is the audit describing invisible text
+     correctly, not text that got harder to read.)
+
+     translateX is OUTSIDE the perspective on purpose: the pan is a flat camera
+     move in the parent's space, not a shove along the drum's own axes.
+     Reading right to left, which is the order the matrices apply: rotate the
+     ring about its axis, push the whole ring forward by --cyl-park, project,
+     then dolly sideways. */
+  .lx-reg-t > tbody.lx-reg-drum {
+    display: block;
+    position: relative;
+    height: var(--cyl-band);
+    transform-style: preserve-3d;
+    /* THE CONTAINER IS A GHOST, AND IT MUST NOT CATCH THE POINTER. Parking
+       the ring forward (+--cyl-park) magnifies the tbody's OWN box by
+       D/(D−park) — here 2.2x, a 1560px invisible rectangle that reaches into
+       the sign-in column and would swallow clicks meant for the form. It
+       paints nothing, so it is simply removed from hit testing and the faces
+       take their own events back. This is also what makes "pause on pointer
+       over the drum" mean over a FACE rather than over a third of the page. */
+    pointer-events: none;
+    transform:
+      translateX(var(--cyl-pan, 0px))
+      perspective(var(--cyl-d))
+      translateZ(var(--cyl-park))
+      rotateY(calc(-1 * var(--cyl-rot, 0deg)));
+  }
+
+  /* a face */
+  .lx-reg-drum .lx-reg-row.lx-rise {
+    position: absolute;
+    top: 14px;
+    left: calc(50% - var(--cyl-w) / 2);
+    width: var(--cyl-w);
+    height: var(--cyl-h);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: stretch;
+    padding: 0;
+    border-bottom: 0;
+    backface-visibility: hidden;
+    pointer-events: auto;
+    transform:
+      rotateY(calc(-1 * var(--cyl-phi, 0deg)))
+      translateZ(calc(-1 * var(--cyl-r)));
+    /* the entrance keeps its opacity stagger and loses its translateY: a
+       translate keyframe fights the 3D transform */
+    animation-name: lx-fade;
+  }
+  @keyframes lx-fade { from { opacity: 0; } to { opacity: 1; } }
+
+  /* THE RULE. Lit from the left like every other rule on this page, and — on
+     a concave surface — BRIGHTEST where the face has come nearest the eye,
+     which is the outer faces. That is the opposite of the convex drum, where
+     the outer faces were turning out of the light, and it is the second cue
+     (after the rules bowing downward at the edges) that tells you which way
+     this surface is curving. --cyl-turn is |sin(φ+rot)|: 0 at the axis, 1 at
+     a quarter turn. */
+  .lx-reg-drum .lx-reg-row.lx-rise::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    bottom: -11px;
+    height: 1px;
+    background: linear-gradient(90deg,
+      rgba(169, 244, 255, calc(0.52 + 0.30 * var(--cyl-turn, 0))) 0%,
+      rgba(169, 244, 255, calc(0.26 + 0.16 * var(--cyl-turn, 0))) 52%,
+      rgba(169, 244, 255, calc(0.15 + 0.10 * var(--cyl-turn, 0))) 100%);
+  }
+  .lx-brief[dir='rtl'] .lx-reg-drum .lx-reg-row.lx-rise::after {
+    background: linear-gradient(270deg,
+      rgba(169, 244, 255, calc(0.52 + 0.30 * var(--cyl-turn, 0))) 0%,
+      rgba(169, 244, 255, calc(0.26 + 0.16 * var(--cyl-turn, 0))) 52%,
+      rgba(169, 244, 255, calc(0.15 + 0.10 * var(--cyl-turn, 0))) 100%);
+  }
+  /* A capability is not a jurisdiction, and its rule says so before you have
+     read a word: the same light, half of it. */
+  .lx-reg-drum .lx-reg-row[data-kind='wide'].lx-rise::after { opacity: 0.55; }
+  /* the row hover was a border colour; the border is gone */
+  .lx-reg-drum .lx-reg-row:hover { border-bottom-color: transparent; }
+
+  /* Six faces are narrow faces: 8·f1 against the 17.6·f1 three of them had.
+     So the name WRAPS here (it could not before) and the institutions stack
+     one per line beneath it. Both are top-aligned against a shared top line,
+     which is the line the arc bends — if they were centred the curve would
+     read as six drifting cards instead of one surface. */
+  .lx-reg-drum .lx-reg-name {
+    white-space: normal;
+    line-height: 1.18;
+    letter-spacing: -0.016em;
+    text-wrap: balance;
+  }
+  .lx-reg-drum .lx-reg-pack {
+    margin-top: 5px;
+    line-height: 1.34;
+    text-wrap: pretty;
+  }
+  /* ONE SYSTEM PER LINE, and no separator to strand at a break. Four lines
+     under Saudi Arabia against two under the UAE and Qatar is the statutory
+     depth stated as a shape, before a word of it is read. */
+  .lx-reg-drum .lx-reg-i { display: block; }
+  .lx-reg-drum .lx-reg-i + .lx-reg-i::before { content: none; }
+
+  /* A 'wide' face has no figure, so without this its phrase would sit in the
+     top third of a fixed-height face over a void the height of the figure it
+     does not have. Its line drops to the BOTTOM of the face instead: the band
+     then reads as two bands of type — six names along the arc's top line,
+     three figures and three phrases along its foot — and the air is in the
+     middle of the face, where air belongs, instead of hanging under it. */
+  .lx-reg-drum .lx-reg-row[data-kind='wide'] .lx-reg-main {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  /* The figure LEFT-aligned inside its face and pinned to the bottom of it:
+     it keeps a constant offset from each card's leading edge, so the three
+     read at a regular rhythm and sit on ONE baseline however the lines above
+     them wrap. Right aligned, each number would sit on its own face's most
+     foreshortened edge. */
+  .lx-reg-t .lx-reg-drum .lx-reg-row td.lx-reg-n {
+    display: block;
+    text-align: start;
+    line-height: 1.1;
+    /* the nearest number catches the most light. Ink colour never changes,
+       so every measured contrast ratio on this page is preserved — a face
+       gets MORE glow as it comes forward, never dimmer ink. */
+    text-shadow: 0 0 calc(14px + 18px * var(--cyl-turn, 0))
+      rgba(120, 198, 255, calc(0.14 + 0.22 * var(--cyl-turn, 0)));
+  }
+
+  /* The run bar's right-hand slot changes hands. There is no right-hand
+     figure column in drum mode for "Employees" to head — the figures are
+     inside the faces — so the head steps aside and the drift's pause control
+     takes the cell, in the same type, on the same edge. */
+  .lx-runbar-n { display: none; }
+  @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+    .lx-drift { display: inline-flex; justify-self: end; }
+  }
+
+  /* the total sits under the band, flat, full measure, on the spine —
+     untouched apart from the space the band now occupies above it */
+  .lx-reg-t > tfoot { position: relative; }
+}
