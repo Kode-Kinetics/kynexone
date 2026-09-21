@@ -32,7 +32,7 @@ namespace Zayra.Api.Controllers;
 [ApiController]
 [Route("api/jobs")]
 [Authorize]
-[HasPermission(BackgroundJobPermissions.AttendanceRead)]
+[HasPermission(BackgroundJobPermissions.AttendanceRead, BackgroundJobPermissions.AuditRead)]
 public sealed class JobsController : ControllerBase
 {
     private readonly BackgroundJobStore _store;
@@ -114,8 +114,15 @@ public static class BackgroundJobPermissions
 {
     public const string AttendanceRead = "attendance.read";
 
+    /// <summary>
+    /// D3 — the data-retention sweep's view key. Reading a retention run means reading who was erased,
+    /// what was kept and on what statutory basis, so it is gated on the audit permission rather than on
+    /// any HR module's: the audience for a purge report is whoever answers to an assessor.
+    /// </summary>
+    public const string AuditRead = "audit.read";
+
     /// <summary>Everything the controller-level <c>[HasPermission]</c> admits.</summary>
-    public static readonly IReadOnlyList<string> AnyView = [AttendanceRead];
+    public static readonly IReadOnlyList<string> AnyView = [AttendanceRead, AuditRead];
 }
 
 /// <summary>Public shape of a job. Lease internals and the raw payload are deliberately not exposed.</summary>

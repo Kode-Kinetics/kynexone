@@ -4,6 +4,7 @@ using Zayra.Api.Controllers;
 using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Jobs;
+using Zayra.Api.Infrastructure.Retention;
 
 namespace Zayra.Api.Tests;
 
@@ -11,7 +12,8 @@ namespace Zayra.Api.Tests;
 public sealed class BackgroundJobInfrastructureTests
 {
     /// <summary>Every production job type registered in Program.cs. Wave 2 adds payroll descriptors here.</summary>
-    private static readonly BackgroundJobTypeDescriptor[] ProductionTypes = [AttendanceProcessingJobHandler.Descriptor];
+    private static readonly BackgroundJobTypeDescriptor[] ProductionTypes =
+        [AttendanceProcessingJobHandler.Descriptor, DataRetentionSweepJobHandler.Descriptor];
 
     [Fact]
     public void JobsController_CoarsePermissionGate_CoversEveryRegisteredJobType()
