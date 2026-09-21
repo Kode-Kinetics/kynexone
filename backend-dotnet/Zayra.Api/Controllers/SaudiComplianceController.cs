@@ -162,7 +162,14 @@ public class SaudiComplianceController : ControllerBase
     /// </summary>
     [HttpGet("nitaqat/hire-impact")]
     public async Task<IActionResult> GetNitaqatHireImpact(
-        [FromQuery] string nationality, [FromQuery] int count = 1,
+        // `string?`, not `string`. Under <Nullable>enable</Nullable> a non-nullable reference
+        // parameter is implicitly [Required], so [ApiController]'s automatic model-state filter
+        // rejected a missing nationality with a generic ValidationProblemDetails BEFORE this
+        // action ran — and the hand-written `nationality_required` contract below, which the
+        // clients and e2e suite are written against, was unreachable dead code. Annotating the
+        // parameter nullable is what lets the documented error actually be returned. The guard
+        // itself is unchanged and still rejects whitespace, which model validation never caught.
+        [FromQuery] string? nationality, [FromQuery] int count = 1,
         [FromQuery] Guid? companyId = null, CancellationToken cancellationToken = default)
     {
         if (!HasPermission("compliance.read") && !HasPermission("qiwa.read")) return Forbid();
