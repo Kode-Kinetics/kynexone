@@ -174,9 +174,9 @@ public class NotificationService : INotificationService
                 if (!moduleState.IsEnabled(owningModule.Key))
                 {
                     _log.LogInformation(
-                        "Notification suppressed: module {Module} is disabled for tenant {TenantId} "
+                        "Notification suppressed: a disabled module for tenant {TenantId} "
                         + "(event {EventCode}, category {Category}).",
-                        owningModule.Key, request.TenantId, request.EventCode, moduleCategory);
+                        request.TenantId, request.EventCode, moduleCategory);
                     return [];
                 }
             }
