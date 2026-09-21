@@ -348,11 +348,16 @@ public static class TenantProvisioningBundle
     // (Previously ApprovalPolicy rows — which only leave read, and which tenants never saw in the
     // Approvals UI.) Same content as before: one HR-approver step, editable by the tenant.
 
+    // Every entry must name an entity in ApprovalEntities.Producers — ApprovalProducerRegistryTests
+    // asserts it. OVERTIME-DEFAULT and PAYROLL-DEFAULT used to sit in this list and routed nothing:
+    // overtime is decided on its own aggregate through its own two-stage chain, and no code path has
+    // ever created an ApprovalRequest for a payroll run. A tenant could open either workflow, add a
+    // second approver, save it and be shown it back, and the next overtime approval or payroll run
+    // would ignore it in silence. A seeded default for an entity with no producer is not a helpful
+    // starting point; it is a control the client believes they have.
     private static readonly (string EntityName, string Code, string Name)[] ApprovalDefaults =
     {
         (nameof(LeaveRequest), "LEAVE-DEFAULT", "Default Leave Approval"),
-        (nameof(OvertimeRequest), "OVERTIME-DEFAULT", "Default Overtime Approval"),
-        ("PayrollRun", "PAYROLL-DEFAULT", "Default Payroll Approval"),
         // Without this row the first timesheet a tenant submits 422s with
         // approval_route_not_configured — the module would look shipped and be unusable.
         (TimesheetConstants.ApprovalEntityName, "TIMESHEET-DEFAULT", "Default Timesheet Approval"),

@@ -1002,8 +1002,10 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
     appliesOnProbation: existing?.appliesOnProbation ?? false,
     annualEntitlementDays: existing?.annualEntitlementDays ?? 21,
     accrualMethod: existing?.accrualMethod ?? 'Monthly',
-    carryForwardMax: existing?.carryForwardMax ?? 0,
-    carryForwardExpiry: existing?.carryForwardExpiry ?? 0,
+    // Pinned to 0, not echoed from the stored policy: a legacy row may hold a cap that was never
+    // applied, and sending it back would make every edit of that policy fail the API's refusal.
+    carryForwardMax: 0,
+    carryForwardExpiry: 0,
     encashmentAllowed: existing?.encashmentAllowed ?? false,
     encashmentMaxDays: existing?.encashmentMaxDays ?? 0,
     minimumDaysPerRequest: existing?.minimumDaysPerRequest ?? 1,
@@ -1076,7 +1078,12 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
                 {['Monthly', 'Yearly', 'Prorated'].map(m => <option key={m}>{m}</option>)}
               </select>
             </Field>
-            <Field label="Carry-Forward Max (0=none)"><input type="number" step="0.5" className={inp} value={form.carryForwardMax} onChange={e => set('carryForwardMax', Number(e.target.value))} /></Field>
+            {/* "Carry-Forward Max" was removed, not hidden. There is no leave year-end process of
+                any kind — no accrual job, no roll-over job, no expiry job — so a cap entered here
+                was stored, read back on screen, and consulted by nothing: on 1 January no balance
+                moved. The API now refuses a non-zero cap (leave_carry_forward_not_implemented), so
+                offering the input would only produce an error the client cannot act on. It comes
+                back in the same change that builds the year-end job. */}
           </div>
         </div>
 
@@ -1315,7 +1322,10 @@ function HolidayCalendarTab() {
       date: toInputDate(h.date),
       hijriDate: h.hijriDate ?? '',
       holidayType: h.holidayType ?? 'National',
-      isRecurring: h.isRecurring ?? false,
+      // Always false, never h.isRecurring: a legacy row may carry the flag, and echoing it back
+      // would make every edit of that holiday fail the API's refusal. Clearing it on the next save
+      // is the honest outcome — the holiday never recurred.
+      isRecurring: false,
       isOptional: h.isOptional ?? false,
     });
     setHolidayModal('edit');
@@ -1392,7 +1402,9 @@ function HolidayCalendarTab() {
                         {h.hijriDate && <span className="text-xs text-slate-400">({h.hijriDate} Hijri)</span>}
                         <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-white/10">{h.holidayType}</span>
                         {h.isOptional && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Optional</span>}
-                        {h.isRecurring && <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">Recurring</span>}
+                        {/* The "Recurring" badge is gone with the checkbox: it was the visible half
+                            of the promise. A holiday marked recurring on a legacy row still never
+                            rolled forward, so showing the badge would keep asserting it. */}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
@@ -1485,10 +1497,12 @@ function HolidayCalendarTab() {
               </select>
             </Field>
             <div className="flex gap-4">
-              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                <input type="checkbox" checked={holidayForm.isRecurring} onChange={e => setHolidayForm(f => ({ ...f, isRecurring: e.target.checked }))} className="rounded" />
-                Recurring
-              </label>
+              {/* The "Recurring" checkbox was removed. Nothing has ever expanded a recurring
+                  holiday into the next year: calendars are per CalendarYear and no scheduled job
+                  exists that could roll one forward. Ticking it promised a rollover that never
+                  happened, and next January's calendar arrived empty with every leave working-day
+                  count wrong from day one. The API now refuses it
+                  (holiday_recurrence_not_implemented). */}
               <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                 <input type="checkbox" checked={holidayForm.isOptional} onChange={e => setHolidayForm(f => ({ ...f, isOptional: e.target.checked }))} className="rounded" />
                 Optional

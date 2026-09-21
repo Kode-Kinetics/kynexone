@@ -625,7 +625,18 @@ public class LeaveService : ILeaveService
         // a single "manager, else HR Manager" step — so a configured two-step chain executed as one
         // click. A tenant with no applicable workflow now gets ApprovalRouteNotConfiguredException: the
         // submission is refused, this transaction rolls back, and no balance is reserved.
-        var route = await _router.ResolveAsync(tenantId, request.EmployeeId, nameof(LeaveRequest), ct);
+        //
+        // Per-leave-type routing: the effective policy's ApprovalWorkflowId, if it names an active
+        // LeaveRequest workflow, wins over the specificity match. That field has been settable on
+        // leave policies since before F1 and was read by nothing — "sick leave is approved by HR
+        // only, annual goes line manager → HR, unpaid needs the MD" saved, read back, and then every
+        // type routed through the one department-level workflow, so the line manager saw the sick
+        // notes. A pin that no longer resolves (workflow deleted, deactivated, or moved to another
+        // entity) falls through to the tier match rather than refusing the submission.
+        var route = (effectivePolicy?.ApprovalWorkflowId is { } pinnedWorkflowId
+                        ? await _router.ResolvePinnedAsync(tenantId, pinnedWorkflowId, nameof(LeaveRequest), ct)
+                        : null)
+                    ?? await _router.ResolveAsync(tenantId, request.EmployeeId, nameof(LeaveRequest), ct);
         var firstStep = route.FirstStep;
         var firstApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, firstStep, ct);
         request.Status = StatusForPendingStep(firstStep);

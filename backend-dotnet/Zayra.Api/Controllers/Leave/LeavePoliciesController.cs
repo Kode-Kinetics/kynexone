@@ -76,6 +76,9 @@ public class LeavePoliciesController : ControllerBase
         if (!leaveTypeExists)
             return BadRequest(new { message = "Leave type not found." });
 
+        if (RefuseCarryForward(req.CarryForwardMax, req.CarryForwardExpiry) is { } carryForwardRefusal)
+            return carryForwardRefusal;
+
         var policy = new LeavePolicy
         {
             TenantId = tenantId.Value,
@@ -116,6 +119,35 @@ public class LeavePoliciesController : ControllerBase
         return Created($"/api/leave/policies/{policy.Id}", policy);
     }
 
+    /// <summary>
+    /// A cap with nothing to cap. <c>CarryForwardMax</c> ("Carry-Forward Max (0=none)") and
+    /// <c>CarryForwardExpiry</c> were stored and read by nothing, because <b>there is no leave
+    /// year-end process of any kind</b>: no accrual job, no roll-over job, no expiry job. The one
+    /// background job type the product registers is <c>attendance.process</c>. On 1 January nothing
+    /// happens — no balance rolls over, nothing expires, and the cap the client spent UAT arguing
+    /// about was never consulted because nothing ever tried to carry anything forward.
+    /// <c>LeaveService</c>'s <c>case "CarryForward"</c> is a balance-transaction type that nothing
+    /// ever posts.
+    ///
+    /// <para>So a cap is refused rather than stored. Zero — the documented "none" value — is
+    /// accepted, because it is the only value that is currently true. When the year-end job is
+    /// built (<c>LeaveAccrualRule</c> is its data model, which is why that entity must not be
+    /// deleted), this guard comes out in the same change as the consumer goes in.</para>
+    /// </summary>
+    private IActionResult? RefuseCarryForward(decimal? max, int? expiry)
+        => (max is > 0m) || (expiry is > 0)
+            ? BadRequest(new
+            {
+                error = "leave_carry_forward_not_implemented",
+                message =
+                    "Leave carry-forward is not implemented in this build, so a carry-forward cap or expiry cannot "
+                    + "be configured. There is no year-end process: no balance rolls over on 1 January, nothing "
+                    + "expires, and a stored cap would never be consulted — it would read back correctly on screen "
+                    + "and govern nothing. Leave both at 0 (the documented 'none' value). Unused balance is handled "
+                    + "today by encashment, which is enforced.",
+            })
+            : null;
+
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateLeavePolicyRequest req, CancellationToken ct)
@@ -126,6 +158,9 @@ public class LeavePoliciesController : ControllerBase
         var policy = await _db.LeavePolicies
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
         if (policy is null) return NotFound();
+
+        if (RefuseCarryForward(req.CarryForwardMax, req.CarryForwardExpiry) is { } carryForwardRefusal)
+            return carryForwardRefusal;
 
         if (!string.IsNullOrWhiteSpace(req.Name)) policy.Name = req.Name;
         if (req.CountryCode is not null) policy.CountryCode = req.CountryCode;

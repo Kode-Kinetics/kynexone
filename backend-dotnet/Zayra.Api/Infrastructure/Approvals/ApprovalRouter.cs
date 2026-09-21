@@ -93,6 +93,32 @@ public sealed class ApprovalRouter : IApprovalRouter
         return route;
     }
 
+    public async Task<ApprovalRoute?> ResolvePinnedAsync(Guid tenantId, Guid workflowId, string entityName, CancellationToken ct)
+    {
+        if (workflowId == Guid.Empty) return null;
+        var entity = (entityName ?? string.Empty).Trim();
+        if (entity.Length == 0) return null;
+
+        // Active AND for this entity. A pin is configuration, so an honoured pin must satisfy every
+        // condition the specificity match would have: pinning a deactivated workflow, or one
+        // belonging to a different entity, is a misconfiguration and falls back rather than routing
+        // an approval somewhere the tenant would not recognise. Department/grade scoping is
+        // deliberately NOT re-checked — an explicit pin is a narrower statement than the tier rule
+        // and overriding it is the whole point.
+        var w = await _db.ApprovalWorkflows.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Id == workflowId && x.IsActive && x.EntityName == entity)
+            .Select(x => new { x.Id, x.Code, x.Name, x.EntityName, x.DepartmentId, x.GradeId })
+            .FirstOrDefaultAsync(ct);
+        if (w is null) return null;
+
+        var route = new ApprovalRoute(w.Id, w.Code, w.Name, w.EntityName, w.DepartmentId, w.GradeId, "Pinned",
+            await LoadStepsAsync(tenantId, w.Id, ct));
+        // Same validation as every other route: a pinned workflow with no final step cannot complete
+        // a request, and failing loudly here beats stranding the request mid-chain.
+        Validate(tenantId, route);
+        return route;
+    }
+
     public async Task<ApprovalRoute?> LoadAsync(Guid tenantId, Guid workflowId, CancellationToken ct)
     {
         if (workflowId == Guid.Empty) return null;
