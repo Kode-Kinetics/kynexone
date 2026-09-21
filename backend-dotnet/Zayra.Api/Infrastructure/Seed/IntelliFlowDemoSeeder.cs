@@ -440,8 +440,12 @@ public static class IntelliFlowDemoSeeder
         {
             if (!usersByEmail.TryGetValue(email, out var linkUser))
             {
+                var atIndex = email.IndexOf('@');
+                var maskedEmail = atIndex > 1
+                    ? $"{email[0]}***{email.Substring(atIndex)}"
+                    : "***";
                 logger.LogWarning(
-                    "IntelliFlowDemoSeeder: user '{Email}' was not seeded — skipping employee link.", email);
+                    "IntelliFlowDemoSeeder: user '{Email}' was not seeded — skipping employee link.", maskedEmail);
                 continue;
             }
             db.EmployeeUserAccounts.Add(new EmployeeUserAccount
