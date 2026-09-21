@@ -52,7 +52,7 @@ public class AttendanceScopeAndApprovalQueueTests
         await db.SaveChangesAsync();
         var controller = new LeaveRequestsController(
             db,
-            new LeaveService(db, new ApprovalPolicyService(db)),
+            new LeaveService(db, new ApprovalRouter(db)),
             new FixedScope(allowed.Id),
             new NullNotificationService());
         controller.ControllerContext = CreateControllerContext(tenantId, Guid.NewGuid(), "Manager", "approvals.decide");

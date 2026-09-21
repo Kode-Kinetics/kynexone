@@ -242,7 +242,7 @@ export default function PlatformRolesPage() {
               <thead>
                 <tr className="border-b border-white/[0.05]">
                   {['Name', 'Email', 'Role', 'Status', ''].map(h => (
-                    <th key={h} className="px-4 py-2 text-left text-xs font-semibold uppercase text-slate-500">{h}</th>
+                    <th key={h} className="px-4 py-2 text-start text-xs font-semibold uppercase text-slate-500">{h}</th>
                   ))}
                 </tr>
               </thead>

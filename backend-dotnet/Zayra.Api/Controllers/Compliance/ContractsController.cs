@@ -151,6 +151,7 @@ public class ContractsController : ControllerBase
         string htmlAr = req.ContentHtmlAr ?? string.Empty;
 
         // If template provided, use its content
+        var mergedFromTemplate = false;
         if (req.TemplateId.HasValue)
         {
             var tmpl = await _db.ContractTemplates.FirstOrDefaultAsync(x => x.Id == req.TemplateId.Value && x.TenantId == tid, ct);
@@ -158,6 +159,47 @@ public class ContractsController : ControllerBase
             {
                 htmlEn = string.IsNullOrEmpty(htmlEn) ? tmpl.ContentHtmlEn : htmlEn;
                 htmlAr = string.IsNullOrEmpty(htmlAr) ? tmpl.ContentHtmlAr : htmlAr;
+
+                // ── Merge fields ────────────────────────────────────────────────────────────
+                // The template body used to be copied verbatim, so a template written with
+                // {{employee_name}} produced a contract that literally said "{{employee_name}}" —
+                // and ContractTemplate.Variables, the declared merge-field list, was written on
+                // create and read by nothing. Both halves are live now: the declaration is checked
+                // against what this build can supply, and the body is filled. See
+                // ContractMergeFields for why an unresolved placeholder refuses rather than ships.
+                if (Zayra.Api.Infrastructure.Compliance.ContractMergeFields
+                        .ValidateDeclaredVariables(tmpl.Variables) is { } declarationError)
+                    return BadRequest(new { error = declarationError.Code, message = declarationError.Message });
+
+                var companyName = employee.CompanyId is { } companyId
+                    ? await _db.Companies.Where(c => c.TenantId == tid && c.Id == companyId)
+                        // The legal name, not the trade name: this is the party to the contract.
+                        .Select(c => c.LegalNameEn).FirstOrDefaultAsync(ct) ?? string.Empty
+                    : string.Empty;
+
+                var values = Zayra.Api.Infrastructure.Compliance.ContractMergeFields.BuildValues(
+                    employeeName: employee.FullName,
+                    employeeCode: employee.EmployeeCode,
+                    designation: employee.Designation,
+                    department: employee.Department,
+                    startDate: req.StartDate,
+                    endDate: req.EndDate,
+                    basicSalary: req.BasicSalary,
+                    currency: contractCurrency,
+                    contractNumber: contractNumber,
+                    contractType: req.ContractType ?? "Employment",
+                    companyName: companyName);
+
+                var mergedEn = Zayra.Api.Infrastructure.Compliance.ContractMergeFields.Merge(htmlEn, values);
+                if (!mergedEn.IsSuccess)
+                    return BadRequest(new { error = mergedEn.Error!.Value.Code, message = mergedEn.Error!.Value.Message, language = "en" });
+                var mergedAr = Zayra.Api.Infrastructure.Compliance.ContractMergeFields.Merge(htmlAr, values);
+                if (!mergedAr.IsSuccess)
+                    return BadRequest(new { error = mergedAr.Error!.Value.Code, message = mergedAr.Error!.Value.Message, language = "ar" });
+
+                htmlEn = mergedEn.Html;
+                htmlAr = mergedAr.Html;
+                mergedFromTemplate = true;
             }
         }
 
@@ -187,7 +229,7 @@ public class ContractsController : ControllerBase
             TenantId = tid, EntityType = "Contract", EntityId = contract.Id.ToString(),
             EmployeeId = employee.PublicId,
             Action = "Created", PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
-            MetadataJson = System.Text.Json.JsonSerializer.Serialize(new { contractNumber, contract.ContractType }),
+            MetadataJson = System.Text.Json.JsonSerializer.Serialize(new { contractNumber, contract.ContractType, mergedFromTemplate }),
         });
 
         await _db.SaveChangesAsync(ct);

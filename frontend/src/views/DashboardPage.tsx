@@ -9,7 +9,6 @@ import {
   ArrowRight,
   ArrowUpRight,
   BadgeDollarSign,
-  MessageSquareText,
   Building2,
   CalendarCheck,
   CalendarPlus,
@@ -21,7 +20,6 @@ import {
   FileWarning,
   RefreshCw,
   ShieldAlert,
-  Lightbulb,
   TrendingDown,
   TrendingUp,
   UserPlus,
@@ -30,9 +28,7 @@ import {
 } from 'lucide-react';
 import { dashboardApi } from '../api/dashboard';
 import type { DashboardFull, ActivityFeedItem } from '../api/dashboard';
-import { aiAssistantApi } from '../api/intelligence';
-import type { AIInsight } from '../api/intelligence';
-import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { WorkforceBriefingPanel } from '../components/dashboard/WorkforceBriefingPanel';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { CalendarDays, Moon, Clock3 } from 'lucide-react';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
@@ -121,7 +117,7 @@ function Card({
       <button
         type="button"
         onClick={onClick}
-        className={`${base} text-left transition-shadow hover:shadow-md ${className}`}
+        className={`${base} text-start transition-shadow hover:shadow-md ${className}`}
       >
         {title && <CardHead title={title} right={titleRight} />}
         {children}
@@ -283,7 +279,7 @@ function KpiCard({ kpi, loading, router }: { kpi: KpiDef; loading: boolean; rout
     <button
       type="button"
       onClick={() => router.push(kpi.to)}
-      className={`group relative flex flex-col gap-3 overflow-hidden rounded-2xl border bg-gradient-to-b to-transparent p-5 text-left transition hover:-translate-y-0.5 hover:shadow-lg dark:bg-[#0e1729]/80 dark:hover:shadow-black/40 ${ACCENT[kpi.tone]} ${kpi.primary ? 'col-span-2' : ''}`}
+      className={`group relative flex flex-col gap-3 overflow-hidden rounded-2xl border bg-gradient-to-b to-transparent p-5 text-start transition hover:-translate-y-0.5 hover:shadow-lg dark:bg-[#0e1729]/80 dark:hover:shadow-black/40 ${ACCENT[kpi.tone]} ${kpi.primary ? 'col-span-2' : ''}`}
       aria-label={`${kpi.label}: ${kpi.value}`}
     >
       <div className="flex items-center justify-between">
@@ -300,7 +296,7 @@ function KpiCard({ kpi, loading, router }: { kpi: KpiDef; loading: boolean; rout
         {kpi.trend === 'down' && <TrendingDown className="mb-1 h-4 w-4 shrink-0 text-rose-500" />}
       </div>
       <p className="text-[11px] font-medium leading-tight text-slate-500 dark:text-slate-400">{kpi.sub}</p>
-      <ArrowUpRight className="absolute right-3 top-3 h-3.5 w-3.5 text-slate-300 opacity-0 transition-opacity group-hover:opacity-100 dark:text-slate-600" />
+      <ArrowUpRight className="absolute end-3 top-3 h-3.5 w-3.5 text-slate-300 opacity-0 transition-opacity group-hover:opacity-100 dark:text-slate-600" />
     </button>
   );
 }
@@ -438,9 +434,7 @@ function CalendarDate() {
 
 export function DashboardPage() {
   const router = useRouter();
-  const { isFeatureEnabled } = useFeatureFlags();
   const [data, setData] = useState<DashboardFull | null>(null);
-  const [insights, setInsights] = useState<AIInsight[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(true);
@@ -459,17 +453,12 @@ export function DashboardPage() {
           setError('Dashboard data could not be loaded. Metrics are unavailable; retry after checking the API and cache service.');
         }),
     ];
-    if (isFeatureEnabled('ai_assistant')) {
-      tasks.push(
-        aiAssistantApi.listInsights({ acknowledged: false })
-          .then((r) => setInsights(r.items))
-          .catch(() => {}),
-      );
-    }
+    // AI insights are NOT fetched here. WorkforceBriefingPanel owns that call so a slow or
+    // unavailable AI surface can never delay the rest of the dashboard rendering.
     await Promise.allSettled(tasks);
     setLoading(false);
     loadRef.current = false;
-  }, [isFeatureEnabled]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 
@@ -607,6 +596,13 @@ export function DashboardPage() {
 
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
+      {/* ── Workforce Briefing ──────────────────────────────────────────────
+          First thing on the page. Self-fetching and self-gating: it hides itself when the
+          tenant has the AI Assistant module switched off or the caller lacks
+          ai.insights_view, and it is never awaited by load(), so it cannot delay anything
+          below it. */}
+      <WorkforceBriefingPanel />
+
       {/* ── Command header ─────────────────────────────────────────────────── */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
@@ -682,9 +678,13 @@ export function DashboardPage() {
           { label: 'Pending Leave',          value: kpis.pendingLeaveRequests,         tone: 'amber' as const, to: '/leave'      },
           { label: 'Attendance Corrections', value: kpis.pendingAttendanceCorrections, tone: 'amber' as const, to: '/attendance' },
           { label: 'Attendance Exceptions',  value: kpis.attendanceExceptions,         tone: 'rose'  as const, to: '/attendance' },
-          { label: 'Expiring Documents',     value: kpis.expiringDocuments,            tone: 'amber' as const, to: '/compliance' },
-          { label: 'Expired Documents',      value: kpis.expiredDocuments,             tone: 'rose'  as const, to: '/compliance' },
-          { label: 'Missing Documents',      value: kpis.missingDocuments,             tone: 'rose'  as const, to: '/compliance' },
+          // These three count rows of EmployeeDocuments. /compliance's own tabs read the visa /
+          // passport / work-permit / contract records instead, so the bare link landed on a page
+          // that could not show the number it was clicked from. The Employee Documents tab is where
+          // this data actually lives.
+          { label: 'Expiring Documents',     value: kpis.expiringDocuments,            tone: 'amber' as const, to: '/compliance?tab=employee-documents' },
+          { label: 'Expired Documents',      value: kpis.expiredDocuments,             tone: 'rose'  as const, to: '/compliance?tab=employee-documents' },
+          { label: 'Missing Documents',      value: kpis.missingDocuments,             tone: 'rose'  as const, to: '/compliance?tab=employee-documents' },
         ];
         const sevRank = (t: 'rose' | 'amber') => (t === 'rose' ? 0 : 1);
         const sorted = [...ops].sort((a, b) =>
@@ -892,7 +892,7 @@ export function DashboardPage() {
                                   <span className="font-mono font-bold text-slate-900 dark:text-white">
                                     {item.value}
                                     {workforceTotal > 0 && (
-                                      <span className="ml-1 text-[10px] font-medium text-slate-400">
+                                      <span className="ms-1 text-[10px] font-medium text-slate-400">
                                         {Math.round((item.value / workforceTotal) * 100)}%
                                       </span>
                                     )}
@@ -951,7 +951,7 @@ export function DashboardPage() {
                     key={a.label}
                     type="button"
                     onClick={() => router.push(a.to)}
-                    className="group flex flex-col gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-3 text-left transition hover:-translate-y-0.5 hover:shadow-md dark:border-white/[0.07] dark:bg-white/[0.03] dark:hover:bg-white/[0.06]"
+                    className="group flex flex-col gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-3 text-start transition hover:-translate-y-0.5 hover:shadow-md dark:border-white/[0.07] dark:bg-white/[0.03] dark:hover:bg-white/[0.06]"
                   >
                     <span className={`flex h-7 w-7 items-center justify-center rounded-lg border ${a.cls}`}>
                       <Icon className="h-3.5 w-3.5" aria-hidden />
@@ -998,7 +998,7 @@ export function DashboardPage() {
                     key={item.title}
                     type="button"
                     onClick={() => router.push('/compliance')}
-                    className={`mb-2 flex w-full items-center gap-2.5 rounded-xl border p-2.5 text-left transition hover:shadow-sm ${c.bdr}`}
+                    className={`mb-2 flex w-full items-center gap-2.5 rounded-xl border p-2.5 text-start transition hover:shadow-sm ${c.bdr}`}
                   >
                     <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${c.bg}`}>
                       <SevIcon className={`h-3.5 w-3.5 ${c.cls}`} aria-hidden />
@@ -1019,7 +1019,7 @@ export function DashboardPage() {
                     <button
                       key={label}
                       type="button"
-                      onClick={() => router.push('/compliance')}
+                      onClick={() => router.push('/compliance?tab=employee-documents')}
                       className="flex flex-col items-center gap-0.5 rounded-lg py-2 text-center transition hover:bg-slate-50 dark:hover:bg-white/[0.04]"
                     >
                       <Ic className={`h-3.5 w-3.5 ${value > 0 ? cls : 'text-slate-300 dark:text-slate-700'}`} aria-hidden />
@@ -1034,50 +1034,9 @@ export function DashboardPage() {
             </div>
           </Card>
 
-          {/* Insights — only when feature enabled */}
-          {isFeatureEnabled('ai_assistant') && (
-            <Card
-              title="Insights"
-            >
-              <div className="p-4 pt-3">
-                {insights.length === 0
-                  ? <Empty msg="No active insights." />
-                  : (
-                    <div className="space-y-2">
-                      {insights.slice(0, 3).map((ins) => {
-                        const sev = ins.severity?.toLowerCase() ?? 'info';
-                        const cfg = {
-                          critical: { icon: ShieldAlert,   cls: 'text-rose-500',  bg: 'bg-rose-500/10' },
-                          warning:  { icon: AlertTriangle, cls: 'text-amber-500', bg: 'bg-amber-500/10' },
-                          info:     { icon: Lightbulb,     cls: 'text-blue-500',  bg: 'bg-blue-500/10' },
-                        } as const;
-                        const c = cfg[sev as keyof typeof cfg] ?? cfg.info;
-                        const CIcon = c.icon;
-                        return (
-                          <div key={ins.id ?? ins.title} className="flex items-start gap-2.5 rounded-xl border border-slate-100 p-3 dark:border-white/[0.06]">
-                            <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${c.bg}`}>
-                              <CIcon className={`h-3.5 w-3.5 ${c.cls}`} aria-hidden />
-                            </span>
-                            <div className="min-w-0">
-                              <p className="text-[12px] font-semibold text-slate-900 dark:text-white">{ins.title}</p>
-                              <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">{ins.summary}</p>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                <button
-                  type="button"
-                  onClick={() => router.push('/ai-assistant')}
-                  className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 py-2 text-xs font-semibold text-slate-700 transition hover:border-blue-500/30 hover:bg-blue-500/[0.04] hover:text-blue-600 dark:border-white/[0.07] dark:bg-white/[0.03] dark:text-slate-300 dark:hover:text-blue-400"
-                >
-                  <MessageSquareText className="h-3.5 w-3.5" aria-hidden />
-                  Open Assistant
-                </button>
-              </div>
-            </Card>
-          )}
+          {/* The AI insights list now lives in WorkforceBriefingPanel at the top of the page,
+              where it is the first thing a user sees. Showing the same findings twice on one
+              screen was the duplication that made the capability look like an afterthought. */}
         </aside>
       </div>
 

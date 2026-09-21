@@ -356,7 +356,7 @@ function OverviewTab({ tenant, onRefresh, onDelete }: { tenant: PlatformTenantDe
           Open Tenant App
         </a>
         <button type="button" onClick={onDelete}
-          className="flex items-center gap-1.5 text-sm text-rose-500 border border-rose-900/40 hover:border-rose-500/40 px-4 py-2 rounded-lg transition-colors ml-auto">
+          className="flex items-center gap-1.5 text-sm text-rose-500 border border-rose-900/40 hover:border-rose-500/40 px-4 py-2 rounded-lg transition-colors ms-auto">
           <Trash2 className="h-3.5 w-3.5" />
           Delete Tenant
         </button>
@@ -453,7 +453,7 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
                       ${enabled ? 'bg-sapphire' : 'bg-slate-700'}`}
                   >
                     <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform
-                      ${enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                      ${enabled ? 'translate-x-4 rtl:-translate-x-4' : 'translate-x-1 rtl:-translate-x-1'}`} />
                   </button>
                 </div>
               );

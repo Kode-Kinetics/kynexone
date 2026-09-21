@@ -50,6 +50,7 @@ public class ApprovalRequestsController : ControllerBase
             var approval = await _approvals.CreateRequestAsync(tenantId.Value, request, Context(), cancellationToken);
             return CreatedAtAction(nameof(Get), new { id = approval.Id }, approval);
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -67,6 +68,7 @@ public class ApprovalRequestsController : ControllerBase
         // Establishment matrix: the target seat was consumed after submission — the decision is
         // NOT recorded (approval stays Pending), the requester raises the budget and re-decides.
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

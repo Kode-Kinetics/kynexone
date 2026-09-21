@@ -174,7 +174,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
               ['Payroll Review', 'payroll-review', WalletCards],
             ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, t, Icon]) => (
               <button key={t} type="button" onClick={() => onNavigate(t)}
-                className="flex w-full items-center gap-3 rounded-lg p-2.5 text-left hover:bg-slate-50 dark:hover:bg-white/5">
+                className="flex w-full items-center gap-3 rounded-lg p-2.5 text-start hover:bg-slate-50 dark:hover:bg-white/5">
                 <Icon className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" />
                 <span className="text-sm text-slate-700 dark:text-slate-300">{label}</span>
               </button>
@@ -320,7 +320,7 @@ function OTRequestsTable({ requests, onApprove, onReject, showActions }: {
         <thead>
           <tr className="border-b border-slate-100 dark:border-white/[0.07]">
             {['Employee', 'Date', 'Requested', 'Approved', 'Source', 'Status', ...(showActions ? ['Actions'] : [])].map(h => (
-              <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+              <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
             ))}
           </tr>
         </thead>
@@ -380,7 +380,7 @@ function MyOTTab({ selfEmployeeId, isEmployee }: { selfEmployeeId?: number; isEm
           {['PendingManager', 'PendingHR', 'Approved', 'Rejected'].map(s => <option key={s} value={s}>{s.replace(/([A-Z])/g, ' $1').trim()}</option>)}
         </select>
         {!isEmployee && <button type="button" className={btn.primary} onClick={load}>Search</button>}
-        <p className="ml-auto text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
+        <p className="ms-auto text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
       </div>
       <div className="surface overflow-hidden">
         {loading ? <p className="p-8 text-center text-sm text-slate-400">Loading…</p> : <OTRequestsTable requests={requests} />}
@@ -423,7 +423,7 @@ function TeamOTTab() {
         <button type="button" className={btn.ghost} onClick={() => overtimeApi.detectFromAttendance(today, today).then(load).catch(() => {})}>
           <RefreshCw className="h-4 w-4" /> Detect from Attendance
         </button>
-        <p className="ml-auto text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
+        <p className="ms-auto text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
       </div>
       <div className="surface overflow-hidden">
         {loading ? <p className="p-8 text-center text-sm text-slate-400">Loading…</p> : <OTRequestsTable requests={requests} onApprove={approve} onReject={reject} showActions />}
@@ -765,7 +765,7 @@ function CalcPreviewTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Employee', 'Hours', 'Hourly Rate', 'Multiplier', 'Amount', 'Currency', 'Calculated'].map(h => (
-                  <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                  <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -838,7 +838,7 @@ function PayrollReviewTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Employee', 'OT Hours', 'Amount', 'Status', 'Created'].map(h => (
-                  <th key={h} className="px-4 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -866,7 +866,7 @@ function PayrollReviewTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Employee', 'OT Hours', 'Comp-Off Days', 'Status'].map(h => (
-                  <th key={h} className="px-4 py-2 text-left text-xs font-bold uppercase text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>

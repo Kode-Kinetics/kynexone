@@ -681,8 +681,9 @@ public class SensitiveFieldMaskingTests
             db,
             new FakeLetterService(),
             new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1),
-            new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalPolicyService(db)),
-            new Zayra.Api.Infrastructure.Attendance.AttendanceService(db, new FakeNotificationService(), new FakeHttpClientFactory()));
+            new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(db)),
+            new Zayra.Api.Infrastructure.Attendance.AttendanceService(db, new FakeNotificationService(), new FakeHttpClientFactory()),
+            new Zayra.Api.Infrastructure.Documents.Letters.HrLetterIssuer(db, new FakeLetterService(), new NullDocumentStorage()));
         var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
         {
             new Claim("tenant_id", tenantId.ToString()),

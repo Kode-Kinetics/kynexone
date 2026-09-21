@@ -94,7 +94,7 @@ function LoginActivityPanel({ tenantId }: { tenantId: string }) {
             <thead>
               <tr className="border-b border-white/[0.06]">
                 {['Time', 'Event', 'Email', 'IP', 'Reason'].map(h => (
-                  <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                  <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -146,7 +146,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
         }`}
       >
         <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
-          checked ? 'translate-x-4' : 'translate-x-0.5'
+          checked ? 'translate-x-4 rtl:-translate-x-4' : 'translate-x-0.5 rtl:-translate-x-0.5'
         }`} />
       </button>
     </label>
@@ -169,7 +169,7 @@ function NumInput({ label, value, onChange, min, max, step = 1, unit }: {
           step={step}
           onChange={e => onChange(parseInt(e.target.value) || 0)}
           aria-label={label}
-          className="w-20 bg-white/[0.04] border border-white/[0.08] rounded-lg px-2 py-1 text-sm text-white text-right focus:outline-none focus:border-sapphire/60"
+          className="w-20 bg-white/[0.04] border border-white/[0.08] rounded-lg px-2 py-1 text-sm text-white text-end focus:outline-none focus:border-sapphire/60"
         />
         {unit && <span className="text-xs text-slate-600 w-10">{unit}</span>}
       </div>
@@ -244,7 +244,7 @@ export default function TenantSecurityPage() {
           <h1 className="text-lg font-bold text-white">Security Policy</h1>
           {policy && <p className="text-xs text-slate-500">{policy.tenantName}</p>}
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ms-auto flex items-center gap-2">
           {policy?.isCustomPolicy && (
             <span className="text-[10px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">
               Custom Policy

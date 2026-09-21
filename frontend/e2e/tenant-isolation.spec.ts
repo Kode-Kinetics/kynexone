@@ -98,6 +98,14 @@ test.describe('Tenant isolation (API-level)', () => {
 
   // ── Leave request isolation ──────────────────────────────────────────────────
 
+  // #55 is FIXED. The seeders now stamp CompanyId at construction (Infrastructure/Seed/DemoLeaveSeed.cs),
+  // and the live demo database carries 54 leave_requests with ZERO null company_id — so the
+  // ICompanyScopedOperational filter no longer hides them from company-scoped callers.
+  //
+  // This test previously carried `test.fail()`, which INVERTED it: once the data was fixed, a
+  // genuinely passing isolation check was reported as an "unexpected pass" — and, more dangerously,
+  // a real cross-tenant leak would have been reported as the expected failure. The marker is gone;
+  // the assertions below are the real intent and must hold.
   test('IntelliFlow leave requests are not visible to Ras Al-Manar token', async ({ request }) => {
     const myIds    = idsOf(await fetchRows(request, '/api/leave/requests', intelliflowToken, 'IntelliFlow'), '/api/leave/requests');
     const theirIds = idsOf(await fetchRows(request, '/api/leave/requests', rasAlManarToken,  'Ras Al-Manar'), '/api/leave/requests');
@@ -113,6 +121,13 @@ test.describe('Tenant isolation (API-level)', () => {
 
   // ── Attendance isolation ─────────────────────────────────────────────────────
 
+  // #55 is FIXED here too. AttendanceController.Daily reads AttendanceDailyRecords, which the
+  // one-door AttendanceDemoSeed.AddDay now populates alongside the legacy projection: the live demo
+  // database holds 4,234 attendance_daily_records, not 0. (That table is tenant-scoped — it has no
+  // company_id column at all — so the company filter was never the issue for attendance.)
+  //
+  // Same inversion as the leave test above: `test.fail()` meant a real cross-tenant attendance leak
+  // would have been recorded as the expected outcome. Removed.
   test('IntelliFlow attendance records not visible to Ras Al-Manar token', async ({ request }) => {
     // Fixed, intentionally broad window keeps the isolation witness deterministic as the demo
     // clock moves. Both tenants must query the identical range.

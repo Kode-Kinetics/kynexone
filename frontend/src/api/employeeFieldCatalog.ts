@@ -232,9 +232,33 @@ export function editFieldsForCountry(catalog: ResolvedFieldCatalog, countryCode?
   return [...catalog.editFields, ...complianceEditFieldsForCountry(catalog, countryCode)];
 }
 
+/**
+ * Non-statutory document types every employee file carries, offered after the country's own
+ * statutory identity documents.
+ *
+ * The three certificates are not decoration. In every GCC state the residence-permit and work-permit
+ * files are assembled from them: a pre-employment MEDICAL fitness certificate, an attested
+ * EDUCATIONAL certificate, and an EXPERIENCE certificate from the previous employer. They were
+ * missing from this list, so the only way to file one was to pick a type that was not what the
+ * document was — which then reads back wrong on the compliance and expiry screens that group by
+ * document type. `DocType.Category` already names `Certificate` as a first-class category and this
+ * product's own HR-letter module issues an Experience Certificate; the upload list simply never
+ * caught up. The backend stores DocumentType as free text (max 80), so nothing here is a new
+ * contract — it is the vocabulary a user can actually reach.
+ */
+const GENERAL_DOCUMENT_TYPES = [
+  'Contract',
+  'Offer letter',
+  'NDA',
+  'Policy acknowledgment',
+  'Medical certificate',
+  'Educational certificate',
+  'Experience certificate',
+];
+
 export function documentTypesForCountry(catalog: ResolvedFieldCatalog, countryCode?: string): string[] {
   const statutory = complianceProfileForCountry(catalog, countryCode).map((field) => field.fieldLabel);
-  return [...new Set([...statutory, 'Contract', 'Offer letter', 'NDA', 'Policy acknowledgment'])];
+  return [...new Set([...statutory, ...GENERAL_DOCUMENT_TYPES])];
 }
 
 // ── Backend registry hydration (progressive enhancement) ─────────────────────────────────────────

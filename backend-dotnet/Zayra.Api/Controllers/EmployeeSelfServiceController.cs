@@ -11,7 +11,15 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
+using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
+
+// Name collision: Controllers/EmployeesController.cs declares a DTO record called
+// EmployeeDocumentRequest in this same namespace, which shadows the entity. Alias the entity
+// rather than rename either — the DTO is on a public upload contract and the entity name is in
+// the database schema.
+using DocumentRequest = Zayra.Api.Models.EmployeeDocumentRequest;
+
 
 namespace Zayra.Api.Controllers;
 
@@ -34,15 +42,26 @@ public class EmployeeSelfServiceController : ControllerBase
     private readonly PdfRenderGate _pdfGate;
     private readonly Application.Leave.ILeaveService _leaveService;
     private readonly IAttendanceService _attendanceService;
+    private readonly IHrLetterIssuer _letterIssuer;
+    private readonly IDocumentStorage? _documentStorage;
 
-    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService)
+    // W2-D: IDocumentStorage is a trailing OPTIONAL parameter, after the required
+    // IHrLetterIssuer that the HR-documents stream added. Both streams' shapes are kept:
+    // the issuer is required because an ESS document request that cannot reach the issuer is
+    // a broken endpoint, and storage stays optional/trailing as W2-D designed it.
+    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IHrLetterIssuer letterIssuer, IDocumentStorage? documentStorage = null)
     {
         _letters = letters;
         _db = db;
         _pdfGate = pdfGate;
         _leaveService = leaveService;
         _attendanceService = attendanceService;
+        _letterIssuer = letterIssuer;
+        _documentStorage = documentStorage;
     }
+
+    private IDocumentStorage Storage => _documentStorage
+        ?? HttpContext.RequestServices.GetRequiredService<IDocumentStorage>();
 
     [HttpGet("dashboard")]
     [AllowEntityReturn("Flat entity (AttendanceDailyRecord, embedded in ESSDashboardDto DTO return). No navigation properties. Fields: WorkDate, FirstInUtc, LastOutUtc, TotalWorkedMinutes, LateMinutes, EarlyExitMinutes, OvertimeMinutes, MissingPunch, Status, WorkMode. All other ESSDashboardDto members are projected DTOs or scalars. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
@@ -55,6 +74,26 @@ public class EmployeeSelfServiceController : ControllerBase
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var now = DateTime.UtcNow;
         var attendance = await _db.AttendanceDailyRecords.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.WorkDate == today && !x.IsDeleted, cancellationToken);
+        // W2-D (S8): a mobile/web punch creates a RAW event only; the daily record appears after HR
+        // processing. Until then, expose today's state from the raw punches (not persisted, Id empty)
+        // and say so in AttendanceTodaySource, instead of returning null all day.
+        string? attendanceSource = attendance is null ? null : "processed";
+        if (attendance is null)
+        {
+            var provisional = (await TodayFromRawEventsAsync(tenantId, new[] { employeeId }, today, cancellationToken))
+                .GetValueOrDefault(employeeId);
+            if (provisional is not null)
+            {
+                attendance = new AttendanceDailyRecord
+                {
+                    Id = Guid.Empty, TenantId = tenantId, EmployeeId = employeeId,
+                    EmployeeName = employee.FullName, Department = employee.Department, WorkDate = today,
+                    FirstInUtc = provisional.FirstInUtc, LastOutUtc = provisional.LastOutUtc,
+                    TotalWorkedMinutes = provisional.WorkedMinutes, Status = "Present",
+                };
+                attendanceSource = "raw";
+            }
+        }
         var leaveBalances = await _db.EmployeeLeaveBalances.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Year == DateTime.UtcNow.Year).ToListAsync(cancellationToken);
         var pendingRequests = await _db.HRRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status != "Closed", cancellationToken);
         var pendingLeave = await _db.LeaveRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status.Contains("Pending"), cancellationToken);
@@ -202,7 +241,8 @@ public class EmployeeSelfServiceController : ControllerBase
             performanceSnapshot,
             overtimeHoursThisMonth,
             nextApprovedLeave,
-            tenureMonths));
+            tenureMonths,
+            attendanceSource));
     }
 
     [HttpGet("profile")]
@@ -303,19 +343,123 @@ public class EmployeeSelfServiceController : ControllerBase
         return Ok(change);
     }
 
+    /// <summary>
+    /// The caller's finalised payslips, newest period first.
+    ///
+    /// W2-D (S6): each row now carries its period (year, month, periodLabel) and currency, joined from
+    /// the run; rows from VOIDED runs are excluded (as the mobile endpoint already does); and the order
+    /// is chronological — it used to be by RunId, a GUID. The slip's money columns keep their names so
+    /// older app builds that read basicSalary/housingAllowance/… still work.
+    /// </summary>
     [HttpGet("payslips")]
-    [AllowEntityReturn("Flat entity — no navigation properties. Salary fields (BasicSalary, GrossSalary, NetSalary, etc.) are intentional: employee is viewing their own finalised payslips (Status='Final'). Scoped to their EmployeeId by GetEssContextAsync. Satisfies standing constraint 'employee can view only own payslip/salary-visible fields'.")]
-    public async Task<ActionResult<IReadOnlyCollection<PayrollSlip>>> Payslips(CancellationToken cancellationToken)
+    public async Task<ActionResult<IReadOnlyCollection<EssPayslipSummaryDto>>> Payslips(CancellationToken cancellationToken)
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError });
         // Only return payslips from locked/finalised runs — employees must not see draft or in-progress payroll
-        var slips = await _db.PayrollSlips.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status == "Final")
-            .OrderByDescending(x => x.RunId)
+        // LEFT join: a slip whose run row is missing keeps appearing (period unknown, as before);
+        // a slip whose run is VOIDED does not.
+        var rows = await (
+                from slip in _db.PayrollSlips.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status == "Final")
+                join run in _db.PayrollRuns.AsNoTracking().Where(r => r.TenantId == tenantId)
+                    on slip.RunId equals run.Id into runs
+                from run in runs.DefaultIfEmpty()
+                where run == null || run.Status != "Voided"
+                select new
+                {
+                    Slip = slip,
+                    Year = run == null ? 0 : run.Year,
+                    Month = run == null ? 0 : run.Month,
+                    RunType = run == null ? string.Empty : run.RunType,
+                    RunCreatedAtUtc = run == null ? DateTime.MinValue : run.CreatedAtUtc,
+                })
+            .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month).ThenByDescending(x => x.RunCreatedAtUtc)
             .ToListAsync(cancellationToken);
+        var currency = await ResolvePayslipCurrencyAsync(tenantId, employeeId, cancellationToken);
+        var result = rows.Select(x => new EssPayslipSummaryDto(
+            x.Slip.Id, x.Slip.RunId, x.Slip.EmployeeId, x.Year, x.Month, PeriodLabel(x.Year, x.Month), currency, null, x.RunType,
+            x.Slip.Status, x.Slip.EmployeeCode,
+            x.Slip.GrossSalary, x.Slip.Deductions, x.Slip.Deductions, x.Slip.NetSalary,
+            x.Slip.BasicSalary, x.Slip.HousingAllowance, x.Slip.TransportAllowance, x.Slip.OtherAllowances,
+            x.Slip.ArrearsAmount, x.Slip.EmployeeStatutoryTotal, x.Slip.LoanDeductions,
+            x.Slip.YtdGross, x.Slip.YtdNet)).ToList();
         await EssAudit(tenantId, employeeId, "ess.payslips.viewed", "PayrollSlip", employeeId.ToString(), cancellationToken);
-        return Ok(slips);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// W2-D (S6) — one payslip with its real component lines, built exactly as the PDF builds them
+    /// (itemised PayslipComponents when present, the slip's columns otherwise). Header totals are
+    /// computed FROM those lines, so what the app shows always adds up; <c>reconciled</c> reports
+    /// whether the stored Net line agrees with gross − deductions. A colleague's id, a non-final
+    /// slip or a voided run is 404.
+    /// </summary>
+    [HttpGet("payslips/{id:guid}")]
+    public async Task<ActionResult<EssPayslipDetailDto>> PayslipDetail(Guid id, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+        var slip = await _db.PayrollSlips.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == id && x.Status == "Final", cancellationToken);
+        if (slip is null) return NotFound();
+        var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == slip.RunId, cancellationToken);
+        if (run is null || run.Status == "Voided") return NotFound();
+
+        var (items, _) = await BuildPayslipLinesAsync(tenantId, employeeId, slip, cancellationToken);
+        var gross = items.Where(i => i.Type == "Earning").Sum(i => i.Amount);
+        var deductions = items.Where(i => i.Type == "Deduction").Sum(i => i.Amount);
+        var netLines = items.Where(i => i.Type == "Net").ToList();
+        var net = netLines.Count > 0 ? netLines.Sum(i => i.Amount) : gross - deductions;
+        var currency = await ResolvePayslipCurrencyAsync(tenantId, employeeId, cancellationToken);
+
+        _db.EmployeePayslipAccessLogs.Add(new EmployeePayslipAccessLog { TenantId = tenantId, EmployeeId = employeeId, PayslipId = id, Action = "View", UserId = GetUserId() });
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return Ok(new EssPayslipDetailDto(
+            slip.Id, run.Year, run.Month, PeriodLabel(run.Year, run.Month), currency, run.RunType,
+            gross, deductions, net, Math.Abs(gross - deductions - net) < 0.01m,
+            items.Select(i => new EssPayslipLineDto(i.Name, i.Amount, i.Type)).ToList(),
+            slip.YtdGross, slip.YtdNet));
+    }
+
+    private static string PeriodLabel(int year, int month) =>
+        month is >= 1 and <= 12 && year > 0
+            ? new DateTime(year, month, 1).ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture)
+            : string.Empty;
+
+    /// <summary>Same resolution the payslip PDF uses: the employee's payroll profile, then the tenant's.</summary>
+    private async Task<string> ResolvePayslipCurrencyAsync(Guid tenantId, int employeeId, CancellationToken ct) =>
+        await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.EmployeeId == employeeId)
+            .Select(p => p.SalaryCurrency)
+            .FirstOrDefaultAsync(ct)
+        ?? await _db.ResolveTenantCurrencyAsync(tenantId, ct);
+
+    /// <summary>
+    /// The payslip's line items — shared by the PDF download and the JSON detail so they can never
+    /// disagree: itemised PayslipComponents when the payslip has them, the slip's own columns otherwise.
+    /// </summary>
+    private async Task<(List<PayslipLineItem> Items, Payslip? Payslip)> BuildPayslipLinesAsync(
+        Guid tenantId, int employeeId, PayrollSlip slip, CancellationToken cancellationToken)
+    {
+        var payslip = await _db.Payslips.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PayrollRunId == slip.RunId && x.EmployeeId == employeeId, cancellationToken);
+        var components = payslip is not null
+            ? await _db.PayslipComponents.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayslipId == payslip.Id).ToListAsync(cancellationToken)
+            : new List<PayslipComponent>();
+
+        // Fallback: build components from the slip summary if payslip detail rows don't exist
+        var items = components.Count > 0
+            ? components.Select(c => new PayslipLineItem(c.ComponentName, c.Amount, c.ComponentType)).ToList()
+            : new List<PayslipLineItem>
+            {
+                new("Basic Salary", slip.BasicSalary, "Earning"),
+                new("Housing Allowance", slip.HousingAllowance, "Earning"),
+                new("Transport Allowance", slip.TransportAllowance, "Earning"),
+                new("Other Allowances", slip.OtherAllowances, "Earning"),
+                new("Total Deductions", slip.Deductions, "Deduction"),
+                new("Net Pay", slip.NetSalary, "Net"),
+            }.Where(i => i.Amount != 0).ToList();
+        return (items, payslip);
     }
 
     [HttpGet("my-roster")]
@@ -349,33 +493,15 @@ public class EmployeeSelfServiceController : ControllerBase
         var slip = await _db.PayrollSlips.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == id && x.Status == "Final", cancellationToken);
         if (slip is null) return NotFound();
 
-        // Load itemised earnings and deductions for the payslip
-        var payslip = await _db.Payslips.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PayrollRunId == slip.RunId && x.EmployeeId == employeeId, cancellationToken);
-        var components = payslip is not null
-            ? await _db.PayslipComponents.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayslipId == payslip.Id).ToListAsync(cancellationToken)
-            : new List<PayslipComponent>();
-
-        // Fallback: build components from the slip summary if payslip detail rows don't exist
-        var items = components.Count > 0
-            ? components.Select(c => new PayslipLineItem(c.ComponentName, c.Amount, c.ComponentType)).ToList()
-            : new List<PayslipLineItem>
-            {
-                new("Basic Salary", slip.BasicSalary, "Earning"),
-                new("Housing Allowance", slip.HousingAllowance, "Earning"),
-                new("Transport Allowance", slip.TransportAllowance, "Earning"),
-                new("Other Allowances", slip.OtherAllowances, "Earning"),
-                new("Total Deductions", slip.Deductions, "Deduction"),
-                new("Net Pay", slip.NetSalary, "Net"),
-            }.Where(i => i.Amount != 0).ToList();
+        // Load itemised earnings and deductions for the payslip (shared with the JSON detail endpoint)
+        var (items, payslip) = await BuildPayslipLinesAsync(tenantId, employeeId, slip, cancellationToken);
 
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == slip.RunId, cancellationToken);
+        // W2-D (S6): a voided run's payslip is not the employee's payslip any more (list and detail hide it).
+        if (run?.Status == "Voided") return NotFound();
         var employee = await _db.Employees.AsNoTracking().Select(e => new { e.Id, e.Designation }).FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken);
         var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
-        var slipCurrency = await _db.EmployeePayrollProfiles.AsNoTracking()
-            .Where(p => p.TenantId == tenantId && p.EmployeeId == employeeId)
-            .Select(p => p.SalaryCurrency)
-            .FirstOrDefaultAsync(cancellationToken)
-            ?? await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
+        var slipCurrency = await ResolvePayslipCurrencyAsync(tenantId, employeeId, cancellationToken);
 
         var data = new PayslipData(
             PayslipNumber: payslip?.PayslipNumber ?? $"PS-{slip.EmployeeCode}",
@@ -471,6 +597,7 @@ public class EmployeeSelfServiceController : ControllerBase
         {
             leave = await _leaveService.SubmitRequestAsync(tenantId, leave, cancellationToken);
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -523,6 +650,519 @@ public class EmployeeSelfServiceController : ControllerBase
         return Created($"/api/ess/documents/{document.Id}", EmployeeDocumentDto.Project(document));
     }
 
+    // ── W2-D (S1) Document upload — multipart, server-side storage key ───────────────────────────
+
+    /// <summary>
+    /// The employee uploads one of their OWN documents. The bytes go through
+    /// <see cref="IDocumentStorage.SaveAsync"/>, which generates the tenant-prefixed key server-side,
+    /// so the client never chooses — and never sees — a storage path. Declared type, extension and
+    /// magic bytes must all agree (<see cref="EssUploadPolicy"/>).
+    /// </summary>
+    [HttpPost("documents")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(EssUploadPolicy.MaxDocumentBytes + EssUploadPolicy.MultipartOverheadBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = EssUploadPolicy.MaxDocumentBytes + EssUploadPolicy.MultipartOverheadBytes)]
+    public async Task<ActionResult<EssDocumentDetailDto>> UploadDocumentFile([FromForm] EssDocumentUploadForm form, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        var documentType = form.DocumentType?.Trim() ?? string.Empty;
+        if (documentType.Length == 0) return BadRequest(new { message = "documentType is required." });
+        if (documentType.Length > 100 || documentType.Any(char.IsControl)) return BadRequest(new { message = "documentType must be at most 100 characters." });
+        var documentNumber = form.DocumentNumber?.Trim();
+        if (documentNumber is { Length: > 64 }) return BadRequest(new { message = "documentNumber must be at most 64 characters." });
+        if (form.ExpiryDate is { } expiry && expiry < DateOnly.FromDateTime(DateTime.UtcNow))
+            return BadRequest(new { message = "expiryDate must not be in the past." });
+        if (form.File is null) return BadRequest(new { message = "A file is required." });
+        if (form.File.Length > EssUploadPolicy.MaxDocumentBytes) return BadRequest(new { message = "The file exceeds the 10 MB limit." });
+
+        var bytes = await ReadAllAsync(form.File, cancellationToken);
+        var verdict = EssUploadPolicy.Check(form.File.ContentType, form.File.FileName, bytes, EssUploadPolicy.MaxDocumentBytes, EssUploadPolicy.DocumentTypes);
+        if (!verdict.Ok) return BadRequest(new { message = verdict.Error });
+
+        var employee = await OwnEmployee(tenantId, employeeId, cancellationToken);
+        if (employee is null) return NotFound();
+
+        StoredDocument stored;
+        try { stored = await Storage.SaveAsync(tenantId, AsFormFile(bytes, verdict.FileName, verdict.ContentType), cancellationToken); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+
+        var document = new EmployeeDocument
+        {
+            TenantId = tenantId,
+            CompanyId = employee.CompanyId,
+            EmployeeId = employeeId,
+            DocumentType = documentType,
+            FileName = stored.FileName,
+            ContentType = verdict.ContentType,
+            StorageUrl = stored.StorageUrl,
+            ExpiryDate = form.ExpiryDate,
+            ApprovalStatus = "Pending",
+            IsRequired = false,
+            UploadedBy = GetUserId(),
+            Notes = string.IsNullOrEmpty(documentNumber) ? string.Empty : $"Document number: {documentNumber}",
+        };
+        _db.EmployeeDocuments.Add(document);
+        await _db.SaveChangesAsync(cancellationToken);
+        await EssAudit(tenantId, employeeId, "ess.document.uploaded", "EmployeeDocument", document.Id.ToString(), cancellationToken);
+        return Created($"/api/ess/documents/{document.Id}", EssDocumentDetailDto.Project(document, bytes.Length));
+    }
+
+    /// <summary>
+    /// W2-D (S2) — download one of the caller's own documents. A colleague's id (or one that does not
+    /// exist) is 404, never 403, so the endpoint does not confirm that the id exists.
+    /// </summary>
+    [HttpGet("documents/{id:guid}/download")]
+    public async Task<IActionResult> DownloadDocument(Guid id, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+        var document = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == id && !x.IsDeleted, cancellationToken);
+        if (document is null) return NotFound();
+        byte[] bytes;
+        try { bytes = await Storage.GetBytesAsync(tenantId, document.StorageUrl, cancellationToken); }
+        catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or DirectoryNotFoundException)
+        {
+            return NotFound(new { message = "Stored document file was not found." });
+        }
+        document.LastDownloadedAtUtc = DateTime.UtcNow;
+        document.LastDownloadedBy = GetUserId();
+        await _db.SaveChangesAsync(cancellationToken);
+        await EssAudit(tenantId, employeeId, "ess.document.downloaded", "EmployeeDocument", document.Id.ToString(), cancellationToken);
+        return File(bytes, string.IsNullOrWhiteSpace(document.ContentType) ? "application/octet-stream" : document.ContentType, document.FileName);
+    }
+
+    // ── W2-D (S3) Profile photo ───────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Replaces the caller's profile photo, applied immediately and audited. The upload is decoded and
+    /// re-encoded as a ≤512×512 JPEG with no EXIF (<see cref="ProfilePhotoProcessor"/>); the original
+    /// bytes are never stored. Employee.ProfilePhotoUrl becomes the API route below, never a storage key.
+    /// </summary>
+    [HttpPost("profile/photo")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(EssUploadPolicy.MaxPhotoBytes + EssUploadPolicy.MultipartOverheadBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = EssUploadPolicy.MaxPhotoBytes + EssUploadPolicy.MultipartOverheadBytes)]
+    public async Task<IActionResult> UploadProfilePhoto([FromForm] EssPhotoUploadForm form, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
+        if (!essOk) return BadRequest(new { message = ctxError });
+        if (form.File is null) return BadRequest(new { message = "A file is required." });
+        if (form.File.Length > EssUploadPolicy.MaxPhotoBytes) return BadRequest(new { message = "The photo exceeds the 5 MB limit." });
+
+        var bytes = await ReadAllAsync(form.File, cancellationToken);
+        var verdict = EssUploadPolicy.Check(form.File.ContentType, form.File.FileName, bytes, EssUploadPolicy.MaxPhotoBytes, EssUploadPolicy.PhotoTypes);
+        if (!verdict.Ok) return BadRequest(new { message = verdict.Error });
+
+        byte[] jpeg;
+        try { jpeg = ProfilePhotoProcessor.ToSanitisedJpeg(bytes); }
+        catch (InvalidDataException ex) { return BadRequest(new { message = ex.Message }); }
+
+        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, cancellationToken);
+        if (employee is null) return NotFound();
+
+        StoredDocument stored;
+        try { stored = await Storage.SaveAsync(tenantId, AsFormFile(jpeg, "profile-photo.jpg", EssUploadPolicy.Jpeg), cancellationToken); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+
+        var version = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        employee.ProfilePhotoStorageKey = stored.StorageUrl;
+        employee.ProfilePhotoUrl = $"/api/ess/profile/photo?v={version}";
+        await _db.SaveChangesAsync(cancellationToken);
+        await EssAudit(tenantId, employeeId, "ess.profile_photo.updated", "Employee", employeeId.ToString(), cancellationToken);
+        return Ok(new { photoUrl = employee.ProfilePhotoUrl });
+    }
+
+    /// <summary>The caller's own profile photo (image/jpeg), or 404 when they have none.</summary>
+    [HttpGet("profile/photo")]
+    public async Task<IActionResult> ProfilePhoto(CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+        var key = await _db.Employees.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted)
+            .Select(x => x.ProfilePhotoStorageKey)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(key)) return NotFound();
+        try
+        {
+            var bytes = await Storage.GetBytesAsync(tenantId, key, cancellationToken);
+            Response.Headers.CacheControl = "private, max-age=300";
+            return File(bytes, EssUploadPolicy.Jpeg);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or DirectoryNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
+    // ── W2-D (S4) Notification preferences ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// { push: { approvals: { enabled, locked }, … }, email: {…}, sms: {…} }. An absent row is
+    /// enabled. Mandatory categories are always { enabled: true, locked: true }. This is the
+    /// per-CATEGORY layer; whether a channel is on at all is GET/PUT /api/notifications/preferences.
+    /// </summary>
+    [HttpGet("notification-preferences")]
+    public async Task<IActionResult> NotificationPreferences(CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+        return Ok(await BuildPreferenceView(tenantId, employeeId, cancellationToken));
+    }
+
+    /// <summary>
+    /// Partial update in the same shape; each leaf is a boolean or { enabled }. Unknown channel or
+    /// category → 400. A mandatory category cannot be turned off → 400.
+    /// </summary>
+    [HttpPut("notification-preferences")]
+    public async Task<IActionResult> UpdateNotificationPreferences([FromBody] JsonElement body, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
+        if (!essOk) return BadRequest(new { message = ctxError });
+        if (body.ValueKind != JsonValueKind.Object) return BadRequest(new { message = "Body must be an object keyed by channel." });
+
+        var changes = new List<(string Channel, string Category, bool Enabled)>();
+        foreach (var channel in body.EnumerateObject())
+        {
+            if (!NotificationCategories.IsChannelKey(channel.Name))
+                return BadRequest(new { message = $"Unknown channel '{channel.Name}'. Allowed: {string.Join(", ", NotificationCategories.ChannelKeys)}." });
+            if (channel.Value.ValueKind != JsonValueKind.Object)
+                return BadRequest(new { message = $"'{channel.Name}' must be an object keyed by category." });
+            foreach (var category in channel.Value.EnumerateObject())
+            {
+                if (!NotificationCategories.IsCategory(category.Name))
+                    return BadRequest(new { message = $"Unknown category '{category.Name}'. Allowed: {string.Join(", ", NotificationCategories.All)}." });
+                bool? enabled = category.Value.ValueKind switch
+                {
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    JsonValueKind.Object when category.Value.TryGetProperty("enabled", out var e) && e.ValueKind is JsonValueKind.True or JsonValueKind.False => e.GetBoolean(),
+                    _ => null,
+                };
+                if (enabled is null)
+                    return BadRequest(new { message = $"'{channel.Name}.{category.Name}' must be true/false or {{ \"enabled\": true/false }}." });
+                if (NotificationCategories.IsMandatory(category.Name) && enabled == false)
+                    return BadRequest(new { message = $"'{category.Name}' notifications are mandatory and cannot be turned off." });
+                changes.Add((channel.Name, category.Name, enabled.Value));
+            }
+        }
+
+        var existing = await _db.EmployeeNotificationCategoryPreferences
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId)
+            .ToListAsync(cancellationToken);
+        var now = DateTime.UtcNow;
+        foreach (var (channel, category, enabled) in changes)
+        {
+            if (NotificationCategories.IsMandatory(category)) continue;   // nothing to store: always on
+            var row = existing.FirstOrDefault(x => x.Channel == channel && x.Category == category);
+            if (row is null)
+            {
+                row = new EmployeeNotificationCategoryPreference { TenantId = tenantId, EmployeeId = employeeId, Channel = channel, Category = category };
+                _db.EmployeeNotificationCategoryPreferences.Add(row);
+                existing.Add(row);
+            }
+            row.Enabled = enabled;
+            row.UpdatedAtUtc = now;
+            row.UpdatedBy = GetUserId();
+        }
+        await _db.SaveChangesAsync(cancellationToken);
+        await EssAudit(tenantId, employeeId, "ess.notification_preferences.updated", "EmployeeNotificationCategoryPreference", employeeId.ToString(), cancellationToken);
+        return Ok(await BuildPreferenceView(tenantId, employeeId, cancellationToken));
+    }
+
+    private async Task<Dictionary<string, Dictionary<string, EssNotificationPreferenceDto>>> BuildPreferenceView(Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        var rows = await _db.EmployeeNotificationCategoryPreferences.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId)
+            .Select(x => new { x.Channel, x.Category, x.Enabled })
+            .ToListAsync(ct);
+        return NotificationCategories.ChannelKeys.ToDictionary(channel => channel, channel =>
+            NotificationCategories.All.ToDictionary(category => category, category =>
+            {
+                if (NotificationCategories.IsMandatory(category)) return new EssNotificationPreferenceDto(true, true);
+                var row = rows.FirstOrDefault(r => r.Channel == channel && r.Category == category);
+                return new EssNotificationPreferenceDto(row?.Enabled ?? true, false);
+            }));
+    }
+
+    // ── W2-D (S8) Team ────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The caller's DIRECT reports (Employee.ManagerEmployeeId == caller) with today's status. Status
+    /// resolution per person: the processed daily record → today's raw punches → approved leave
+    /// covering today → "Not clocked in". An employee with no reports gets an empty list. No salary,
+    /// contact or identity fields are returned.
+    /// </summary>
+    [HttpGet("team")]
+    public async Task<ActionResult<IReadOnlyCollection<EssTeamMemberDto>>> Team(CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var reports = await _db.Employees.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.ManagerEmployeeId == employeeId && x.Id != employeeId
+                && x.Status != EmployeeStatuses.Terminated)
+            .OrderBy(x => x.FullName)
+            .Select(x => new { x.Id, x.EmployeeCode, x.FullName, x.JobTitle, x.Designation, x.Department })
+            .ToListAsync(cancellationToken);
+        var ids = reports.Select(r => r.Id).ToList();
+        var daily = ids.Count == 0 ? new() : await _db.AttendanceDailyRecords.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.WorkDate == today && !x.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var raw = await TodayFromRawEventsAsync(tenantId, ids, today, cancellationToken);
+        var onLeave = ids.Count == 0 ? new List<int>() : await _db.LeaveRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.Status == "Approved" && x.StartDate <= today && x.EndDate >= today)
+            .Select(x => x.EmployeeId).Distinct().ToListAsync(cancellationToken);
+
+        var result = reports.Select(r =>
+        {
+            var record = daily.FirstOrDefault(d => d.EmployeeId == r.Id);
+            var jobTitle = string.IsNullOrWhiteSpace(r.JobTitle) ? r.Designation : r.JobTitle;
+            if (record is not null)
+                return new EssTeamMemberDto(r.Id, r.EmployeeCode, r.FullName, jobTitle, r.Department,
+                    record.MissingPunch ? "Missing punch" : record.Status, "processed",
+                    record.FirstInUtc, record.LastOutUtc, record.FirstInUtc is not null && record.LastOutUtc is null);
+            if (raw.TryGetValue(r.Id, out var p))
+                return new EssTeamMemberDto(r.Id, r.EmployeeCode, r.FullName, jobTitle, r.Department,
+                    "Present", "raw", p.FirstInUtc, p.LastOutUtc, p.CurrentlyActive);
+            if (onLeave.Contains(r.Id))
+                return new EssTeamMemberDto(r.Id, r.EmployeeCode, r.FullName, jobTitle, r.Department,
+                    "On leave", "leave", null, null, false);
+            return new EssTeamMemberDto(r.Id, r.EmployeeCode, r.FullName, jobTitle, r.Department,
+                "Not clocked in", "none", null, null, false);
+        }).ToList();
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Today's state per employee from RAW punch events (UTC day, matching WorkDate). First "In" is
+    /// the clock-in; if the latest punch is "Out" it is the clock-out, otherwise the person is on the
+    /// clock. Worked minutes are summed over In→Out pairs.
+    /// </summary>
+    private async Task<Dictionary<int, ProvisionalAttendance>> TodayFromRawEventsAsync(Guid tenantId, IReadOnlyCollection<int> employeeIds, DateOnly today, CancellationToken ct)
+    {
+        if (employeeIds.Count == 0) return new();
+        var start = today.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var end = start.AddDays(1);
+        var ids = employeeIds.Cast<int?>().ToList();
+        var events = await _db.AttendanceRawEvents.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.PunchTimestampUtc >= start && x.PunchTimestampUtc < end)
+            .Select(x => new { x.EmployeeId, x.PunchTimestampUtc, x.PunchDirection })
+            .ToListAsync(ct);
+        var result = new Dictionary<int, ProvisionalAttendance>();
+        foreach (var group in events.Where(e => e.EmployeeId.HasValue).GroupBy(e => e.EmployeeId!.Value))
+        {
+            var ordered = group.OrderBy(e => e.PunchTimestampUtc).ToList();
+            var firstIn = ordered.FirstOrDefault(e => e.PunchDirection == "In")?.PunchTimestampUtc;
+            var last = ordered[^1];
+            var active = last.PunchDirection == "In";
+            DateTime? lastOut = active ? null : ordered.LastOrDefault(e => e.PunchDirection == "Out")?.PunchTimestampUtc;
+            var worked = 0;
+            DateTime? openIn = null;
+            foreach (var e in ordered)
+            {
+                if (e.PunchDirection == "In") openIn ??= e.PunchTimestampUtc;
+                else if (e.PunchDirection == "Out" && openIn is not null)
+                {
+                    worked += (int)(e.PunchTimestampUtc - openIn.Value).TotalMinutes;
+                    openIn = null;
+                }
+            }
+            result[group.Key] = new ProvisionalAttendance(firstIn ?? ordered[0].PunchTimestampUtc, lastOut, active, worked);
+        }
+        return result;
+    }
+
+    private sealed record ProvisionalAttendance(DateTime? FirstInUtc, DateTime? LastOutUtc, bool CurrentlyActive, int WorkedMinutes);
+
+    private static async Task<byte[]> ReadAllAsync(IFormFile file, CancellationToken ct)
+    {
+        await using var input = file.OpenReadStream();
+        using var buffer = new MemoryStream((int)Math.Min(file.Length, EssUploadPolicy.MaxDocumentBytes));
+        await input.CopyToAsync(buffer, ct);
+        return buffer.ToArray();
+    }
+
+    /// <summary>The verified bytes, under the server-built name and canonical type, for IDocumentStorage.</summary>
+    private static IFormFile AsFormFile(byte[] bytes, string fileName, string contentType) =>
+        new FormFile(new MemoryStream(bytes), 0, bytes.Length, "file", fileName)
+        {
+            Headers = new HeaderDictionary(),
+            ContentType = contentType,
+        };
+
+    // ── HR document requests (B6) ─────────────────────────────────────────────────────────
+    //
+    // The employee asks; HR issues. There is deliberately NO endpoint here that produces a
+    // letter — an employee who could issue their own salary certificate could issue one saying
+    // anything, which is the entire reason a bank asks for one on company letterhead.
+    //
+    // Each request also raises a ticket in the HR Request Centre under the seeded SAL-CERT
+    // family, so HR works the one queue they already work rather than a second inbox nobody
+    // remembers to open. The demo tenant has carried a Resolved "Salary certificate for embassy"
+    // ticket since AuthSeeder day one; this is the path that lets that ticket be true.
+
+    [HttpGet("document-requests/types")]
+    public async Task<IActionResult> DocumentRequestTypes(CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, _, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        // Only offer what this tenant has actually configured a template for. Offering a type
+        // whose issuance would fail is the "shipping a field that lies" failure mode.
+        var configured = await _db.HrLetterTemplates.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)
+            .Select(x => x.LetterType)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var defaults = HrLetterTemplateDefaults.Build().ToDictionary(x => x.LetterType, StringComparer.Ordinal);
+        return Ok(HrLetterTypes.EmployeeRequestable
+            .Where(configured.Contains)
+            .Select(type => new EssLetterTypeDto(
+                type,
+                defaults.GetValueOrDefault(type)?.NameEn ?? type,
+                defaults.GetValueOrDefault(type)?.NameAr ?? string.Empty)));
+    }
+
+    [HttpPost("document-requests")]
+    public async Task<IActionResult> CreateDocumentRequest(EssDocumentRequestDto request, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        var letterType = HrLetterTypes.Normalize(request.LetterType);
+        if (letterType is null || !HrLetterTypes.EmployeeRequestable.Contains(letterType))
+            return BadRequest(new { message = $"'{request.LetterType}' is not a document you can request. Ask HR directly." });
+
+        var language = HrLetterLanguages.IsKnown(request.Language)
+            ? request.Language!.ToLowerInvariant()
+            : HrLetterLanguages.Bilingual;
+
+        var templateExists = await _db.HrLetterTemplates.AsNoTracking()
+            .AnyAsync(x => x.TenantId == tenantId && x.LetterType == letterType && x.IsActive && !x.IsDeleted, cancellationToken);
+        if (!templateExists)
+            return Conflict(new
+            {
+                code = "template_not_configured",
+                message = "Your organisation has not configured this document yet. Please contact HR.",
+            });
+
+        // One open request per document type. Without this a frustrated employee raises the same
+        // request five times and HR issues five certificates with five references.
+        var duplicate = await _db.EmployeeDocumentRequests.AsNoTracking().AnyAsync(
+            x => x.TenantId == tenantId && x.EmployeeId == employeeId
+                 && x.LetterType == letterType && x.Status == EmployeeDocumentRequestStatuses.Pending,
+            cancellationToken);
+        if (duplicate)
+            return Conflict(new
+            {
+                code = "duplicate_pending_request",
+                message = "You already have an open request for this document. HR will respond to it.",
+            });
+
+        var category = await _db.HRRequestCategories.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Code == HrLetterTypes.Prefixes[letterType] && x.IsActive, cancellationToken);
+        var subject = $"{letterType} request";
+
+        var ticket = new HRRequest
+        {
+            TenantId = tenantId,
+            EmployeeId = employeeId,
+            CategoryId = category?.Id,
+            CategoryName = category?.Name ?? "HR Document",
+            Subject = subject,
+            Description = string.IsNullOrWhiteSpace(request.Purpose)
+                ? subject
+                : $"Purpose: {request.Purpose.Trim()}",
+            Priority = "Normal",
+            Status = "Open",
+            DueAtUtc = DateTime.UtcNow.AddHours(category?.DefaultSlaHours ?? 24),
+            CreatedBy = GetUserId(),
+        };
+        _db.HRRequests.Add(ticket);
+
+        var documentRequest = new DocumentRequest
+        {
+            TenantId = tenantId,
+            EmployeeId = employeeId,
+            RequestType = "Letter",
+            DocumentType = letterType,
+            LetterType = letterType,
+            Language = language,
+            Purpose = (request.Purpose ?? string.Empty).Trim(),
+            AddresseeName = (request.AddresseeName ?? string.Empty).Trim(),
+            Status = EmployeeDocumentRequestStatuses.Pending,
+            HrRequestId = ticket.Id,
+            CreatedBy = GetUserId(),
+        };
+        _db.EmployeeDocumentRequests.Add(documentRequest);
+        await _db.SaveChangesAsync(cancellationToken);
+        await EssAudit(tenantId, employeeId, "ess.document_request.created", nameof(DocumentRequest), documentRequest.Id.ToString(), cancellationToken);
+
+        return Created($"/api/ess/document-requests/{documentRequest.Id}", ToEssDocumentRequest(documentRequest, null));
+    }
+
+    [HttpGet("document-requests")]
+    public async Task<IActionResult> MyDocumentRequests(CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        var requests = await _db.EmployeeDocumentRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .Take(50)
+            .ToListAsync(cancellationToken);
+
+        var letterIds = requests.Where(x => x.IssuedLetterId != null).Select(x => x.IssuedLetterId!.Value).ToList();
+        var letters = letterIds.Count == 0
+            ? []
+            : await _db.IssuedLetters.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && letterIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.ReferenceNumber })
+                .ToListAsync(cancellationToken);
+
+        return Ok(requests.Select(r => ToEssDocumentRequest(
+            r, letters.FirstOrDefault(l => l.Id == r.IssuedLetterId)?.ReferenceNumber)));
+    }
+
+    /// <summary>
+    /// Download the letter HR issued in answer to my request. Re-rendered from the frozen content
+    /// on the register row, so the employee and HR are looking at the same document under the
+    /// same reference.
+    /// </summary>
+    [HttpGet("document-requests/{id:guid}/pdf")]
+    public async Task<IActionResult> MyDocumentRequestPdf(Guid id, CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError });
+
+        var request = await _db.EmployeeDocumentRequests.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && x.EmployeeId == employeeId, cancellationToken);
+        if (request is null) return NotFound();
+        if (request.IssuedLetterId is not Guid letterId)
+            return Conflict(new { code = "not_issued_yet", message = $"This request is {request.Status}. There is nothing to download yet." });
+
+        var letter = await _db.IssuedLetters.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == letterId && x.EmployeeId == employeeId, cancellationToken);
+        if (letter is null) return NotFound();
+
+        byte[]? pdf;
+        try { pdf = await _pdfGate.RenderAsync(() => _letterIssuer.ReprintAsync(tenantId, letterId, cancellationToken), cancellationToken); }
+        catch (PdfConcurrencyException ex) { return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = ex.Message }); }
+        if (pdf is null) return Conflict(new { code = "reprint_unavailable", message = "This document can no longer be regenerated. Please contact HR." });
+
+        await EssAudit(tenantId, employeeId, "ess.document_request.downloaded", nameof(IssuedLetter), letterId.ToString(), cancellationToken);
+        return File(pdf, "application/pdf", $"{letter.ReferenceNumber}.pdf");
+    }
+
+    private static EssDocumentRequestResponse ToEssDocumentRequest(DocumentRequest r, string? reference) =>
+        new(r.Id, r.LetterType, r.Language, r.Purpose, r.AddresseeName, r.Status,
+            r.CreatedAtUtc, r.DecidedAtUtc, r.DecisionNote, reference, r.IssuedLetterId != null);
+
     [HttpPost("hr-requests")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: CategoryId/Name, Subject, Description, Priority, Status, DueAtUtc. Employee's own service ticket. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<HRRequest>> CreateHrRequest(ESSHRRequestCreateDto request, CancellationToken cancellationToken)
@@ -530,6 +1170,11 @@ public class EmployeeSelfServiceController : ControllerBase
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
         if (!essOk) return BadRequest(new { message = ctxError });
         var category = request.CategoryId is null ? null : await _db.HRRequestCategories.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.CategoryId && x.IsActive, cancellationToken);
+        // W2-D (S1): an attachment is a reference to an EmployeeDocument the CALLER owns (uploaded via
+        // POST /api/ess/documents) — never bytes, never a storage key, never a colleague's document.
+        if (request.AttachmentDocumentId is { } attachmentId
+            && !await _db.EmployeeDocuments.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == attachmentId && !x.IsDeleted, cancellationToken))
+            return BadRequest(new { message = "The attachment was not found among your documents." });
         var slaHours = category?.DefaultSlaHours ?? 48;
         var hrRequest = new HRRequest
         {
@@ -541,7 +1186,8 @@ public class EmployeeSelfServiceController : ControllerBase
             Description = request.Description,
             Priority = request.Priority ?? "Normal",
             DueAtUtc = DateTime.UtcNow.AddHours(slaHours),
-            CreatedBy = GetUserId()
+            CreatedBy = GetUserId(),
+            AttachmentDocumentId = request.AttachmentDocumentId,
         };
         _db.HRRequests.Add(hrRequest);
         await _db.SaveChangesAsync(cancellationToken);
@@ -688,7 +1334,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var leaveAvailable = await _db.EmployeeLeaveBalances.Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Year == DateTime.UtcNow.Year).SumAsync(x => x.Entitled + x.Accrued + x.CarriedForward + x.ManualAdjustment - x.Used - x.Pending - x.Encashed, cancellationToken);
         var openTickets = await _db.HRRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status != "Closed", cancellationToken);
         var expiringDocs = await _db.EmployeeDocuments.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted && x.ExpiryDate != null && x.ExpiryDate <= DateOnly.FromDateTime(DateTime.UtcNow.AddDays(60)), cancellationToken);
-        var answer = $"I can only use your own Zayra employee data. Current snapshot: leave available {leaveAvailable:0.##} days, open HR requests {openTickets}, documents expiring in 60 days {expiringDocs}. I cannot approve, reject, or expose another employee's data.";
+        var answer = $"I can only use your own KynexOne employee data. Current snapshot: leave available {leaveAvailable:0.##} days, open HR requests {openTickets}, documents expiring in 60 days {expiringDocs}. I cannot approve, reject, or expose another employee's data.";
         _db.EmployeeAIQueryLogs.Add(new EmployeeAIQueryLog { TenantId = tenantId, EmployeeId = employeeId, Question = request.Question, Answer = answer, UserId = GetUserId() });
         await _db.SaveChangesAsync(cancellationToken);
         return Ok(new ESSAIAnswerDto(answer));
@@ -803,14 +1449,67 @@ public record ESSDashboardDto(
     ESSPerformanceSnapshotDto? PerformanceSnapshot,
     int OvertimeHoursThisMonth,
     ESSNextLeaveDto? NextApprovedLeave,
-    int TenureMonths);
+    int TenureMonths,
+    // W2-D (S8): "processed" (the daily record), "raw" (derived from today's punches before HR
+    // processing; not persisted) or null (no attendance today).
+    string? AttendanceTodaySource = null);
 public record ProfileChangeRequestDto(Dictionary<string, object?> Changes, string? Reason);
 public record ProfileChangeDecisionDto(string? Notes);
 public record ESSAttendanceRegularizationDto(DateOnly WorkDate, string RequestType, DateTime? RequestedInUtc, DateTime? RequestedOutUtc, string Reason);
 public record ESSLeaveRequestDto(Guid LeaveTypeId, DateOnly StartDate, DateOnly EndDate, string? DayType, string Reason);
 public record ESSDocumentUploadDto(string DocumentType, string FileName, string ContentType, string StorageUrl, DateOnly? ExpiryDate, bool IsRequired);
-public record ESSHRRequestCreateDto(Guid? CategoryId, string? CategoryName, string Subject, string Description, string? Priority);
+public record EssLetterTypeDto(string LetterType, string NameEn, string NameAr);
+public record EssDocumentRequestDto(string LetterType, string? Language, string? Purpose, string? AddresseeName);
+public record EssDocumentRequestResponse(
+    Guid Id, string LetterType, string Language, string Purpose, string AddresseeName, string Status,
+    DateTime CreatedAtUtc, DateTime? DecidedAtUtc, string DecisionNote, string? ReferenceNumber, bool IsIssued);
+public record ESSHRRequestCreateDto(Guid? CategoryId, string? CategoryName, string Subject, string Description, string? Priority, Guid? AttachmentDocumentId = null);
 public record ESSCommentDto(string Comment);
 public record ESSAIQuestionDto(string Question);
 public record ESSAIAnswerDto(string Answer);
 public record EssRosterEntryDto(Guid Id, DateOnly Date, Guid ShiftDefinitionId, string ShiftName, string ShiftCode, string ShiftColor);
+
+// ── W2-D DTOs ────────────────────────────────────────────────────────────────────────────────────
+public sealed class EssDocumentUploadForm
+{
+    public IFormFile? File { get; set; }
+    public string? DocumentType { get; set; }
+    public DateOnly? ExpiryDate { get; set; }
+    public string? DocumentNumber { get; set; }
+}
+
+public sealed class EssPhotoUploadForm
+{
+    public IFormFile? File { get; set; }
+}
+
+/// <summary>EmployeeDocumentDto minus StorageUrl: an ESS response never carries a storage key.</summary>
+public record EssDocumentDetailDto(
+    Guid Id, int? EmployeeId, string DocumentType, string FileName, string ContentType, long SizeBytes,
+    DateOnly? ExpiryDate, string ApprovalStatus, bool IsRequired, DateTime UploadedAtUtc, string Notes)
+{
+    public static EssDocumentDetailDto Project(EmployeeDocument d, long sizeBytes) =>
+        new(d.Id, d.EmployeeId, d.DocumentType, d.FileName, d.ContentType, sizeBytes, d.ExpiryDate,
+            d.ApprovalStatus, d.IsRequired, d.UploadedAtUtc, d.Notes);
+}
+
+public record EssNotificationPreferenceDto(bool Enabled, bool Locked);
+
+public record EssTeamMemberDto(
+    int EmployeeId, string EmployeeCode, string FullName, string JobTitle, string Department,
+    string TodayStatus, string StatusSource, DateTime? ClockInUtc, DateTime? ClockOutUtc, bool CurrentlyActive);
+
+public record EssPayslipSummaryDto(
+    Guid Id, Guid RunId, int EmployeeId, int Year, int Month, string PeriodLabel, string Currency, DateOnly? PaymentDate, string RunType,
+    string Status, string EmployeeCode,
+    decimal GrossSalary, decimal Deductions, decimal TotalDeductions, decimal NetSalary,
+    decimal BasicSalary, decimal HousingAllowance, decimal TransportAllowance, decimal OtherAllowances,
+    decimal ArrearsAmount, decimal EmployeeStatutoryTotal, decimal LoanDeductions,
+    decimal YtdGross, decimal YtdNet);
+
+public record EssPayslipLineDto(string Name, decimal Amount, string Type);
+
+public record EssPayslipDetailDto(
+    Guid Id, int Year, int Month, string PeriodLabel, string Currency, string RunType,
+    decimal GrossSalary, decimal TotalDeductions, decimal NetSalary, bool Reconciled,
+    IReadOnlyList<EssPayslipLineDto> Lines, decimal YtdGross, decimal YtdNet);

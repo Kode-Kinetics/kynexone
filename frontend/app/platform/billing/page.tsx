@@ -26,8 +26,8 @@ function MetricCard({ label, value, sub, accent = 'default', icon: Icon }: {
   const icn  = { default: 'text-slate-600', green: 'text-emerald-500', rose: 'text-rose-500', amber: 'text-amber-500' };
   return (
     <div className="relative bg-[#161b22] border border-white/[0.07] rounded-xl p-4 overflow-hidden">
-      <div className={`absolute left-0 top-3 bottom-3 w-0.5 rounded-r ${bar[accent]}`} />
-      <div className="pl-2">
+      <div className={`absolute start-0 top-3 bottom-3 w-0.5 rounded-e ${bar[accent]}`} />
+      <div className="ps-2">
         <div className="flex items-start justify-between gap-2 mb-2">
           <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-widest">{label}</p>
           {Icon && <Icon className={`h-3.5 w-3.5 shrink-0 mt-0.5 ${icn[accent]}`} />}
@@ -165,7 +165,7 @@ export default function PlatformBillingPage() {
                 <thead>
                   <tr className="border-b border-white/[0.06]">
                     {['Tenant', 'Invoice', 'Amount', 'Status', 'Date', 'Due'].map(h => (
-                      <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                      <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                     ))}
                   </tr>
                 </thead>

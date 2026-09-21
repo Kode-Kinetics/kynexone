@@ -2,7 +2,9 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -16,11 +18,13 @@ public class GosiController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly GosiReconciliationService _reconciliation;
+    private readonly IStatutoryRuleReader _rules;
 
-    public GosiController(ZayraDbContext db, GosiReconciliationService reconciliation)
+    public GosiController(ZayraDbContext db, GosiReconciliationService reconciliation, IStatutoryRuleReader rules)
     {
         _db = db;
         _reconciliation = reconciliation;
+        _rules = rules;
     }
 
     // ── Contribution Rules ────────────────────────────────────────────────────
@@ -217,8 +221,15 @@ public class GosiController : ControllerBase
 
         GosiContributionResult? preview = null;
         if (report.IsReady && salary?.BasicSalary > 0)
+        {
+            // S1/A2(b) — the contributory wage is basic + housing, matching the payroll run's pack.
+            // The MONTHLY ceiling comes from the same statutory rule the pack reads, so this preview
+            // and the payslip cannot disagree. Previously unbounded here: SAR 5,850 previewed against
+            // SAR 4,387.50 deducted on a SAR 60,000 covered wage.
+            var bounds = await KsaGosiWageBounds.ResolveAsync(_rules, periodDate, null, ct);
             preview = GosiCalculationService.Calculate(
-                employee.Nationality, salary.BasicSalary, rules, periodDate, tenantId);
+                employee.Nationality, salary.BasicSalary + salary.HousingAllowance, rules, periodDate, tenantId, bounds);
+        }
 
         return Ok(new
         {

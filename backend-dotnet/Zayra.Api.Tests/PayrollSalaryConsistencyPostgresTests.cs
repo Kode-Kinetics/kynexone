@@ -88,7 +88,7 @@ public sealed class PayrollSalaryConsistencyPostgresTests
         var coverage = assignments.Select(s => s.EmployeeId).Distinct().Count() * 100m / employees.Count;
         coverage.Should().Be(100m);
 
-        var gosi = await new GosiReadinessReportService(db).BuildAsync(tenant.Id, CancellationToken.None);
+        var gosi = await TestReconciliation.GosiReadiness(db).BuildAsync(tenant.Id, CancellationToken.None);
         gosi.Employees.Should().HaveCount(12);
         gosi.Employees.Should().NotContain(e =>
             e.BlockingIssues.Any(i => i.Code == "MISSING_BASIC_SALARY"));

@@ -169,7 +169,10 @@ export function AttendancePage() {
   const [message, setMessage] = useState('');
   const [loadErrors, setLoadErrors] = useState<AttendanceLoadErrors>({});
 
-  const [filterDate, setFilterDate] = useState(today());
+  // Empty until resolved from the DATA on mount — see the effect below. Defaulting this to
+  // today() opened the whole screen empty on every tenant, because attendance only exists for
+  // days that have already happened.
+  const [filterDate, setFilterDate] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [punchEmployeeId, setPunchEmployeeId] = useState('');
   const [punchDirection, setPunchDirection] = useState('In');
@@ -195,7 +198,36 @@ export function AttendancePage() {
     [employees, punchEmployeeId, regularizationForm.employeeId, processForm.employeeId],
   );
 
+  // Open on the most recent day that actually HAS attendance, resolved from the data itself.
+  //
+  // Why not today(): attendance is only ever written for days that have happened. The demo
+  // seeders stop at yesterday, so the screen opened empty on every tenant. Re-seeding cannot fix
+  // that and neither can seeding further ahead — a Tuesday reseed still leaves a Wednesday demo
+  // looking at an empty day, and seeding attendance into the future would be fabricating
+  // punches for days nobody worked. Asking the data "what is the latest day you have?" is the
+  // only default that is correct on any day, with no reseed and nothing to re-run.
+  //
+  // The request deliberately sends no from/to: GetDailyAsync now defaults to a trailing window
+  // ordered by WorkDate descending, so item[0] is the latest record. today() is used only when
+  // the tenant has no attendance at all, which keeps a brand-new tenant on a sensible date.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let resolved = today();
+      try {
+        const latest = await attendanceApi.daily({ pageSize: 1 });
+        const workDate = latest.items[0]?.workDate;
+        if (workDate) resolved = String(workDate).slice(0, 10);
+      } catch {
+        /* fall back to today() — the main load below surfaces any real error */
+      }
+      if (!cancelled) setFilterDate(resolved);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const load = useCallback(async () => {
+    if (!filterDate) return;   // wait for the initial date to resolve from the data
     setLoading(true);
     setError('');
     setLoadErrors({});
@@ -806,7 +838,7 @@ function DailyTable({ records, loading, compact }: { records: AttendanceDailyRec
     <div className="surface overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-sm">
-          <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Date', 'Employee', 'In', 'Out', 'Worked', 'Late', 'Missing', 'Status'].map((h) => <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+          <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Date', 'Employee', 'In', 'Out', 'Worked', 'Late', 'Missing', 'Status'].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {loading && <tr><td colSpan={8} className="py-12 text-center text-slate-400">Loading live attendance...</td></tr>}
             {!loading && records.length === 0 && <tr><td colSpan={8}><Empty text="No processed attendance records for this selection." /></td></tr>}
@@ -904,7 +936,7 @@ function RawTable({ rows }: { rows: AttendanceRawEvent[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[760px] text-sm">
-        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Timestamp', 'Employee', 'Source', 'Direction', 'Method', 'Processed'].map((h) => <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Timestamp', 'Employee', 'Source', 'Direction', 'Method', 'Processed'].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
         <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
           {rows.map((r) => <tr key={r.id}><td className="px-4 py-3 font-mono text-slate-700 dark:text-slate-300">{dateTime(r.punchTimestampUtc)}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.employeeCode || r.employeeId}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.source}</td><td className="px-4 py-3"><StatusChip label={r.punchDirection} tone="blue" /></td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.verificationMethod}</td><td className="px-4 py-3"><StatusChip label={r.isProcessed ? 'Processed' : 'Raw'} tone={r.isProcessed ? 'emerald' : 'amber'} dot /></td></tr>)}
         </tbody>
@@ -935,7 +967,7 @@ function PayrollTable({ rows }: { rows: AttendancePayrollSummary[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] text-sm">
-        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Employee', 'Late', 'Early', 'Absences', 'OT', 'Lock'].map((h) => <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Employee', 'Late', 'Early', 'Absences', 'OT', 'Lock'].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
         <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">{rows.map((r) => <tr key={r.employeeId}><td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{r.employeeName}</td><td className="px-4 py-3">{r.lateMinutes}m</td><td className="px-4 py-3">{r.earlyExitMinutes}m</td><td className="px-4 py-3">{r.absenceDays}</td><td className="px-4 py-3">{minutes(r.overtimeMinutes)}</td><td className="px-4 py-3"><StatusChip label={r.hasLockedRecords ? 'Locked' : 'Open'} tone={r.hasLockedRecords ? 'rose' : 'emerald'} /></td></tr>)}</tbody>
       </table>
     </div>

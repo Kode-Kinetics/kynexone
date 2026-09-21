@@ -42,8 +42,14 @@ public static class SecurityHeaders
             headers["Pragma"] = "no-cache";
         }
         // Semi-static reference data: short private cache so browser avoids round trips.
+        //
+        // /api/features is deliberately NOT in this list. It looks like reference data but it is
+        // control-plane state: the navigation, the route guard and the module admin screen all
+        // read it to decide what exists. Cached for five minutes, an administrator switching a
+        // module off saw the write succeed and the API start refusing the module while the UI
+        // carried on showing it — indistinguishable from a switch that does nothing. Found by
+        // driving a browser; curl bypasses the HTTP cache and looked correct throughout.
         else if (path.StartsWith("/api/master-data", StringComparison.OrdinalIgnoreCase) ||
-                 path.StartsWith("/api/features", StringComparison.OrdinalIgnoreCase) ||
                  path.StartsWith("/api/localization", StringComparison.OrdinalIgnoreCase) ||
                  path.StartsWith("/api/help-text", StringComparison.OrdinalIgnoreCase))
         {

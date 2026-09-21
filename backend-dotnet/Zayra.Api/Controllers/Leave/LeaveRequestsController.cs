@@ -131,6 +131,30 @@ public class LeaveRequestsController : ControllerBase
         if (req.EndDate < req.StartDate)
             return BadRequest(new { message = "End date must be after start date." });
 
+        // W2-D (S1): AttachmentPath holds a STORAGE KEY, never file bytes, and only the key of a
+        // document the leave's employee owns. The app sends AttachmentDocumentId (the id returned by
+        // POST /api/ess/documents) and the key is resolved here, server-side, so it never travels to
+        // the client. A raw AttachmentPath is accepted only if it IS such a document's key.
+        var attachmentPath = string.Empty;
+        if (req.AttachmentDocumentId is { } attachmentDocumentId)
+        {
+            var key = await _db.EmployeeDocuments.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.Id == attachmentDocumentId && !d.IsDeleted)
+                .Select(d => d.StorageUrl).FirstOrDefaultAsync(ct);
+            if (string.IsNullOrWhiteSpace(key))
+                return BadRequest(new { message = "The attachment was not found among the employee's documents." });
+            attachmentPath = key;
+        }
+        else if (!string.IsNullOrWhiteSpace(req.AttachmentPath))
+        {
+            var candidate = req.AttachmentPath.Trim();
+            var owned = candidate.Length <= 1024 && await _db.EmployeeDocuments.AsNoTracking()
+                .AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.StorageUrl == candidate && !d.IsDeleted, ct);
+            if (!owned)
+                return BadRequest(new { message = "attachmentPath must reference an uploaded document. Upload the file first (POST /api/ess/documents) and send its id as attachmentDocumentId." });
+            attachmentPath = candidate;
+        }
+
         Employee? delegateEmployee = null;
         if (req.DelegateEmployeeId.HasValue)
         {
@@ -158,7 +182,7 @@ public class LeaveRequestsController : ControllerBase
             HoursRequested = req.HoursRequested ?? 0,
             Reason = req.Reason ?? string.Empty,
             IsEmergency = req.IsEmergency,
-            AttachmentPath = req.AttachmentPath ?? string.Empty,
+            AttachmentPath = attachmentPath,
             DelegateEmployeeId = delegateEmployee?.Id,
             DelegateEmployeeName = delegateEmployee?.FullName ?? string.Empty,
             PayrollImpact = leaveType.IsPaid ? "Full" : "None"
@@ -173,6 +197,9 @@ public class LeaveRequestsController : ControllerBase
                 "LeaveRequest", submitted.Id.ToString(), ct);
             return Created($"/api/leave/requests/{submitted.Id}", submitted);
         }
+        // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
+        // stable code, distinct from ordinary validation failures.
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -211,6 +238,9 @@ public class LeaveRequestsController : ControllerBase
                 "LeaveRequest", result.Id.ToString(), ct);
             return Ok(result);
         }
+        // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
+        // stable code, distinct from ordinary validation failures.
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -251,6 +281,9 @@ public class LeaveRequestsController : ControllerBase
                 "LeaveRequest", result.Id.ToString(), ct);
             return Ok(result);
         }
+        // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
+        // stable code, distinct from ordinary validation failures.
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -305,6 +338,9 @@ public class LeaveRequestsController : ControllerBase
                 "LeaveRequest", result.Id.ToString(), ct);
             return Ok(result);
         }
+        // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
+        // stable code, distinct from ordinary validation failures.
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -352,13 +388,36 @@ public class LeaveRequestsController : ControllerBase
         if (scope.CallerEmployeeId == cancellation.EmployeeId) return Forbid();
         var leave = await _db.LeaveRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
         if (leave is null) return NotFound();
+
+        // Refusing a cancellation REVERTS the leave to the state it was in when the cancellation was
+        // asked for, and the only state that can be is "CancellationRequested" — POST /{id}/cancel
+        // moves an Approved leave into it and creates the Pending row this endpoint decides.
+        //
+        // This assignment used to be unconditional. A leave that had since been Withdrawn or
+        // Cancelled — releasing its balance back to the employee — was resurrected as Approved by a
+        // stale pending cancellation row, while the released balance stayed released. The employee
+        // then held an approved absence AND the days back in their entitlement: the same days spent
+        // twice. LeaveService.CancelRequestAsync already refuses to act on a Cancelled or Withdrawn
+        // request (see its status check); this path was the way around that guard.
+        //
+        // Refuses the way the codebase's other decision endpoints refuse: a coded 409, as
+        // ApprovalDecisionGuard's ParentStateForbidsDecision does for loans.
+        if (leave.Status != "CancellationRequested")
+            return Conflict(new
+            {
+                error = "invalid_leave_state",
+                message = $"A cancellation can only be rejected while the leave is awaiting that "
+                        + $"decision (current: {leave.Status}). This cancellation request is stale — "
+                        + $"the leave has already moved on."
+            });
+
         cancellation.Status = "Rejected";
         cancellation.ReviewedByName = User.Identity?.Name ?? "Approver";
         cancellation.ReviewNotes = req.Notes ?? string.Empty;
         cancellation.ReviewedAtUtc = DateTime.UtcNow;
         leave.Status = "Approved";
         await _db.SaveChangesAsync(ct);
-        return Ok(leave);
+        return Ok(LeaveRequestStateDto.Project(leave));
     }
 
     [HttpPost("{id:guid}/withdraw")]
@@ -656,7 +715,9 @@ public record SubmitLeaveRequestRequest(
     bool IsEmergency,
     string? AttachmentPath,
     int? DelegateEmployeeId = null,
-    string? DelegateEmployeeName = null);
+    string? DelegateEmployeeName = null,
+    // W2-D (S1): id of an EmployeeDocument owned by the leave's employee; resolved to AttachmentPath.
+    Guid? AttachmentDocumentId = null);
 
 public record ApproveLeaveRequest(string? Notes);
 public record RejectLeaveRequestBody(string Reason);
@@ -665,3 +726,30 @@ public record CancellationDecisionRequest(string? Notes);
 public record WithdrawLeaveRequest(string? Reason);
 public record DelegateLeaveRequest(int DelegateEmployeeId, string? DelegationType, string? Notes);
 public record ImportLeaveRequestsRequest(string CsvContent);
+
+/// <summary>
+/// The leave-request state returned by a cancellation decision. Replaces returning the raw
+/// <c>LeaveRequest</c> entity, which serialized TenantId, CompanyId and every field later added to
+/// the model. Nothing consumed the entity shape — the endpoint has no frontend or test caller — so
+/// this projects the decision-relevant subset and nothing else.
+/// </summary>
+public record LeaveRequestStateDto(
+    Guid Id,
+    int EmployeeId,
+    string EmployeeName,
+    Guid LeaveTypeId,
+    string LeaveTypeName,
+    DateOnly StartDate,
+    DateOnly EndDate,
+    decimal TotalDays,
+    string DayType,
+    string Status,
+    string CancellationReason,
+    DateTime? DecidedAtUtc,
+    DateTime? CancelledAtUtc)
+{
+    public static LeaveRequestStateDto Project(Zayra.Api.Models.LeaveRequest r) => new(
+        r.Id, r.EmployeeId, r.EmployeeName, r.LeaveTypeId, r.LeaveTypeName,
+        r.StartDate, r.EndDate, r.TotalDays, r.DayType, r.Status,
+        r.CancellationReason, r.DecidedAtUtc, r.CancelledAtUtc);
+}

@@ -6,14 +6,28 @@ compliance profiles, security fail-closed behavior and platform-admin group
 tenant lifecycle — through the frontend (`/api` is proxied to the backend by
 `next.config.ts`).
 
-**CI-safe by design:** every suite probes the stack in `beforeAll`
-(`GET <baseURL>/api/auth/me` — a 401 proves frontend+backend are alive) and
-probes its seed user's login. When either probe fails, all tests in the suite
-`test.skip()` with an explanatory message instead of failing. Tests that need
-a UI surface still being built in parallel (switcher, `/group`,
-`/compliance-profiles`, platform create-tenant form) also skip with a clear
-message when the surface is absent, while the API-level equivalents assert
-strictly.
+**Stack unreachable is a FAILURE, not a skip.** Every suite calls
+`assertStackReachable()` in `beforeAll` (`GET <baseURL>/api/auth/me` — a 401
+proves frontend+backend are alive and talking). It **throws**, which fails every
+test in the suite.
+
+> This paragraph used to read "CI-safe by design: ... all tests in the suite
+> `test.skip()` ... instead of failing." That was not safe, it was blind — a
+> completely dead backend produced a **green** run across all seven suites, with
+> nothing in the output distinguishing "28 boundaries verified" from "the API was
+> never contacted". A suite that cannot reach the system it tests has not passed;
+> it has failed to run. Changed 2026-09-17 (`test/integrity-hardening`).
+
+What still skips, deliberately, and why it is a different thing:
+- **Seed data absent** (`groupSeedMissingReason`) — the enterprise group seed is
+  env-gated behind `SEED_ENTERPRISE_TEST_DATA=true`, so its absence is a
+  configuration statement, not a broken system. It still skips with a message.
+- **UI surfaces still being built** (switcher, `/group`, `/compliance-profiles`,
+  platform create-tenant form) skip with a clear message when absent, while the
+  API-level equivalents assert strictly.
+
+Both remaining skip classes are *yellow and loud*. Neither can be produced by a
+dead backend any more.
 
 ## How to run
 

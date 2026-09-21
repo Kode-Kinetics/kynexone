@@ -4,11 +4,11 @@ import { TrendingDown, TrendingUp } from 'lucide-react';
 import type { KpiMetric } from '../types/ui';
 
 const borderTone: Record<KpiMetric['tone'], string> = {
-  blue: 'border-l-sapphire',
-  cyan: 'border-l-cyanAccent',
-  emerald: 'border-l-emeraldZ',
-  amber: 'border-l-amber-400',
-  rose: 'border-l-rose-500',
+  blue: 'border-s-sapphire',
+  cyan: 'border-s-cyanAccent',
+  emerald: 'border-s-emeraldZ',
+  amber: 'border-s-amber-400',
+  rose: 'border-s-rose-500',
 };
 
 const textTone: Record<KpiMetric['tone'], string> = {
@@ -22,7 +22,7 @@ const textTone: Record<KpiMetric['tone'], string> = {
 export function KpiCard({ metric }: { metric: KpiMetric }) {
   return (
     <article
-      className={`surface rounded-xl border-l-[3px] p-4 transition-shadow hover:shadow-soft ${borderTone[metric.tone]}`}
+      className={`surface rounded-xl border-s-[3px] p-4 transition-shadow hover:shadow-soft ${borderTone[metric.tone]}`}
     >
       <div className="flex items-start justify-between gap-2">
         <p className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400">

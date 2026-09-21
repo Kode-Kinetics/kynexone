@@ -218,9 +218,11 @@ public sealed class ImportTemplateShapeTests
     {
         var discovered = DiscoverTemplateEndpoints();
 
-        discovered.Should().HaveCountGreaterThanOrEqualTo(16,
+        // F1: the approval-policies template is gone — that model was merged into approval workflows
+        // and its controller now answers 410 Gone (see ApprovalPoliciesController).
+        discovered.Should().HaveCountGreaterThanOrEqualTo(15,
             "the product ships a CSV template for companies, branches, locations, departments, "
-            + "designations, cost centres, grades, approval policies, leave types, leave requests, "
+            + "designations, cost centres, grades, leave types, leave requests, "
             + "job openings, employees, salary structures, employee salaries, the organisation-"
             + "structure package and the migration package — if this count collapses, discovery "
             + "broke and the shape guard above is silently measuring nothing");

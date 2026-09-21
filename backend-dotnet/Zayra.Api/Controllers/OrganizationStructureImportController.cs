@@ -159,6 +159,12 @@ public class OrganizationStructureImportController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         var commit = await Commit(req, ct);
+        // Commit() now runs its unit through the execution strategy, and a retry inside that
+        // strategy clears the change tracker. Re-attach the batch from persisted state so the
+        // status updates below are actually written instead of being applied to a detached
+        // entity and silently dropped by SaveChanges.
+        if (_db.Entry(batch).State == EntityState.Detached)
+            batch = await _db.MigrationImportBatches.FirstAsync(x => x.TenantId == tenantId && x.Id == id, ct);
         if (commit.Result is OkObjectResult ok && ok.Value is OrganizationStructureImportResult result)
         {
             var reconciliation = await BuildReconciliationAsync(tenantId, ParsePackage(req), result, ct);
@@ -209,8 +215,82 @@ public class OrganizationStructureImportController : ControllerBase
         if (validation.HasBlockingErrors)
             return UnprocessableEntity(validation);
 
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        // Program.cs registers the DbContext with EnableRetryOnFailure, so the ambient execution
+        // strategy is NpgsqlRetryingExecutionStrategy, and it refuses a user-initiated
+        // BeginTransactionAsync unless the whole unit runs inside
+        // Database.CreateExecutionStrategy().ExecuteAsync(...). The bare transaction that stood
+        // here threw InvalidOperationException before touching a single row, and the generic
+        // exception handler turned it into HTTP 400 — so the org-structure import could never
+        // commit, 100% of the time.
         var counts = new Dictionary<string, int>();
+
+        if (!_db.Database.IsRelational())
+        {
+            // Preserved branch: the in-memory provider the fast unit tests use has neither
+            // transactions nor an execution strategy to satisfy.
+            await ApplyStructureAsync(tenantId, parsed, counts, ct);
+        }
+        else
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            var attempt = 0;
+            await strategy.ExecuteAsync(async () =>
+            {
+                if (attempt++ > 0)
+                {
+                    // ExecuteAsync may re-run this delegate. A retry must not inherit the change
+                    // tracker a failed attempt left behind: every Company/Branch/Department it
+                    // added is still pending and would be inserted a second time, and — worse —
+                    // rows whose SaveChanges succeeded before a transient failure swallowed the
+                    // COMMIT are tracked as Unchanged, so a naive retry would silently write
+                    // nothing at all. ApplyStructureAsync re-reads every lookup from the database,
+                    // so a cleared tracker means the attempt restarts from persisted state.
+                    _db.ChangeTracker.Clear();
+                    counts.Clear();
+                }
+
+                var tx = await _db.Database.BeginTransactionAsync(ct);
+                try
+                {
+                    await ApplyStructureAsync(tenantId, parsed, counts, ct);
+                    await tx.CommitAsync(ct);
+                }
+                catch
+                {
+                    // Never let a failing rollback mask the original error: the strategy has to
+                    // see the real exception to classify it as transient. Dispose still releases.
+                    try { await tx.RollbackAsync(ct); } catch { /* connection already gone */ }
+                    throw;
+                }
+                finally
+                {
+                    await tx.DisposeAsync();
+                }
+            });
+        }
+
+        await _audit.WriteAsync(
+            "setup.organization_structure_import_committed",
+            "OrganizationStructureImport",
+            "bulk",
+            BuildContext(tenantId),
+            JsonSerializer.Serialize(new { received = validation.Received, warnings = validation.Warnings, applied = counts }),
+            ct);
+        return Ok(validation with { Applied = counts, Committed = true });
+    }
+
+    /// <summary>
+    /// Upserts every organization-structure section and persists it. Extracted from
+    /// <see cref="Commit"/> verbatim so the whole apply can be handed to the ambient execution
+    /// strategy as one retriable unit. Every lookup dictionary is re-read from the database on
+    /// entry, so with a cleared change tracker the strategy may safely run it again.
+    /// </summary>
+    private async Task ApplyStructureAsync(
+        Guid tenantId,
+        ParsedOrgPackage parsed,
+        Dictionary<string, int> counts,
+        CancellationToken ct)
+    {
         void Bump(string key) => counts[key] = counts.GetValueOrDefault(key) + 1;
 
         var companies = await _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToDictionaryAsync(x => x.LegalNameEn.ToUpperInvariant(), ct);
@@ -463,15 +543,6 @@ public class OrganizationStructureImportController : ControllerBase
         }
 
         await _db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
-        await _audit.WriteAsync(
-            "setup.organization_structure_import_committed",
-            "OrganizationStructureImport",
-            "bulk",
-            BuildContext(tenantId),
-            JsonSerializer.Serialize(new { received = validation.Received, warnings = validation.Warnings, applied = counts }),
-            ct);
-        return Ok(validation with { Applied = counts, Committed = true });
     }
 
     private async Task<OrganizationStructureImportResult> ValidateAsync(Guid tenantId, ParsedOrgPackage parsed, EntityScopeContext scope, CancellationToken ct)

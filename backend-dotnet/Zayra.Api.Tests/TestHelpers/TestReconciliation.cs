@@ -1,5 +1,6 @@
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Compliance;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Payroll;
@@ -23,6 +24,15 @@ internal static class TestReconciliation
 
     public static GosiReconciliationService For(ZayraDbContext db) =>
         new(db, new KsaTestPackResolver(KsaRuleReader()));
+
+    /// <summary>
+    /// The GOSI readiness report, wired to the SAME statutory rule reader the payslip path uses —
+    /// which is the whole point of the fix it now depends on. <see cref="KsaRuleReader"/> already
+    /// sets <c>gosi.covered_wage_ceiling_sar = 45,000</c>, so a readiness figure computed here is
+    /// capped exactly as <c>KsaDeductionCalculator</c> caps it.
+    /// </summary>
+    public static GosiReadinessReportService GosiReadiness(ZayraDbContext db) =>
+        new(db, KsaRuleReader());
 }
 
 /// <summary>Reusable KSA-only pack resolver for tests (not file-scoped, unlike the regression stub).</summary>

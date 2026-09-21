@@ -314,18 +314,44 @@ public sealed class QiwaSyncWorker : BackgroundService
 
         if (result.Success)
         {
+            // ── HONESTY GATE ─────────────────────────────────────────────────────────────────
+            // "The pipeline completed" and "the record is filed with MHRSD" are different claims,
+            // and only the live adapter can make the second one. Before this gate, a sandbox run
+            // stamped the employee "synced" and the tenant connection "Connected" without a single
+            // byte leaving the process, and the compliance screen reported a filing that did not
+            // exist. The log status still records that the attempt completed; the EMPLOYEE-facing
+            // and CONNECTION-facing claims now say which of the two things actually happened.
+            var live = _adapter.IsLiveIntegration;
+
             log.Status         = QiwaSyncLogStatuses.Success;
             log.CompletedAtUtc = DateTime.UtcNow;
             log.ErrorMessage   = null;
-            employee.QiwaSyncStatus = QiwaSyncStatuses.Synced;
+            employee.QiwaSyncStatus = live ? QiwaSyncStatuses.Synced : QiwaSyncStatuses.Simulated;
+
             if (connection is not null)
             {
-                connection.Status = QiwaConnectionStatuses.Connected;
-                connection.LastConnectedAtUtc = DateTime.UtcNow;
-                connection.LastErrorMessage = null;
+                connection.Status = live
+                    ? QiwaConnectionStatuses.Connected
+                    : QiwaConnectionStatuses.Simulated;
+                // LastConnectedAtUtc means "we last reached Qiwa". A simulator never did, and
+                // stamping it would leave a false timestamp on the compliance dashboard.
+                if (live) connection.LastConnectedAtUtc = DateTime.UtcNow;
+                connection.LastErrorMessage = live
+                    ? null
+                    : "Simulation only — this process is running the Qiwa sandbox adapter "
+                      + "(QIWA_USE_LIVE_ADAPTER is not 'true'). No employee record has been filed "
+                      + "with Qiwa or MHRSD.";
             }
-            Audit(db, tenantId, "qiwa.sync_success", log.EmployeeId, new { syncLogId = log.Id });
-            _log.LogInformation("Qiwa sync success: employee {EmployeeId} tenant {TenantId}", log.EmployeeId, tenantId);
+
+            Audit(db, tenantId, live ? "qiwa.sync_success" : "qiwa.sync_simulated", log.EmployeeId,
+                new { syncLogId = log.Id, adapter = _adapter.AdapterName, filedWithQiwa = live });
+
+            if (live)
+                _log.LogInformation("Qiwa sync success: employee {EmployeeId} tenant {TenantId}", log.EmployeeId, tenantId);
+            else
+                _log.LogInformation(
+                    "Qiwa sync SIMULATED (adapter={Adapter}, nothing filed): employee {EmployeeId} tenant {TenantId}",
+                    _adapter.AdapterName, log.EmployeeId, tenantId);
         }
         else
         {

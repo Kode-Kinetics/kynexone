@@ -8,6 +8,7 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Leave;
+using Zayra.Api.Infrastructure.Timesheets;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Approvals;
@@ -16,9 +17,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 {
     private readonly ZayraDbContext _db;
     private readonly IAuditService _audit;
-    private readonly IHrmHierarchyService _hierarchy;
     private readonly IEstablishmentGuard _establishmentGuard;
     private readonly ILeaveService _leaveService;
+    private readonly IApprovalRouter _router;
 
     public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit)
         : this(db, audit, new HrmHierarchyService(db, audit))
@@ -30,14 +31,16 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         IAuditService audit,
         IHrmHierarchyService hierarchy,
         IEstablishmentGuard? establishmentGuard = null,
-        ILeaveService? leaveService = null)
+        ILeaveService? leaveService = null,
+        IApprovalRouter? router = null)
     {
         _db = db;
         _audit = audit;
-        _hierarchy = hierarchy;
         // Optional with concrete fallback so direct constructions keep compiling AND enforcing.
         _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
-        _leaveService = leaveService ?? new LeaveService(db, new ApprovalPolicyService(db));
+        // F1 — ONE router shared by this service and the leave aggregate it delegates to.
+        _router = router ?? new ApprovalRouter(db, hierarchy);
+        _leaveService = leaveService ?? new LeaveService(db, _router);
     }
 
     public async Task<PagedResult<ApprovalWorkflowDto>> GetWorkflowsAsync(Guid tenantId, string? entityName, int page, int pageSize, CancellationToken cancellationToken)
@@ -60,6 +63,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     public async Task<ApprovalWorkflowDto> CreateWorkflowAsync(Guid tenantId, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         await EnsureWorkflowCodeUnique(tenantId, request.Code, null, cancellationToken);
+        await EnsureScopeUnambiguousAsync(tenantId, request, null, cancellationToken);
         var workflow = new ApprovalWorkflow { TenantId = tenantId };
         Apply(workflow, request, tenantId);
         _db.ApprovalWorkflows.Add(workflow);
@@ -73,6 +77,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (workflow is null) return null;
         await EnsureWorkflowCodeUnique(tenantId, request.Code, id, cancellationToken);
+        await EnsureScopeUnambiguousAsync(tenantId, request, id, cancellationToken);
         _db.ApprovalWorkflowSteps.RemoveRange(workflow.Steps);
         Apply(workflow, request, tenantId);
         await _db.SaveChangesAsync(cancellationToken);
@@ -189,8 +194,27 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     public async Task<ApprovalRequestDto> CreateRequestAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstOrDefaultAsync(x => x.Id == request.WorkflowId && x.TenantId == tenantId && x.IsActive, cancellationToken)
-            ?? throw new InvalidOperationException("Approval workflow was not found or is inactive.");
+        var entityName = Clean(request.EntityName);
+        // A leave approval is the leave aggregate's routing projection (same id, balance reserved in
+        // the same transaction). Starting one here would create a second, orphaned projection.
+        if (string.Equals(entityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Leave approvals are started by submitting the leave request, not directly.");
+
+        ApprovalWorkflow workflow;
+        if (request.WorkflowId is { } explicitId && explicitId != Guid.Empty)
+        {
+            workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstOrDefaultAsync(x => x.Id == explicitId && x.TenantId == tenantId && x.IsActive, cancellationToken)
+                ?? throw new InvalidOperationException("Approval workflow was not found or is inactive.");
+            if (!string.Equals(workflow.EntityName, entityName, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Approval workflow '{workflow.Code}' is for '{workflow.EntityName}', not '{entityName}'.");
+        }
+        else
+        {
+            // F1 — no explicit workflow: the ONE router picks it (department+grade → department →
+            // grade → default). Nothing configured is a typed configuration error, never a guess.
+            var route = await _router.ResolveAsync(tenantId, request.RequestedForEmployeeId, entityName, cancellationToken);
+            workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstAsync(x => x.Id == route.WorkflowId && x.TenantId == tenantId, cancellationToken);
+        }
         if (!workflow.Steps.Any()) throw new InvalidOperationException("Approval workflow has no steps.");
         var approval = new ApprovalRequest
         {
@@ -304,26 +328,33 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             approval.Status = "Rejected";
             approval.CompletedAtUtc = DateTime.UtcNow;
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
+            await TimesheetApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else if (step.IsFinalStep)
         {
             approval.Status = "Approved";
             approval.CompletedAtUtc = DateTime.UtcNow;
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
+            // Timesheets: project the decision onto the timesheet and, on approval, write the
+            // attendance reconciliation its hours feed — in THIS SaveChanges, so a decision taken
+            // in the Approval Center and one taken on the timesheet screen are the same write.
+            await TimesheetApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // Requisitions: the shared row and the requisition's own status are now one write. Before
+            // this the module stamped its status and left this row Pending for ever.
+            await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else
         {
             var nextStep = await _db.ApprovalWorkflowSteps.Where(x => x.TenantId == tenantId && x.WorkflowId == approval.WorkflowId && x.StepOrder > step.StepOrder).OrderBy(x => x.StepOrder).FirstOrDefaultAsync(cancellationToken);
+            // F1 — only a step marked IsFinalStep completes a request. A non-final step with nothing
+            // after it is a broken workflow; refuse the decision instead of approving by default.
             if (nextStep is null)
-            {
-                approval.Status = "Approved";
-                approval.CompletedAtUtc = DateTime.UtcNow;
-            }
-            else
-            {
-                approval.CurrentStepOrder = nextStep.StepOrder;
-                await RouteCurrentStepAsync(approval, nextStep, cancellationToken);
-            }
+                throw new ApprovalRouteInvalidException(tenantId, approval.EntityName, approval.WorkflowId,
+                    await _db.ApprovalWorkflows.Where(x => x.TenantId == tenantId && x.Id == approval.WorkflowId).Select(x => x.Code).FirstOrDefaultAsync(cancellationToken) ?? approval.WorkflowId.ToString(),
+                    $"step {step.StepOrder} is not final and no step follows it.");
+            approval.CurrentStepOrder = nextStep.StepOrder;
+            await RouteCurrentStepAsync(approval, nextStep, cancellationToken);
         }
 
         try
@@ -353,6 +384,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         workflow.Name = Clean(request.Name);
         workflow.EntityName = Clean(request.EntityName);
         workflow.IsActive = request.IsActive;
+        workflow.DepartmentId = request.DepartmentId;
+        workflow.GradeId = request.GradeId;
+        workflow.IsDefault = request.IsDefault;
         workflow.Steps.Clear();
         var steps = request.Steps.OrderBy(x => x.StepOrder).ToList();
         for (var i = 0; i < steps.Count; i++)
@@ -397,50 +431,31 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 .FirstOrDefaultAsync(cancellationToken);
         }
 
-        var approverEmployeeId = await ResolveApproverEmployeeIdAsync(approval.TenantId, subjectEmployeeId, step, cancellationToken);
-        if (approverEmployeeId is null)
+        // F1 — approver resolution is the router's, shared with the leave aggregate.
+        var approver = await _router.ResolveApproverAsync(approval.TenantId, subjectEmployeeId, ToRouteStep(step), cancellationToken);
+        if (approver.EmployeeId is null)
         {
-            if (!string.Equals(approval.CurrentApproverType, "Role", StringComparison.OrdinalIgnoreCase))
+            if (approver.Escalated || !string.Equals(approval.CurrentApproverType, "Role", StringComparison.OrdinalIgnoreCase))
             {
                 approval.CurrentApproverType = "Role";
-                approval.CurrentApproverRole = "HR Manager";
-                approval.CurrentQueue = "Role:HR Manager";
-                approval.EscalatedToRole = "HR Manager";
+                approval.CurrentApproverRole = approver.QueueRole;
+                approval.CurrentQueue = $"Role:{approver.QueueRole}";
+                if (approver.Escalated) approval.EscalatedToRole = approver.QueueRole;
             }
             return;
         }
 
-        var approver = await _db.Employees.AsNoTracking()
-            .Where(x => x.TenantId == approval.TenantId && x.Id == approverEmployeeId.Value && !x.IsDeleted)
-            .Select(x => new { x.Id, x.FullName, x.Designation, x.UserAccountId })
-            .FirstOrDefaultAsync(cancellationToken);
-        if (approver is null) return;
-
-        approval.CurrentApproverEmployeeId = approver.Id;
-        approval.CurrentApproverUserId = approver.UserAccountId;
-        approval.CurrentApproverName = approver.FullName;
-        if (string.IsNullOrWhiteSpace(approval.CurrentApproverRole)) approval.CurrentApproverRole = approver.Designation ?? approval.CurrentApproverType;
-        approval.CurrentQueue = $"{approval.CurrentApproverType}:{approver.FullName}";
+        approval.CurrentApproverEmployeeId = approver.EmployeeId;
+        approval.CurrentApproverUserId = approver.UserId;
+        approval.CurrentApproverName = approver.Name;
+        if (string.IsNullOrWhiteSpace(approval.CurrentApproverRole)) approval.CurrentApproverRole = approver.QueueRole;
+        approval.CurrentQueue = $"{approval.CurrentApproverType}:{approver.Name}";
     }
 
-    private async Task<int?> ResolveApproverEmployeeIdAsync(Guid tenantId, int? subjectEmployeeId, ApprovalWorkflowStep step, CancellationToken cancellationToken)
-    {
-        var type = Clean(step.ApproverType).ToUpperInvariant();
-        if (type == "SPECIFICEMPLOYEE") return step.SpecificEmployeeId;
-        if (subjectEmployeeId is null) return null;
-
-        var hierarchy = await _hierarchy.ResolveHierarchyAsync(tenantId, subjectEmployeeId.Value, 20, cancellationToken);
-        return type switch
-        {
-            "MANAGER" or "DIRECTMANAGER" => hierarchy.DirectManager?.EmployeeId,
-            "SENIORMANAGER" or "SECONDLEVELMANAGER" => hierarchy.SecondLevelManager?.EmployeeId,
-            "SUPERVISOR" => await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == subjectEmployeeId.Value).Select(x => x.SupervisorEmployeeId).FirstOrDefaultAsync(cancellationToken),
-            "DEPARTMENTHEAD" => hierarchy.DepartmentHead?.EmployeeId,
-            "COMPANYHEAD" => hierarchy.CompanyHead?.EmployeeId,
-            "HRBUSINESSPARTNER" => await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == subjectEmployeeId.Value).Select(x => x.HRBusinessPartnerEmployeeId).FirstOrDefaultAsync(cancellationToken),
-            _ => null
-        };
-    }
+    private static ApprovalRouteStep ToRouteStep(ApprovalWorkflowStep step)
+        => new(step.StepOrder, step.StepName,
+            string.IsNullOrWhiteSpace(step.ApproverType) ? "Role" : step.ApproverType.Trim(),
+            step.ApproverRole ?? string.Empty, step.SpecificEmployeeId, step.EscalationAfterHours, step.IsFinalStep);
 
     private async Task<int?> ResolveSubjectEmployeeIdAsync(ApprovalRequest approval, CancellationToken cancellationToken)
     {
@@ -500,6 +515,31 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var clean = Clean(code).ToUpperInvariant();
         var exists = await _db.ApprovalWorkflows.AnyAsync(x => x.TenantId == tenantId && x.Code == clean && x.Id != excludedId, cancellationToken);
         if (exists) throw new InvalidOperationException("Approval workflow code already exists in this tenant.");
+    }
+
+    /// <summary>
+    /// F1 — the router needs an unambiguous answer. Two ACTIVE workflows for the same entity and the
+    /// same org scope (department, grade) would leave the choice to a tie-break, so a new one is
+    /// refused. A scoped workflow cannot be the tenant default.
+    /// </summary>
+    private async Task EnsureScopeUnambiguousAsync(Guid tenantId, ApprovalWorkflowRequest request, Guid? excludedId, CancellationToken cancellationToken)
+    {
+        if (request.IsDefault && (request.DepartmentId.HasValue || request.GradeId.HasValue))
+            throw new InvalidOperationException("A workflow scoped to a department or grade cannot be the tenant default.");
+        if (request.DepartmentId.HasValue && !await _db.Departments.AnyAsync(d => d.TenantId == tenantId && d.Id == request.DepartmentId.Value, cancellationToken))
+            throw new InvalidOperationException("The workflow's department was not found in this tenant.");
+        if (!request.IsActive) return;
+
+        var entity = Clean(request.EntityName);
+        var clash = await _db.ApprovalWorkflows.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive && x.EntityName == entity && x.Id != excludedId
+                && x.DepartmentId == request.DepartmentId && x.GradeId == request.GradeId)
+            .OrderBy(x => x.Code)
+            .Select(x => x.Code)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (clash is not null)
+            throw new InvalidOperationException(
+                $"Active approval workflow '{clash}' already covers '{entity}' for this department/grade scope. Deactivate it or change the scope.");
     }
 
     private async Task<bool> CanDecideStepAsync(ApprovalRequest approval, ApprovalWorkflowStep step, RequestContext context, CancellationToken cancellationToken)

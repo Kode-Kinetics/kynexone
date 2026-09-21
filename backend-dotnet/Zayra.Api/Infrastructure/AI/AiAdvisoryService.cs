@@ -58,7 +58,7 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         var permissionSignature = BuildSignature(permissions);
         var roleSignature = BuildSignature(roles);
         var normalizedQuery = NormalizeQuery(request.Query);
-        var cacheKey = BuildCacheKey(caller.TenantId, governance.Intent, governance.Module, request.EmployeeId, normalizedQuery, roleSignature, permissionSignature);
+        var cacheKey = BuildCacheKey(caller.TenantId, governance.Intent, governance.Module, request.EmployeeId, normalizedQuery, roleSignature, permissionSignature, caller.CompanyScopeSignature);
         var cacheLookup = new AiCacheKey(
             caller.TenantId,
             cacheKey,
@@ -236,7 +236,10 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         var configured = _options.EffectiveProvider;
         if (configured == "anthropic" && !string.IsNullOrWhiteSpace(_options.AnthropicApiKey)) return "anthropic";
         if (configured == "openai" && !string.IsNullOrWhiteSpace(_options.OpenAIApiKey)) return "openai";
-        if (configured == "ollama") return "ollama";
+        // Unlike the other two, this must check the base URL. Without it LlmClient falls back
+        // to http://localhost:11434, which on a hosted deployment is nothing — the request
+        // hangs for HttpClient's 100s default instead of degrading to the rules-based path.
+        if (configured == "ollama" && !string.IsNullOrWhiteSpace(_options.OllamaBaseUrl)) return "ollama";
         if (!string.IsNullOrWhiteSpace(_options.AnthropicApiKey)) return "anthropic";
         if (!string.IsNullOrWhiteSpace(_options.OpenAIApiKey)) return "openai";
         if (!string.IsNullOrWhiteSpace(_options.OllamaBaseUrl)) return "ollama";
@@ -272,7 +275,7 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         return cleaned.Length == 0 ? string.Empty : string.Join('|', cleaned);
     }
 
-    private string BuildCacheKey(Guid tenantId, string intent, string module, int? employeeId, string normalizedQuery, string roleSignature, string permissionSignature)
+    private string BuildCacheKey(Guid tenantId, string intent, string module, int? employeeId, string normalizedQuery, string roleSignature, string permissionSignature, string companyScopeSignature)
     {
         return _redaction.Hash(string.Join("::", new[]
         {
@@ -282,6 +285,10 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
             employeeId?.ToString() ?? string.Empty,
             roleSignature,
             permissionSignature,
+            // The company dimension. The context this key caches is company-filtered by the
+            // global query filters; without this segment a company switch served the previous
+            // company's answer. See AiUserContext.CompanyScopeSignature.
+            companyScopeSignature,
             normalizedQuery
         }));
     }

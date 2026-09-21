@@ -188,14 +188,14 @@ export default function PlatformLoginPage() {
                     required
                     autoComplete="current-password"
                     placeholder="••••••••"
-                    className="pa-input pr-11"
+                    className="pa-input pe-11"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(v => !v)}
                     tabIndex={-1}
                     aria-label={showPassword ? 'Hide password' : 'Show password'}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                    className="absolute end-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
                   >
                     {showPassword ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
                   </button>

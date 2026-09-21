@@ -40,7 +40,7 @@ function LanguageSwitcher() {
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-44 overflow-hidden rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
+        <div className="absolute start-0 top-full z-50 mt-2 w-44 overflow-hidden rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
           {LOCALES.map((loc) => (
             <button
               key={loc.code}
@@ -129,7 +129,7 @@ function NotificationPanel({ onClose, onCountChange }: { onClose: () => void; on
   const unread = items.filter((n) => n.status === 'Unread');
 
   return (
-    <div className="absolute right-0 top-full z-50 mt-2 w-[340px] rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
+    <div className="absolute end-0 top-full z-50 mt-2 w-[340px] rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-white/[0.07]">
         <div className="flex items-center gap-2">
@@ -275,7 +275,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
         type="button"
         aria-label="Open command search"
         onClick={onOpenSearch}
-        className="flex h-8 max-w-md flex-1 items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50/80 px-3 text-left text-sm transition hover:border-slate-300 hover:bg-white dark:border-white/[0.08] dark:bg-white/[0.04] dark:hover:bg-white/[0.07]"
+        className="flex h-8 max-w-md flex-1 items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50/80 px-3 text-start text-sm transition hover:border-slate-300 hover:bg-white dark:border-white/[0.08] dark:bg-white/[0.04] dark:hover:bg-white/[0.07]"
       >
         <svg className="h-3.5 w-3.5 shrink-0 text-slate-400" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
@@ -288,7 +288,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
       <LanguageSwitcher />
       <CompanySwitcher />
 
-      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+      <div className="ms-auto flex shrink-0 items-center gap-1.5">
         <button
           type="button"
           aria-label="Open assistant"
@@ -318,7 +318,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
           >
             <Bell className="h-4 w-4" />
             {unreadCount > 0 && (
-              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-[#0D1221]" />
+              <span className="absolute end-1.5 top-1.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-[#0D1221]" />
             )}
           </button>
           {notifOpen && (
@@ -334,16 +334,16 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
             type="button"
             aria-label="Open user menu"
             onClick={() => setUserMenuOpen((o) => !o)}
-            className="hidden h-8 items-center gap-2 rounded-lg border border-slate-200/80 bg-white/60 pl-1 pr-3 backdrop-blur-sm transition hover:border-slate-300 hover:bg-white/90 md:flex dark:border-white/[0.08] dark:bg-white/[0.05] dark:hover:bg-white/[0.09]"
+            className="hidden h-8 items-center gap-2 rounded-lg border border-slate-200/80 bg-white/60 ps-1 pe-3 backdrop-blur-sm transition hover:border-slate-300 hover:bg-white/90 md:flex dark:border-white/[0.08] dark:bg-white/[0.05] dark:hover:bg-white/[0.09]"
           >
             <Avatar name={user?.fullName ?? 'User'} size="xs" />
-            <div className="text-left">
+            <div className="text-start">
               <p className="text-xs font-semibold leading-tight text-slate-900 dark:text-white">{user?.fullName ?? 'User'}</p>
               <p className="text-[10px] leading-tight text-slate-500 dark:text-slate-400">{user?.roles[0] ?? 'Member'}</p>
             </div>
           </button>
           {userMenuOpen && (
-            <div className="animate-fade-in absolute right-0 top-full z-50 mt-2 w-52 overflow-hidden rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
+            <div className="animate-fade-in absolute end-0 top-full z-50 mt-2 w-52 overflow-hidden rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
               <div className="border-b border-slate-100 px-4 py-3 dark:border-white/[0.07]">
                 <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">{user?.fullName ?? 'User'}</p>
                 <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">{user?.email ?? ''}</p>
@@ -351,14 +351,14 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
               <button
                 type="button"
                 onClick={() => { setUserMenuOpen(false); router.push('/ess'); }}
-                className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-white/[0.04]"
+                className="flex w-full items-center gap-2.5 px-4 py-2.5 text-start text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-white/[0.04]"
               >
                 <UserCircle2 className="h-4 w-4 text-slate-400" /> {t('My Profile')}
               </button>
               <button
                 type="button"
                 onClick={async () => { setUserMenuOpen(false); await logout(); router.replace('/login'); }}
-                className="flex w-full items-center gap-2.5 border-t border-slate-100 px-4 py-2.5 text-left text-sm text-rose-600 transition hover:bg-rose-50 dark:border-white/[0.07] dark:text-rose-400 dark:hover:bg-rose-500/10"
+                className="flex w-full items-center gap-2.5 border-t border-slate-100 px-4 py-2.5 text-start text-sm text-rose-600 transition hover:bg-rose-50 dark:border-white/[0.07] dark:text-rose-400 dark:hover:bg-rose-500/10"
               >
                 <LogOut className="h-4 w-4" /> {t('Sign out')}
               </button>

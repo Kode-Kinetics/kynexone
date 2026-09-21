@@ -48,7 +48,7 @@ public class DomainPermanentRepairTests
         });
         await db.SaveChangesAsync();
 
-        var service = new LeaveService(db, new ApprovalPolicyService(db));
+        var service = new LeaveService(db, new ApprovalRouter(db));
         var action = () => service.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,

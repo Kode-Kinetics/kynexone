@@ -178,13 +178,13 @@ export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdicti
       <PanelState loading={loading} empty={rows.length === 0} emptyLabel="No statutory rules found for this country/jurisdiction.">
         <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
           <table className="w-full min-w-[760px] text-sm">
-            <thead className="bg-slate-50 text-left text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+            <thead className="bg-slate-50 text-start text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
               <tr>
                 <th className="px-3 py-2">Statutory rule</th>
-                <th className="px-3 py-2 text-right">Platform default</th>
-                <th className="px-3 py-2 text-right">Resolved</th>
+                <th className="px-3 py-2 text-end">Platform default</th>
+                <th className="px-3 py-2 text-end">Resolved</th>
                 <th className="px-3 py-2">Override</th>
-                <th className="px-3 py-2 text-right">Manage</th>
+                <th className="px-3 py-2 text-end">Manage</th>
               </tr>
             </thead>
             <tbody>
@@ -194,8 +194,8 @@ export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdicti
                 return (
                   <tr key={r.ruleKey} className="border-t border-slate-100 dark:border-white/5">
                     <td className="px-3 py-2 font-mono text-xs">{r.ruleKey}</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-slate-500">{r.platformDefault ?? '—'}</td>
-                    <td className="px-3 py-2 text-right font-medium tabular-nums">{r.resolvedValue ?? '—'}</td>
+                    <td className="px-3 py-2 text-end tabular-nums text-slate-500">{r.platformDefault ?? '—'}</td>
+                    <td className="px-3 py-2 text-end font-medium tabular-nums">{r.resolvedValue ?? '—'}</td>
                     <td className="px-3 py-2">
                       {pend ? (
                         <div className="space-y-0.5">

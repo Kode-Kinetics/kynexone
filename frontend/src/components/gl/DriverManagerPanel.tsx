@@ -186,14 +186,14 @@ export function DriverManagerPanel({ scope, scopeLabel, canManage, canAuthorPred
       <PanelState loading={loading} empty={drivers.length === 0} emptyLabel="No drivers found. Seed defaults from the Accounts tab.">
         <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
           <table className="w-full min-w-[720px] text-sm">
-            <thead className="bg-slate-50 text-left text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+            <thead className="bg-slate-50 text-start text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
               <tr>
                 <th className="px-3 py-2">Key</th>
                 <th className="px-3 py-2">Category</th>
                 <th className="px-3 py-2">Side</th>
                 <th className="px-3 py-2">Match</th>
                 <th className="px-3 py-2">Default account</th>
-                <th className="px-3 py-2 text-right">Manage</th>
+                <th className="px-3 py-2 text-end">Manage</th>
               </tr>
             </thead>
             <tbody>

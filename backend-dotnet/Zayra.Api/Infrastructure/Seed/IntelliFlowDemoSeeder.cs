@@ -131,14 +131,20 @@ public static class IntelliFlowDemoSeeder
         // ── 5. Portal users (admin has IsGroupScope=true) ─────────────────────
         var userSpecs = new (string Role, string Name, string Email, bool GroupScope)[]
         {
-            ("Admin",            "IntelliFlow Administrator", AdminEmail,                         true),
-            ("HR Director",      "Sarah Mitchell",            "hrdirector@intelliflow.com",       false),
-            ("HR Manager",       "Omar Al-Farsi",             "hrmanager@intelliflow.com",        false),
-            ("Finance Approver", "Chen Wei",                  "finance@intelliflow.com",          false),
-            ("Manager",          "Priya Sharma",              "manager@intelliflow.com",          false),
-            ("Supervisor",       "Khalid Al-Rashid",          "supervisor@intelliflow.com",       false),
-            ("Employee",         "Fatima Al-Zahra",           "employee1@intelliflow.com",        false),
-            ("Employee",         "James O'Brien",             "employee2@intelliflow.com",        false),
+            // FullName mirrors the linked employee record (see "Employee ↔ login linkage" below).
+            // AccessManagementService.InviteEmployeeLoginAsync keeps user.FullName == employee.FullName;
+            // a demo tenant that arrives pre-linked has to honour the same invariant, otherwise the
+            // portal header greets one person while every ESS screen shows another.
+            ("Admin",            "Yaser Al-Ghamdi",           AdminEmail,                         true),
+            ("HR Director",      "Nadia Al-Zahrani",          "hrdirector@intelliflow.com",       false),
+            ("HR Manager",       "Amira Al-Shehri",           "hrmanager@intelliflow.com",        false),
+            ("Finance Approver", "Ahmad Al-Qahtani",          "finance@intelliflow.com",          false),
+            ("Manager",          "Walid Al-Harbi",            "manager@intelliflow.com",          false),
+            ("Supervisor",       "Sara Al-Otaibi",            "supervisor@intelliflow.com",       false),
+            ("Employee",         "Liu Wei",                   "employee1@intelliflow.com",        false),
+            ("Employee",         "Carlos Mendez",             "employee2@intelliflow.com",        false),
+            // Deliberately NOT linked to an employee: the auditor is an external read-only reviewer,
+            // and the Auditor role grants no ess.* permission, so a link would not enable ESS anyway.
             ("Auditor",          "Maya Johnson",              "auditor@intelliflow.com",          false),
         };
         var seededUsers = new List<(User User, string Role, bool GroupScope)>();
@@ -148,7 +154,7 @@ public static class IntelliFlowDemoSeeder
             if (!roleMap.TryGetValue(roleName, out var role))
             {
                 logger.LogWarning(
-                    "IntelliFlowDemoSeeder: role '{Role}' not found — skipping user {Email}.", roleName, email);
+                    "IntelliFlowDemoSeeder: role '{Role}' not found — skipping that user.", roleName);
                 continue;
             }
             var u = new User
@@ -397,6 +403,73 @@ public static class IntelliFlowDemoSeeder
 
         await db.SaveChangesAsync(ct);
 
+        // ── 10b. Employee ↔ login linkage (ESS / mobile enablement) ───────────
+        // JwtTokenService only emits the employee_id claim when a non-deleted employee_user_accounts
+        // row exists for the user (Infrastructure/Auth/JwtTokenService.cs:37). With no row and no
+        // matching work_email, EmployeeSelfServiceController.GetEssContextAsync and
+        // MobileController.ResolveCallerEmployeeIdAsync both resolve null, so every /api/ess/* call
+        // returns 400 and the mobile surface 403s. A demo tenant therefore has to arrive in the state
+        // the production invite flow (AccessManagementService.InviteEmployeeLoginAsync + invitation
+        // acceptance) leaves behind:
+        //   • Status "Active" and RequiresPasswordSetup=false — a true value makes AuthService reject
+        //     the login outright with failReason "requires_password_setup" (AuthService.cs:46).
+        //   • employee.UserAccountId pointing back at the user, as the invite path sets it.
+        //   • employees.work_email equal to the login e-mail, so the e-mail fallback resolves too.
+        // One link per user: employee_user_accounts has a UNIQUE index on (tenant_id, user_id).
+        //
+        // AccessMode is ADDITIVE only (AuthService.GetPermissions unions role permissions with
+        // AuthService.AccessModePermissions). ess.read/ess.write come from the role for Admin,
+        // Manager, Supervisor and Employee, but NOT for HR Director, HR Manager or Finance Approver —
+        // and AccessModePermissions has no case for HRPortal/FinancePortal/FullPortal/SupervisorPortal,
+        // so those three personas need a mode that carries ESS. ManagerPortal adds nothing the HR roles
+        // do not already hold (they grant manager.read/manager.approve/approvals.*) beyond ess.*;
+        // Finance Approver gets ESSOnly, the minimum additive grant, to avoid handing it manager.read.
+        var usersByEmail = seededUsers.ToDictionary(x => x.User.Email, x => x.User, StringComparer.OrdinalIgnoreCase);
+        var loginLinks = new (string Email, Employee Employee, string AccessMode)[]
+        {
+            (AdminEmail,                   empYaser,  AccessModes.FullPortal),       // CTO, 5 direct reports
+            ("hrdirector@intelliflow.com", empNadia,  AccessModes.ManagerPortal),    // HR Director, 1 direct report
+            ("hrmanager@intelliflow.com",  empAmira,  AccessModes.ManagerPortal),    // HR Specialist
+            ("finance@intelliflow.com",    empAhmad,  AccessModes.EssOnly),          // Finance Manager
+            ("manager@intelliflow.com",    empWalid,  AccessModes.ManagerPortal),    // 3 direct reports — Team screen
+            ("supervisor@intelliflow.com", empSara,   AccessModes.SupervisorPortal), // 2 direct reports
+            ("employee1@intelliflow.com",  empLiu,    AccessModes.EssOnly),          // rank and file, reports to Walid
+            ("employee2@intelliflow.com",  empCarlos, AccessModes.EssOnly),          // rank and file, reports to Walid
+        };
+        foreach (var (email, emp, accessMode) in loginLinks)
+        {
+            if (!usersByEmail.TryGetValue(email, out var linkUser))
+            {
+                logger.LogWarning(
+                    "IntelliFlowDemoSeeder: no seeded user for employee {EmployeeId} — skipping employee link.", emp.Id);
+                continue;
+            }
+            db.EmployeeUserAccounts.Add(new EmployeeUserAccount
+            {
+                TenantId                = tenantId,
+                EmployeeId              = emp.Id,
+                UserId                  = linkUser.Id,
+                AccessMode              = accessMode,
+                IsPrimary               = true,
+                Status                  = "Active",
+                RequiresPasswordSetup   = false,
+                InvitationTokenHash     = string.Empty,
+                InvitedAtUtc            = now,
+                InvitationAcceptedAtUtc = now,
+                CreatedAtUtc            = now,
+            });
+            emp.WorkEmail     = linkUser.Email;
+            emp.UserAccountId = linkUser.Id;
+        }
+
+        // Every remaining employee still needs a work e-mail: it is the manager-linking key for the
+        // bulk importer, the "invite this employee" default in User Management, and the only address
+        // the notification pipeline can reach them on.
+        foreach (var emp in allEmps.Where(e => string.IsNullOrWhiteSpace(e.WorkEmail)))
+            emp.WorkEmail = WorkEmail(emp.EnglishName, "intelliflow.com");
+
+        await db.SaveChangesAsync(ct);
+
         // ── 11. Payroll profiles ──────────────────────────────────────────────
         // Employee.Salary remains a legacy/search projection, but payroll and statutory workflows resolve
         // EmployeeSalaryStructure. A pilot seed must follow that same contract rather than creating a
@@ -542,6 +615,7 @@ public static class IntelliFlowDemoSeeder
             Code       = "LEAVE-APPROVAL",
             Name       = "Leave Approval",
             EntityName = nameof(LeaveRequest),
+            IsDefault  = true,
             IsActive   = true,
         };
         leaveWorkflow.Steps.Add(new ApprovalWorkflowStep
@@ -827,5 +901,19 @@ public static class IntelliFlowDemoSeeder
             "payroll {Period} gross={Gross:N2} ded={Ded:N2} net={Net:N2} SAR, GL={GL:N2} SAR.",
             allEmps.Length, saudiEmps.Length, expatEmps.Length,
             period, totalGross, totalDed, totalNet, glDebits);
+    }
+
+    /// <summary>first.last@domain, punctuation stripped — mirrors WorkEmailPatterns.FirstLast.</summary>
+    private static string WorkEmail(string fullName, string domain)
+    {
+        var parts = fullName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var local = parts.Length switch
+        {
+            0 => "employee",
+            1 => parts[0],
+            _ => $"{parts[0]}.{parts[^1]}",
+        };
+        local = new string(local.Where(c => char.IsLetterOrDigit(c) || c == '.').ToArray()).ToLowerInvariant();
+        return $"{local}@{domain}";
     }
 }

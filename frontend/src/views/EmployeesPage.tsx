@@ -1207,7 +1207,7 @@ export function EmployeesPage() {
                   Add Employee
                 </button>
                 {atEmployeeLimit && usage && (
-                  <div className="absolute bottom-full left-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
+                  <div className="absolute bottom-full start-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
                     Employee limit reached ({usage.activeEmployees}/{usage.maxEmployees}). Upgrade your plan to add more employees.
                   </div>
                 )}
@@ -1233,9 +1233,9 @@ export function EmployeesPage() {
         <section className="space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <label htmlFor="employee-search" className="sr-only">Search employees</label>
-              <input id="employee-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} className="input w-full pl-9" placeholder="Search employee code, name, email" />
+              <input id="employee-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} className="input w-full ps-9" placeholder="Search employee code, name, email" />
             </div>
             <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className="select sm:w-56" aria-label="Status filter">
               {activeStatusFilterOptions.map((item) => <option key={item || 'all'} value={item}>{item || 'All statuses'}</option>)}
@@ -1334,7 +1334,7 @@ export function EmployeesPage() {
               <table className="w-full min-w-[820px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    <th className="w-10 px-4 py-3 text-left">
+                    <th className="w-10 px-4 py-3 text-start">
                       <input
                         ref={selectAllRef}
                         type="checkbox"
@@ -1346,7 +1346,7 @@ export function EmployeesPage() {
                       />
                     </th>
                     {['Employee', 'Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
-                      <th key={head} className="px-4 py-3 text-left text-xs font-bold uppercase text-slate-400">{head}</th>
+                      <th key={head} className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{head}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1388,7 +1388,7 @@ export function EmployeesPage() {
                               type="button"
                               aria-label={`Open profile for ${employee.fullName}`}
                               onClick={(event) => { event.stopPropagation(); openDetail(employee.id); }}
-                              className="rounded-sm text-left font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
+                              className="rounded-sm text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
                             >
                               {employee.fullName}
                             </button>
@@ -1515,8 +1515,8 @@ export function EmployeesPage() {
                                   <p className="font-semibold text-slate-800 dark:text-slate-100">
                                     {m.fullName} <span className="text-slate-400">{m.employeeCode}</span>
                                     {m.matchType === 'strong'
-                                      ? <span className="ml-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
-                                      : <span className="ml-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
+                                      ? <span className="ms-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
+                                      : <span className="ms-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
                                   </p>
                                   <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
                                 </div>
@@ -1794,8 +1794,8 @@ export function EmployeesPage() {
                           <p className="font-semibold text-slate-800 dark:text-slate-100">
                             {m.fullName} <span className="text-slate-400">{m.employeeCode}</span>
                             {m.matchType === 'strong'
-                              ? <span className="ml-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
-                              : <span className="ml-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
+                              ? <span className="ms-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
+                              : <span className="ms-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
                           </p>
                           <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
                         </div>
@@ -1820,7 +1820,7 @@ export function EmployeesPage() {
           )}
           <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           <Section title="Master Profile">
-            <Input label="Employee code" value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
+            <Input label="Employee code" ltr value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form.manualEmployeeCode} onChange={(e) => setField('manualEmployeeCode', e.target.checked)} className="h-4 w-4 accent-sapphire" />
               Manual override
@@ -1846,7 +1846,7 @@ export function EmployeesPage() {
               info="Auto-built from the name + the company's email domain. Edit only the part before the @ — the domain is locked to the company. Also links this employee to their self-service (ESS) login."
               infoKey="employees.work_email"
             />
-            <Input label="Mobile number" value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
+            <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
           </Section>
 
           <Section title="Employment Details">
@@ -1913,10 +1913,10 @@ export function EmployeesPage() {
 
           <Section title="Payroll Profile">
             <Input label="Bank name" value={form.payrollProfile?.bankName ?? ''} onChange={(v) => setPayrollField('bankName', v)} />
-            <Input label="IBAN" value={form.payrollProfile?.iban ?? ''} onChange={(v) => setPayrollField('iban', v)} info="International bank account number for salary transfers, e.g. AE07 0331 2345 6789 0123 456. No spaces needed." infoKey="employees.iban" />
-            <Input label="Account number" value={form.payrollProfile?.accountNumber ?? ''} onChange={(v) => setPayrollField('accountNumber', v)} />
-            <Input label="Bank routing / sort code" value={form.payrollProfile?.bankRoutingCode ?? ''} onChange={(v) => setPayrollField('bankRoutingCode', v)} info="Bank branch routing or sort code required for WPS SIF export (UAE: 6-digit CBQ code; KSA: Mudad bank code)." infoKey="employees.bankRoutingCode" />
-            <Input label="MOL ID / National labour number" value={form.payrollProfile?.molId ?? ''} onChange={(v) => setPayrollField('molId', v)} info="Ministry of Labour employee registration number — required in CBUAE WPS v2 SIF E1EDL20 segment and Saudi Mudad WPS." infoKey="employees.molId" />
+            <Input label="IBAN" ltr value={form.payrollProfile?.iban ?? ''} onChange={(v) => setPayrollField('iban', v)} info="International bank account number for salary transfers, e.g. AE07 0331 2345 6789 0123 456. No spaces needed." infoKey="employees.iban" />
+            <Input label="Account number" ltr value={form.payrollProfile?.accountNumber ?? ''} onChange={(v) => setPayrollField('accountNumber', v)} />
+            <Input label="Bank routing / sort code" ltr value={form.payrollProfile?.bankRoutingCode ?? ''} onChange={(v) => setPayrollField('bankRoutingCode', v)} info="Bank branch routing or sort code required for WPS SIF export (UAE: 6-digit CBQ code; KSA: Mudad bank code)." infoKey="employees.bankRoutingCode" />
+            <Input label="MOL ID / National labour number" ltr value={form.payrollProfile?.molId ?? ''} onChange={(v) => setPayrollField('molId', v)} info="Ministry of Labour employee registration number — required in CBUAE WPS v2 SIF E1EDL20 segment and Saudi Mudad WPS." infoKey="employees.molId" />
             <Select label="Salary currency" value={form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setPayrollField('salaryCurrency', v)} options={SALARY_CURRENCY_OPTIONS} />
             <Select label="Payment method" value={form.payrollProfile?.paymentMethod ?? ''} onChange={(v) => setPayrollField('paymentMethod', v)} options={PAYMENT_METHOD_OPTIONS} info="How salary is disbursed. WPS/BankTransfer require valid bank details before payroll can run." infoKey="employees.payment_method" />
             <Input label="Payroll group" value={form.payrollProfile?.payrollGroup ?? ''} onChange={(v) => setPayrollField('payrollGroup', v)} />
@@ -2229,7 +2229,7 @@ function WorkEmailField({
     <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">
         {label}
-        {info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}
+        {info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}
         {changedFromOriginal && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
       </span>
 
@@ -2312,17 +2312,21 @@ function WorkEmailField({
   );
 }
 
-function Input({ label, value, onChange, required, type = 'text', placeholder, rtl, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
+// `ltr` marks a field whose CONTENT is an identifier, not prose — an IBAN, an account or
+// routing number, a phone number. Under dir=rtl the bidi algorithm reorders such a mixed
+// letter+digit run and strands the country code at the wrong end; `field-ltr` (see
+// src/styles/index.css) isolates it. It is inert in LTR, so nothing changes in English.
+function Input({ label, value, onChange, required, type = 'text', placeholder, rtl, ltr, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; ltr?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
   return (
     <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
-      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}</span>
+      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
       {action ? (
         <span className="mt-1.5 flex items-stretch gap-1.5">
-          <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className="input w-full flex-1" />
+          <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input w-full flex-1${ltr ? ' field-ltr' : ''}`} />
           {action}
         </span>
       ) : (
-        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className="input mt-1.5 w-full" />
+        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input mt-1.5 w-full${ltr ? ' field-ltr' : ''}`} />
       )}
     </label>
   );
@@ -2331,7 +2335,7 @@ function Input({ label, value, onChange, required, type = 'text', placeholder, r
 function Select({ label, value, onChange, options, required, info, infoKey }: { label: string; value: string; onChange: (value: string) => void; options: string[]; required?: boolean; info?: string; infoKey?: string }) {
   return (
     <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
-      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}</span>
+      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
         <option value="">Select</option>
         {options.map((option) => <option key={option} value={option}>{option}</option>)}

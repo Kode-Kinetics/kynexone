@@ -353,13 +353,13 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
               </div>
               <div className="grid grid-cols-2 gap-y-1.5 text-xs">
                 <span className="text-slate-400">Headcount</span>
-                <span className="text-right font-medium text-slate-700 dark:text-slate-200">{tot.current}{tot.approved > 0 && <span className="text-slate-400"> / {tot.approved}</span>}</span>
+                <span className="text-end font-medium text-slate-700 dark:text-slate-200">{tot.current}{tot.approved > 0 && <span className="text-slate-400"> / {tot.approved}</span>}</span>
                 <span className="text-slate-400">Gap</span>
-                <span className={`text-right font-medium ${gapTone(tot.approved, tot.approved - tot.current)}`}>{tot.approved > 0 ? (tot.approved - tot.current > 0 ? `+${tot.approved - tot.current}` : tot.approved - tot.current) : '—'}</span>
+                <span className={`text-end font-medium ${gapTone(tot.approved, tot.approved - tot.current)}`}>{tot.approved > 0 ? (tot.approved - tot.current > 0 ? `+${tot.approved - tot.current}` : tot.approved - tot.current) : '—'}</span>
                 <span className="text-slate-400">Budget / Spend</span>
-                <span className="text-right font-medium text-slate-700 dark:text-slate-200">{tot.budget > 0 ? `${money(tot.spend)} / ${money(tot.budget)}` : money(tot.spend)}</span>
+                <span className="text-end font-medium text-slate-700 dark:text-slate-200">{tot.budget > 0 ? `${money(tot.spend)} / ${money(tot.budget)}` : money(tot.spend)}</span>
                 <span className="text-slate-400">Utilisation</span>
-                <span className={`text-right font-semibold ${utilTone(u)}`}>{u === null ? '— no budget' : `${u}%`}</span>
+                <span className={`text-end font-semibold ${utilTone(u)}`}>{u === null ? '— no budget' : `${u}%`}</span>
               </div>
             </div>
           );
@@ -385,7 +385,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
       {/* ── Department establishment table, grouped by cost centre ────────── */}
       <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+          <thead className="bg-slate-50 text-start text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
             <tr>
               <th className="w-8 px-2 py-2.5"><span className="sr-only">{t('Staffing levels')}</span></th>
               <th className="px-4 py-2.5 font-medium">Department</th>
@@ -461,7 +461,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                         <td className="px-4 py-2 text-slate-600 dark:text-slate-300">{r.currentMonthlySpend > 0 ? money(r.currentMonthlySpend) : '—'}</td>
                         <td className={`px-4 py-2 text-center font-semibold ${utilTone(u)}`}>{u === null ? '—' : `${u}%`}</td>
                         {!readOnly && (
-                          <td className="px-4 py-2 text-right">
+                          <td className="px-4 py-2 text-end">
                             {savedId === r.departmentId
                               ? <span className="inline-flex items-center gap-1 text-xs text-emerald-500"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>
                               : canEdit
@@ -508,7 +508,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
 
                               <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
                                 <table className="w-full text-xs">
-                                  <thead className="bg-slate-50 text-left text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+                                  <thead className="bg-slate-50 text-start text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
                                     <tr>
                                       <th className="px-3 py-2 font-medium">{t('Level')}</th>
                                       <th className="px-3 py-2 font-medium text-center">{t('Budgeted')}</th>
@@ -528,7 +528,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                         <tr key={lvl.id}>
                                           <td className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">
                                             {levelName(lvl)}
-                                            {inEdit === 0 && <span className="ml-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">{t('frozen')}</span>}
+                                            {inEdit === 0 && <span className="ms-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">{t('frozen')}</span>}
                                           </td>
                                           <td className="px-3 py-2 text-center">
                                             {canEdit ? (

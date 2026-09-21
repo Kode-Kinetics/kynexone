@@ -18,10 +18,20 @@ public class ReportsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
-    public ReportsController(ZayraDbContext db, IDataScopeService scopeService)
+    private readonly Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService _nitaqat;
+    public ReportsController(
+        ZayraDbContext db,
+        IDataScopeService scopeService,
+        Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService? nitaqat = null)
     {
         _db = db;
         _scopeService = scopeService;
+        // Optional so the many call sites that construct this controller directly (the
+        // scheduled-report worker and a dozen scope tests) keep working; DI and the worker
+        // pass the scoped instance, everyone else gets an equivalent one over the same
+        // DbContext. There is no per-request state in it beyond the context.
+        _nitaqat = nitaqat ?? new Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService(
+            db, new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db));
     }
 
     private Guid GetTenantId() =>
@@ -67,6 +77,7 @@ public class ReportsController : ControllerBase
             new { key = "attendance.corrections", name = "Attendance Corrections", category = "Attendance", description = "Submitted, approved, and rejected attendance correction requests" },
             new { key = "compliance.document-compliance", name = "Document Compliance", category = "Compliance", description = "Employee document status: verified, pending, rejected, expired, and missing required docs" },
             new { key = "qiwa.readiness", name = "Qiwa Readiness", category = "Compliance", description = "Employees missing Iqama, Work Permit, National ID, or Passport required for Qiwa" },
+            new { key = "compliance.saudization", name = "Saudization / Nitaqat Standing", category = "Compliance", description = "Weighted Nitaqat position per Saudi establishment: Saudi units, total units, achieved percentage, band, and hires to the next band" },
         };
         return Ok(catalog);
     }
@@ -97,6 +108,71 @@ public class ReportsController : ControllerBase
         await LogReportExecution(tid, uid, req, "Success", rowCount, (int)sw.ElapsedMilliseconds, null, ct);
 
         return Ok(new { reportKey = req.ReportKey, generatedAt = DateTime.UtcNow, rowCount, durationMs = sw.ElapsedMilliseconds, data });
+    }
+
+    // ── Export ────────────────────────────────────────────────────────────────
+    //
+    // F3. Before this endpoint, results rendered into an HTML table and could not leave the
+    // product. ReportsPage.tsx imported a Download icon and never used it. The only way out was
+    // a SCHEDULED report — which needs a governance override and emails you a file — and the
+    // worker wrote CSV bytes for every format, so "PDF" arrived as a .csv.
+    //
+    // Formats: CSV and a genuine XLSX. PDF is NOT offered here and has been removed from the UI
+    // rather than kept as an option that produces something else. A report is a wide table with
+    // an unbounded column count; paginating one onto A4 well is a feature, not a serialiser, and
+    // shipping a bad one to keep a dropdown populated is the failure mode this stream exists to
+    // stop. The button will come back when the thing behind it exists.
+
+    [HttpPost("export")]
+    [HasPermission("reports.export")]
+    public async Task<IActionResult> ExportReport([FromBody] ExportReportRequest req, CancellationToken ct)
+    {
+        // Belt and braces, matching the schedule endpoints: the attribute is the gate, the
+        // imperative check is what survives an attribute being dropped in a refactor.
+        if (!HasPermission("reports.export")) return Forbid();
+
+        var format = ReportExportFormats.Normalize(req.Format);
+        if (format is null)
+            return BadRequest(new
+            {
+                code = "unsupported_export_format",
+                message = $"Export format must be one of: {string.Join(", ", ReportExportFormats.All)}.",
+            });
+
+        var tid = GetTenantId();
+        var uid = GetUserId();
+        var scope = await _scopeService.ResolveAsync(User, tid, ct);
+        var employeeIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds;
+        var runRequest = new RunReportRequest(req.ReportKey, req.Filters);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        var data = await ExecuteReportDataAsync(tid, runRequest, employeeIds, ct);
+        if (data is null)
+        {
+            await LogReportExecution(tid, uid, runRequest, "Failed", 0, (int)sw.ElapsedMilliseconds,
+                $"Report '{req.ReportKey}' not found.", ct, format);
+            return NotFound($"Report '{req.ReportKey}' not found.");
+        }
+
+        var tables = ReportTabulator.Tabulate(
+            System.Text.Json.JsonSerializer.SerializeToElement(data), ReportTabulator.Humanise(req.ReportKey));
+        var rowCount = tables.Sum(t => t.Rows.Count);
+        sw.Stop();
+
+        await LogReportExecution(tid, uid, runRequest, "Success", rowCount, (int)sw.ElapsedMilliseconds, null, ct, format);
+
+        var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmm");
+        var safeKey = new string(req.ReportKey.Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray()).Trim('-');
+        if (safeKey.Length == 0) safeKey = "report";
+
+        // The export is the one place the whole result leaves the product — the on-screen table
+        // is truncated at 200 rows — so it is audited with the row count and the scope it ran
+        // under, the same way the employee CSV export is.
+        Response.Headers["X-Report-Row-Count"] = rowCount.ToString();
+
+        return format == ReportExportFormats.Xlsx
+            ? File(ReportWorkbookWriter.ToXlsx(tables), ReportWorkbookWriter.ContentType, $"{safeKey}-{stamp}.xlsx")
+            : File(ReportTabulator.ToCsv(tables), "text/csv", $"{safeKey}-{stamp}.csv");
     }
 
     internal async Task<object?> ExecuteReportDataAsync(
@@ -132,8 +208,83 @@ public class ReportsController : ControllerBase
             "attendance.corrections" => await RunAttendanceCorrections(tid, req, employeeIds, ct),
             "compliance.document-compliance" => await RunDocumentCompliance(tid, req, employeeIds, ct),
             "qiwa.readiness" => await RunQiwaReadiness(tid, req, employeeIds, ct),
+            "compliance.saudization" => await RunSaudizationStanding(tid, ct),
             _ => null,
         };
+
+    // ── Saudization / Nitaqat ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// One row per Saudi establishment. Establishments that cannot be banded appear
+    /// WITH THEIR REFUSAL REASON rather than being dropped or given a zero: the HR
+    /// review found there was no Saudization report at all, and a report that quietly
+    /// omits the establishments it could not compute is the next version of that
+    /// problem.
+    /// </summary>
+    private async Task<object> RunSaudizationStanding(Guid tid, CancellationToken ct)
+    {
+        var companies = await _db.Companies
+            .Where(c => c.TenantId == tid && c.IsActive && !c.IsDeleted
+                     && (c.CountryCode == "SA" || c.CountryCode == "SAU"))
+            .Select(c => new { c.Id, c.TradeName, c.LegalNameEn })
+            .ToListAsync(ct);
+
+        var asOf = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var rows = new List<object>();
+
+        foreach (var c in companies)
+        {
+            var name = string.IsNullOrWhiteSpace(c.TradeName) ? c.LegalNameEn : c.TradeName;
+            var result = await _nitaqat.GetStandingAsync(tid, c.Id, asOf, ct);
+
+            if (result.Standing is { } s)
+            {
+                rows.Add(new
+                {
+                    establishment = name,
+                    activity = s.ActivityNameEn,
+                    sizeTier = s.SizeTierNameEn,
+                    saudiWeighted = s.SaudiWeighted,
+                    totalWeighted = s.TotalWeighted,
+                    achievedPercent = s.AchievedPercent,
+                    band = s.Band,
+                    currentBandFloorPercent = s.CurrentBandFloorPercent,
+                    nextBand = s.NextBandUp?.Band,
+                    nextBandRequiredPercent = s.NextBandUp?.RequiredPercent,
+                    saudiHiresToNextBand = s.Scenario.SaudiHiresToNextBand,
+                    expatHiresBeforeDowngrade = s.Scenario.ExpatHiresBeforeDowngrade,
+                    restrictsServices = s.RestrictsServices,
+                    allInputsVerified = s.AllInputsVerified,
+                    unverifiedInputs = string.Join("; ", s.UnverifiedInputs),
+                    status = "Computed",
+                });
+            }
+            else
+            {
+                rows.Add(new
+                {
+                    establishment = name,
+                    activity = (string?)null,
+                    sizeTier = (string?)null,
+                    saudiWeighted = (decimal?)null,
+                    totalWeighted = (decimal?)null,
+                    achievedPercent = (decimal?)null,
+                    band = (string?)null,
+                    currentBandFloorPercent = (decimal?)null,
+                    nextBand = (string?)null,
+                    nextBandRequiredPercent = (decimal?)null,
+                    saudiHiresToNextBand = (int?)null,
+                    expatHiresBeforeDowngrade = (int?)null,
+                    restrictsServices = false,
+                    allInputsVerified = false,
+                    unverifiedInputs = result.Refusal?.Message ?? string.Empty,
+                    status = result.Refusal?.Reason ?? "Unknown",
+                });
+            }
+        }
+
+        return new { asOf, establishments = rows.Count, rows };
+    }
 
     // ── HR Reports ────────────────────────────────────────────────────────────
 
@@ -731,7 +882,10 @@ public class ReportsController : ControllerBase
             TenantId = tid, ReportKey = req.ReportKey, ReportName = req.ReportName,
             Category = req.Category, FiltersJson = System.Text.Json.JsonSerializer.Serialize(req.Filters),
             Frequency = req.Frequency, DeliveryMethod = req.DeliveryMethod,
-            Recipients = req.Recipients ?? string.Empty, ExportFormat = req.ExportFormat,
+            Recipients = req.Recipients ?? string.Empty,
+            // Stored canonical. The column used to keep whatever the UI sent ("Excel", "PDF"),
+            // which is how "PDF" survived all the way to a .csv landing in someone's inbox.
+            ExportFormat = ReportExportFormats.NormalizeSchedulable(req.ExportFormat) ?? ReportExportFormats.Csv,
             CreatedBy = uid,
             NextRunAtUtc = ReportSchedulePolicy.NextRun(DateTime.UtcNow, req.Frequency),
         };
@@ -790,7 +944,7 @@ public class ReportsController : ControllerBase
         return Ok(new { total, items });
     }
 
-    private async Task LogReportExecution(Guid tid, Guid? uid, RunReportRequest req, string status, int rowCount, int durationMs, string? errorMessage, CancellationToken ct)
+    private async Task LogReportExecution(Guid tid, Guid? uid, RunReportRequest req, string status, int rowCount, int durationMs, string? errorMessage, CancellationToken ct, string? exportFormat = null)
     {
         _db.ReportExecutionLogs.Add(new ReportExecutionLog
         {
@@ -798,7 +952,9 @@ public class ReportsController : ControllerBase
             ReportKey = req.ReportKey,
             ReportName = req.ReportKey,
             FiltersJson = System.Text.Json.JsonSerializer.Serialize(req.Filters),
-            ExportFormat = "JSON",
+            // Was hard-coded "JSON" for every row, so the execution log could not answer
+            // "did anyone export this?" — the one question an auditor asks of it.
+            ExportFormat = exportFormat ?? "JSON",
             Status = status,
             RowCount = rowCount,
             RunBy = uid,
@@ -878,6 +1034,7 @@ public class ReportFilters
 }
 
 public record RunReportRequest(string ReportKey, ReportFilters? Filters);
+public record ExportReportRequest(string ReportKey, ReportFilters? Filters, string Format = ReportExportFormats.Csv);
 public record SaveReportRequest(string ReportKey, string Name, string Category, ReportFilters? Filters, string[]? Columns, bool IsShared, GovernanceOverrideRequest? GovernanceOverride = null);
 public record CreateScheduleRequest(string ReportKey, string ReportName, string Category, ReportFilters? Filters, string Frequency, string DeliveryMethod, string? Recipients, string ExportFormat, GovernanceOverrideRequest? GovernanceOverride = null);
 public record GovernanceOverrideRequest(string TicketReference, string Reason, bool Acknowledged);

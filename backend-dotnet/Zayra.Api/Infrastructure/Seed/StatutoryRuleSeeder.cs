@@ -48,11 +48,15 @@ public static class StatutoryRuleSeeder
         }
     }
 
-    private static List<StatutoryRule> BuildRules()
+    /// <summary>Exposed to tests (InternalsVisibleTo) so the seeded statutory constants can be
+    /// asserted directly — notably that every Nitaqat curve constant carries a source and expires
+    /// when MHRSD reissued the annex.</summary>
+    internal static List<StatutoryRule> BuildRules()
     {
         var list = new List<StatutoryRule>();
         var eff16 = new DateTime(2016, 6, 1, 0, 0, 0, DateTimeKind.Utc);   // GOSI regulation effective date
         var eff22 = new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc);   // UAE/Qatar post-reform effective date
+        var eff21 = new DateTime(2021, 1, 1, 0, 0, 0, DateTimeKind.Utc);   // KSA balanced-Nitaqat revision
 
         // ── KSA GOSI ─────────────────────────────────────────────────────────
         // ⚠️  COMPLIANCE GATE — DO NOT REMOVE ⚠️
@@ -82,7 +86,94 @@ public static class StatutoryRuleSeeder
             "VERIFY: GOSI covered wage ceiling SAR 45,000 — confirm current ceiling"));
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "nitaqat.default_target_ratio", "0.35", "decimal", eff16,
-            "VERIFY: Nitaqat target ratio varies by sector; 35% is directional — confirm with HRSD"));
+            "SUPERSEDED for reporting — read by KsaNationalizationTracker only, which nothing in "
+            + "production calls. The real Nitaqat target is a function of (economic activity × "
+            + "establishment size tier) and lives in nitaqat_band_thresholds; see "
+            + "NitaqatCalculationService. Left in place so the country-pack tracker and its tests "
+            + "keep their existing behaviour."));
+
+        // ── KSA Nitaqat counting wage floor ───────────────────────────────────
+        // MHRSD counts a Saudi as a full unit only once their monthly wage clears a
+        // floor, and as a half unit between a lower and the full floor. These are
+        // genuine scalars, so they belong in StatutoryRule rather than in the
+        // Nitaqat matrix table. The nitaqat.* prefix is already a bounded statutory
+        // key (StatutoryRateGuard), so a tenant may override but not invent.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "nitaqat.counting_wage_floor_sar", "4000", "decimal", eff21,
+            "VERIFIED 2026-09-20 against MHRSD Ministerial Decision 61706 (ref. 61706, dated "
+            + "03/04/1442 AH), clause Fourth: \"To enroll a Saudi worker in the Localization "
+            + "percentage calculated in 'Nitaqat' program as one worker, the monthly wage shall be "
+            + "at least (4,000 riyals).\" Clause Third: monthly wage means the salary subject to "
+            + "GOSI subscription. hrsd.gov.sa/sites/default/files/2023-02/E61706.pdf"));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "nitaqat.counting_wage_half_floor_sar", "3000", "decimal", eff21,
+            "VERIFIED 2026-09-20 against MHRSD Ministerial Decision 61706, clauses Fifth "
+            + "(wage of 3,000 = half worker), Seventh (more than 3,000 and less than 4,000 = half "
+            + "worker — a FLAT half, not a sliding scale) and Sixth (less than 3,000 = not counted). "
+            + "hrsd.gov.sa/sites/default/files/2023-02/E61706.pdf"));
+
+        // ── KSA Nitaqat Mutawar band curve (نطاقات المطور) ────────────────────
+        //
+        // Since 1 December 2021 MHRSD does NOT publish a band percentage per
+        // (activity × size tier). It publishes, per economic activity, a curve
+        //     y = m · ln(x) + c
+        // where x is the establishment's total workforce, and abolished the fixed
+        // size bands outright. See Infrastructure/Compliance/NitaqatCurve.cs for the
+        // verbatim quotations and the full citation.
+        //
+        // WHAT IS SEEDED HERE, AND WHY SO LITTLE. Exactly one activity's constants:
+        // Manufacturing, from the Ministry's OWN WORKED EXAMPLE in the official
+        // English procedural guideline. Those eight numbers were read out of the
+        // published PDF on 2026-09-20 and reproduced arithmetically against the
+        // Ministry's own stated answers (400 workers, C-2023 → 22.15 / 30.07 /
+        // 34.93 / 40.83, and an entity at 35.00% lands in High Green). That
+        // reproduction is pinned as a test. Nothing else is seeded, because nothing
+        // else was verified to that standard.
+        //
+        // END-DATED 2026-01-01 ON PURPOSE. MHRSD reissued the constants annex in
+        // January 2026 with 41 activities and re-baselined values. Those have NOT
+        // been verified here, so rather than let a 2024 constant quietly answer a
+        // 2026 question, the rows expire and the product refuses with a pointer to
+        // the exact document. A stale constant produces a confident wrong answer
+        // about work-visa eligibility; a refusal does not.
+        var effCurve23 = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var effCurve24 = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var curveExpiry = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        const string curveSource =
+            "MHRSD Nitaqat Program Procedural Guideline (official English edition of Ministerial "
+            + "Decision 182495, in force 1 December 2021), worked example for Manufacturing. Read "
+            + "from hrsd.gov.sa/sites/default/files/2023-06/E20210523.pdf on 2026-09-20 and "
+            + "reproduced against the Ministry's own published results. SUPERSEDED from 2026-01-01 "
+            + "by the January 2026 annex (hrsd.gov.sa/sites/default/files/2026-03/ntaqat-almtwr.pdf), "
+            + "which has NOT been verified here — load it before relying on a 2026+ band.";
+
+        // m (gradient) — published per activity, not per year, so one row each.
+        foreach (var (band, m) in new[]
+                 {
+                     ("LOWGREEN", "1.68"), ("MEDIUMGREEN", "1.87"),
+                     ("HIGHGREEN", "2.08"), ("PLATINUM", "2.08"),
+                 })
+            list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                $"nitaqat.curve.MANUFACTURING.{band}.m", m, "decimal", effCurve23, curveExpiry,
+                $"Curve gradient m for Manufacturing / {band}. {curveSource}"));
+
+        // c (intercept) — published per activity AND YEAR. The guideline states the
+        // third-year value applies "in the third year and beyond", which is why the
+        // 2024 row would otherwise have run forever; the 2026 reissue is why it does not.
+        foreach (var (band, c23, c24) in new[]
+                 {
+                     ("LOWGREEN", "12.08", "17.08"), ("MEDIUMGREEN", "18.87", "23.87"),
+                     ("HIGHGREEN", "22.47", "25.47"), ("PLATINUM", "28.37", "32.87"),
+                 })
+        {
+            list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                $"nitaqat.curve.MANUFACTURING.{band}.c", c23, "decimal", effCurve23, effCurve24,
+                $"Curve intercept c for Manufacturing / {band}, C-2023 (Jan 2023 to Dec 2023). {curveSource}"));
+            list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                $"nitaqat.curve.MANUFACTURING.{band}.c", c24, "decimal", effCurve24, curveExpiry,
+                $"Curve intercept c for Manufacturing / {band}, C-2024 (Jan 2024 onwards). {curveSource}"));
+        }
 
         // ── KSA OT / LOP ──────────────────────────────────────────────────────
         // ⚠️  FLAG FOR SAUDI COMPLIANCE SIGN-OFF — do NOT file payroll against these
@@ -115,6 +206,152 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "ot.restday_multiplier", "2.0", "decimal", eff07,
             "FLAG-COMPLIANCE: Rest-day (weekend) OT 2× per KSA Labour Law Art.107 — VERIFY before filing"));
+        // S1/A5 — the OT hourly BASE. Art.107: "an additional amount equal to the hourly WAGE plus 50%
+        // of his BASIC wage". The base is the wage (Art.2: basic + all due increments); only the 50%
+        // uplift is measured on basic. The payroll run computes
+        //     hour pay = baseHourly + basicHourly × (multiplier − 1)
+        // so "wage" + 1.5 reproduces Art.107 exactly, and "basic" collapses to the pre-S1 arithmetic.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ot.hourly_base", "wage", "string", eff07,
+            "[CERT] KSA Art.107 overtime is the hourly WAGE plus 50% of BASIC. Values: wage | basic. " +
+            "Set to 'basic' only on a written opinion — computing KSA overtime on basic alone under-pays " +
+            "every overtime hour by roughly 30% on a typical 60/40 package."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "ot.hourly_base", "basic", "string", eff22,
+            "[CONF] UAE overtime is basic + 25% (and +50% for 22:00–04:00 work, which is not yet modelled). " +
+            "Basic-only is correct here and is deliberately NOT the KSA rule."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "ot.standard_multiplier", "1.25", "decimal", eff22,
+            "[CONF] UAE ordinary overtime: basic + 25%. VERIFY the 22:00–04:00 night rate (+50%) before filing."));
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "ot.hourly_base", "basic", "string", eff22,
+            "[CONF] Qatar Art.74 overtime is basic + not less than 25% (+50% for night work, not yet modelled)."));
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "ot.standard_multiplier", "1.25", "decimal", eff22,
+            "[CONF] Qatar Art.74 ordinary overtime: basic + not less than 25%. This is a FLOOR."));
+
+        // ── KSA Art. 98 / 109 / 117 — working hours, annual leave tiering, sick-leave scale ──
+        // Effective-dated from the Labour Law's own commencement (eff07 = 1426-09-23H / 2005-09-27),
+        // exactly as the EOSB rules are: these are not new law, so there is no later commencement to
+        // date them from, and a payroll that has already closed is not recomputed (a LeavePayrollImpact
+        // is snapshotted at approval and only ever read once, then stamped Processed).
+        //
+        // ⚠️  SOURCE CONFLICT ON ART. 98 — READ BEFORE CHANGING THESE NUMBERS.
+        // MHRSD publishes two English texts that disagree:
+        //   (a) hrsd.gov.sa knowledge centre art. 312 (last modified 2025-09-02): 8h/day, 48h/week;
+        //       Ramadan for Muslims 6h/day or 36h/week.   ← implemented here
+        //   (b) hrsd.gov.sa/sites/default/files/2023-02/Labor.pdf: 9h/day, 45h/week; Ramadan 7h/35h.
+        // (b) is not the operative text — its Art. 104 grants TWO weekly rest days where the operative
+        // Art. 104 grants one rest day of not less than 24 consecutive hours (Friday); it reads as an
+        // un-enacted five-day-week package. (a) is also the employee-favourable reading, because a lower
+        // Ramadan baseline makes MORE hours overtime-bearing under Art. 107.
+        // [COUNSEL] Confirm the operative Art. 98 figures before filing KSA payroll.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "workhours.standard_minutes_per_day", "480", "decimal", eff07,
+            "[CONF] KSA Art.98 ordinary actual working hours: 8h/day (480 min). Mirrors the existing "
+            + "lop.standard_work_minutes_per_day; kept as its own key because this one is the OVERTIME "
+            + "threshold and that one is the LOP absent-day divisor, and a tenant may lawfully differ."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "workhours.ramadan_minutes_per_day", "360", "decimal", eff07,
+            "[CERT] KSA Art.98 Ramadan reduced actual working hours: 6h/day (360 min) for Muslims. Art.98 "
+            + "cuts HOURS, not wages — the monthly wage is unchanged, so every hour worked beyond 6 in a "
+            + "Ramadan day is overtime at the Art.107 rate. Raising this value REDUCES overtime pay."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "workhours.ramadan_minutes_per_week", "2160", "decimal", eff07,
+            "[CONF] KSA Art.98 Ramadan weekly ceiling: 36h/week (2,160 min). Recorded for completeness and "
+            + "for the weekly-criterion employer; the daily criterion is what this product measures overtime "
+            + "on today (AttendanceService is a per-day engine). NOT YET ENFORCED — see the report."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "workhours.ramadan_scope", "all", "string", eff07,
+            "[COUNSEL] Who the Art.98 Ramadan reduction applies to. Values: all | none. The statute says "
+            + "\"for Muslims\", but the Employee model carries no religion attribute, so 'muslim' is not "
+            + "evaluable and folds to 'all' with a notice. 'all' is the default because over-delivering to "
+            + "non-Muslim staff is lawful, whereas applying it to nobody strips a statutory entitlement."));
+
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.annual_base_days", "21", "decimal", eff07,
+            "[CERT] KSA Art.109(1) annual leave: \"not less than 21 days\". A statutory FLOOR — a configured "
+            + "leave policy below it is raised to it, never the other way round."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.annual_tiered_days", "30", "decimal", eff07,
+            "[CERT] KSA Art.109(1) annual leave after the service threshold: \"not less than 30 days\". Also a "
+            + "FLOOR. An employer may grant more; it may not grant less."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.annual_tier_threshold_years", "5", "decimal", eff07,
+            "[COUNSEL] KSA Art.109(1): the uplift applies \"if the worker spends five consecutive years in the "
+            + "service of the employer\". Applied at COMPLETION of the fifth year (>=), the employee-favourable "
+            + "reading. Confirm whether the uplift attaches from the fifth anniversary or from the start of the "
+            + "following leave year."));
+
+        // Art. 117 bands. Days AND rates are separate rules so counsel can move either without code.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band1_days", "30", "decimal", eff07,
+            "[CERT] KSA Art.117 band 1: the first 30 days of sick leave in a single year."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band1_pay_rate", "1.0", "decimal", eff07,
+            "[CERT] KSA Art.117 band 1 pay: full wage."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band2_days", "60", "decimal", eff07,
+            "[CERT] KSA Art.117 band 2: the next 60 days."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band2_pay_rate", "0.75", "decimal", eff07,
+            "[CERT] KSA Art.117 band 2 pay: \"three quarters of the wage\". Lowering this under-pays sick leave."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band3_days", "30", "decimal", eff07,
+            "[CERT] KSA Art.117 band 3: the following 30 days."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_band3_pay_rate", "0.0", "decimal", eff07,
+            "[CERT] KSA Art.117 band 3 pay: without pay. Art.117 grants nothing beyond band 3 either, so days "
+            + "past the end of the scale continue at this rate."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_apply_statutory_scale", "true", "bool", eff07,
+            "[COUNSEL] Whether to apply the Art.117 reduction at all. Before this rule existed the product paid "
+            + "sick leave at 100% for every day without limit, which is ABOVE statute and therefore lawful — "
+            + "Art.117 is a floor. Turning this off restores that behaviour for an employer whose contracts "
+            + "promise full sick pay. Leaving it on applies exactly the statutory minimum."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.sick_reduction_wage_base", "basic", "string", eff07,
+            "[COUNSEL] The wage the Art.117 reduction is measured on. Values: basic | wage. Art.117 says \"three "
+            + "quarters of the WAGE\", and Art.2 defines wage as basic plus all due increments — so the strict "
+            + "reading is 'wage'. The default is 'basic' because it DEDUCTS LESS and therefore over-pays the "
+            + "employee relative to statute, which is the safe direction to be wrong in, and because it matches "
+            + "the base the existing unpaid-leave deduction already uses. Move to 'wage' on a written opinion."));
+
+        // ── S1/A1 + A8 — KSA EOSB wage base and service period ────────────────
+        // Art. 84 M/51 awards on the LAST WAGE; Art. 2 defines wage as "the basic wage plus all other
+        // due increments". The statutory FLOOR (basic + housing) is compiled into KsaEndOfServiceCalculator
+        // and is deliberately NOT a rule — it is not configurable, because a tenant cannot contract out
+        // of the Labour Law. What IS a rule is each genuinely arguable component, effective-dated from
+        // the Labour Law's own commencement, so the record shows when each reading applied.
+        // These are NOT new law. Art. 84 has always said "last wage"; there is no commencement date to
+        // date the fix from, which is precisely why the change is retroactive in effect for any settlement
+        // that has not yet accrued. Settlements that have already posted their accrual journal are
+        // immutable and are NOT recomputed — see the report.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "eosb.include_transport", "true", "bool", eff07,
+            "[COUNSEL] Transport allowance IN the Art.84 last-wage base. A fixed monthly transport allowance is " +
+            "due irrespective of expenditure and so reads as an Art.2 'increment'; a reimbursive travel float does " +
+            "not. Housing is NOT governed by this rule — it is the non-configurable statutory floor. Set false only " +
+            "on a written opinion that your transport allowance is reimbursive."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "eosb.include_other_allowances", "false", "bool", eff07,
+            "[COUNSEL] Composite 'other allowances' (food + mobile + other) OUT of the Art.84 last-wage base, " +
+            "because the composite mixes regular cash increments (which ARE wage under Art.2) with reimbursive " +
+            "items (which are not) and the data model cannot tell them apart. Model a regular allowance as its own " +
+            "EOSB-included pay component rather than flipping this."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "eosb.exclude_unpaid_leave", "false", "bool", eff07,
+            "[CONF] Unpaid leave stays IN the KSA service period for gratuity. Unlike UAE Decree-Law 33/2021 " +
+            "Art.51 there is no express KSA exclusion — it rests on the 'continuous service' reading. Excluding it " +
+            "is the employer-favourable direction and must be a conscious, counselled decision."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "eosb.exclude_unpaid_leave", "true", "bool", eff22,
+            "[CERT] UAE Decree-Law 33/2021 Art.51 excludes periods of unpaid leave from the service period for " +
+            "gratuity EXPRESSLY. Turning this off over-states both the award and the EOSB provision."));
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "eosb.exclude_unpaid_leave", "false", "bool", eff22,
+            "[CONF] Qatar has no express exclusion of unpaid leave from the Art.54 service period; it turns on " +
+            "'continuous service'. Defaults to including the days — confirm with counsel before flipping."));
 
         // ── UAE GPSSA ────────────────────────────────────────────────────────
         // Source: Federal Law 7/1999 + Cabinet Resolution 50/2022.
@@ -124,6 +361,19 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
             "gpssa.national_employer_rate", "0.125", "decimal", eff22,
             "VERIFY: GPSSA employer 12.5% — confirm current rate with GPSSA"));
+        // S1/A10 — GPSSA contribution-salary bounds. [COUNSEL] on the exact figures; the mechanism is
+        // certain and the absence of ANY bound was producing an unlawful over-deduction from the
+        // employee's net pay (Art. 25, Decree-Law 33/2021). Effective-dated from Law 7/1999 so a
+        // current circular can supersede them without touching code. Set a rule to 0 to disable it.
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "gpssa.contribution_salary_min", "1000", "decimal", new DateTime(1999, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            "[COUNSEL] GPSSA contribution-salary FLOOR, AED 1,000 (Law 7/1999, private sector). Confirm the " +
+            "current figure and the Decree-Law 57/2023 equivalent before filing."));
+        list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
+            "gpssa.contribution_salary_max", "50000", "decimal", new DateTime(1999, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            "[COUNSEL] GPSSA contribution-salary CEILING, AED 50,000 (Law 7/1999, private sector). Without a " +
+            "ceiling the product over-deducts from senior Emirati employees, which is an unlawful deduction. " +
+            "Confirm the current figure and the Decree-Law 57/2023 equivalent before filing."));
         list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,
             "emiratisation.target_ratio", "0.10", "decimal", eff22,
             "VERIFY: Emiratisation 10% target varies by sector — confirm with Nafis/MOHRE"));
@@ -145,11 +395,32 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
             "grsia.national_employer_rate", "0.14", "decimal", eff22,
             "VERIFY: GRSIA employer 14% — Qatar Law 24/2002 and amendments"));
+        // S1/A11 — Law 1/2022 contribution salary = basic + social + housing, from January 2023.
+        // Effective-dated so a pre-2023 period still reproduces the Law 24/2002 basic-only base it was
+        // actually filed on. A SOCIAL allowance has no field in this data model — see the pack.
+        list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
+            "grsia.include_housing_in_contribution_salary", "true", "bool", new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            "[CONF] Social Insurance Law No.1 of 2022 (in force Jan 2023, superseding Law 24/2002): the " +
+            "contribution salary for Qatari nationals is basic + social allowance + housing allowance, not " +
+            "basic alone. [COUNSEL] confirm the treatment of housing provided IN KIND."));
         list.Add(Rule(CountryCodes.Qatar, Jurisdictions.QatarMainland,
             "qatarization.target_ratio", "0.20", "decimal", eff22,
             "VERIFY: Qatarization 20% directional — confirm sector targets with Ministry of Labor"));
 
         return list;
+    }
+
+    /// <summary>
+    /// A rule with an explicit expiry. Used where a value is known to be superseded on a date and
+    /// letting it run forever would answer a later period with an earlier regime's number.
+    /// </summary>
+    private static StatutoryRule RuleUntil(
+        string country, string jurisdiction, string key, string value,
+        string dataType, DateTime effectiveFrom, DateTime effectiveTo, string description)
+    {
+        var r = Rule(country, jurisdiction, key, value, dataType, effectiveFrom, description);
+        r.EffectiveTo = effectiveTo;
+        return r;
     }
 
     private static StatutoryRule Rule(

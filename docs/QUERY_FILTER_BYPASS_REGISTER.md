@@ -89,6 +89,8 @@ Legend — **Actor**: `SU` scoped user · `GU` group user · `SW` system worker 
 | `Infrastructure/Notifications/NotificationService.cs` | 3 | SW | Enqueue on child scope; tenant pinned |
 | `Infrastructure/Notifications/NotificationDeliveryWorker.cs` | 1 | SW | Device prune; tenant pinned |
 | `Infrastructure/Email/SmtpEmailService.cs` | 1 | SW | Template lookup from worker scope; tenant pinned |
+| `Infrastructure/Notifications/NotificationService.cs` (`LoadCategoryOptOutsAsync`) | 1 | SW | W2-D: `ScopedBypass.TenantWide` — the employee's category opt-outs at enqueue; tenant re-applied by the helper, employee pinned |
+| `Infrastructure/Notifications/NotificationDeliveryWorker.cs` (`IsCategoryOptedOutNowAsync`) | 1 | SW | W2-D: `ScopedBypass.TenantWide` — send-time re-check of the same opt-out; the delivery's own tenant re-applied by the helper |
 
 ### 4.4 The single cross-tenant bypass — lease reclaimer
 

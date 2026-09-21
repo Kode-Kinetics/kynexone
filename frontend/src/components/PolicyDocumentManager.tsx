@@ -246,7 +246,7 @@ export function PolicyDocumentManager() {
         <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3 dark:border-white/[0.07]">
           <MessageSquareText className="h-4 w-4 text-sapphire dark:text-cyan-400" />
           <p className="text-sm font-semibold text-slate-800 dark:text-white">Policy Assistant</p>
-          <span className="ml-auto rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+          <span className="ms-auto rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
             Advisory
           </span>
         </div>
@@ -281,7 +281,7 @@ export function PolicyDocumentManager() {
               <div className="flex items-center gap-2">
                 <MessageSquareText className="h-4 w-4 text-sapphire dark:text-cyan-400" />
                 <span className="text-xs font-semibold text-sapphire dark:text-cyan-400">Assistant</span>
-                <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
+                <span className="ms-auto rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
                   Advisory Only
                 </span>
                 {!answer.isGrounded && (

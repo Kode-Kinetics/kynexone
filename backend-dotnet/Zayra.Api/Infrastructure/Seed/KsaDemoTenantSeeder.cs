@@ -359,28 +359,54 @@ public static class KsaDemoTenantSeeder
         }
         await db.SaveChangesAsync(ct);
 
-        // ── 11. GOSI contribution rules (KSA 2024 rates) ─────────────────────
-        // VERIFY: rates per GOSI Circular effective 2024-01-01.
-        // Saudi Annuities: 10% employee / 12% employer (min 400, max 45,000 SAR).
-        // SANED: 1% employee / 1% employer (no wage cap).
-        // NonSaudi Occupational Hazards: 2% employer (no cap).
+        // ── 11. GOSI contribution rules ──────────────────────────────────────
+        // S1/A2(a) — THESE ROWS WERE WRONG TWICE OVER, and they are TENANT rows, which beat the
+        // platform defaults in GosiCalculationService.SelectActiveRules. Every tenant stamped out of
+        // this seeder inherited them.
+        //
+        //  1. Wrong VALUES. 10%/12% annuities and 1%/1% SANED are not any Saudi GOSI schedule, past
+        //     or present. The correct schedule is 9%/9% annuities and 0.75%/0.75% SANED.
+        //  2. Wrong UNIT, which is the worse of the two and was not in the compliance review.
+        //     GosiContributionRule.Rate is a PERCENT — GosiCalculationService computes
+        //     `wage * rule.Rate / 100m`, and GosiRuleSeeder's platform defaults are written 9.00m,
+        //     0.75m, 2.00m accordingly. These rows were written as FRACTIONS (0.10m, 0.12m, 0.01m,
+        //     0.02m), so they resolved to 0.10%, 0.12%, 0.01% and 0.02%. A Saudi national on a
+        //     14,000 covered wage had an employee contribution of SAR 15.40 computed against the
+        //     SAR 1,365 actually owed — roughly NINETY TIMES under, in the GOSI module the
+        //     customer's finance team reconciles against the GOSI portal, while the payroll run's
+        //     country pack quietly deducted the right amount from a different rate store.
+        //
+        // GosiRateUnitLintTests now guards the unit for every seeder in the repo.
+        // MinContributoryWage / MaxContributoryWage are deliberately not set on any row. They were
+        // set here on the two Annuities rows and on neither SANED row, so even this seeded tenant
+        // capped Annuities and left SANED uncapped. The contributory-wage bounds are a statutory
+        // value and now live once, in the effective-dated rules engine
+        // (gosi.covered_wage_ceiling_sar, read via KsaGosiWageBounds) — these columns are no
+        // longer read by any calculation. See GosiCalculationService.
         var gosiEffective = new DateOnly(2024, 1, 1);
         db.GosiContributionRules.AddRange(
-            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.Annuities, Payer = GosiPayers.Employee, Rate = 0.10m, MinContributoryWage = 400m, MaxContributoryWage = 45_000m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "VERIFY: KSA 2024 GOSI Annuities employee rate" },
-            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.Annuities, Payer = GosiPayers.Employer, Rate = 0.12m, MinContributoryWage = 400m, MaxContributoryWage = 45_000m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "VERIFY: KSA 2024 GOSI Annuities employer rate" },
-            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.SANED,      Payer = GosiPayers.Employee, Rate = 0.01m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "VERIFY: KSA 2024 SANED employee rate" },
-            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.SANED,      Payer = GosiPayers.Employer, Rate = 0.01m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "VERIFY: KSA 2024 SANED employer rate" },
-            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.NonSaudi, Branch = GosiBranches.OccupationalHazards, Payer = GosiPayers.Employer, Rate = 0.02m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "VERIFY: KSA 2024 Occ Hazards employer rate NonSaudi" }
+            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.Annuities, Payer = GosiPayers.Employee, Rate = 9.00m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "GOSI Annuities employee 9% (percent units) — VERIFY against the current GOSI circular" },
+            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.Annuities, Payer = GosiPayers.Employer, Rate = 9.00m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "GOSI Annuities employer 9% (percent units) — VERIFY against the current GOSI circular" },
+            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.SANED,      Payer = GosiPayers.Employee, Rate = 0.75m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "SANED employee 0.75% (percent units) — VERIFY against the current GOSI circular" },
+            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.Saudi, Branch = GosiBranches.SANED,      Payer = GosiPayers.Employer, Rate = 0.75m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "SANED employer 0.75% (percent units) — VERIFY against the current GOSI circular" },
+            new GosiContributionRule { TenantId = tenantId, CountryCode = "SA", Classification = GosiClassifications.NonSaudi, Branch = GosiBranches.OccupationalHazards, Payer = GosiPayers.Employer, Rate = 2.00m, EffectiveFrom = gosiEffective, IsActive = true, Notes = "Occupational Hazards employer 2% (percent units) — VERIFY against the current GOSI circular" }
         );
 
         // ── 12. Statutory rules ───────────────────────────────────────────────
         var srEffective = DateTime.UtcNow.AddYears(-1);
         db.StatutoryRules.AddRange(
-            new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.employee_rate_saudi",            RuleValue = "0.10",     DataType = "decimal", EffectiveFrom = srEffective },
-            new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.employer_rate_saudi",            RuleValue = "0.12",     DataType = "decimal", EffectiveFrom = srEffective },
-            new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.saned_employee_rate",            RuleValue = "0.01",     DataType = "decimal", EffectiveFrom = srEffective },
-            new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.saned_employer_rate",            RuleValue = "0.01",     DataType = "decimal", EffectiveFrom = srEffective },
-            new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.occ_hazard_employer_rate_nonsaudi", RuleValue = "0.02", DataType = "decimal", EffectiveFrom = srEffective },
+            // S1/A2(a) — these were a THIRD rate store, and a dead one: the keys below never matched
+            // the keys the country pack reads (gosi.saudi_employee_rate / gosi.saudi_employer_rate /
+            // gosi.saned_rate / gosi.expat_occupational_hazard_rate), so the rows sat in the table
+            // carrying the same invented 10/12/1 figures and influencing nothing. Renamed to the keys
+            // the pack actually reads and corrected to the real schedule, so a seeded tenant's
+            // statutory rules are now live and true rather than dead and wrong. StatutoryRule decimals
+            // are FRACTIONS (the pack multiplies directly), unlike GosiContributionRule.Rate above,
+            // which is a percent — the two stores genuinely use different units.
+            new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.saudi_employee_rate",            RuleValue = "0.09",     DataType = "decimal", EffectiveFrom = srEffective },
+            new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.saudi_employer_rate",            RuleValue = "0.09",     DataType = "decimal", EffectiveFrom = srEffective },
+            new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.saned_rate",                     RuleValue = "0.0075",   DataType = "decimal", EffectiveFrom = srEffective },
+            new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.expat_occupational_hazard_rate", RuleValue = "0.02",     DataType = "decimal", EffectiveFrom = srEffective },
             new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "eosb.years_factor",                  RuleValue = "0.5",      DataType = "decimal", EffectiveFrom = srEffective },
             new StatutoryRule { TenantId = tenantId, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "wps.payment_frequency",              RuleValue = "Monthly",  DataType = "string",  EffectiveFrom = srEffective }
         );
@@ -472,17 +498,17 @@ public static class KsaDemoTenantSeeder
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         db.LeaveRequests.AddRange(
             // 1. Noura: Annual, 2 weeks from today+30
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empNoura.Id, EmployeeName=empNoura.FullName, DepartmentName=empNoura.Department, LeaveTypeId=ltAnnual.Id, LeaveTypeName=ltAnnual.NameEn, StartDate=today.AddDays(30), EndDate=today.AddDays(43),  DayType="Full", Reason="Annual vacation", Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddHours(-2) },
+            new LeaveRequest { TenantId=tenantId, CompanyId=empNoura.CompanyId, EmployeeId=empNoura.Id, EmployeeName=empNoura.FullName, DepartmentName=empNoura.Department, LeaveTypeId=ltAnnual.Id, LeaveTypeName=ltAnnual.NameEn, StartDate=today.AddDays(30), EndDate=today.AddDays(43),  DayType="Full", Reason="Annual vacation", Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddHours(-2) },
             // 2. Mohammed: Sick, 2 days last week
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empMohammed.Id, EmployeeName=empMohammed.FullName, DepartmentName=empMohammed.Department, LeaveTypeId=ltSick.Id, LeaveTypeName=ltSick.NameEn, StartDate=today.AddDays(-7), EndDate=today.AddDays(-6), DayType="Full", Reason="Illness", Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-8), DecidedAtUtc=DateTime.UtcNow.AddDays(-7) },
+            new LeaveRequest { TenantId=tenantId, CompanyId=empMohammed.CompanyId, EmployeeId=empMohammed.Id, EmployeeName=empMohammed.FullName, DepartmentName=empMohammed.Department, LeaveTypeId=ltSick.Id, LeaveTypeName=ltSick.NameEn, StartDate=today.AddDays(-7), EndDate=today.AddDays(-6), DayType="Full", Reason="Illness", Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-8), DecidedAtUtc=DateTime.UtcNow.AddDays(-7) },
             // 3. Hessa: Annual, 1 week from today+14
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empHessa.Id, EmployeeName=empHessa.FullName, DepartmentName=empHessa.Department, LeaveTypeId=ltAnnual.Id, LeaveTypeName=ltAnnual.NameEn, StartDate=today.AddDays(14), EndDate=today.AddDays(20), DayType="Full", Reason="Personal", Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-5), DecidedAtUtc=DateTime.UtcNow.AddDays(-4) },
+            new LeaveRequest { TenantId=tenantId, CompanyId=empHessa.CompanyId, EmployeeId=empHessa.Id, EmployeeName=empHessa.FullName, DepartmentName=empHessa.Department, LeaveTypeId=ltAnnual.Id, LeaveTypeName=ltAnnual.NameEn, StartDate=today.AddDays(14), EndDate=today.AddDays(20), DayType="Full", Reason="Personal", Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-5), DecidedAtUtc=DateTime.UtcNow.AddDays(-4) },
             // 4. Khalid: Casual, 1 day tomorrow
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empKhalid.Id, EmployeeName=empKhalid.FullName, DepartmentName=empKhalid.Department, LeaveTypeId=ltCasual.Id, LeaveTypeName=ltCasual.NameEn, StartDate=today.AddDays(1), EndDate=today.AddDays(1), DayType="Full", Reason="Bank visit", Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddHours(-1) },
+            new LeaveRequest { TenantId=tenantId, CompanyId=empKhalid.CompanyId, EmployeeId=empKhalid.Id, EmployeeName=empKhalid.FullName, DepartmentName=empKhalid.Department, LeaveTypeId=ltCasual.Id, LeaveTypeName=ltCasual.NameEn, StartDate=today.AddDays(1), EndDate=today.AddDays(1), DayType="Full", Reason="Bank visit", Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddHours(-1) },
             // 5. Ahmed: Annual, 10 days from today+20
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empAhmed.Id, EmployeeName=empAhmed.FullName, DepartmentName=empAhmed.Department, LeaveTypeId=ltAnnual.Id, LeaveTypeName=ltAnnual.NameEn, StartDate=today.AddDays(20), EndDate=today.AddDays(29), DayType="Full", Reason="Home country visit", Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddDays(-2) },
+            new LeaveRequest { TenantId=tenantId, CompanyId=empAhmed.CompanyId, EmployeeId=empAhmed.Id, EmployeeName=empAhmed.FullName, DepartmentName=empAhmed.Department, LeaveTypeId=ltAnnual.Id, LeaveTypeName=ltAnnual.NameEn, StartDate=today.AddDays(20), EndDate=today.AddDays(29), DayType="Full", Reason="Home country visit", Status="Submitted", SubmittedAtUtc=DateTime.UtcNow.AddDays(-2) },
             // 6. Priya: Sick, 1 day yesterday
-            new LeaveRequest { TenantId=tenantId, EmployeeId=empPriya.Id, EmployeeName=empPriya.FullName, DepartmentName=empPriya.Department, LeaveTypeId=ltSick.Id, LeaveTypeName=ltSick.NameEn, StartDate=today.AddDays(-1), EndDate=today.AddDays(-1), DayType="Full", Reason="Migraine", Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-1), DecidedAtUtc=DateTime.UtcNow.AddHours(-6) }
+            new LeaveRequest { TenantId=tenantId, CompanyId=empPriya.CompanyId, EmployeeId=empPriya.Id, EmployeeName=empPriya.FullName, DepartmentName=empPriya.Department, LeaveTypeId=ltSick.Id, LeaveTypeName=ltSick.NameEn, StartDate=today.AddDays(-1), EndDate=today.AddDays(-1), DayType="Full", Reason="Migraine", Status="Approved", SubmittedAtUtc=DateTime.UtcNow.AddDays(-1), DecidedAtUtc=DateTime.UtcNow.AddHours(-6) }
         );
 
         // ── Leave balances ─────────────────────────────────────────────────────

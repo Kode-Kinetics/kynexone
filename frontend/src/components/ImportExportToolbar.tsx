@@ -495,7 +495,7 @@ export function ImportExportToolbar({
       {/* Toast (kept for the toast-flow importers and for import errors) */}
       {toast && (
         <div
-          className={`absolute right-0 top-10 z-50 max-w-sm rounded-lg border px-4 py-3 text-xs shadow-lg ${
+          className={`absolute end-0 top-10 z-50 max-w-sm rounded-lg border px-4 py-3 text-xs shadow-lg ${
             toast.type === 'success'
               ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300'
               : 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300'
@@ -573,7 +573,7 @@ export function ImportExportToolbar({
               <div className="max-h-[50vh] overflow-auto rounded-lg border border-slate-200 dark:border-white/10">
                 <table className="w-full min-w-[560px] text-sm">
                   <thead className="sticky top-0 bg-slate-50 dark:bg-white/[0.04]">
-                    <tr className="text-left text-[11px] font-bold uppercase text-slate-400">
+                    <tr className="text-start text-[11px] font-bold uppercase text-slate-400">
                       <th className="px-3 py-2">#</th>
                       <th className="px-3 py-2">Name</th>
                       <th className="px-3 py-2">Lands as</th>
