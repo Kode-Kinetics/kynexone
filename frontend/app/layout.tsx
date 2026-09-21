@@ -1,19 +1,24 @@
 import type { Metadata, Viewport } from 'next';
 import { Providers } from '@/src/components/Providers';
-import { Archivo, IBM_Plex_Mono } from 'next/font/google';
 
 import '@/src/styles/index.css';
 
-/** The login object's two voices: a grotesque for text, a mono for the
- *  etched legends, readouts and the service stamp. */
-const archivo = Archivo({
-  subsets: ['latin'], weight: ['400', '500', '600'],
-  variable: '--font-kx-sans', display: 'swap',
-});
-const plexMono = IBM_Plex_Mono({
-  subsets: ['latin'], weight: ['400', '500'],
-  variable: '--font-kx-mono', display: 'swap',
-});
+/* Archivo and IBM Plex Mono used to be declared here as --font-kx-sans /
+ * --font-kx-mono. They are gone, and nothing lost a face.
+ *
+ * They were referenced in exactly one stylesheet — login-aurora.css — and
+ * always in SECOND position: `var(--lx-sans), var(--font-kx-sans), Inter, …`.
+ * --lx-sans and --lx-mono are set by app/login/page.tsx on the wrapper that
+ * contains every element those rules match, so the fallback slot was never
+ * reached. Declaring them in the ROOT layout made all ~40 routes download and
+ * apply five extra font weights to serve a branch of a font stack that only
+ * /login can enter and that /login never takes. IBM Plex Mono was also being
+ * fetched twice on /login — once here, once as --lx-mono.
+ *
+ * The comment in app/login/page.tsx states the rule this restores: the sign-in
+ * surface's type stack is loaded on the login route, "never in the root
+ * layout, so no other route pays for it".
+ */
 
 export const metadata: Metadata = {
   title: 'KynexOne — One Platform for Every Workforce Operation',
@@ -44,12 +49,7 @@ document.documentElement.lang=l;document.documentElement.dir=d;
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     // suppressHydrationWarning: LOCALE_BOOT rewrites lang/dir before React hydrates.
-    <html
-      lang="en"
-      dir="ltr"
-      suppressHydrationWarning
-      className={`${archivo.variable} ${plexMono.variable}`}
-    >
+    <html lang="en" dir="ltr" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: LOCALE_BOOT }} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />

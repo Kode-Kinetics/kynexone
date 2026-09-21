@@ -598,14 +598,46 @@ export interface LoginAuroraSceneProps {
   markRef?: RefObject<HTMLElement | null>;
   /** Changes whenever the card's size can have changed (auth state, error). */
   stateKey?: string;
+  /**
+   * Called once if the scene cannot hold a usable frame rate on this machine.
+   * The caller is expected to stop rendering it; unmounting runs the hook's
+   * teardown, which cancels the loop and releases the GL context.
+   */
+  onTooSlow?: () => void;
 }
 
-export function LoginAuroraScene({ slotRef, paneRef, markRef, stateKey }: LoginAuroraSceneProps) {
+/* ── the frame budget ──────────────────────────────────────────────────────
+   Measured on this branch with software rendering (SwiftShader, no GPU) the
+   scene ran at a mean 142ms/frame — about 7fps — with 428 dropped frames in
+   8 seconds. That is not a background; it is a stutter that reads as a broken
+   page, and it costs battery to produce. A shader hero is worth having when
+   the machine can draw it and worth abandoning when it cannot.
+
+   So: ignore the first frames (shader compile, texture upload and first-paint
+   contention all land there), then take a rolling mean. If the scene cannot
+   beat ~22fps over a full sample window, it retires and the static CSS field
+   — which is the same composition — is what the customer sees. One shot: it
+   never oscillates, because retiring is permanent for the life of the page. */
+const WARMUP_FRAMES = 30;
+const SAMPLE_FRAMES = 45;
+const SLOW_FRAME_MS = 45;
+
+export function LoginAuroraScene({
+  slotRef, paneRef, markRef, stateKey, onTooSlow,
+}: LoginAuroraSceneProps) {
   const scene = useRef<GLScene | null>(null);
   const rect = useRef<Rect>({ x: 820, y: 130, w: 420, h: 470 });
   const light = useRef({ x: 150, y: 150 });
   const broken = useRef(false);
   const [fallback, setFallback] = useState(false);
+  /** Set whenever the slot or the mark can have moved; consumed in draw(). */
+  const dirty = useRef(true);
+  /** Frame-budget watchdog state. */
+  const budget = useRef({ seen: 0, acc: 0, n: 0, last: 0, retired: false });
+  /* Held in a ref so a caller passing an inline arrow cannot rebuild the
+     scene, matching how useRenderCanvas treats its own callbacks. */
+  const tooSlow = useRef(onTooSlow);
+  tooSlow.current = onTooSlow;
 
   const measure = useCallback(() => {
     const el = slotRef.current;
@@ -668,9 +700,53 @@ export function LoginAuroraScene({ slotRef, paneRef, markRef, stateKey }: LoginA
 
     draw(frame) {
       const { width, height, pointer } = frame;
-      // The page scrolls when a tall auth state needs it, so the slot's
-      // position is re-read every frame rather than only on resize.
-      measure();
+
+      /* Frame budget. Only animated frames count: a static frame (reduced
+         motion, hidden tab) is drawn once and its interval is meaningless,
+         and those paths are already cheap.
+
+         Timed from performance.now() rather than frame.dt, because the hook
+         clamps dt to 1/15s so that a long stall cannot teleport an
+         animation. That clamp is right for the animation and wrong for
+         measuring it: every frame worse than 66.7ms reports as 66.7ms, which
+         is exactly the range this watchdog has to tell apart. */
+      if (!frame.isStatic) {
+        const b = budget.current;
+        if (!b.retired) {
+          const now = performance.now();
+          const gap = b.last ? now - b.last : 0;
+          b.last = now;
+          b.seen += 1;
+          if (b.seen > WARMUP_FRAMES && gap > 0) {
+            b.acc += gap;
+            b.n += 1;
+            if (b.n >= SAMPLE_FRAMES) {
+              if (b.acc / b.n > SLOW_FRAME_MS) {
+                b.retired = true;
+                // eslint-disable-next-line no-console
+                console.info(
+                  `[LoginAuroraScene] retiring: ${(b.acc / b.n).toFixed(1)}ms/frame `
+                  + `over ${b.n} frames exceeds the ${SLOW_FRAME_MS}ms budget. `
+                  + 'Falling back to the static field.',
+                );
+                tooSlow.current?.();
+                return;
+              }
+              b.acc = 0;
+              b.n = 0;
+            }
+          }
+        }
+      }
+
+      /* The slot's position is re-read when something can have MOVED it —
+         a scroll, a resize, a state change — and not on every frame.
+         measure() is two getBoundingClientRect() calls, each of which forces
+         a synchronous layout; doing that from inside rAF at 60fps is a
+         layout thrash that shows up as dropped frames on the machines this
+         scene is already most expensive on. `dirty` is set by the scroll and
+         resize listeners below and by requestFrame()'s callers. */
+      if (dirty.current) { dirty.current = false; measure(); }
       const c = rect.current;
 
       /* restrained parallax: the glass drifts against the field */
@@ -708,22 +784,45 @@ export function LoginAuroraScene({ slotRef, paneRef, markRef, stateKey }: LoginA
     resize() { measure(); },
   });
 
+  /* draw() writes an inline transform onto the pane for the parallax. If the
+     scene goes away — retired for being too slow, or unmounted by the width
+     gate — that transform would otherwise stick, leaving the card frozen a
+     few pixels off centre with nothing left to move it back. */
+  useEffect(() => () => {
+    if (paneRef?.current) paneRef.current.style.transform = '';
+  }, [paneRef]);
+
   useEffect(() => {
+    const touch = () => { dirty.current = true; requestFrame(); };
     measure();
     requestFrame();
-    const ro = new ResizeObserver(() => { measure(); requestFrame(); });
+    const ro = new ResizeObserver(touch);
     if (slotRef.current) ro.observe(slotRef.current);
     if (markRef?.current) ro.observe(markRef.current);
-    window.addEventListener('resize', measure);
-    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+    window.addEventListener('resize', touch);
+    /* The shell — not the window — is the scroller here: .lx-shell is
+       position:fixed with overflow-y:auto, so a tall auth state scrolls
+       inside it and window scroll events never fire. Listening on the
+       canvas's scrolling ancestor is what keeps the glass registered with
+       the card it is drawn around. Capture, so it is heard wherever in the
+       subtree the scroll originates. */
+    window.addEventListener('scroll', touch, { passive: true, capture: true });
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', touch);
+      window.removeEventListener('scroll', touch, { capture: true });
+    };
   }, [measure, requestFrame, slotRef, markRef]);
 
   // A state change resizes the card; repaint even when the loop is parked
   // (hidden tab, or prefers-reduced-motion) so the pane follows the form.
   useEffect(() => {
+    dirty.current = true;
     measure();
     requestFrame();
-    const id = window.setTimeout(() => { measure(); requestFrame(); }, 60);
+    const id = window.setTimeout(() => {
+      dirty.current = true; measure(); requestFrame();
+    }, 60);
     return () => window.clearTimeout(id);
   }, [stateKey, measure, requestFrame]);
 

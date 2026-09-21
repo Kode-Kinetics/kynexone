@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound, Lock, Mail,
@@ -9,8 +10,38 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
-import { LoginAuroraScene } from '../components/LoginAuroraScene';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
+
+/**
+ * The aurora is CODE-SPLIT and never server-rendered.
+ *
+ * It was a static import, which put the 823-line scene, the 679-line render
+ * harness and the whole fragment shader source into the chunk the browser has
+ * to parse before the sign-in form exists. None of it can draw anything until
+ * hydration anyway — the canvas has no SSR output — so it was pure latency in
+ * front of the one thing on this page anybody came for. Split out, the form
+ * paints on the static field (see `.lx-field-static` in login-aurora.css) and
+ * the shader takes over when it is ready.
+ */
+const LoginAuroraScene = dynamic(
+  () => import('../components/LoginAuroraScene').then(m => m.LoginAuroraScene),
+  { ssr: false },
+);
+
+/**
+ * Below this width the scene is not mounted at all and the static CSS field is
+ * the whole background.
+ *
+ * This is a cost decision, not an art one. The shader is fill-rate bound —
+ * per-channel refraction plus a 12-tap shaft march over every pixel of a
+ * full-bleed canvas at dpr 1.5 — and a mid-range phone pays that on its GPU
+ * and its battery for a picture that a phone-width layout mostly covers with
+ * the card anyway. The static field keeps the same two lights in the same
+ * places, so the composition is the one that was designed; it just is not
+ * lit per-frame.
+ */
+const SCENE_MIN_WIDTH = 768;
+
 type Mode = 'login' | 'forgot' | 'reset' | 'mfa' | 'mfa-enroll';
 
 export function LoginPage() {
@@ -163,17 +194,43 @@ export function LoginPage() {
   const markRef = useRef<HTMLDivElement>(null);
   const busy = loading;
 
+  /* Starts false so the first client render matches the server's (no canvas),
+     then turns on for wide viewports after mount. Tracked live, so rotating a
+     tablet or dragging a window across the breakpoint mounts/unmounts the
+     scene — and unmounting runs useRenderCanvas's teardown, which cancels the
+     rAF loop and hands the GL context back. */
+  const [sceneOn, setSceneOn] = useState(false);
+  /* Latched: once the scene has proved it cannot hold a frame rate on this
+     machine, widening the window must not bring it back. */
+  const [sceneRetired, setSceneRetired] = useState(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia(`(min-width: ${SCENE_MIN_WIDTH}px)`);
+    const sync = () => setSceneOn(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+
   return (
     <div className="tenant-login-shell lx-shell">
+      {/* The static field. Always present, painted from CSS on first paint,
+          and the ONLY background below 768px, with no WebGL, and before the
+          scene chunk arrives. Purely decorative; never announced. */}
+      <div className="lx-field-static" aria-hidden="true" />
+
       {/* The aurora: a shader field whose key light is the KynexOne mark, the
           roster matrix that light passes through, and the glass the form sits
           behind. Purely decorative; never announced. */}
-      <LoginAuroraScene
-        slotRef={slotRef}
-        paneRef={paneRef}
-        markRef={markRef}
-        stateKey={`${mode}|${error ? 'e' : ''}${info ? 'i' : ''}`}
-      />
+      {sceneOn && !sceneRetired && (
+        <LoginAuroraScene
+          slotRef={slotRef}
+          paneRef={paneRef}
+          markRef={markRef}
+          stateKey={`${mode}|${error ? 'e' : ''}${info ? 'i' : ''}`}
+          onTooSlow={() => setSceneRetired(true)}
+        />
+      )}
 
       <div className="lx-page">
         {/* ── band 1: identity, and NOTHING ELSE. ──────────────────────
@@ -214,15 +271,30 @@ export function LoginPage() {
                           className="lx-in" placeholder="you@company.com" autoComplete="email" required />
                       </Field>
 
+                      {/* dir="auto": the card's strings are still English while
+                          LOCALE_BOOT flips the document to dir="rtl" for an
+                          Arabic user, and the bidi algorithm then moves the
+                          trailing "?" of an all-Latin run to the LEFT — the
+                          Arabic sign-in screen rendered "?Forgot password".
+                          "auto" takes the direction from the first strong
+                          character, so this reads correctly as English today
+                          and will still be right if the string is translated. */}
                       <Field legend="Password" htmlFor="li-pw" aside={
                         <button type="button" onClick={() => go('forgot')} className="lx-link"
-                          data-testid="login-forgot">Forgot password?</button>
+                          dir="auto" data-testid="login-forgot">Forgot password?</button>
                       }>
                         <span className="lx-inwrap">
                           <input id="li-pw" type={showPw ? 'text' : 'password'} value={password}
                             onChange={e => setPassword(e.target.value)}
                             className="lx-in lx-in-pw" placeholder="••••••••••" autoComplete="current-password" required />
-                          <button type="button" onClick={() => setShowPw(v => !v)} tabIndex={-1}
+                          {/* No tabIndex={-1}. Revealing the password is
+                              functionality, so WCAG 2.1.1 requires it from the
+                              keyboard; taking the control out of the tab order
+                              left a keyboard-only user unable to check what
+                              they had typed before submitting. It sits between
+                              the password field and Workspace, which is where
+                              it visually is. */}
+                          <button type="button" onClick={() => setShowPw(v => !v)}
                             className="lx-reveal" data-testid="login-password-toggle"
                             aria-label={showPw ? 'Hide password' : 'Show password'} aria-pressed={showPw}>
                             {showPw ? <EyeOff /> : <Eye />}
@@ -368,24 +440,38 @@ export function LoginPage() {
 function Head({ kicker, title, sub, icon }: {
   kicker?: string; title: string; sub?: string; icon?: React.ReactNode;
 }) {
+  /* aria-live sits on the WRAPPER, not on the <h1>.
+   *
+   * The h1 previously carried role="status" to announce the new step when the
+   * card swaps between sign-in / recovery / MFA. An ARIA role replaces the
+   * element's native semantics, so that turned the page's only <h1> into a
+   * live region with no heading role at all: nothing in the accessibility
+   * tree was a level-1 heading, and heading navigation (the first thing a
+   * screen-reader user does on an unfamiliar page) had nowhere to land.
+   * Announcing from the wrapper keeps both — the region still speaks the new
+   * title on a mode change, and the h1 stays a heading. */
   return (
-    <div className="lx-head-block">
+    <div className="lx-head-block" aria-live="polite">
       {kicker && (
         <p className="lx-kicker">
           {icon ?? <ShieldCheck aria-hidden />}
           {kicker}
         </p>
       )}
-      <h1 className="lx-title" role="status">{title}</h1>
+      <h1 className="lx-title">{title}</h1>
       {sub && <p className="lx-sub">{sub}</p>}
     </div>
   );
 }
 
 function Back({ onClick, label = 'Back to sign in' }: { onClick: () => void; label?: string }) {
+  /* The arrow is a separate span marked aria-hidden rather than a character in
+     the label, and the button is dir="auto" for the same bidi reason as the
+     forgot link. The glyph itself is flipped for RTL in CSS, so "back" always
+     points away from the reading direction instead of into it. */
   return (
-    <button type="button" onClick={onClick} className="lx-back" data-testid="login-back">
-      ← {label}
+    <button type="button" onClick={onClick} className="lx-back" dir="auto" data-testid="login-back">
+      <span className="lx-back-arrow" aria-hidden>←</span>{label}
     </button>
   );
 }

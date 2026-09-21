@@ -711,10 +711,16 @@ function RosterTab({ definitions }: RosterTabProps) {
                     <td key={ds} className="px-2 py-2 text-center">
                       {a ? (
                         <div
-                          className="group/cell relative inline-flex items-center gap-1 overflow-hidden rounded-lg py-1 pl-2.5 pr-2 text-[11px] font-semibold text-slate-800 dark:text-slate-100"
+                          className="group/cell relative inline-flex items-center gap-1 overflow-hidden rounded-lg py-1 ps-2.5 pe-2 text-[11px] font-semibold text-slate-800 dark:text-slate-100"
                           style={{ backgroundColor: `${a.shiftColor}1A` }}
                         >
-                          <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ backgroundColor: a.shiftColor }} />
+                          {/* Logical, not physical: the accent bar marks the
+                              START of the chip, so in Arabic it has to move to
+                              the right edge along with the extra padding that
+                              clears it. As pl-/pr-/left- the bar stayed on the
+                              left while the reading order flipped, and it sat
+                              under the shift code instead of beside it. */}
+                          <span aria-hidden className="absolute inset-y-0 start-0 w-[3px]" style={{ backgroundColor: a.shiftColor }} />
                           {a.shiftCode}
                           <button
                             type="button"

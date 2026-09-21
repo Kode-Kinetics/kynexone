@@ -106,11 +106,45 @@
   overflow-y: auto;
   background: #05080F;
   color: var(--lx-body);
-  font-family: var(--lx-sans), var(--font-kx-sans), Inter, system-ui, sans-serif;
+  font-family: var(--lx-sans), Inter, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   THE STATIC FIELD — the same composition, not lit per frame.
+
+   This is what the page looks like with no canvas at all: below 768px, with
+   WebGL blocked or unavailable, and in the window between first paint and the
+   scene chunk hydrating. Before it existed, all three of those showed the
+   shell's flat #05080F and the sign-in card floated on near-black.
+
+   The two gradients ARE the shader's two lights, at the coordinates the
+   fragment source uses: the KEY (cyan → sapphire) at 82%/44% of the frame,
+   and the violet FILL low on the left at 13%/62%. So the still and the moving
+   version are the same picture; one of them just does not move. The emerald
+   is the third, weakest term, kept because without it the field reads as a
+   two-stop blue ramp — which is the stock-gradient look the scene's header
+   comment says the whole design is trying to avoid.
+
+   Costs nothing measurable: three radial gradients on one fixed element,
+   composited once, no repaint.
+   ══════════════════════════════════════════════════════════════════════ */
+.lx-field-static {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(58% 74% at 82% 44%, rgba(94, 235, 255, 0.24) 0%, rgba(47, 107, 255, 0.20) 34%, rgba(5, 8, 15, 0) 72%),
+    radial-gradient(52% 62% at 13% 62%, rgba(104, 78, 214, 0.26) 0%, rgba(42, 34, 110, 0.16) 44%, rgba(5, 8, 15, 0) 76%),
+    radial-gradient(40% 44% at 62% 82%, rgba(0, 200, 150, 0.12) 0%, rgba(5, 8, 15, 0) 70%),
+    linear-gradient(168deg, #070C18 0%, #05080F 58%, #04060D 100%);
+}
+
+/* The canvas sits ON the static field and simply covers it once it paints, so
+   there is no cross-fade to mistime and nothing flashes if the scene fails and
+   unmounts back to the still. */
 .lx-canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
 
 /* Keeps the brand side legible over a field that can go near-white, and
@@ -278,7 +312,7 @@
    so it joins the scale at its micro step. Its position is untouched; the mark,
    the rays and the wordmark are untouched. */
 .lx-descriptor {
-  font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-family: var(--lx-mono), ui-monospace, SFMono-Regular, monospace;
   font-size: var(--lx-f1);
   letter-spacing: 0.20em;
   text-transform: uppercase;
@@ -499,7 +533,7 @@
   align-items: baseline; gap: 12px var(--lx-gut);
   margin: clamp(12px, 1.6vh, 20px) 0 0;
   padding: 0 0 clamp(10px, 1.2vh, 16px);
-  font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-family: var(--lx-mono), ui-monospace, SFMono-Regular, monospace;
   font-size: var(--lx-f1); letter-spacing: 0.13em; text-transform: uppercase;
 }
 /* Run name and pay period are ONE text node now. Two spans side by side were
@@ -821,11 +855,15 @@
   font: inherit; font-size: var(--lx-f1); color: var(--lx-cyan);
 }
 .lx-back:hover { color: var(--lx-cyan-soft); }
+/* "Back" has to point against the reading direction, so the glyph — and only
+   the glyph — mirrors. A logical rule, so it follows the document's dir
+   rather than a hard-coded locale list. */
+[dir='rtl'] .lx-back-arrow { transform: scaleX(-1); }
 
 .lx-head-block { margin: 0 0 22px; }
 .lx-kicker {
   margin: 0 0 7px; display: flex; align-items: center; gap: 8px;
-  font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-family: var(--lx-mono), ui-monospace, SFMono-Regular, monospace;
   font-size: var(--lx-f1); letter-spacing: 0.22em; text-transform: uppercase; color: var(--lx-cyan);
 }
 .lx-kicker svg { width: 13px; height: 13px; stroke-width: 1.6; }
@@ -837,7 +875,7 @@
 .lx-legend { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
 .lx-legend label,
 .lx-legend > span:first-child {
-  font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-family: var(--lx-mono), ui-monospace, SFMono-Regular, monospace;
   font-size: var(--lx-f1); letter-spacing: 0.085em; text-transform: uppercase; color: var(--lx-label);
 }
 .lx-link { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; font-size: var(--lx-f1); color: var(--lx-cyan); }
@@ -845,7 +883,7 @@
 
 .lx-tag {
   display: inline-flex; align-items: center; gap: 4px;
-  font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  font-family: var(--lx-mono), ui-monospace, SFMono-Regular, monospace;
   font-size: var(--lx-f1); letter-spacing: 0.08em; text-transform: uppercase; color: var(--lx-emerald-l);
 }
 .lx-tag svg { width: 11px; height: 11px; stroke-width: 1.8; }
@@ -869,8 +907,8 @@
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(47, 107, 255, 0.34), 0 0 22px rgba(94, 235, 255, 0.22);
 }
 .lx-in-pw { padding-right: 46px; }
-.lx-in-mono { font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace; letter-spacing: 0.04em; }
-.lx-in-code { font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace; font-size: var(--lx-f3); letter-spacing: 0.32em; text-align: center; }
+.lx-in-mono { font-family: var(--lx-mono), ui-monospace, SFMono-Regular, monospace; letter-spacing: 0.04em; }
+.lx-in-code { font-family: var(--lx-mono), ui-monospace, SFMono-Regular, monospace; font-size: var(--lx-f3); letter-spacing: 0.32em; text-align: center; }
 .lx-in-sm { font-size: var(--lx-f1); letter-spacing: 0.06em; }
 
 .lx-reveal {
@@ -883,7 +921,7 @@
 
 .lx-hint { margin: 6px 0 0; font-size: var(--lx-f1); color: var(--lx-muted); }
 .lx-uri {
-  margin: 0; font-family: var(--lx-mono), var(--font-kx-mono), ui-monospace, monospace;
+  margin: 0; font-family: var(--lx-mono), ui-monospace, SFMono-Regular, monospace;
   font-size: var(--lx-f1); line-height: 1.5; word-break: break-all; color: var(--lx-muted);
 }
 

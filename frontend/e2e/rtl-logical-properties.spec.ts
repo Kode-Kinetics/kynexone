@@ -68,9 +68,12 @@ const ALLOWED: Record<string, string> = {
   // composition, not content: nothing reads along them, and mirroring the art in Arabic
   // buys no legibility while changing the brand image on the first screen a client sees.
   // Recognisable by the blur-2xl/blur-3xl + pointer-events-none pairing.
-  'src/views/LoginPage.tsx::-left-1/4': 'decorative aurora blob; viewport composition, not reading order',
-  'src/views/LoginPage.tsx::right-[-15%]': 'decorative aurora blob; viewport composition, not reading order',
-  'src/views/LoginPage.tsx::left-[20%]': 'decorative aurora blob; viewport composition, not reading order',
+  // src/views/LoginPage.tsx had three entries here (-left-1/4, right-[-15%],
+  // left-[20%]) for the blurred aurora blobs of the old panel-grid sign-in
+  // page. The V3 rebuild deleted that markup: the field is now drawn by a
+  // shader on a full-bleed canvas, with a CSS static field behind it, and
+  // neither uses a physical inset. The exceptions went with the code, which
+  // is why the pin below drops from 9 to 6.
   'app/platform/login/page.tsx::-left-1/4': 'decorative radial glow; viewport composition, not reading order',
   'app/platform/login/page.tsx::right-[-15%]': 'decorative radial glow; viewport composition, not reading order',
   'src/views/EmployeeSelfServicePage.tsx::right-0': 'decorative blurred disc on the ESS hero card (translate-x-16 + blur-3xl)',
@@ -148,7 +151,12 @@ test.describe('RTL logical-property ratchet', () => {
   test('the pinned exception count may only go down', () => {
     // Pinned 2026-09-20 at the nine exceptions documented in ALLOWED. If you removed one,
     // lower this number in the same commit so the ratchet keeps its teeth.
-    const PINNED_PHYSICAL_EXCEPTIONS = 9;
+    //
+    // 2026-09-21: 9 → 6. The login V3 rebuild deleted the three blurred aurora
+    // blobs in src/views/LoginPage.tsx that held the only physical insets on
+    // that page; the shader canvas and the CSS static field that replaced them
+    // use none. Ratcheted down, never up.
+    const PINNED_PHYSICAL_EXCEPTIONS = 6;
 
     const { findings } = scan();
     const allowed = findings.filter((f) => f.key in ALLOWED);
