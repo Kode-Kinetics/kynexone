@@ -174,7 +174,7 @@ public static class CleanDemoKsaSeeder
         {
             if (!roleMap.TryGetValue(roleName, out var role))
             {
-                logger.LogWarning("CleanDemoKsaSeeder: role '{Role}' not found — skipping user {Email}.", roleName, email);
+                logger.LogWarning("CleanDemoKsaSeeder: role '{Role}' not found — skipping that user.", roleName);
                 continue;
             }
             var u = new User
@@ -450,12 +450,8 @@ public static class CleanDemoKsaSeeder
         {
             if (!usersByEmail.TryGetValue(email, out var linkUser))
             {
-                var atIndex = email.IndexOf('@');
-                var maskedEmail = atIndex > 1
-                    ? $"{email[0]}***{email.Substring(atIndex)}"
-                    : "***";
                 logger.LogWarning(
-                    "CleanDemoKsaSeeder: user '{EmailMasked}' was not seeded — skipping employee link.", maskedEmail);
+                    "CleanDemoKsaSeeder: no seeded user for employee {EmployeeId} — skipping employee link.", emp.Id);
                 continue;
             }
             db.EmployeeUserAccounts.Add(new EmployeeUserAccount
