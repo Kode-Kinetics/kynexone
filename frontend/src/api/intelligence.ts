@@ -293,11 +293,61 @@ export const tenantAdminApi = {
 
 // ── Features API (accessible to all authenticated tenant users) ───────────────
 
+/** A module as the tenant administrator sees it, including why it may be locked. */
+export interface TenantModule {
+  key: string;
+  labelEn: string;
+  labelAr: string;
+  description: string;
+  enabled: boolean;
+  /** False when this module is load-bearing or statutory for this tenant. */
+  canDisable: boolean;
+  /** "Optional" | "Core" | "Statutory" */
+  lockClass: string;
+  /** Present only when canDisable is false. Shown to the administrator verbatim. */
+  lockReason: string | null;
+}
+
+export interface TenantModuleList {
+  countryCode: string | null;
+  modules: TenantModule[];
+}
+
+export const tenantModulesApi = {
+  list: () =>
+    client.get<TenantModuleList>('/api/tenant-modules').then(r => r.data),
+
+  /**
+   * Switch a module on or off. Rejects with 409 `module_not_disableable` for a load-bearing or
+   * statutory module, 501 `module_not_enforceable` for a key nothing reads, and 400
+   * `unknown_module` otherwise — deliberately, rather than storing a flag that changes nothing.
+   */
+  set: (moduleKey: string, enabled: boolean) =>
+    client.put<TenantModule>(`/api/tenant-modules/${moduleKey}`, { enabled }).then(r => r.data),
+};
+
+/** One module and the frontend routes it owns, as the backend catalog defines them. */
+export interface ModuleNav {
+  key: string;
+  labelEn: string;
+  navPaths: string[];
+  enabled: boolean;
+}
+
 export const featuresApi = {
   /**
-   * Returns the set of feature keys that are explicitly disabled for the tenant.
-   * An absent key means the feature is enabled (default for fresh tenants with no flags).
+   * Returns the module keys that are EFFECTIVELY disabled for the tenant — the stored flags after
+   * the backend has applied its statutory and core locks. An absent key means enabled.
    */
   getDisabledKeys: () =>
     client.get<string[]>('/api/features/disabled-keys').then(r => r.data),
+
+  /**
+   * Which routes belong to which module, and whether that module is on.
+   *
+   * The mapping is served rather than hard-coded here so the navigation, the route guard and the
+   * API guard cannot drift apart — they all resolve against the same backend catalog.
+   */
+  getModules: () =>
+    client.get<ModuleNav[]>('/api/features/modules').then(r => r.data),
 };

@@ -116,17 +116,22 @@ public class TenantAdminController : ControllerBase
         return Ok(flags);
     }
 
+    /// <summary>
+    /// Retired. This route answered 403 unconditionally while the Tenant Admin UI rendered toggles
+    /// against it and swallowed the failure, so every module switch an administrator clicked was a
+    /// no-op. Module enablement is now a real, audited tenant-administrator capability at
+    /// <c>/api/tenant-modules</c>, which refuses only the modules that are load-bearing or
+    /// statutory — and says which, and why.
+    /// </summary>
     [HttpPut("feature-flags/{featureKey}")]
     public IActionResult SetFeatureFlag(string featureKey)
-    {
-        // Module/feature entitlements are provisioned by the platform administrator only.
-        // A company admin can read their flags but cannot enable or disable modules.
-        return StatusCode(StatusCodes.Status403Forbidden, new
+        => StatusCode(StatusCodes.Status410Gone, new
         {
-            error = "not_permitted",
-            message = "Feature flag changes are managed by KynexOne platform administrators. Please contact support."
+            code = "feature_flag_write_moved",
+            message = "Module enablement moved to /api/tenant-modules, which enforces the "
+                      + "non-disableable set instead of refusing every write.",
+            replacement = $"/api/tenant-modules/{featureKey}",
         });
-    }
 
     // ── Localization ─────────────────────────────────────────────────────────
 
