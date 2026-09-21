@@ -8,12 +8,26 @@ namespace Zayra.Api.Migrations
     // See 20260713061000 for why these attributes are load-bearing. Written by hand in 15148d0
     // (2026-07-13) without them; invisible to EF for 70 days.
     //
-    // GENUINELY UNAPPLIED IN PRODUCTION (verified 2026-09-21: absent from __EFMigrationsHistory),
-    // but its columns and indexes are already there — 20260816013100_RepairMigrationModelParity
-    // created them independently. So on the next `--migrate` the DDL half is all IF NOT EXISTS and
-    // no-ops, and only the routing UPDATE does work: it re-derives current_approver_* / due_at_utc
-    // for Pending EmployeeChangeRequest approvals from current employee data. Re-derivation is
-    // idempotent (COALESCE on the timestamps, CASE on priority), so a second run is a no-op.
+    // GENUINELY UNAPPLIED IN PRODUCTION (re-verified 2026-09-21 against the live database: absent
+    // from __EFMigrationsHistory), but all fourteen columns and all four indexes are already there —
+    // 20260816013100_RepairMigrationModelParity created them independently. So on the next
+    // `--migrate` the DDL half is all IF NOT EXISTS and no-ops, and only the routing UPDATE works.
+    //
+    // THAT UPDATE IS NOT IDEMPOTENT AGAINST LIVE DATA, and an earlier note here claiming it was is
+    // wrong. current_approver_*, current_queue and sla_hours are assigned unconditionally, not
+    // COALESCEd. The eight Pending EmployeeChangeRequest approvals in production have since been
+    // routed by the application to `Role:HR Manager` with sla_hours = 48. Re-deriving from July-era
+    // employee data would have silently re-routed the six with a manager away from the HR Manager
+    // queue to `Manager:<name>` and halved their SLA to 24h — changing who must act on eight of a
+    // pilot client's live approvals, with no audit row. A backfill must not overwrite the state the
+    // running system has since established.
+    //
+    // So the UPDATE is now restricted to rows that were never routed (`current_queue = ''`, the
+    // column default). That is precisely the population the backfill was written for. In production
+    // it matches exactly one row: the approval_request that 20260713062000 creates immediately
+    // before this migration runs. The eight already-routed rows are left alone.
+    //
+    // This keeps the migration safe to run and needs no manual __EFMigrationsHistory row.
     [Microsoft.EntityFrameworkCore.Infrastructure.DbContextAttribute(typeof(ZayraDbContext))]
     [Migration("20260713073000_AddApprovalQueueAccountability")]
     public partial class AddApprovalQueueAccountability : Migration
@@ -59,6 +73,10 @@ namespace Zayra.Api.Migrations
                     LEFT JOIN employees m ON m.tenant_id = ar.tenant_id AND m.id = e.manager_employee_id
                     WHERE ar.entity_name = 'EmployeeChangeRequest'
                       AND ar.status = 'Pending'
+                      -- Backfill only. An empty current_queue is the column default, i.e. a row
+                      -- that has never been routed. Anything already routed belongs to the running
+                      -- application, not to this migration; see the class comment.
+                      AND ar.current_queue = ''
                 )
                 UPDATE approval_requests ar
                 SET requested_for_employee_id = src.employee_id,

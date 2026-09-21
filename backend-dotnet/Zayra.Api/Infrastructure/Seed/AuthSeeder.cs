@@ -92,7 +92,13 @@ public class AuthSeeder : IAuthSeeder
             }
             catch (Exception ex) { Console.WriteLine($"[Seed] Bootstrap admin password rotation skipped: {ex.Message}"); }
         }
-        if (!admin.IsGroupScope) admin.IsGroupScope = true;
+        // NOTE: group scope is granted ON CREATION ONLY (see the `admin is null` branch above).
+        // This used to be `if (!admin.IsGroupScope) admin.IsGroupScope = true;`, which re-promoted the
+        // bootstrap admin on EVERY boot. AccessController.SetGroupScope writes a `GroupScopeRevoked`
+        // audit row and revokes the account's refresh tokens, so narrowing this account is a
+        // deliberate, recorded act; restoring it at the next restart silently reversed an operator's
+        // security decision. The seeder bootstraps an admin that does not exist yet; it does not
+        // re-assert scope over one that does.
 
         await _db.SaveChangesAsync(cancellationToken);
 
@@ -132,17 +138,62 @@ public class AuthSeeder : IAuthSeeder
         }
         catch (Exception ex) { Console.WriteLine($"[Seed] Admin permission backfill skipped: {ex.Message}"); }
 
-        // Historical tenant admins created before entity-scope rollout can have the Admin
-        // role but neither group scope nor company grants. That resolves to entity_scope=none
-        // and blocks normal tenant-owner actions such as creating employees once companies
-        // exist. Keep explicit company-scoped HR untouched: only true Admin-role users with
-        // no active grants are elevated to tenant/group scope.
+        // PRIVILEGE-ESCALATION-BY-RESTART (removed). This block used to run, tenant-wide on every
+        // boot:
+        //
+        //     UPDATE users SET is_group_scope = TRUE
+        //     WHERE is_group_scope = FALSE AND <has Admin role> AND <has no active entity grant>
+        //
+        // The stated intent was a ONE-TIME repair: tenant admins created before the entity-scope
+        // rollout had the Admin role but neither group scope nor company grants, which resolves to
+        // entity_scope=none (EntityScopeContext.cs:183) and blocks even creating an employee.
+        // Repairing that once is reasonable. Re-asserting it forever is not, because "Admin role,
+        // no active grant" is ALSO the exact shape of a deliberately de-scoped administrator:
+        //
+        //   * AccessController.SetGroupScope(false) writes a `GroupScopeRevoked` audit row and
+        //     revokes the user's refresh tokens — an explicit, recorded narrowing.
+        //   * AccessController's grant delete sets UserEntityAccess.IsActive = false; revoking an
+        //     admin's LAST company grant leaves them with no active grant.
+        //
+        // Either way the next restart silently widened them back to full group scope — on Render
+        // that is every deploy, plus three OOM restarts in four days. Revocation became escalation.
+        // The repair has also already run everywhere it could: against production on 2026-09-21 the
+        // predicate above matched 0 rows. So it is deleted rather than narrowed, and what remains
+        // is the read-only detection of the state it existed to find.
+        //
+        // Widening a live user's scope is an authorisation decision and belongs to an authenticated
+        // administrator behind AccessController's audit trail, never to an unattended boot path.
         try
         {
-            await _db.Database.ExecuteSqlRawAsync(
-                @"UPDATE users u
-                  SET is_group_scope = TRUE,
-                      updated_at_utc = NOW()
+            var strandedAdmins = await CountStrandedAdminsAsync(cancellationToken);
+            if (strandedAdmins > 0)
+            {
+                Console.WriteLine(
+                    $"[Seed] WARNING: {strandedAdmins} Admin-role user(s) resolve to entity_scope=none " +
+                    "(no group scope and no active company grant). They cannot administer their tenant. " +
+                    "Grant scope deliberately via PATCH /access/users/{id}/group-scope or an entity grant — " +
+                    "the seeder no longer does this automatically, because it could not tell a " +
+                    "never-configured admin from a deliberately de-scoped one.");
+            }
+        }
+        catch (Exception ex) { Console.WriteLine($"[Seed] Admin entity-scope check skipped: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Read-only diagnostic: how many non-deleted Admin-role users resolve to entity_scope=none.
+    /// </summary>
+    /// <remarks>
+    /// Raw SQL, deliberately: this must see every tenant, and the LINQ equivalent would need
+    /// <c>IgnoreQueryFilters()</c> — a new raw bypass that
+    /// <c>QueryFilterBypassRatchetTests</c> exists to prevent. It only ever SELECTs, so it cannot
+    /// widen anyone's scope; <c>RawSqlExecutionRatchetTests</c> pins that property.
+    /// </remarks>
+    private async Task<int> CountStrandedAdminsAsync(CancellationToken cancellationToken)
+    {
+        var counts = await _db.Database
+            .SqlQueryRaw<int>(
+                @"SELECT COUNT(*)::int AS ""Value""
+                  FROM users u
                   WHERE COALESCE(u.is_group_scope, FALSE) = FALSE
                     AND COALESCE(u.is_deleted, FALSE) = FALSE
                     AND EXISTS (
@@ -157,9 +208,9 @@ public class AuthSeeder : IAuthSeeder
                         FROM user_entity_accesses uea
                         WHERE uea.user_id = u.id
                           AND uea.tenant_id = u.tenant_id
-                          AND COALESCE(uea.is_active, TRUE) = TRUE);", cancellationToken);
-        }
-        catch (Exception ex) { Console.WriteLine($"[Seed] Admin entity-scope backfill skipped: {ex.Message}"); }
+                          AND COALESCE(uea.is_active, TRUE) = TRUE);")
+            .ToListAsync(cancellationToken);
+        return counts.Count == 0 ? 0 : counts[0];
     }
 
     public async Task<Role> EnsureTenantRolesAsync(Guid tenantId, CancellationToken cancellationToken = default)

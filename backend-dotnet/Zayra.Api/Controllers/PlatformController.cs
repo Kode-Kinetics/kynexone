@@ -7,10 +7,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
-using StackExchange.Redis;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
@@ -42,6 +42,13 @@ public class PlatformController : ControllerBase
     private readonly IMfaService _mfa;
     private readonly ILogger<PlatformController> _log;
     private readonly IMemoryCache _cache;
+
+    /// <summary>
+    /// Key read (never written) by the <c>/platform/health</c> distributed-cache probe. Carries the
+    /// same "kynexone:" prefix AddStackExchangeRedisCache applies (Program.cs:285) so the probe is
+    /// visibly ours in a shared Redis; a miss is the expected and successful outcome.
+    /// </summary>
+    internal const string RedisProbeKey = "health:probe";
 
     public PlatformController(
         ZayraDbContext db,
@@ -317,19 +324,40 @@ public class PlatformController : ControllerBase
 
         var smtpConfigured = !string.IsNullOrEmpty(_config["Smtp:Host"]);
 
-        // Redis health check — optional dependency
+        // Distributed-cache health check — optional dependency.
+        //
+        // This used to resolve IConnectionMultiplexer. Nothing in the composition root has ever
+        // registered that interface: AddStackExchangeRedisCache (Program.cs:282) registers
+        // IDistributedCache backed by a RedisCache and nothing else, and the only reference to
+        // IConnectionMultiplexer in the repository was this line. GetService therefore returned
+        // null unconditionally and the check reported "not_configured" whether Redis was live,
+        // dead or absent — a check that could never pass, and never fail either.
+        //
+        // Interrogate what is actually registered instead. Program.cs picks exactly one of two
+        // implementations at boot from REDIS_URL, so the registered instance is the honest answer
+        // to "is this deployment using Redis?", and a round-trip through it is the honest answer
+        // to "is that Redis reachable?". The verdicts share ProductionReadinessEvidence's
+        // vocabulary so /platform/health and /health/ready cannot disagree.
         string redisStatus;
         try
         {
-            var muxer = HttpContext.RequestServices.GetService<IConnectionMultiplexer>();
-            if (muxer is null)
+            var cache = HttpContext.RequestServices.GetService<IDistributedCache>();
+            if (cache is null)
             {
+                // Program.cs always registers one of the two, so this means a composition-root
+                // problem rather than an absent Redis. Kept distinct so the two never get confused.
                 redisStatus = "not_configured";
+            }
+            else if (cache is MemoryDistributedCache)
+            {
+                // No REDIS_URL at boot, so Program.cs:288 registered the in-memory fallback.
+                redisStatus = "fallback_memory";
             }
             else
             {
-                var anyConnected = muxer.GetEndPoints().Any(ep => muxer.GetServer(ep).IsConnected);
-                redisStatus = anyConnected ? "ok" : "disconnected";
+                // A real round trip. A miss is a success: it still required a live connection.
+                await cache.GetAsync(RedisProbeKey, ct);
+                redisStatus = "ok";
             }
         }
         catch
