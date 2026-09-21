@@ -536,7 +536,12 @@ public sealed partial class MigrationImportController : ControllerBase
         if (created) _db.EmployeeLeaveBalances.Add(item);
         // The carried figure is the NET balance as at cutover — what the employee could actually take on
         // day one. That is the number the consultant ties to the legacy system's leave report.
-        var netBalance = item.Entitled + item.Accrued + item.CarriedForward + item.ManualAdjustment
+        // Math.Max(Entitled, Accrued), NOT Entitled + Accrued: the two columns are alternative
+        // representations of one grant, and the shipped template makes BOTH mandatory, so adding them
+        // doubled the opening balance of every migrated tenant that filled in both — which is all of
+        // them. (Pending is deliberately not subtracted here: this is the cutover control total the
+        // consultant ties to the legacy leave report, which has no notion of an in-flight request.)
+        var netBalance = item.Granted + item.CarriedForward + item.ManualAdjustment
                        - item.Used - item.Encashed - item.Expired;
         await StampOriginAsync(OpeningBalanceEntityTypes.LeaveBalance, item.Id, employee, cutoverDate, netBalance,
             string.Empty, Val(row, "SourceSystem"), Val(row, "SourceRecordId"), cutover, ct);
@@ -910,7 +915,9 @@ public sealed partial class MigrationImportController : ControllerBase
                 "loans" => Dec(row, "OutstandingBalance"),
                 "advances" => Dec(row, "OutstandingBalance"),
                 "eosbOpeningProvision" => Dec(row, "AccruedAmount"),
-                "leaveBalances" => Dec(row, "Entitled") + Dec(row, "Accrued") + Dec(row, "CarriedForward")
+                // Math.Max, not +, for the same reason as UpsertLeaveBalanceAsync: Entitled and Accrued
+                // are one grant in two columns. This control total must agree with the row it totals.
+                "leaveBalances" => Math.Max(Dec(row, "Entitled"), Dec(row, "Accrued")) + Dec(row, "CarriedForward")
                                  + Dec(row, "ManualAdjustment") - Dec(row, "Used") - Dec(row, "Encashed") - Dec(row, "Expired"),
                 "benefitsEnrollments" => Dec(row, "EmployeeContribution") + Dec(row, "EmployerContribution"),
                 "contracts" => Dec(row, "BasicSalary"),

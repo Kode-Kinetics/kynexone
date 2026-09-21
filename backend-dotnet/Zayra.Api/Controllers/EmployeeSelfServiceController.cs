@@ -1331,7 +1331,11 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError });
-        var leaveAvailable = await _db.EmployeeLeaveBalances.Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Year == DateTime.UtcNow.Year).SumAsync(x => x.Entitled + x.Accrued + x.CarriedForward + x.ManualAdjustment - x.Used - x.Pending - x.Encashed, cancellationToken);
+        // Must match EmployeeLeaveBalance.Available exactly; re-spelt because Available is [Ignore]d
+        // and cannot be translated to SQL. Math.Max(Entitled, Accrued), not Entitled + Accrued, and
+        // Expired subtracted — this copy had drifted on both counts, so the ESS assistant quoted the
+        // employee a different balance from the one their own leave screen showed.
+        var leaveAvailable = await _db.EmployeeLeaveBalances.Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Year == DateTime.UtcNow.Year).SumAsync(x => Math.Max(x.Entitled, x.Accrued) + x.CarriedForward + x.ManualAdjustment - x.Used - x.Pending - x.Encashed - x.Expired, cancellationToken);
         var openTickets = await _db.HRRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status != "Closed", cancellationToken);
         var expiringDocs = await _db.EmployeeDocuments.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted && x.ExpiryDate != null && x.ExpiryDate <= DateOnly.FromDateTime(DateTime.UtcNow.AddDays(60)), cancellationToken);
         var answer = $"I can only use your own KynexOne employee data. Current snapshot: leave available {leaveAvailable:0.##} days, open HR requests {openTickets}, documents expiring in 60 days {expiringDocs}. I cannot approve, reject, or expose another employee's data.";

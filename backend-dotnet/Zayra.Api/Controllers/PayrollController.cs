@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Finance;
@@ -1633,8 +1634,27 @@ public class PayrollController : ControllerBase
             if (incomeTaxRate > 0m)
                 Console.WriteLine($"[Payroll] DEPRECATION: tenant {tenantId} income tax resolved from the legacy SystemSettings magic key (no CompanyTaxPolicy). Migrate to a CompanyTaxPolicy for company {company.Id}.");
         }
+        // A RUN MUST NOT CONSUME WHAT IT DOES NOT PAY.
+        //
+        // "Overtime payable" impacts were loaded here, matched NEITHER money bucket below (the
+        // short-hours bucket wants "deduction", the LOP bucket wants "Absence"), and were then flipped
+        // to "Processed" with the rest of the list at the end of the run. The `Status != "Processed"`
+        // predicate on this very query then hid them from every future run: attendance-derived
+        // overtime was silently destroyed, unpaid, by the first run that covered its period. The
+        // consumption witness even records Amount = 0m for it, so the audit trail could not show the
+        // loss either.
+        //
+        // Overtime is PAID from OvertimePayrollImpacts, which are created only when an overtime
+        // REQUEST is approved (OvertimeController). The bridge from attendance into that path is the
+        // explicit POST /api/overtime/detect-from-attendance. Until a product decision says attendance
+        // overtime should pay automatically, the correct behaviour is to leave those rows untouched and
+        // still claimable — not to swallow them. Excluding them here is what makes that true, because
+        // this list is exactly what the end of the run marks Processed.
         var attendanceImpacts = await _db.AttendancePayrollImpacts.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId))
+            .Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd
+                     && x.Status != "Processed"
+                     && x.ImpactType != AttendanceImpactTypes.OvertimePayable
+                     && employeeIdsForRun.Contains(x.EmployeeId))
             .ToListAsync(cancellationToken);
         var leaveImpacts = await _db.LeavePayrollImpacts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId))

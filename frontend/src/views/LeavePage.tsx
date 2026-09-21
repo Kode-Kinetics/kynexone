@@ -398,8 +398,15 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {balances.map(b => {
-            const available = b.entitled + b.accrued + b.carriedForward + b.manualAdjustment - b.used - b.pending - b.encashed;
-            const pct = b.entitled > 0 ? Math.min(100, (b.used / b.entitled) * 100) : 0;
+            // Use the server's figure. This screen used to re-spell the formula locally and got it
+            // wrong twice over: it added `entitled` and `accrued` (two representations of one grant,
+            // so a 30-day entitlement read 37.5 available) and it omitted `expired` entirely. The
+            // balance now has exactly one definition, on EmployeeLeaveBalance.Available.
+            const available = b.available;
+            // `granted` is max(entitled, accrued) — the bar has a denominator even for a tenant whose
+            // figure lives in `accrued` with `entitled` at zero, which `entitled` alone did not.
+            const grantedDays = b.granted ?? Math.max(b.entitled, b.accrued);
+            const pct = grantedDays > 0 ? Math.min(100, (b.used / grantedDays) * 100) : 0;
             return (
               <div key={b.id} className="surface p-5">
                 <div className="mb-3 flex items-start justify-between gap-2">
@@ -499,7 +506,10 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
   }, [form.employeeId, form.leaveTypeId]);
 
   const requestedDays = form.startDate && form.endDate ? daysBetween(form.startDate, form.endDate) : 0;
-  const available = balance ? (balance.entitled + balance.accrued + balance.carriedForward + balance.manualAdjustment - balance.used - balance.pending - balance.encashed) : null;
+  // The apply-leave form's sufficiency warning must quote the SAME number the server enforces
+  // against (LeaveService.HasSufficientBalanceAsync reads EmployeeLeaveBalance.Available), or the
+  // form green-lights a request the API then rejects. Re-spelling it here is what let them diverge.
+  const available = balance ? balance.available : null;
   const selectedType = leaveTypes.find(t => t.id === form.leaveTypeId);
 
   const submit = async () => {
