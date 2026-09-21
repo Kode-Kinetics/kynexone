@@ -279,18 +279,21 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
           {onLeave.length === 0 ? (
             <p className="text-sm text-slate-400">No employees on leave today.</p>
           ) : (
-            <div className="space-y-3">
+            // A real list of employee records, so marked up as one. Every other module renders its
+            // records as a <table>; Leave was the only one building record lists out of anonymous
+            // <div>s, which left assistive technology with no list or item semantics at all.
+            <ul className="space-y-3">
               {onLeave.slice(0, 6).map((e, i) => (
-                <div key={i} className="flex items-center gap-3">
+                <li key={`${e.employeeId}-${e.startDate}-${i}`} data-id={e.employeeId} className="flex items-center gap-3">
                   <LeaveColorDot color={e.colorCode || '#2F6BFF'} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{e.employeeName}</p>
                     <p className="text-xs text-slate-400">{e.departmentName} · {e.leaveTypeName}</p>
                   </div>
                   <span className="text-xs tabular-nums text-slate-400">{e.totalDays}d</span>
-                </div>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
         </div>
 
@@ -302,17 +305,17 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
           {pending.length === 0 ? (
             <p className="text-sm text-slate-400">No pending approvals.</p>
           ) : (
-            <div className="space-y-3">
+            <ul className="space-y-3">
               {pending.map(r => (
-                <div key={r.id} className="flex items-start justify-between gap-2">
+                <li key={r.id} data-id={r.id} className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.employeeName}</p>
                     <p className="text-xs text-slate-400">{r.leaveTypeName} · {fmtDate(r.startDate)} – {fmtDate(r.endDate)}</p>
                   </div>
                   <span className="shrink-0 text-xs font-semibold text-amber-600 dark:text-amber-400">{r.totalDays}d</span>
-                </div>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
         </div>
 
