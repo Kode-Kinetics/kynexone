@@ -2203,7 +2203,14 @@ public class PayrollController : ControllerBase
             // ── Short-hours deduction (late/early) at hourly rate ─────────────
             var attendanceDeduction = Math.Round(
                 attendanceImpacts
-                    .Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("deduction", StringComparison.OrdinalIgnoreCase))
+                    // "Absence deduction" also contains "deduction", so an absent day was charged
+                    // here at the hourly rate AND again as LOP twelve lines below. With the shipped KSA
+                    // defaults the two are identical (480/60 x basic/240 == basic/30), so every absent
+                    // day cost two days' basic and the payslip captioned it "Late/early" to an employee
+                    // who was never late. Absences belong to the LOP bucket only.
+                    .Where(x => x.EmployeeId == e.Id
+                                && x.ImpactType.Contains("deduction", StringComparison.OrdinalIgnoreCase)
+                                && !x.ImpactType.Contains("Absence", StringComparison.OrdinalIgnoreCase))
                     .Sum(x => x.Minutes) / 60m * hourlyRate, 2);
 
             // ── LOP (Loss of Pay): absent days at day-rate (basic ÷ lopDayDivisor) ──
