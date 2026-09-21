@@ -450,8 +450,12 @@ public static class CleanDemoKsaSeeder
         {
             if (!usersByEmail.TryGetValue(email, out var linkUser))
             {
+                var atIndex = email.IndexOf('@');
+                var maskedEmail = atIndex > 1
+                    ? $"{email[0]}***{email.Substring(atIndex)}"
+                    : "***";
                 logger.LogWarning(
-                    "CleanDemoKsaSeeder: user '{Email}' was not seeded — skipping employee link.", email);
+                    "CleanDemoKsaSeeder: user '{EmailMasked}' was not seeded — skipping employee link.", maskedEmail);
                 continue;
             }
             db.EmployeeUserAccounts.Add(new EmployeeUserAccount
