@@ -9,7 +9,6 @@ import {
   ArrowRight,
   ArrowUpRight,
   BadgeDollarSign,
-  MessageSquareText,
   Building2,
   CalendarCheck,
   CalendarPlus,
@@ -21,7 +20,6 @@ import {
   FileWarning,
   RefreshCw,
   ShieldAlert,
-  Lightbulb,
   TrendingDown,
   TrendingUp,
   UserPlus,
@@ -30,9 +28,7 @@ import {
 } from 'lucide-react';
 import { dashboardApi } from '../api/dashboard';
 import type { DashboardFull, ActivityFeedItem } from '../api/dashboard';
-import { aiAssistantApi } from '../api/intelligence';
-import type { AIInsight } from '../api/intelligence';
-import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { WorkforceBriefingPanel } from '../components/dashboard/WorkforceBriefingPanel';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { CalendarDays, Moon, Clock3 } from 'lucide-react';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
@@ -438,9 +434,7 @@ function CalendarDate() {
 
 export function DashboardPage() {
   const router = useRouter();
-  const { isFeatureEnabled } = useFeatureFlags();
   const [data, setData] = useState<DashboardFull | null>(null);
-  const [insights, setInsights] = useState<AIInsight[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(true);
@@ -459,17 +453,12 @@ export function DashboardPage() {
           setError('Dashboard data could not be loaded. Metrics are unavailable; retry after checking the API and cache service.');
         }),
     ];
-    if (isFeatureEnabled('ai_assistant')) {
-      tasks.push(
-        aiAssistantApi.listInsights({ acknowledged: false })
-          .then((r) => setInsights(r.items))
-          .catch(() => {}),
-      );
-    }
+    // AI insights are NOT fetched here. WorkforceBriefingPanel owns that call so a slow or
+    // unavailable AI surface can never delay the rest of the dashboard rendering.
     await Promise.allSettled(tasks);
     setLoading(false);
     loadRef.current = false;
-  }, [isFeatureEnabled]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 
@@ -606,6 +595,13 @@ export function DashboardPage() {
     <div className="flex w-full min-w-0 flex-col gap-4" aria-label="Workforce Command Center">
 
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
+      {/* ── Workforce Briefing ──────────────────────────────────────────────
+          First thing on the page. Self-fetching and self-gating: it hides itself when the
+          tenant has the AI Assistant module switched off or the caller lacks
+          ai.insights_view, and it is never awaited by load(), so it cannot delay anything
+          below it. */}
+      <WorkforceBriefingPanel />
 
       {/* ── Command header ─────────────────────────────────────────────────── */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1038,50 +1034,9 @@ export function DashboardPage() {
             </div>
           </Card>
 
-          {/* Insights — only when feature enabled */}
-          {isFeatureEnabled('ai_assistant') && (
-            <Card
-              title="Insights"
-            >
-              <div className="p-4 pt-3">
-                {insights.length === 0
-                  ? <Empty msg="No active insights." />
-                  : (
-                    <div className="space-y-2">
-                      {insights.slice(0, 3).map((ins) => {
-                        const sev = ins.severity?.toLowerCase() ?? 'info';
-                        const cfg = {
-                          critical: { icon: ShieldAlert,   cls: 'text-rose-500',  bg: 'bg-rose-500/10' },
-                          warning:  { icon: AlertTriangle, cls: 'text-amber-500', bg: 'bg-amber-500/10' },
-                          info:     { icon: Lightbulb,     cls: 'text-blue-500',  bg: 'bg-blue-500/10' },
-                        } as const;
-                        const c = cfg[sev as keyof typeof cfg] ?? cfg.info;
-                        const CIcon = c.icon;
-                        return (
-                          <div key={ins.id ?? ins.title} className="flex items-start gap-2.5 rounded-xl border border-slate-100 p-3 dark:border-white/[0.06]">
-                            <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${c.bg}`}>
-                              <CIcon className={`h-3.5 w-3.5 ${c.cls}`} aria-hidden />
-                            </span>
-                            <div className="min-w-0">
-                              <p className="text-[12px] font-semibold text-slate-900 dark:text-white">{ins.title}</p>
-                              <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">{ins.summary}</p>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                <button
-                  type="button"
-                  onClick={() => router.push('/ai-assistant')}
-                  className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 py-2 text-xs font-semibold text-slate-700 transition hover:border-blue-500/30 hover:bg-blue-500/[0.04] hover:text-blue-600 dark:border-white/[0.07] dark:bg-white/[0.03] dark:text-slate-300 dark:hover:text-blue-400"
-                >
-                  <MessageSquareText className="h-3.5 w-3.5" aria-hidden />
-                  Open Assistant
-                </button>
-              </div>
-            </Card>
-          )}
+          {/* The AI insights list now lives in WorkforceBriefingPanel at the top of the page,
+              where it is the first thing a user sees. Showing the same findings twice on one
+              screen was the duplication that made the capability look like an afterthought. */}
         </aside>
       </div>
 

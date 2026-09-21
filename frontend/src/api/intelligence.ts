@@ -194,7 +194,7 @@ export const aiAssistantApi = {
   query: (query: string, employeeId?: number) =>
     client.post<AIQueryResponse>('/api/ai/query', { query, employeeId }).then(r => r.data),
 
-  listInsights: (params?: { module?: string; severity?: string; acknowledged?: boolean; page?: number }) =>
+  listInsights: (params?: { module?: string; severity?: string; acknowledged?: boolean; page?: number; pageSize?: number }) =>
     client.get<{ items: AIInsight[]; total: number; page: number; pageSize: number }>(
       '/api/ai/insights', { params }
     ).then(r => r.data),
