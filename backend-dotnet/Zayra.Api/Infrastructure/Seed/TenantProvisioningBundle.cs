@@ -2,6 +2,8 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Recruitment;
 
 namespace Zayra.Api.Infrastructure.Seed;
@@ -34,7 +36,7 @@ public static class TenantProvisioningBundle
     public readonly record struct ProvisionResult(
         int CountryRules, int MasterDataTypes, int MasterDataValues, int HrCategories,
         int AttendancePolicies, int LeaveTypes, int LeavePolicies, int ApprovalWorkflows, int NotificationTemplates,
-        int ComplianceProfiles = 0, int PayComponents = 0);
+        int ComplianceProfiles = 0, int PayComponents = 0, int LetterTemplates = 0);
 
     public static async Task<ProvisionResult> ProvisionAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
@@ -53,10 +55,58 @@ public static class TenantProvisioningBundle
         // PayComponentEngine.ResolveInEffect is a genuine last resort rather than the normal path. Same
         // insert-if-absent contract as everything else in this bundle.
         var payComponents = (await PayComponentSeeder.SeedTenantDefaultsAsync(db, tenantId, ct)).Components;
+        // The bilingual HR letter catalogue. Without it a brand-new tenant's "Issue a Letter" tab
+        // has nothing to issue from and ESS offers an empty document-request dropdown — the module
+        // renders its shell and cannot be used. Installed here as well as by TenantDefaultsBackfill
+        // so a tenant created between deploys is usable immediately, not at the next restart.
+        var letterTemplates = await InstallDefaultLetterTemplatesAsync(db, tenantId, ct);
 
         await db.SaveChangesAsync(ct);
         return new ProvisionResult(countryRules, mdTypes, mdValues, hrCategories,
-            attnPolicies, leaveTypes, leavePolicies, apPolicies, notifs, compliance, payComponents);
+            attnPolicies, leaveTypes, leavePolicies, apPolicies, notifs, compliance, payComponents,
+            letterTemplates);
+    }
+
+    // ── 7b. The bilingual HR letter catalogue ──
+    /// <summary>
+    /// Plants the bilingual default for every letter type this tenant has no tenant-wide template
+    /// for. Shared by <see cref="ProvisionAsync"/> (new tenants) and
+    /// <c>TenantDefaultsBackfill</c> (tenants that predate the module), so the two paths cannot
+    /// drift and <see cref="HrLetterTemplateDefaults"/> stays the single source of the wording.
+    /// </summary>
+    internal static async Task<int> InstallDefaultLetterTemplatesAsync(
+        ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    {
+        const string why =
+            "Seeding/backfill runs with no HTTP principal, so the company read filter resolves to an "
+            + "EMPTY company scope and would hide every template the tenant already has. The gap "
+            + "check would then re-insert existing rows and trip ux_hr_letter_templates_scope_type. "
+            + "The tenant filter is re-applied by the helper; no other tenant is observable.";
+
+        // Deliberately NOT filtered on IsDeleted. A type whose template has been removed is a
+        // DECISION; an unattended pass that resurrected it on the next deploy would be exactly the
+        // "data reverts on deploy" incident class this bundle's idempotency contract forbids. An
+        // administrator who wants it back still has POST /api/hr-letters/templates/seed-defaults,
+        // which is an explicit, audited restore.
+        var covered = await ScopedBypass.TenantWide(db.HrLetterTemplates, tenantId, why)
+            .Where(x => x.CompanyId == null)
+            .Select(x => x.LetterType)
+            .ToListAsync(ct);
+
+        var added = 0;
+        foreach (var template in HrLetterTemplateDefaults.Build())
+        {
+            if (covered.Contains(template.LetterType, StringComparer.Ordinal)) continue;
+            template.Id = Guid.NewGuid();
+            template.TenantId = tenantId;
+            // HrLetterTemplate is ICompanyScoped: a null CompanyId is the tenant default that every
+            // company-scoped user inherits, which is the scope the admin action writes too.
+            template.CompanyId = null;
+            db.HrLetterTemplates.Add(template);
+            added++;
+        }
+
+        return added;
     }
 
     // ── 8. Tenant-default compliance profiles per GCC state (§3.5) ──
@@ -369,7 +419,11 @@ public static class TenantProvisioningBundle
         (RequisitionApprovalSync.ApprovalEntityName, "REQUISITION-DEFAULT", "Default Manpower Requisition Approval"),
     };
 
-    private static async Task<int> InstallDefaultApprovalWorkflowsAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    // internal, not private: TenantDefaultsBackfill installs the same defaults on tenants that
+    // already existed when the timesheet module shipped. Sharing this installer rather than copying
+    // it keeps ApprovalDefaults the single list — ConfigurationConsumerTests asserts every entry in
+    // it names an entity with a producer, and a second copy would escape that guard.
+    internal static async Task<int> InstallDefaultApprovalWorkflowsAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
         // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent, never touches another tenant.
         var existing = await db.ApprovalWorkflows.IgnoreQueryFilters().AsNoTracking()

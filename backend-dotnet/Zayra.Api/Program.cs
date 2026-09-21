@@ -1046,6 +1046,28 @@ using (var scope = app.Services.CreateScope())
             logger), logger);
     }
 
+    // ── Tenant defaults backfill (runs LAST, and for EVERY tenant) ─────────────────────────────
+    // HR letter templates and the timesheet approval route are installed only on the NEW-TENANT
+    // path (TenantProvisioningBundle / the hr-letters seed-defaults admin action), so every tenant
+    // that predates those two modules — which is all of them — came up without them: the HR Letters
+    // "Issue" tab has no template to issue from, ESS offers an empty document-request dropdown, and
+    // the first timesheet submitted 422s with no_approval_route. Both modules look shipped and
+    // cannot be used, and nothing on the failing screen says why.
+    //
+    // Placed here, AFTER the demo-only zone and OUTSIDE it, for two reasons: a demo tenant created
+    // earlier in this same boot must receive the defaults in this boot rather than the next one,
+    // and a real client tenant must receive them in an environment where no demo seeder runs at
+    // all. That is safe because, unlike everything in the block above, this pass creates,
+    // deactivates, renames and overwrites nothing — it is strictly insert-if-absent, so a template
+    // the client has edited is never reverted by a later deploy.
+    //
+    // Kill switch: TenantDefaults:Backfill=false / TenantDefaults__Backfill=false.
+    if (!string.Equals(app.Configuration["TenantDefaults:Backfill"], "false", StringComparison.OrdinalIgnoreCase))
+    {
+        await TrySeedAsync("TenantDefaultsBackfill",
+            () => TenantDefaultsBackfill.RunAsync(dbContext, logger), logger);
+    }
+
 }
 
 app.Run();
