@@ -2,6 +2,9 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Documents.Letters;
+using Zayra.Api.Infrastructure.Recruitment;
 
 namespace Zayra.Api.Infrastructure.Seed;
 
@@ -32,8 +35,8 @@ public static class TenantProvisioningBundle
 {
     public readonly record struct ProvisionResult(
         int CountryRules, int MasterDataTypes, int MasterDataValues, int HrCategories,
-        int AttendancePolicies, int LeaveTypes, int LeavePolicies, int ApprovalPolicies, int NotificationTemplates,
-        int ComplianceProfiles = 0);
+        int AttendancePolicies, int LeaveTypes, int LeavePolicies, int ApprovalWorkflows, int NotificationTemplates,
+        int ComplianceProfiles = 0, int PayComponents = 0, int LetterTemplates = 0);
 
     public static async Task<ProvisionResult> ProvisionAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
@@ -44,13 +47,66 @@ public static class TenantProvisioningBundle
         var hrCategories  = await InstallHrRequestCategoriesAsync(db, tenantId, ct);
         var attnPolicies  = await InstallDefaultAttendancePolicyAsync(db, tenantId, ct);
         var (leaveTypes, leavePolicies) = await InstallDefaultLeaveAsync(db, tenantId, ct);
-        var apPolicies    = await InstallDefaultApprovalPoliciesAsync(db, tenantId, ct);
+        var apPolicies    = await InstallDefaultApprovalWorkflowsAsync(db, tenantId, ct);
         var notifs        = await InstallNotificationTemplatesAsync(db, tenantId, ct);
         var compliance    = await InstallComplianceProfilesAsync(db, tenantId, ct);
+        // F2 — the system pay-component catalog as REAL rows, on every provisioning path (the bootstrap tenant
+        // included, which never reached PayComponentSeeder before), so the compiled fallback in
+        // PayComponentEngine.ResolveInEffect is a genuine last resort rather than the normal path. Same
+        // insert-if-absent contract as everything else in this bundle.
+        var payComponents = (await PayComponentSeeder.SeedTenantDefaultsAsync(db, tenantId, ct)).Components;
+        // The bilingual HR letter catalogue. Without it a brand-new tenant's "Issue a Letter" tab
+        // has nothing to issue from and ESS offers an empty document-request dropdown — the module
+        // renders its shell and cannot be used. Installed here as well as by TenantDefaultsBackfill
+        // so a tenant created between deploys is usable immediately, not at the next restart.
+        var letterTemplates = await InstallDefaultLetterTemplatesAsync(db, tenantId, ct);
 
         await db.SaveChangesAsync(ct);
         return new ProvisionResult(countryRules, mdTypes, mdValues, hrCategories,
-            attnPolicies, leaveTypes, leavePolicies, apPolicies, notifs, compliance);
+            attnPolicies, leaveTypes, leavePolicies, apPolicies, notifs, compliance, payComponents,
+            letterTemplates);
+    }
+
+    // ── 7b. The bilingual HR letter catalogue ──
+    /// <summary>
+    /// Plants the bilingual default for every letter type this tenant has no tenant-wide template
+    /// for. Shared by <see cref="ProvisionAsync"/> (new tenants) and
+    /// <c>TenantDefaultsBackfill</c> (tenants that predate the module), so the two paths cannot
+    /// drift and <see cref="HrLetterTemplateDefaults"/> stays the single source of the wording.
+    /// </summary>
+    internal static async Task<int> InstallDefaultLetterTemplatesAsync(
+        ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    {
+        const string why =
+            "Seeding/backfill runs with no HTTP principal, so the company read filter resolves to an "
+            + "EMPTY company scope and would hide every template the tenant already has. The gap "
+            + "check would then re-insert existing rows and trip ux_hr_letter_templates_scope_type. "
+            + "The tenant filter is re-applied by the helper; no other tenant is observable.";
+
+        // Deliberately NOT filtered on IsDeleted. A type whose template has been removed is a
+        // DECISION; an unattended pass that resurrected it on the next deploy would be exactly the
+        // "data reverts on deploy" incident class this bundle's idempotency contract forbids. An
+        // administrator who wants it back still has POST /api/hr-letters/templates/seed-defaults,
+        // which is an explicit, audited restore.
+        var covered = await ScopedBypass.TenantWide(db.HrLetterTemplates, tenantId, why)
+            .Where(x => x.CompanyId == null)
+            .Select(x => x.LetterType)
+            .ToListAsync(ct);
+
+        var added = 0;
+        foreach (var template in HrLetterTemplateDefaults.Build())
+        {
+            if (covered.Contains(template.LetterType, StringComparer.Ordinal)) continue;
+            template.Id = Guid.NewGuid();
+            template.TenantId = tenantId;
+            // HrLetterTemplate is ICompanyScoped: a null CompanyId is the tenant default that every
+            // company-scoped user inherits, which is the scope the admin action writes too.
+            template.CompanyId = null;
+            db.HrLetterTemplates.Add(template);
+            added++;
+        }
+
+        return added;
     }
 
     // ── 8. Tenant-default compliance profiles per GCC state (§3.5) ──
@@ -337,39 +393,65 @@ public static class TenantProvisioningBundle
         return (typesAdded, policiesAdded);
     }
 
-    // ── 6. Default approval policies per core workflow type (Program A4 — seeded defaults) ──
+    // ── 6. Default approval workflows per core entity (Program A4 — seeded defaults) ──
+    // F1: installed as ApprovalWorkflow, the single approval-configuration model the router reads.
+    // (Previously ApprovalPolicy rows — which only leave read, and which tenants never saw in the
+    // Approvals UI.) Same content as before: one HR-approver step, editable by the tenant.
 
-    private static readonly (string WorkflowType, string Name)[] ApprovalDefaults =
+    // Every entry must name an entity in ApprovalEntities.Producers — ApprovalProducerRegistryTests
+    // asserts it. OVERTIME-DEFAULT and PAYROLL-DEFAULT used to sit in this list and routed nothing:
+    // overtime is decided on its own aggregate through its own two-stage chain, and no code path has
+    // ever created an ApprovalRequest for a payroll run. A tenant could open either workflow, add a
+    // second approver, save it and be shown it back, and the next overtime approval or payroll run
+    // would ignore it in silence. A seeded default for an entity with no producer is not a helpful
+    // starting point; it is a control the client believes they have.
+    private static readonly (string EntityName, string Code, string Name)[] ApprovalDefaults =
     {
-        ("Leave", "Default Leave Approval"),
-        ("Overtime", "Default Overtime Approval"),
-        ("Payroll", "Default Payroll Approval"),
+        (nameof(LeaveRequest), "LEAVE-DEFAULT", "Default Leave Approval"),
+        // Without this row the first timesheet a tenant submits 422s with
+        // approval_route_not_configured — the module would look shipped and be unusable.
+        (TimesheetConstants.ApprovalEntityName, "TIMESHEET-DEFAULT", "Default Timesheet Approval"),
+        // ManpowerRequisition was the one entity with a producer and NO seeded workflow. The router
+        // returned null, Submit created no shared row, and a requisition's approval then existed
+        // nowhere but a status string: no queue entry, no decision ledger, no maker-checker. A
+        // headcount commitment approved by nobody on the record is a control failure, not a gap in
+        // configuration, so the default belongs here beside the other four.
+        (RequisitionApprovalSync.ApprovalEntityName, "REQUISITION-DEFAULT", "Default Manpower Requisition Approval"),
     };
 
-    private static async Task<int> InstallDefaultApprovalPoliciesAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    // internal, not private: TenantDefaultsBackfill installs the same defaults on tenants that
+    // already existed when the timesheet module shipped. Sharing this installer rather than copying
+    // it keeps ApprovalDefaults the single list — ConfigurationConsumerTests asserts every entry in
+    // it names an entity with a producer, and a second copy would escape that guard.
+    internal static async Task<int> InstallDefaultApprovalWorkflowsAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
         // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent, never touches another tenant.
-        var existing = (await db.ApprovalPolicies.IgnoreQueryFilters().AsNoTracking()
-            .Where(p => p.TenantId == tenantId && p.IsDefault)
-            .Select(p => p.WorkflowType).ToListAsync(ct))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var existing = await db.ApprovalWorkflows.IgnoreQueryFilters().AsNoTracking()
+            .Where(w => w.TenantId == tenantId)
+            .Select(w => new { w.Code, w.EntityName, w.IsActive, w.DepartmentId, w.GradeId })
+            .ToListAsync(ct);
+        // Natural key: an active tenant-wide workflow for the entity already exists (the tenant's own
+        // or a previous install), or the code is taken. Either way this install is a no-op.
+        var coveredEntities = existing.Where(w => w.IsActive && w.DepartmentId == null && w.GradeId == null)
+            .Select(w => w.EntityName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var codes = existing.Select(w => w.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var added = 0;
-        foreach (var (workflowType, name) in ApprovalDefaults)
+        foreach (var (entityName, code, name) in ApprovalDefaults)
         {
-            if (!existing.Add(workflowType)) continue;
-            var policy = new ApprovalPolicy
+            if (coveredEntities.Contains(entityName) || codes.Contains(code)) continue;
+            var workflow = new ApprovalWorkflow
             {
-                TenantId = tenantId, WorkflowType = workflowType, Name = name,
+                TenantId = tenantId, Code = code, Name = name, EntityName = entityName,
                 IsDefault = true, IsActive = true,
             };
-            // Single HR-approver step by default (resolves to any HR Manager/Officer — configurable).
-            policy.Steps.Add(new ApprovalPolicyStep
+            // Single HR-approver step by default (the HR Manager role queue — configurable).
+            workflow.Steps.Add(new ApprovalWorkflowStep
             {
-                TenantId = tenantId, PolicyId = policy.Id, StepOrder = 1,
-                StepName = "HR Approval", ApproverType = "HR", IsFinalStep = true,
+                TenantId = tenantId, WorkflowId = workflow.Id, StepOrder = 1,
+                StepName = "HR Approval", ApproverType = "HR", ApproverRole = "HR Manager", IsFinalStep = true,
             });
-            db.ApprovalPolicies.Add(policy);
+            db.ApprovalWorkflows.Add(workflow);
             added++;
         }
         return added;

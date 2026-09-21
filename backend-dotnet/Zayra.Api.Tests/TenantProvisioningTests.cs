@@ -463,7 +463,28 @@ public class TenantProvisioningTests
         (await db.AttendancePolicies.AnyAsync(p => p.TenantId == tenant.Id && p.Code == "DEFAULT")).Should().BeTrue();
         (await db.LeaveTypes.AnyAsync(t => t.TenantId == tenant.Id && t.Code == "ANNUAL")).Should().BeTrue();
         (await db.LeavePolicies.AnyAsync(p => p.TenantId == tenant.Id && p.CompanyId == null)).Should().BeTrue();
-        (await db.ApprovalPolicies.CountAsync(p => p.TenantId == tenant.Id && p.IsDefault)).Should().BeGreaterThan(0);
+        // F1: defaults are ApprovalWorkflows (the single model the router reads), one per core entity.
+        // Naming the entities beats counting them: a bare count tells the next person who adds a
+        // default that the number is wrong, not which default went missing.
+        (await db.ApprovalWorkflows
+                .Where(w => w.TenantId == tenant.Id && w.IsDefault && w.IsActive)
+                .Select(w => w.EntityName)
+                .ToListAsync())
+            // OvertimeRequest and PayrollRun are deliberately NOT here any more. Neither has a
+            // producer — nothing in the product creates an ApprovalRequest for an overtime request
+            // (overtime is decided on its own aggregate, through its own PendingManager → PendingHR
+            // chain) or for a payroll run. A tenant could open either seeded workflow, add a second
+            // approver, save it, be shown it back, and have it ignored for ever. Every name below
+            // is asserted against ApprovalEntities.Producers by
+            // ConfigurationConsumerTests.EverySeededDefaultApprovalWorkflow_NamesAnEntityWithAProducer.
+            .Should().BeEquivalentTo(new[] { "LeaveRequest", "Timesheet", "ManpowerRequisition" });
+        (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "LeaveRequest" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();
+        // Without this one, the first timesheet a tenant submits 422s on approval_route_not_configured.
+        (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "Timesheet" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();
+        // Without this one the router returns null for a requisition, Submit creates no shared
+        // approval row, and the headcount commitment is "approved" with nothing on the record.
+        (await db.ApprovalWorkflows.AnyAsync(w => w.TenantId == tenant.Id && w.EntityName == "ManpowerRequisition" && w.Steps.Any(s => s.IsFinalStep))).Should().BeTrue();
+        (await db.ApprovalPolicies.CountAsync(p => p.TenantId == tenant.Id)).Should().Be(0, "the retired model is never written");
 
         var countryRuleCount = countryRules.Count;
         var mdValueCount = await db.MasterDataValues.CountAsync(v => v.TenantId == tenant.Id);
@@ -477,7 +498,7 @@ public class TenantProvisioningTests
         second.AttendancePolicies.Should().Be(0);
         second.LeaveTypes.Should().Be(0);
         second.LeavePolicies.Should().Be(0);
-        second.ApprovalPolicies.Should().Be(0);
+        second.ApprovalWorkflows.Should().Be(0);
         second.NotificationTemplates.Should().Be(0);
 
         (await db.CountryPayrollRules.CountAsync(r => r.TenantId == tenant.Id)).Should().Be(countryRuleCount);

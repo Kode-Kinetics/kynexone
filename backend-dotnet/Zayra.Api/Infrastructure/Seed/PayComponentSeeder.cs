@@ -28,6 +28,12 @@ public static class PayComponentSeeder
                 .ToListAsync(ct))
             .Select(x => (x.Code, x.ComponentType))
             .ToHashSet();
+        // F2 — also honour rows ADDED earlier in the same unit of work. Tenant creation calls this seeder and
+        // then TenantProvisioningBundle (which now calls it too) before a single SaveChanges; without this the
+        // second call would re-add every row and the (tenant, company, code, type, effective_from) UNIQUE
+        // would reject the whole provisioning transaction.
+        foreach (var tracked in db.PayComponents.Local.Where(c => c.TenantId == tenantId && c.CompanyId == null))
+            existing.Add((tracked.Code, tracked.ComponentType));
 
         int components = 0;
         foreach (var seed in PayComponentCatalog.SystemComponentSeeds(tenantId))

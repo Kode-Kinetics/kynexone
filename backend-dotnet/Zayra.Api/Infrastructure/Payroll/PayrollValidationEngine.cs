@@ -15,7 +15,7 @@ namespace Zayra.Api.Infrastructure.Payroll;
 ///            expat must have zero; 45,000 SAR covered-wage ceiling flagged
 ///   3  Net salary not negative; not zero when gross > 0
 ///   4  Duplicate employee entry in run
-///   5  WPS readiness: IBAN present + valid Saudi format (SA + 22 alphanumeric);
+///   5  WPS readiness: IBAN present + valid Saudi format (24 characters total) and mod-97;
 ///            MOL ID present on payroll profile for KSA runs
 ///   6  Nationality present on employee record (drives GOSI branch)
 ///   7  Run-level totals reconcile: Σ(gross), Σ(deductions), Σ(net) match header
@@ -24,7 +24,14 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// </summary>
 public static class PayrollValidationEngine
 {
-    private const decimal GosiCoveredWageCeiling = 45_000m;
+    /// <summary>
+    /// S1/A2(c) — the LAST-RESORT default only. The ceiling was a compiled constant checked against a
+    /// tenant-overridable statutory rule: when GOSI moves the ceiling, the rule updates and a compiled
+    /// constant keeps warning on the old number forever. Callers now pass the resolved
+    /// <c>gosi.covered_wage_ceiling_sar</c> through <see cref="PayrollValidationContext"/>, so there is
+    /// one ceiling in the system rather than a third store of it.
+    /// </summary>
+    private const decimal DefaultGosiCoveredWageCeiling = 45_000m;
     private const int GosiRateStalenessThresholdMonths = 18;
 
     public static List<PayrollValidationResult> Run(PayrollValidationContext ctx)
@@ -98,6 +105,29 @@ public static class PayrollValidationEngine
         // "this run pays the monthly wage" are demoted to Warning rather than blocking Approve/Lock.
         // For a Regular run IncludesRecurringPay is always true, so nothing about an existing run changes.
         var paysRecurring = ctx.Run.IncludesRecurringPay;
+
+        // ── S1/A3: the entrant-cohort dimension does not exist, and that is now SAID ─────────
+        // Since 3 July 2024 the Saudi schedule depends on WHEN THE INDIVIDUAL first registered, not
+        // only on the period: first-time entrants to the insured labour market are on a separate,
+        // rising ladder while existing subscribers stay on 9%/9%. Every rate lookup in this product
+        // is keyed by period alone, and EmployeePayrollProfile has no first-registration date, so no
+        // configuration can express the split — it is a schema change, not a rate change.
+        //
+        // This fires once per KSA run rather than per employee, and is suppressible: a customer who
+        // has confirmed they employ no post-3-July-2024 first-time entrant should not be nagged.
+        if (isKsa && paysRecurring && !ctx.EntrantCohortSchemeAcknowledged)
+            Warn("WARN_GOSI_ENTRANT_COHORT_NOT_MODELLED",
+                "This run assumes EVERY insured person is on the pre-3-July-2024 GOSI schedule (9% / 9% " +
+                "annuities). Saudi Arabia introduced a separate scheme for FIRST-TIME entrants to the insured " +
+                "labour market on 3 July 2024, whose contribution rate steps up year by year, and this product " +
+                "has no cohort dimension: the rate is looked up by period, never by person, and there is no " +
+                "first-registration date on the employee record to look one up with. If any employee in this " +
+                "run first registered with GOSI on or after 3 July 2024, their contribution is UNDER-STATED and " +
+                "will be collected later as back-contributions with a surcharge. Confirm with GOSI, and set the " +
+                "statutory rule 'gosi.new_entrant_scheme_acknowledged' to true once you have established that " +
+                "your population is entirely pre-3-July-2024 (or once the cohort schema lands). [COUNSEL] for " +
+                "the exact ladder. The same defect applies to UAE nationals under Decree-Law 57/2023.");
+
 
         // ── Rule 1: Missing salary structure / payroll profile ────────────────
         foreach (var emp in ctx.ActiveEmployees)
@@ -257,7 +287,35 @@ public static class PayrollValidationEngine
                     var priorGosiEe  = ctx.PriorPeriodGosiEeByEmployee.TryGetValue(slip.EmployeeId, out var pg) ? pg : 0m;
                     var periodGosiEe = gosiEeAmount + priorGosiEe;
 
-                    if (!hasGosiEe && periodGosiEe <= 0m && paysRecurring)
+                    // ── S1/A4: a GCC national is a DIFFERENT failure with a DIFFERENT exit ─────────
+                    // GOSI_MISSING_FOR_SAUDI told the preparer to make the employee contribute to
+                    // GOSI-ANN-EE and GOSI-SANED-EE — contributions the KSA calculator structurally
+                    // could not produce for a GCC national, because those are the SAUDI branches and
+                    // a GCC national is insured under their HOME state's scheme. The instruction was
+                    // impossible to follow, so the run was stranded: Approve and Lock 422, re-Process
+                    // is refused once the run leaves Draft/Processed, and nothing ever sets IsResolved.
+                    // The customer's only exits were to void the run or to override and file short.
+                    //
+                    // It is still an Error, and deliberately so — under-contributing for a GCC national
+                    // accrues back-contributions with a monthly surcharge and costs the establishment
+                    // its GOSI compliance certificate, which gates Qiwa services and visa issuance. But
+                    // it now names the two rows that make it go away.
+                    var gccHome = GosiCalculationService.DeriveGccHomeState(emp.Nationality);
+                    if (!hasGosiEe && periodGosiEe <= 0m && paysRecurring && gccHome is not null)
+                        Err("GOSI_GCC_SCHEME_NOT_CONFIGURED",
+                            $"Employee {slip.EmployeeCode} is a {gccHome} national working in Saudi Arabia, and no " +
+                            "contribution was calculated for them. Under the GCC Unified Insurance Extension Scheme " +
+                            $"they are insured under {gccHome}'s own scheme, at {gccHome}'s rates, collected by GOSI — " +
+                            "NOT under the Saudi Annuities/SANED branches, and NOT as an expatriate on occupational " +
+                            "hazard alone, which is what this product used to do silently. This product does not ship " +
+                            $"{gccHome} rates. To clear this and complete the run, seed two effective-dated statutory " +
+                            $"rules for SAU / KSA-mainland from the current {gccHome} circular: " +
+                            $"'gosi.gcc.{gccHome}.employee_rate' and 'gosi.gcc.{gccHome}.employer_rate' (decimal " +
+                            "fractions, e.g. 0.07). The employer share is automatically capped at the Saudi employer " +
+                            "rate and the excess charged to the employee, per the scheme. [COUNSEL] confirm the " +
+                            $"{gccHome} branch rates and which branches the extension scheme covers before filing.",
+                            slip.EmployeeId);
+                    else if (!hasGosiEe && periodGosiEe <= 0m && paysRecurring)
                         Err("GOSI_MISSING_FOR_SAUDI",
                             $"Employee {slip.EmployeeCode} is classified as {classification} but has zero GOSI employee deductions. " +
                             "Saudi and GCC nationals must contribute to GOSI Annuities (GOSI-ANN-EE) and SANED (GOSI-SANED-EE).",
@@ -277,11 +335,33 @@ public static class PayrollValidationEngine
 
                     // 45 k ceiling warning
                     var coveredWage = slip.BasicSalary + slip.HousingAllowance;
-                    if (coveredWage > GosiCoveredWageCeiling)
+                    var ceiling = ctx.GosiCoveredWageCeiling > 0m ? ctx.GosiCoveredWageCeiling : DefaultGosiCoveredWageCeiling;
+                    if (coveredWage > ceiling)
                         Warn("GOSI_CEILING_EXCEEDED",
-                            $"Employee {slip.EmployeeCode} covered wage (Basic + Housing = {coveredWage:N2} SAR) exceeds the GOSI 45,000 SAR ceiling. " +
-                            "Verify that contributions were calculated on 45,000 SAR, not {coveredWage:N2} SAR.",
+                            $"Employee {slip.EmployeeCode} covered wage (Basic + Housing = {coveredWage:N2} SAR) exceeds the GOSI {ceiling:N0} SAR ceiling. " +
+                            $"Verify that contributions were calculated on {ceiling:N0} SAR, not {coveredWage:N2} SAR.",
                             slip.EmployeeId);
+
+                    // S1/A3 corollary — GOSI annuities and SANED have AGE-based eligibility and cease
+                    // at retirement age. With no age test anywhere, the product deducts SANED from a
+                    // 62-year-old Saudi indefinitely. DateOfBirth exists on the employee record, so
+                    // the condition is at least detectable even though the cessation rule is not
+                    // implemented. Silent when no retirement age is configured.
+                    if (ctx.GosiRetirementAgeYears > 0 && hasGosiEe && emp.DateOfBirth is DateOnly dob)
+                    {
+                        var periodStartDate = new DateOnly(ctx.Run.Year, ctx.Run.Month, 1);
+                        var age = periodStartDate.Year - dob.Year
+                                - (periodStartDate < dob.AddYears(periodStartDate.Year - dob.Year) ? 1 : 0);
+                        if (age >= ctx.GosiRetirementAgeYears)
+                            Warn("WARN_GOSI_AGE_ELIGIBILITY_NOT_MODELLED",
+                                $"Employee {slip.EmployeeCode} is {age} and GOSI employee contributions of " +
+                                $"{gosiEeAmount:N2} SAR were still deducted. GOSI annuities and SANED have " +
+                                $"age-based eligibility and cease at retirement age ({ctx.GosiRetirementAgeYears}); " +
+                                "this product does not model the cessation, so the deduction may be an " +
+                                "OVER-deduction from the employee's net pay. [COUNSEL] confirm the cessation rule " +
+                                "for someone who continues working past retirement age, then correct this slip.",
+                                slip.EmployeeId);
+                    }
                 }
                 else  // NonSaudi / expat
                 {
@@ -302,7 +382,7 @@ public static class PayrollValidationEngine
                     slip.EmployeeId);
             else if (!IbanValidator.IsValid(iban))
                 Err("INVALID_IBAN",
-                    $"Employee {slip.EmployeeCode} IBAN '{iban}' fails ISO 13616 mod-97 validation. " +
+                    $"Employee {slip.EmployeeCode} IBAN '{iban}' fails country format/length or ISO 13616 mod-97 validation. " +
                     "Correct the IBAN before approving this run.",
                     slip.EmployeeId);
             else if (isKsa && !IbanValidator.IsSaudiIban(iban))
@@ -561,6 +641,29 @@ public sealed record PayrollValidationContext(
     /// informational warning so the preparer knows the per-run GOSI figure is a period delta.
     /// </summary>
     public bool StatutoryComputedIncrementally { get; init; }
+
+    /// <summary>
+    /// S1/A2(c) — the GOSI covered-wage ceiling actually in force for this run's period, resolved from
+    /// the same effective-dated <c>gosi.covered_wage_ceiling_sar</c> rule the country pack caps on.
+    /// Zero means "not supplied" and the engine falls back to its compiled default, so a caller that
+    /// has not been updated behaves exactly as before.
+    /// </summary>
+    public decimal GosiCoveredWageCeiling { get; init; }
+
+    /// <summary>
+    /// S1/A3 — true when the tenant has acknowledged the post-3-July-2024 GOSI new-entrant scheme,
+    /// which suppresses WARN_GOSI_ENTRANT_COHORT_NOT_MODELLED. Driven by the statutory rule
+    /// <c>gosi.new_entrant_scheme_acknowledged</c>. Defaults to false: the gap is real and the
+    /// default must be to say so.
+    /// </summary>
+    public bool EntrantCohortSchemeAcknowledged { get; init; }
+
+    /// <summary>
+    /// S1/A3 (corollary) — the age at which GOSI annuities and SANED cease. Zero disables the check.
+    /// Driven by <c>gosi.retirement_age_years</c>; [COUNSEL] for the current figure and for the
+    /// treatment of someone who continues working past it.
+    /// </summary>
+    public int GosiRetirementAgeYears { get; init; }
 }
 
 /// <summary>

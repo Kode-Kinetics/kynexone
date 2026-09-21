@@ -211,6 +211,11 @@ builder.Services.PostConfigure<EntityScopeOptions>(options =>
         options.StrictMode);
 });
 
+// Effective module state (stored flags + the catalog's statutory/core locks). Scoped because it
+// reads the tenant's DbContext; the result is cached per tenant in IMemoryCache.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Modules.ITenantModuleService,
+                           Zayra.Api.Infrastructure.Modules.TenantModuleService>();
+
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<SubscriptionGuardFilter>();
@@ -250,6 +255,9 @@ if (string.IsNullOrWhiteSpace(connectionString))
 builder.Services.AddDbContextPool<ZayraDbContext>(options => options
     .UseNpgsql(connectionString,
         npgsqlOptions => npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null))
+    // F3: turns a query tagged ForUpdateSkipLockedTag into SELECT … FOR UPDATE SKIP LOCKED (job claiming).
+    // Inert for every other command.
+    .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
     .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)));
 
 builder.Services.AddMemoryCache();
@@ -360,7 +368,8 @@ builder.Services.AddScoped<Zayra.Api.Application.WorkWeek.IWorkWeekService, Zayr
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IProrationPolicyResolver, Zayra.Api.Infrastructure.Payroll.ProrationPolicyResolver>();
 builder.Services.AddScoped<IHrmHierarchyService, HrmHierarchyService>();
 builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
-builder.Services.AddScoped<IApprovalPolicyService, ApprovalPolicyService>();
+builder.Services.AddScoped<IApprovalRouter, ApprovalRouter>();
+builder.Services.AddScoped<Zayra.Api.Application.Timesheets.ITimesheetService, Zayra.Api.Infrastructure.Timesheets.TimesheetService>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
 builder.Services.AddScoped<IEmployeeModuleSchemaBootstrapper, EmployeeModuleSchemaBootstrapper>();
 // P0-5: config-selected durable storage with a Production fail-fast (Render dyno disk is
@@ -380,12 +389,20 @@ builder.Services.AddScoped<INotificationRecipientResolver, NotificationRecipient
 builder.Services.AddScoped<INotificationProviderConfigReader, NotificationProviderConfigReader>();
 builder.Services.AddScoped<ISmsProvider, NullSmsProvider>();
 builder.Services.AddScoped<IWhatsAppProvider, NullWhatsAppProvider>();
-builder.Services.AddScoped<IPushProvider, NullPushProvider>();
+// POD-D5 / mobile enablement — REAL push. The Expo adapter replaces NullPushProvider because the
+// mobile client registers Expo tokens (ExponentPushToken[...]) via getExpoPushTokenAsync(); it stays
+// dormant (visible "not_configured" delivery rows) until a tenant sets Notifications/Push.Provider=expo.
+builder.Services.AddScoped<IPushProvider, ExpoPushProvider>();
+// Timeout MUST stay above ProviderBackedDispatcher.SendTimeout (10 s) so the dispatcher's linked CTS
+// is what fires first and the outcome is classified Ambiguous rather than a bare transport failure.
+builder.Services.AddHttpClient(ExpoPushProvider.HttpClientName,
+    c => c.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddScoped<INotificationChannelDispatcher, EmailChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, SmsChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, WhatsAppChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, PushChannelDispatcher>();
 builder.Services.AddScoped<ILetterService, LetterService>();
+builder.Services.AddScoped<IHrLetterIssuer, HrLetterIssuer>();
 var pdfCapacity = builder.Configuration.GetValue("Pdf:MaxConcurrentRenders", 3);
 builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Documents.PdfRenderGate(pdfCapacity));
 builder.Services.AddScoped<IRecruitmentService, RecruitmentService>();
@@ -411,7 +428,11 @@ builder.Services.AddScoped<Zayra.Api.Application.Recruitment.IRecruitmentAiServi
 builder.Services.AddScoped<IPolicyDocumentService, PolicyDocumentService>();
 builder.Services.AddScoped<IQiwaIntegrationService, QiwaIntegrationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.SaudiComplianceDashboardService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.GosiReadinessReportService>();
+// Nitaqat MHRSD grid loader: the product ships the MECHANISM, not the grid (see
+// NitaqatGridImportService for why seeding ~3,000 unverified thresholds would be worse than none).
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.NitaqatGridImportService>();
 // POD-A1: single GOSI/statutory reconciliation truth (contribution-summary, variance-report,
 // compliance dashboard variance count). Scoped so it shares the request's memoized IStatutoryRuleReader.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.GosiReconciliationService>();
@@ -456,6 +477,20 @@ builder.Services.AddHostedService<AiInsightEngine>();
 // thread is what makes "a notification can never fail OR HANG a payroll operation" true.
 builder.Services.AddHostedService<NotificationDeliveryWorker>();
 builder.Services.AddHostedService<ComplianceReminderWorker>();
+
+// F3 — durable background jobs (job store + per-item checkpoints + leased, fenced worker). Runs on
+// every instance: claims are FOR UPDATE SKIP LOCKED with a lease token, so old and new instances share
+// the queue during a deploy cutover without running any job twice. BackgroundJobs__WorkerEnabled=false
+// turns the worker off on an instance that should only serve HTTP.
+var backgroundJobOptions = builder.Configuration.GetSection(Zayra.Api.Infrastructure.Jobs.BackgroundJobOptions.SectionName)
+    .Get<Zayra.Api.Infrastructure.Jobs.BackgroundJobOptions>() ?? new Zayra.Api.Infrastructure.Jobs.BackgroundJobOptions();
+builder.Services.AddSingleton(backgroundJobOptions);
+builder.Services.AddSingleton(Zayra.Api.Infrastructure.Attendance.AttendanceProcessingJobHandler.Descriptor);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.AttendanceProcessingJobHandler>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobTypeRegistry>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Jobs.BackgroundJobStore>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobRunner>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Jobs.BackgroundJobWorker>();
 
 builder.Services.AddHttpClient<ILlmClient, LlmClient>();
 builder.Services.AddHttpContextAccessor();
@@ -778,6 +813,7 @@ app.MapGet("/health", async (ZayraDbContext db, ILoggerFactory loggerFactory) =>
 // for local dev convenience (it defaults false in Production).
 var isMigrateMode = args.Contains("--migrate");
 var isPurgeDemoMode = args.Contains("--purge-demo");
+var isSundayDemoFixtureMode = args.Contains("--seed-sunday-demo-fixture");
 var runMigrationsOnStartup = app.Configuration.GetValue<bool>("Database:RunMigrationsOnStartup");
 
 using (var scope = app.Services.CreateScope())
@@ -809,6 +845,22 @@ using (var scope = app.Services.CreateScope())
     {
         logger.LogInformation("--migrate mode complete. Exiting.");
         return; // exit 0 — Render one-off job succeeds
+    }
+
+    // Explicit one-off, disposable fixture for the 20-Sep-2026 client-demo gate. The seeder owns
+    // additional fail-closed Production/dedicated/client, exact-confirmation, password and database
+    // transaction guards. It exits before the normal startup seed chain so no unrelated tenant is
+    // created or changed as a side effect of preparing this isolated fixture.
+    if (isSundayDemoFixtureMode)
+    {
+        await SundayKsaDemoFixtureSeeder.RunAsync(
+            dbContext,
+            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
+            scope.ServiceProvider.GetRequiredService<IAuthSeeder>(),
+            app.Environment,
+            logger);
+        logger.LogInformation("--seed-sunday-demo-fixture mode complete. Exiting.");
+        return;
     }
 
     // Phase 1B default-company backfill — idempotent (only touches null CompanyId rows),
@@ -960,6 +1012,7 @@ using (var scope = app.Services.CreateScope())
 
     await TrySeedAsync("GosiRuleSeeder",      () => GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger), logger);
     await TrySeedAsync("StatutoryRuleSeeder", () => Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.SeedAsync(dbContext, logger), logger);
+        await TrySeedAsync("NitaqatReferenceSeeder", () => Zayra.Api.Infrastructure.Seed.NitaqatReferenceSeeder.SeedAsync(dbContext, logger), logger);
 
     // Pricing config + module catalog must exist even in production (demo seeding is off there),
     // otherwise the platform-admin pricing/CPQ console is empty. Idempotent (skips when present).
@@ -991,6 +1044,28 @@ using (var scope = app.Services.CreateScope())
             scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
             authSeeder,
             logger), logger);
+    }
+
+    // ── Tenant defaults backfill (runs LAST, and for EVERY tenant) ─────────────────────────────
+    // HR letter templates and the timesheet approval route are installed only on the NEW-TENANT
+    // path (TenantProvisioningBundle / the hr-letters seed-defaults admin action), so every tenant
+    // that predates those two modules — which is all of them — came up without them: the HR Letters
+    // "Issue" tab has no template to issue from, ESS offers an empty document-request dropdown, and
+    // the first timesheet submitted 422s with no_approval_route. Both modules look shipped and
+    // cannot be used, and nothing on the failing screen says why.
+    //
+    // Placed here, AFTER the demo-only zone and OUTSIDE it, for two reasons: a demo tenant created
+    // earlier in this same boot must receive the defaults in this boot rather than the next one,
+    // and a real client tenant must receive them in an environment where no demo seeder runs at
+    // all. That is safe because, unlike everything in the block above, this pass creates,
+    // deactivates, renames and overwrites nothing — it is strictly insert-if-absent, so a template
+    // the client has edited is never reverted by a later deploy.
+    //
+    // Kill switch: TenantDefaults:Backfill=false / TenantDefaults__Backfill=false.
+    if (!string.Equals(app.Configuration["TenantDefaults:Backfill"], "false", StringComparison.OrdinalIgnoreCase))
+    {
+        await TrySeedAsync("TenantDefaultsBackfill",
+            () => TenantDefaultsBackfill.RunAsync(dbContext, logger), logger);
     }
 
 }

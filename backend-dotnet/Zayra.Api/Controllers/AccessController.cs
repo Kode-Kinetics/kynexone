@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
@@ -380,18 +381,42 @@ public class AccessController : ControllerBase
         return Ok(await _accessManagement.GetDelegationsAsync(tenantId.Value, cancellationToken));
     }
 
+    // ── Approval delegation and approval authority: writes refuse ─────────────────────────────
+    //
+    // Both of these are configuration a tenant could store and nothing has ever read. They now
+    // answer 501 on every write, following the rule this codebase already states in
+    // ApprovalPoliciesController — "accepting a write here would recreate exactly the silent
+    // misconfiguration F1 removes: configuration that is stored but never applied" — and the status
+    // EnterpriseIdentityController uses for the same reason: 501 for never-built, not 410 for
+    // retired, because neither of these was ever wired.
+    //
+    // The GETs are deliberately left alive. A tenant that already stored rows must still be able to
+    // see them; hiding the data would be a second deception on top of the first.
+
+    /// <summary>The reason a delegation write refuses. Public so the test and the API agree on one string.</summary>
+    public const string DelegationNotImplementedMessage =
+        "Approval delegation is not implemented in this build. Delegations were stored and never consulted: "
+        + "no approval router, workflow service or leave path has ever read them, so an approver who recorded "
+        + "a delegation before going on leave would have had their queue stall anyway, with the UI showing the "
+        + "delegation as active. Accepting the write would restate that. Reassign the approver on the approval "
+        + "workflow's step, or deactivate the employee to reroute their pending approvals.";
+
+    /// <summary>The reason an approval-authority write refuses.</summary>
+    public const string AuthorityNotImplementedMessage =
+        "Approval authority limits are not enforced in this build. An amount limit has nothing to compare "
+        + "against: ApprovalRequest carries no monetary amount, so 'department managers may approve up to "
+        + "SAR 50,000' could never have been applied and a manager could final-approve any sum with the audit "
+        + "log recording a legitimate approval. Storing the rule would be evidence of a control that does not "
+        + "exist. Express approval seniority as ordered steps on the approval workflow instead.";
+
     [HttpPost("approval-delegations")]
-    public async Task<ActionResult<ApprovalDelegationDto>> CreateApprovalDelegation(ApprovalDelegationRequest request, CancellationToken cancellationToken)
-    {
-        try
+    public IActionResult CreateApprovalDelegation(ApprovalDelegationRequest request)
+        => StatusCode(StatusCodes.Status501NotImplemented, new
         {
-            var tenantId = GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            var delegation = await _accessManagement.CreateDelegationAsync(tenantId.Value, request, GetContext(), cancellationToken);
-            return Created($"/api/access/approval-delegations/{delegation.Id}", delegation);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+            code = "approval_delegation_not_implemented",
+            message = DelegationNotImplementedMessage,
+            replacement = "/api/approval-workflows",
+        });
 
     [HttpGet("approval-authorities")]
     public async Task<ActionResult<IReadOnlyCollection<ApprovalAuthorityDto>>> ApprovalAuthorities(CancellationToken cancellationToken)
@@ -402,18 +427,17 @@ public class AccessController : ControllerBase
     }
 
     [HttpPost("approval-authorities")]
-    public async Task<ActionResult<ApprovalAuthorityDto>> CreateApprovalAuthority(ApprovalAuthorityRequest request, CancellationToken cancellationToken)
-    {
-        try
+    public IActionResult CreateApprovalAuthority(ApprovalAuthorityRequest request)
+        => StatusCode(StatusCodes.Status501NotImplemented, new
         {
-            var tenantId = GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            var authority = await _accessManagement.CreateAuthorityAsync(tenantId.Value, request, GetContext(), cancellationToken);
-            return Created($"/api/access/approval-authorities/{authority.Id}", authority);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+            code = "approval_authority_not_implemented",
+            message = AuthorityNotImplementedMessage,
+            replacement = "/api/approval-workflows",
+        });
 
+    // Cancel stays live: it is the one write that makes an already-stored delegation LESS
+    // believable, which is the direction this change is going in. Refusing it would leave a tenant
+    // holding rows the UI shows as active with no way to clear them.
     [HttpPatch("approval-delegations/{delegationId:guid}/cancel")]
     public async Task<IActionResult> CancelDelegation(Guid delegationId, CancellationToken cancellationToken)
     {
@@ -424,17 +448,13 @@ public class AccessController : ControllerBase
     }
 
     [HttpPut("approval-authorities/{authorityId:guid}")]
-    public async Task<ActionResult<ApprovalAuthorityDto>> UpdateApprovalAuthority(Guid authorityId, ApprovalAuthorityRequest request, CancellationToken cancellationToken)
-    {
-        try
+    public IActionResult UpdateApprovalAuthority(Guid authorityId, ApprovalAuthorityRequest request)
+        => StatusCode(StatusCodes.Status501NotImplemented, new
         {
-            var tenantId = GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            var authority = await _accessManagement.UpdateAuthorityAsync(tenantId.Value, authorityId, request, GetContext(), cancellationToken);
-            return authority is null ? NotFound() : Ok(authority);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+            code = "approval_authority_not_implemented",
+            message = AuthorityNotImplementedMessage,
+            replacement = "/api/approval-workflows",
+        });
 
     // ── Permission Grantors ───────────────────────────────────────────────────
 

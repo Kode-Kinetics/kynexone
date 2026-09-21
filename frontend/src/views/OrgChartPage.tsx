@@ -108,9 +108,9 @@ export function OrgChartPage() {
           </div>
           {/* Search */}
           <div className="relative">
-            <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search className="w-4 h-4 absolute start-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <input type="text" placeholder="Search people…" value={search} onChange={e => setSearch(e.target.value)}
-              className="pl-8 pr-3 py-1.5 text-sm border border-slate-200 dark:border-white/[0.1] rounded-lg bg-white dark:bg-white/[0.05] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-sapphire/30 w-48" />
+              className="ps-8 pe-3 py-1.5 text-sm border border-slate-200 dark:border-white/[0.1] rounded-lg bg-white dark:bg-white/[0.05] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-sapphire/30 w-48" />
           </div>
           <button type="button" onClick={load}
             className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 px-3 py-1.5 border border-slate-200 dark:border-white/[0.1] rounded-lg hover:bg-slate-50 dark:hover:bg-white/[0.05] transition-colors">
@@ -173,7 +173,7 @@ function OrgNode({ node, collapsed, toggle, search, matchesSearch, depth }: {
   };
 
   return (
-    <div className={depth > 0 ? 'pl-6' : ''}>
+    <div className={depth > 0 ? 'ps-6' : ''}>
       <div className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-slate-50 dark:hover:bg-white/[0.03] cursor-pointer group transition-colors"
         onClick={() => hasReports && toggle(node.id)}>
         <div className="w-5 shrink-0">
@@ -192,7 +192,7 @@ function OrgNode({ node, collapsed, toggle, search, matchesSearch, depth }: {
         {hasReports && <span className="text-xs text-slate-400 shrink-0 bg-slate-100 dark:bg-white/[0.07] rounded-full px-2 py-0.5">{node.directReports.length}</span>}
       </div>
       {!isCollapsed && visible.length > 0 && (
-        <div className="border-l-2 border-slate-100 dark:border-white/[0.06] ml-[22px]">
+        <div className="border-s-2 border-slate-100 dark:border-white/[0.06] ms-[22px]">
           {visible.map(c => <OrgNode key={c.id} node={c} collapsed={collapsed} toggle={toggle} search={search} matchesSearch={matchesSearch} depth={depth + 1} />)}
         </div>
       )}
@@ -284,7 +284,7 @@ function TreeView({ tree, search }: { tree: OrgChartNodeDto[]; search: string })
   return (
     <div className="relative">
       {/* Controls */}
-      <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
+      <div className="absolute top-3 end-3 z-10 flex items-center gap-1.5">
         <span className="text-xs text-slate-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/[0.1] rounded px-2 py-1">{Math.round(zoom * 100)}%</span>
         <button type="button" onClick={() => setZoom(z => Math.min(2, z + 0.1))} className="w-7 h-7 flex items-center justify-center rounded border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.05] text-sm font-bold">+</button>
         <button type="button" onClick={() => setZoom(z => Math.max(0.25, z - 0.1))} className="w-7 h-7 flex items-center justify-center rounded border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.05] text-sm font-bold">−</button>
@@ -293,7 +293,7 @@ function TreeView({ tree, search }: { tree: OrgChartNodeDto[]; search: string })
           <Maximize2 className="w-3.5 h-3.5" />
         </button>
       </div>
-      <p className="absolute bottom-3 left-3 text-[11px] text-slate-400 z-10 pointer-events-none">Drag to pan · Scroll to zoom</p>
+      <p className="absolute bottom-3 start-3 text-[11px] text-slate-400 z-10 pointer-events-none">Drag to pan · Scroll to zoom</p>
 
       <div
         ref={canvasRef}

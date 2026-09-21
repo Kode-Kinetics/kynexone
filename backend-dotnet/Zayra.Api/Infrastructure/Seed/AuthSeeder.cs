@@ -4,6 +4,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Seed;
@@ -220,7 +221,7 @@ public class AuthSeeder : IAuthSeeder
         // Level 6 — Payroll Officer: payroll processing
         await EnsureRole(tenantId, "Payroll Officer", "Payroll and WPS specialist", Ps(new[] {
             "dashboard.read", "employees.read", "employees.sensitive", "attendance.read",
-            "payroll.read", "payroll.write", "loans.read", "notifications.read", "reports.read"
+            "payroll.read", "payroll.write", "loans.read", "approvals.read", "notifications.read", "reports.read"
         }), 6, true, cancellationToken);
 
         // Level 7 — Finance Approver: finance approvals
@@ -633,32 +634,14 @@ public class AuthSeeder : IAuthSeeder
             });
         }
 
-        if (!await _db.ApprovalWorkflows.AnyAsync(x => x.TenantId == tenantId && x.Code == "EMPLOYEE-ONBOARDING", cancellationToken))
-        {
-            var onboarding = new ApprovalWorkflow
-            {
-                TenantId = tenantId,
-                Code = "EMPLOYEE-ONBOARDING",
-                Name = "Employee Onboarding Approval",
-                EntityName = "EmployeeDraft"
-            };
-            onboarding.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = onboarding.Id, StepOrder = 1, StepName = "HR Review", ApproverRole = "HR Manager", IsFinalStep = true });
-            _db.ApprovalWorkflows.Add(onboarding);
-        }
-
-        if (!await _db.ApprovalWorkflows.AnyAsync(x => x.TenantId == tenantId && x.Code == "EMPLOYEE-TRANSFER", cancellationToken))
-        {
-            var transfer = new ApprovalWorkflow
-            {
-                TenantId = tenantId,
-                Code = "EMPLOYEE-TRANSFER",
-                Name = "Employee Transfer Approval",
-                EntityName = "EmployeeTransferRequest"
-            };
-            transfer.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = transfer.Id, StepOrder = 1, StepName = "Current Manager Approval", ApproverRole = "Manager" });
-            transfer.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = transfer.Id, StepOrder = 2, StepName = "HR Approval", ApproverRole = "HR Manager", IsFinalStep = true });
-            _db.ApprovalWorkflows.Add(transfer);
-        }
+        // EMPLOYEE-ONBOARDING ("EmployeeDraft") and EMPLOYEE-TRANSFER ("EmployeeTransferRequest")
+        // used to be seeded here and are not any more. Neither entity has a producer: nothing in the
+        // product has ever created an ApprovalRequest for a draft or a transfer, so neither workflow
+        // could route anything. The transfer one was the worst of them — a two-step
+        // "Current Manager → HR Approval" chain, visible in the Approvals configuration, citable in
+        // a security questionnaire, and inert. Transfers are approved inline on the transfer request
+        // by EmployeesController; drafts are activated on the employee record. Both are now refused
+        // by ApprovalWorkflowsController (see ApprovalEntities) rather than offered and ignored.
 
         await _db.SaveChangesAsync(cancellationToken);
 
@@ -806,8 +789,10 @@ public class AuthSeeder : IAuthSeeder
         // ICompanyScopedOperational: the nine rows this block used to write with CompanyId null were
         // readable only by the group-scope admin, so any ordinary company-scoped login opened Leave on
         // an empty list. See DemoLeaveSeed's remarks for why no backfill rescued them.
-        var leaveWorkflowId = (await _db.ApprovalWorkflows
-            .Where(x => x.TenantId == tenantId).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct)) ?? Guid.Empty;
+        // F1: the demo projections must reference the tenant's real LEAVE workflow — previously this
+        // took the tenant's first workflow of ANY entity (unordered), or Guid.Empty.
+        var leaveWorkflowId = (await new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(_db)
+            .TryResolveAsync(tenantId, null, nameof(LeaveRequest), ct))?.WorkflowId ?? Guid.Empty;
         var nowUtc = DateTime.UtcNow;
         if (!await _db.LeaveRequests.AnyAsync(x => x.TenantId == tenantId, ct))
         {
@@ -1031,20 +1016,17 @@ public class AuthSeeder : IAuthSeeder
         await _db.SaveChangesAsync(ct);
 
         // ── Pending approvals ────────────────────────────────────────────────────
-        var workflowId = (await _db.ApprovalWorkflows.FirstOrDefaultAsync(x => x.TenantId == tenantId, ct))?.Id ?? Guid.NewGuid();
-        var currentPeriod = new DateOnly(today.Year, today.Month, 1);
-        var currentRunId = (await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Year == currentPeriod.Year && x.Month == currentPeriod.Month, ct))?.Id ?? Guid.NewGuid();
         // The four LeaveRequest rows this block used to add pointed at Guid.NewGuid() EntityIds — an
         // Approvals queue whose items opened onto nothing. The leave seed above now writes the real
-        // routing projections, so only the non-leave demo approvals remain here (and the guard no
-        // longer counts those real rows as "already seeded"). CompanyId is stamped for the same
-        // reason it is on the leave rows: ApprovalRequest is ICompanyScopedOperational.
-        if (!await _db.ApprovalRequests.AnyAsync(x => x.TenantId == tenantId && x.Status == "Pending" && x.EntityName != nameof(LeaveRequest), ct))
-        _db.ApprovalRequests.AddRange(
-            new ApprovalRequest { TenantId=tenantId, CompanyId=companyId, WorkflowId=workflowId, EntityName="PayrollRun",           EntityId=currentRunId.ToString(),   Title=$"Payroll approval — {currentPeriod:MMM yyyy}",   Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-20) },
-            new ApprovalRequest { TenantId=tenantId, CompanyId=companyId, WorkflowId=workflowId, EntityName="EmployeeTransferRequest", EntityId=Guid.NewGuid().ToString(), Title=$"Transfer request — {employees[5].FullName}", Status="Pending", CurrentStepOrder=1, CreatedAtUtc=DateTime.UtcNow.AddHours(-8) }
-        );
-        await _db.SaveChangesAsync(ct);
+        // routing projections.
+        //
+        // The two remaining demo rows ("PayrollRun" and "EmployeeTransferRequest") have now gone for
+        // the same reason, one step further on: neither entity has a producer, so nothing would ever
+        // have created those rows in a real tenant, and deciding one in the Approval Center changed
+        // nothing anywhere — the transfer row's EntityId was a fresh Guid pointing at no record at
+        // all. A queue item that cannot be acted on is the demo version of dead configuration. Every
+        // item in the Approval Center now opens onto something real.
+        var currentPeriod = new DateOnly(today.Year, today.Month, 1);
 
         // ── Notifications ────────────────────────────────────────────────────────
         var adminUserId = (await _db.Users.FirstOrDefaultAsync(x => x.TenantId == tenantId, ct))?.Id;
@@ -1133,12 +1115,35 @@ public class AuthSeeder : IAuthSeeder
             await _db.SaveChangesAsync(ct);
         }
 
+        // ── B6: bilingual HR letter templates ────────────────────────────────────
+        // Seeded as rows, not compiled into C#. A tenant that wants "was employed with" to read
+        // "served with" edits the template; previously that needed a release.
+        var seededLetterTypes = await _db.HrLetterTemplates
+            .Where(x => x.TenantId == tenantId && x.CompanyId == null && !x.IsDeleted)
+            .Select(x => x.LetterType)
+            .ToListAsync(ct);
+        var newTemplates = HrLetterTemplateDefaults.Build()
+            .Where(t => !seededLetterTypes.Contains(t.LetterType))
+            .ToList();
+        if (newTemplates.Count > 0)
+        {
+            foreach (var template in newTemplates) template.TenantId = tenantId;
+            _db.HrLetterTemplates.AddRange(newTemplates);
+            await _db.SaveChangesAsync(ct);
+        }
+
         // ── HR Request Center: categories + requests ─────────────────────────────
         if (!await _db.HRRequestCategories.AnyAsync(x => x.TenantId == tenantId, ct))
         {
             var categories = new[]
             {
                 new HRRequestCategory { TenantId = tenantId, Code = "SAL-CERT", Name = "Salary Certificate",   DefaultSlaHours = 24 },
+                // B6: these three codes are HrLetterTypes.Prefixes values. ESS raises its document
+                // request against the matching category so a letter request lands in the HR queue
+                // HR already works, not in a second inbox beside it.
+                new HRRequestCategory { TenantId = tenantId, Code = "BANK-LTR", Name = "Salary Transfer Letter", DefaultSlaHours = 24 },
+                new HRRequestCategory { TenantId = tenantId, Code = "EMP-VER",  Name = "Employment Verification", DefaultSlaHours = 24 },
+                new HRRequestCategory { TenantId = tenantId, Code = "EXP",      Name = "Experience Certificate", DefaultSlaHours = 48 },
                 new HRRequestCategory { TenantId = tenantId, Code = "NOC",      Name = "NOC Letter",           DefaultSlaHours = 48 },
                 new HRRequestCategory { TenantId = tenantId, Code = "PAY-INQ",  Name = "Payroll Inquiry",      DefaultSlaHours = 48 },
                 new HRRequestCategory { TenantId = tenantId, Code = "DOC-REQ",  Name = "Document Request",     DefaultSlaHours = 72 },

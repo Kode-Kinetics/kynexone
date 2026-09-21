@@ -213,17 +213,36 @@ jobs:
           PLATFORM_ADMIN_PASSWORD: 'YourPassword123!'
           ASPNETCORE_ENVIRONMENT: 'Development'
           ASPNETCORE_URLS: 'http://localhost:5117'
+          # This ephemeral CI database starts EMPTY, so something has to create the schema. Without
+          # this flag nothing did: `AuthSeeder` (Infrastructure/Seed/AuthSeeder.cs:32) calls
+          # `EnsureCreatedAsync`, which materialises all ~320 tables straight from the model and
+          # writes NO `__EFMigrationsHistory`. The app then serves fine, but
+          # `Database.GetPendingMigrations()` correctly reports every migration as pending, so
+          # `/health/ready` answers 503 `not_ready` — and reports the six workers as `unavailable`
+          # even though all six had registered heartbeats, because ProductionReadinessEvidence
+          # short-circuits the worker probe when migrations are pending. Migrating first means the
+          # history table exists, EnsureCreatedAsync no-ops on the already-created schema, and
+          # readiness is a real signal instead of a permanent 503. The docker-compose lane used by
+          # Browser Pilot has always done this (RUN_MIGRATIONS_ON_STARTUP defaults to true), which
+          # is why only this job was affected.
+          Database__RunMigrationsOnStartup: 'true'
         run: |
           set -euo pipefail
           nohup dotnet run --no-launch-profile --no-build -c Release \
             --project backend-dotnet/Zayra.Api/Zayra.Api.csproj > /tmp/api.log 2>&1 &
-          for i in $(seq 1 90); do
-            if curl -sf -m 5 http://localhost:5117/health/live > /dev/null; then
-              echo "backend up after ${i}s"; exit 0
+          # Wait for READY, not merely live. The Playwright pre-flight (e2e/global-setup.ts) gates
+          # on /health/ready, so waiting on /health/live declared the stack up while readiness was
+          # still 503 and handed the failure to Playwright minutes later with no payload. Failing
+          # here instead prints the readiness JSON that says exactly which dependency is down.
+          for i in $(seq 1 180); do
+            code=$(curl -s -m 10 -o /tmp/ready.json -w '%{http_code}' http://localhost:5117/health/ready || true)
+            if [ "$code" = "200" ]; then
+              echo "backend ready after ~$((i * 2))s"; cat /tmp/ready.json; exit 0
             fi
-            sleep 1
+            sleep 2
           done
-          echo "::error::Backend did not become healthy in 90s."
+          echo "::error::Backend did not become READY in 360s. Last /health/ready payload:"
+          cat /tmp/ready.json 2>/dev/null || echo '(no response body)'
           tail -80 /tmp/api.log
           exit 1
 

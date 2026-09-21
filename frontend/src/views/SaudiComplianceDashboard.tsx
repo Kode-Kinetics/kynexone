@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import client from '../api/client';
 import { SaudiComplianceConfig } from './SaudiComplianceConfig';
+import { NitaqatPanel } from './NitaqatPanel';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -362,7 +363,7 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
 
             {qiwa.blockedEmployees.length > 0 && (
               <div className="max-h-40 overflow-auto rounded-lg border border-slate-100 dark:border-white/[0.07]">
-                <table className="w-full text-left text-xs">
+                <table className="w-full text-start text-xs">
                   <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-800">
                     <tr>
                       <th className="px-2 py-1.5">Code</th>
@@ -505,7 +506,7 @@ function GosiCard({ gosi }: { gosi: GosiSection }) {
 
         {gosi.blockedEmployees.length > 0 && (
           <div className="max-h-36 overflow-auto rounded-lg border border-slate-100 dark:border-white/[0.07]">
-            <table className="w-full text-left text-xs">
+            <table className="w-full text-start text-xs">
               <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-800">
                 <tr>
                   <th className="px-2 py-1.5">Code</th>
@@ -618,11 +619,16 @@ function DashboardTab() {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'configure';
+type Tab = 'dashboard' | 'nitaqat' | 'configure';
 
+// Saudization sits beside QIWA/WPS/GOSI rather than inside the dashboard grid: a
+// Nitaqat band carries its own scenario modelling, trend and working, and squeezing
+// it into a fourth module card would reduce it to the single number this stream
+// exists to replace.
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: ShieldCheck },
-  { id: 'configure', label: 'Configure',  icon: Settings },
+  { id: 'dashboard', label: 'Dashboard',   icon: ShieldCheck },
+  { id: 'nitaqat',   label: 'Saudization', icon: Users },
+  { id: 'configure', label: 'Configure',   icon: Settings },
 ];
 
 export function SaudiComplianceDashboard() {
@@ -654,6 +660,7 @@ export function SaudiComplianceDashboard() {
       </div>
 
       {tab === 'dashboard' && <DashboardTab />}
+      {tab === 'nitaqat'   && <NitaqatPanel />}
       {tab === 'configure' && <SaudiComplianceConfig />}
     </div>
   );

@@ -47,7 +47,7 @@ export default function TermsPage() {
               KynexOne is a business-to-business platform for workforce management. You may use it only for
               lawful purposes and in accordance with these Terms. You must not use the Service to:
             </p>
-            <ul className="ml-5 mt-3 list-disc space-y-1.5">
+            <ul className="ms-5 mt-3 list-disc space-y-1.5">
               <li>Violate any applicable law or regulation.</li>
               <li>Upload or transmit malware, viruses, or malicious code.</li>
               <li>Attempt to gain unauthorised access to systems or other tenants&apos; data.</li>

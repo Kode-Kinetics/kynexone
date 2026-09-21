@@ -174,7 +174,7 @@ public static class CleanDemoKsaSeeder
         {
             if (!roleMap.TryGetValue(roleName, out var role))
             {
-                logger.LogWarning("CleanDemoKsaSeeder: role '{Role}' not found — skipping user {Email}.", roleName, email);
+                logger.LogWarning("CleanDemoKsaSeeder: role '{Role}' not found — skipping that user.", roleName);
                 continue;
             }
             var u = new User
@@ -451,7 +451,7 @@ public static class CleanDemoKsaSeeder
             if (!usersByEmail.TryGetValue(email, out var linkUser))
             {
                 logger.LogWarning(
-                    "CleanDemoKsaSeeder: user '{Email}' was not seeded — skipping employee link.", email);
+                    "CleanDemoKsaSeeder: no seeded user for employee {EmployeeId} — skipping employee link.", emp.Id);
                 continue;
             }
             db.EmployeeUserAccounts.Add(new EmployeeUserAccount
@@ -548,6 +548,7 @@ public static class CleanDemoKsaSeeder
             Code       = "LEAVE-APPROVAL",
             Name       = "Leave Approval",
             EntityName = nameof(LeaveRequest),
+            IsDefault  = true,
             IsActive   = true,
         };
         ramLeaveWorkflow.Steps.Add(new ApprovalWorkflowStep
@@ -664,7 +665,11 @@ public static class CleanDemoKsaSeeder
         await db.SaveChangesAsync(ct);
 
         // ── 16. Locked payroll run — real GOSI calc ───────────────────────────
-        // Pass 1: compute per-employee figures via GosiCalculationService
+        // Pass 1: compute per-employee figures via GosiCalculationService.
+        // The MONTHLY contributory-wage bounds come from the statutory rules engine, the single
+        // source shared with the payroll run's country pack.
+        var gosiBounds = await Zayra.Api.Infrastructure.CountryPack.Ksa.KsaGosiWageBounds.ResolveAsync(
+            new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(db), periodDate, null, ct);
         var perEmpData = new List<(
             Employee Emp, decimal Basic, decimal Housing, decimal Transport,
             decimal Bonus, decimal BaseGross, decimal Gross,
@@ -678,7 +683,7 @@ public static class CleanDemoKsaSeeder
             var bonus     = emp == empAbdulrahman ? BonusAmount : 0m;
             var baseGross = basic + housing + transport;
             var gross     = baseGross + bonus;
-            var gosi      = GosiCalculationService.Calculate(emp.Nationality, basic, gosiRules, periodDate, tenantId);
+            var gosi      = GosiCalculationService.Calculate(emp.Nationality, basic, gosiRules, periodDate, tenantId, gosiBounds);
             perEmpData.Add((emp, basic, housing, transport, bonus, baseGross, gross, gosi.EmployeeTotal, gosi.EmployerTotal, gosi));
         }
 
@@ -750,13 +755,13 @@ public static class CleanDemoKsaSeeder
 
             payrollSlips.Add(new PayrollSlip
             {
-                TenantId = tenantId, RunId = payrollRun.Id, EmployeeId = emp.Id,
+                TenantId = tenantId, CompanyId = company.Id, RunId = payrollRun.Id, EmployeeId = emp.Id,
                 EmployeeCode = emp.EmployeeCode, EmployeeName = emp.FullName,
                 Department = emp.Department ?? string.Empty,
                 BasicSalary = basic, HousingAllowance = housing,
                 TransportAllowance = transport, OtherAllowances = bonus,
                 GrossSalary = gross, Deductions = empGosiTotal, NetSalary = netPay,
-                Status = "Processed",
+                Status = "Final",   // run is Locked above; PayrollController.Lock (:3472) stamps Final. ESS filters on Final.
             });
 
             // GL: salary posting DR 5100 / CR 2100 (base gross, bonus GL posted separately)

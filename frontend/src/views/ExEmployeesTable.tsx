@@ -59,11 +59,11 @@ export function ExEmployeesTable() {
 
       <div className="flex flex-col gap-2 sm:flex-row">
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="input w-full pl-9"
+            className="input w-full ps-9"
             placeholder="Search former employee code, name, email"
           />
         </div>
@@ -81,7 +81,7 @@ export function ExEmployeesTable() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Former Employee', 'Department', 'Last Status', 'Exit Date', 'Retention Until'].map((head) => (
-                  <th key={head} className="px-4 py-3 text-left text-xs font-bold uppercase text-slate-400">{head}</th>
+                  <th key={head} className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{head}</th>
                 ))}
               </tr>
             </thead>
@@ -106,7 +106,7 @@ export function ExEmployeesTable() {
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.department || '-'}</td>
                   <td className="px-4 py-3">
                     <StatusChip label={r.lastStatus} tone="slate" />
-                    {r.isDeleted && <span className="ml-1 text-xs text-slate-400">(removed)</span>}
+                    {r.isDeleted && <span className="ms-1 text-xs text-slate-400">(removed)</span>}
                   </td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(r.exitDate)}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(r.retentionUntilUtc)}</td>

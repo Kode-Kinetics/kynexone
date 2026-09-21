@@ -3,7 +3,8 @@
 import { useState, useEffect } from 'react';
 import {
   tenantAdminApi,
-  type TenantFeatureFlag,
+  tenantModulesApi,
+  type TenantModuleList,
   type TenantLocalizationSetting,
   type TenantBranding,
   type TenantSubscription,
@@ -17,18 +18,14 @@ import { HelpTextManager } from '../components/HelpTextManager';
 import { useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 
-type Tab = 'subscription' | 'features' | 'invoices' | 'localization' | 'branding' | 'security' | 'country-rules' | 'statutory-rules' | 'help-text';
+type Tab = 'subscription' | 'modules' | 'invoices' | 'localization' | 'branding' | 'security' | 'country-rules' | 'statutory-rules' | 'help-text';
 
-const FEATURE_KEYS = [
-  { key: 'ai_assistant', label: 'Workspace Assistant', description: 'Enable natural-language workspace queries' },
-  { key: 'mobile_app', label: 'Mobile App', description: 'Enable mobile API endpoints' },
-  { key: 'wps_export', label: 'WPS/SIF Export', description: 'GCC WPS payroll file generation' },
-  { key: 'eosb_calc', label: 'EOSB Calculator', description: 'End-of-service benefit computation' },
-  { key: 'resume_screening', label: 'Resume Screening', description: 'Automated CV analysis (advisory)' },
-  { key: 'payroll_ai_validation', label: 'Payroll Anomaly Checks', description: 'Variance detection for payroll' },
-  { key: 'risk_scores', label: 'Employee Risk Scores', description: 'Churn and burnout risk indicators (advisory)' },
-  { key: 'hijri_calendar', label: 'Hijri Calendar', description: 'Show Hijri dates alongside Gregorian' },
-];
+// The module list is no longer hard-coded here. It used to be an eight-key array that named
+// mostly sub-features with no runtime reader (resume_screening, risk_scores, payroll_ai_validation,
+// eosb_calc, hijri_calendar), omitted every module a client would actually want to switch off,
+// and wrote to an endpoint that returned 403 unconditionally — so none of the toggles did
+// anything. The list now comes from the backend catalog, which is the same source the API guard,
+// the navigation and the route guard enforce.
 
 const GCC_COUNTRIES = [
   { code: 'AE', name: 'United Arab Emirates' },
@@ -143,7 +140,9 @@ function Toggle({ id, checked, onChange }: { id: string; checked: boolean; onCha
       }`}
     >
       <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-        checked ? 'translate-x-6' : 'translate-x-1'
+        // Knob travel is a transform, which does not mirror on its own — a switch that
+        // slides off the track in Arabic is worse than one that does not mirror at all.
+        checked ? 'translate-x-6 rtl:-translate-x-6' : 'translate-x-1 rtl:-translate-x-1'
       }`} />
     </button>
   );
@@ -156,7 +155,10 @@ export default function TenantAdminPage() {
   const { refresh: refreshFeatureFlags } = useFeatureFlags();
   const [tab, setTab] = useState<Tab>('subscription');
   const [subscription, setSubscription] = useState<TenantSubscription | null>(null);
-  const [flags, setFlags] = useState<TenantFeatureFlag[]>([]);
+  const [modules, setModules] = useState<TenantModuleList | null>(null);
+  const [modulesLoading, setModulesLoading] = useState(false);
+  const [modulesError, setModulesError] = useState<string | null>(null);
+  const [moduleBusy, setModuleBusy] = useState<string | null>(null);
   const [localization, setLocalization] = useState<TenantLocalizationSetting | null>(null);
   const [branding, setBranding] = useState<TenantBranding | null>(null);
   const [saving, setSaving] = useState(false);
@@ -199,7 +201,7 @@ export default function TenantAdminPage() {
 
   useEffect(() => {
     if (tab === 'subscription') { loadSubscription(); loadUsage(); loadAiUsage(); loadSubscriptionUsage(); }
-    if (tab === 'features') loadFlags();
+    if (tab === 'modules') loadModules();
     if (tab === 'invoices') loadInvoices();
     if (tab === 'localization') loadLocalization();
     if (tab === 'branding') loadBranding();
@@ -236,8 +238,16 @@ export default function TenantAdminPage() {
     try { setAiUsage(await tenantAdminApi.getAiUsage()); } catch {}
   }
 
-  async function loadFlags() {
-    try { setFlags(await tenantAdminApi.listFeatureFlags()); } catch {}
+  async function loadModules() {
+    setModulesLoading(true);
+    setModulesError(null);
+    try {
+      setModules(await tenantModulesApi.list());
+    } catch {
+      setModulesError('Could not load your modules. Refresh to try again.');
+    } finally {
+      setModulesLoading(false);
+    }
   }
 
   async function loadLocalization() {
@@ -265,22 +275,29 @@ export default function TenantAdminPage() {
     }
   }
 
-  async function toggleFlag(key: string, current: boolean) {
+  async function toggleModule(key: string, current: boolean) {
+    setModuleBusy(key);
+    setModulesError(null);
     try {
-      const updated = await tenantAdminApi.setFeatureFlag(key, !current);
-      setFlags(prev => {
-        const exists = prev.find(f => f.featureKey === key);
-        if (exists) return prev.map(f => f.featureKey === key ? updated : f);
-        return [...prev, updated];
+      const updated = await tenantModulesApi.set(key, !current);
+      setModules(prev => prev && {
+        ...prev,
+        modules: prev.modules.map(m => (m.key === key ? updated : m)),
       });
-      // Sidebar nav reads enabled features from FeatureFlagContext — re-sync it so
-      // toggled modules show/hide immediately instead of after a browser refresh.
+      // The sidebar, the route guard and the dashboard all read module state from
+      // FeatureFlagContext — re-sync it so the change lands immediately rather than after a
+      // browser refresh. Previously this call was the only visible effect of a toggle, because
+      // the write itself always failed and the error was swallowed.
       await refreshFeatureFlags();
-    } catch {}
-  }
-
-  function isFlagEnabled(key: string) {
-    return flags.find(f => f.featureKey === key)?.isEnabled ?? false;
+    } catch (err: unknown) {
+      // The API refuses deliberately and says why; surface that rather than failing silently.
+      const detail = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setModulesError(detail ?? 'Could not change that module. Please try again.');
+      // Re-read so the UI reflects the server's actual state after a refusal.
+      try { setModules(await tenantModulesApi.list()); } catch {}
+    } finally {
+      setModuleBusy(null);
+    }
   }
 
   async function saveLocalization() {
@@ -388,7 +405,7 @@ export default function TenantAdminPage() {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'subscription', label: 'Subscription' },
-    { id: 'features', label: 'Feature Flags' },
+    { id: 'modules', label: 'Modules' },
     { id: 'invoices', label: 'Invoices' },
     { id: 'localization', label: 'Localization' },
     { id: 'branding', label: 'Branding' },
@@ -402,7 +419,7 @@ export default function TenantAdminPage() {
     <div className="p-6 max-w-4xl mx-auto space-y-4">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Tenant Administration</h1>
-        <p className="text-sm text-gray-500">Manage subscription, feature flags, localization, and branding</p>
+        <p className="text-sm text-gray-500">Manage subscription, modules, localization, and branding</p>
       </div>
 
       {/* PastDue warning banner */}
@@ -625,25 +642,112 @@ export default function TenantAdminPage() {
         </div>
       )}
 
-      {/* Feature Flags */}
-      {tab === 'features' && (
-        <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
-          {FEATURE_KEYS.map(feat => {
-            const enabled = isFlagEnabled(feat.key);
-            return (
-              <div key={feat.key} className="flex items-center justify-between px-6 py-4">
-                <div>
-                  <p className="text-sm font-medium text-gray-900">{feat.label}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">{feat.description}</p>
-                </div>
-                <Toggle
-                  id={`flag-${feat.key}`}
-                  checked={enabled}
-                  onChange={() => toggleFlag(feat.key, enabled)}
-                />
-              </div>
-            );
-          })}
+      {/* Modules */}
+      {tab === 'modules' && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Modules</h2>
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              Switching a module off removes it everywhere — its navigation, its pages, its API and
+              its notifications. Modules your organisation is legally required to run, and those the
+              rest of the product depends on, are locked and explain why.
+            </p>
+          </div>
+
+          {modulesError && (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+            >
+              {modulesError}
+            </div>
+          )}
+
+          {modulesLoading && !modules ? (
+            <div className="rounded-xl border border-gray-200 bg-white p-10 text-center dark:border-gray-700 dark:bg-gray-900">
+              <p className="text-sm text-gray-400">Loading modules…</p>
+            </div>
+          ) : !modules || modules.modules.length === 0 ? (
+            <div className="rounded-xl border border-gray-200 bg-white p-10 text-center dark:border-gray-700 dark:bg-gray-900">
+              <p className="text-sm text-gray-400">No modules to show.</p>
+            </div>
+          ) : (
+            (['Optional', 'Statutory', 'Core'] as const).map(group => {
+              const rows = modules.modules.filter(m => m.lockClass === group);
+              if (rows.length === 0) return null;
+
+              const heading =
+                group === 'Optional' ? 'Your choice'
+                  : group === 'Statutory' ? 'Required by law'
+                    : 'Required by the product';
+              const blurb =
+                group === 'Optional' ? 'Switch these on and off freely.'
+                  : group === 'Statutory'
+                    ? `Locked because of where your organisation operates${modules.countryCode ? ` (${modules.countryCode})` : ''}.`
+                    : 'Other modules depend on these, so they cannot be switched off.';
+
+              return (
+                <section key={group}>
+                  <div className="mb-2 px-1">
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{heading}</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{blurb}</p>
+                  </div>
+
+                  <div className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white dark:divide-gray-800 dark:border-gray-700 dark:bg-gray-900">
+                    {rows.map(m => (
+                      <div
+                        key={m.key}
+                        className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div className="min-w-0 pe-0 sm:pe-6">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{m.labelEn}</p>
+                            {!m.canDisable && (
+                              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                                Locked on
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{m.description}</p>
+                          {!m.canDisable && m.lockReason && (
+                            <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-500">{m.lockReason}</p>
+                          )}
+                        </div>
+
+                        <div className="flex shrink-0 items-center gap-2 self-start sm:self-center">
+                          {moduleBusy === m.key && (
+                            <span className="text-xs text-gray-400">Saving…</span>
+                          )}
+                          {m.canDisable ? (
+                            <Toggle
+                              id={`module-${m.key}`}
+                              checked={m.enabled}
+                              onChange={() => toggleModule(m.key, m.enabled)}
+                            />
+                          ) : (
+                            // Rendered as a disabled switch rather than hidden: an administrator
+                            // looking for "where do I turn this off" needs to see that it exists
+                            // and is deliberately locked, not wonder if it is missing.
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked="true"
+                              aria-label={`${m.labelEn} is locked on`}
+                              disabled
+                              title={m.lockReason ?? undefined}
+                              className="relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed items-center rounded-full bg-gray-300 opacity-60 dark:bg-gray-600"
+                            >
+                              <span className="inline-block h-4 w-4 translate-x-6 transform rounded-full bg-white shadow rtl:-translate-x-6" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              );
+            })
+          )}
         </div>
       )}
 
@@ -662,12 +766,12 @@ export default function TenantAdminPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-100 text-xs text-gray-500">
-                      <th className="py-2 text-left font-medium">Invoice #</th>
-                      <th className="py-2 text-left font-medium">Period</th>
-                      <th className="py-2 text-right font-medium">Amount</th>
-                      <th className="py-2 text-left font-medium">Status</th>
-                      <th className="py-2 text-left font-medium">Due</th>
-                      <th className="py-2 text-left font-medium">Paid</th>
+                      <th className="py-2 text-start font-medium">Invoice #</th>
+                      <th className="py-2 text-start font-medium">Period</th>
+                      <th className="py-2 text-end font-medium">Amount</th>
+                      <th className="py-2 text-start font-medium">Status</th>
+                      <th className="py-2 text-start font-medium">Due</th>
+                      <th className="py-2 text-start font-medium">Paid</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
@@ -675,7 +779,7 @@ export default function TenantAdminPage() {
                       <tr key={inv.id} className="hover:bg-gray-50 transition-colors">
                         <td className="py-2.5 font-mono text-xs text-gray-700">{inv.invoiceNumber}</td>
                         <td className="py-2.5 text-gray-600">{inv.periodDescription ?? '—'}</td>
-                        <td className="py-2.5 text-right font-medium text-gray-900">
+                        <td className="py-2.5 text-end font-medium text-gray-900">
                           {inv.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} {inv.currencyCode}
                         </td>
                         <td className="py-2.5">
@@ -1082,14 +1186,14 @@ export default function TenantAdminPage() {
                 <div key={code} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
                   <div className="px-5 py-3 bg-gray-50 border-b border-gray-100">
                     <p className="text-sm font-semibold text-gray-800">
-                      {getCountryName(code)} <span className="text-gray-400 font-normal ml-1">({code})</span>
+                      {getCountryName(code)} <span className="text-gray-400 font-normal ms-1">({code})</span>
                     </p>
                   </div>
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-100">
                         {['Rule Key', 'Rule Value', 'Type', 'Override', 'Eff. From', 'Eff. To', 'Actions'].map(col => (
-                          <th key={col} className="text-left text-xs font-medium text-gray-500 px-4 py-2">{col}</th>
+                          <th key={col} className="text-start text-xs font-medium text-gray-500 px-4 py-2">{col}</th>
                         ))}
                       </tr>
                     </thead>
@@ -1264,7 +1368,7 @@ export default function TenantAdminPage() {
                 <thead>
                   <tr className="border-b border-gray-100 bg-gray-50">
                     {['Country', 'Jurisdiction', 'Rule Key', 'Value', 'Effective From', 'Source / Note', 'Override', 'Actions'].map(col => (
-                      <th key={col} className="text-left text-xs font-medium text-gray-500 px-4 py-2">{col}</th>
+                      <th key={col} className="text-start text-xs font-medium text-gray-500 px-4 py-2">{col}</th>
                     ))}
                   </tr>
                 </thead>

@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   description: 'How KynexOne collects, uses, and protects your data.',
 };
 
-const EFFECTIVE_DATE = 'June 2025';
+const EFFECTIVE_DATE = 'September 2026';
 
 export default function PrivacyPolicyPage() {
   return (
@@ -61,7 +61,7 @@ export default function PrivacyPolicyPage() {
               ['Account & Identity', 'Full name, work email address, job title, employee ID, profile photo.'],
               ['Authentication', 'Password hash (never stored in plain text), session tokens, MFA credentials, login timestamps and IP addresses.'],
               ['HR Records', 'Employment dates, department, branch, salary band, contract type, performance reviews, leave records, disciplinary notes.'],
-              ['Payroll', 'Bank account details (stored encrypted), salary, allowances, deductions, tax identification numbers, payslip data.'],
+              ['Payroll', 'Bank account details (access-controlled and masked in user-facing responses), salary, allowances, deductions, tax identification numbers, payslip data.'],
               ['Attendance', 'Clock-in / clock-out timestamps, biometric device identifiers (hashed), geolocation data (where permitted), device IP.'],
               ['Documents', 'Uploaded employee documents including ID copies, visas, certificates, and expiry dates.'],
               ['Communication', 'Messages sent through in-platform support and HR request workflows.'],
@@ -72,7 +72,7 @@ export default function PrivacyPolicyPage() {
           {/* How we use it */}
           <Section title="3. How We Use Your Data">
             <p className="mb-3">We use personal data to:</p>
-            <ul className="ml-5 list-disc space-y-1.5">
+            <ul className="ms-5 list-disc space-y-1.5">
               <li>Provide, operate, and maintain the KynexOne platform.</li>
               <li>Process payroll, calculate deductions, and generate payslips.</li>
               <li>Track attendance, calculate working hours, and support regularisations.</li>
@@ -103,7 +103,7 @@ export default function PrivacyPolicyPage() {
             <p className="mb-3">
               We do <strong>not</strong> sell personal data. We share data only:
             </p>
-            <ul className="ml-5 list-disc space-y-1.5">
+            <ul className="ms-5 list-disc space-y-1.5">
               <li>
                 <strong>With your employer (the Customer)</strong> — your organisation controls your HR data
                 through the platform. Kode Kinetics acts as a data processor on their behalf.
@@ -127,26 +127,32 @@ export default function PrivacyPolicyPage() {
           {/* Data residency */}
           <Section title="6. Data Residency & International Transfers">
             <p>
-              KynexOne supports configurable data residency. Customers can request that their data be stored
-              and processed within a specific geographic region. Where data is transferred across borders, we
-              rely on Standard Contractual Clauses (SCCs) or equivalent mechanisms approved under applicable
-              data protection law.
+              Data residency depends on the database, object-storage, and application regions selected for a
+              customer&apos;s deployment. The public service does not promise self-service region selection.
+              Any cross-border transfer mechanism, including Standard Contractual Clauses where applicable,
+              must be confirmed in the applicable customer agreement or data-processing addendum before reliance.
             </p>
           </Section>
 
           {/* Security */}
           <Section title="7. Security">
             <p className="mb-3">
-              We apply industry-standard and regulatory-grade controls to protect your data:
+              The current platform implements the following technical controls. Exact provider and tenant
+              configuration should be confirmed for the deployment in use:
             </p>
-            <ul className="ml-5 list-disc space-y-1.5">
-              <li>AES-256 encryption at rest for all sensitive fields (payroll, documents, credentials).</li>
-              <li>TLS 1.2+ in transit for all data in motion.</li>
+            <ul className="ms-5 list-disc space-y-1.5">
+              <li>Provider-managed encryption at rest for hosted database and durable object storage.</li>
+              <li>Application-layer protection for selected secrets, including MFA and configured integration credentials.</li>
+              <li>HTTPS for browser-to-service traffic and a TLS-required API-to-database connection.</li>
               <li>Role-based access control (RBAC) with principle of least privilege.</li>
-              <li>Full audit logging of data access, modifications, and administrative actions.</li>
-              <li>Regular penetration testing and vulnerability assessments.</li>
-              <li>SOC 2 Type II alignment and ISO 27001 control framework.</li>
+              <li>Audit records for designated payroll, leave, attendance, overtime, performance, and administrative workflows.</li>
+              <li>Automated dependency, secret, static-analysis, and regression checks in the repository CI workflows.</li>
+              <li>Independent penetration-test scope and cadence are confirmed separately for each customer engagement.</li>
             </ul>
+            <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              KynexOne does not claim ISO 27001 or SOC 2 Type II certification. Framework references describe
+              a control-improvement direction and are not third-party assurance.
+            </p>
             <p className="mt-3">
               Despite these measures, no system is completely secure. If you believe your data has been
               compromised, contact us immediately at{' '}
@@ -173,7 +179,7 @@ export default function PrivacyPolicyPage() {
             <p className="mb-3">
               Depending on your jurisdiction, you may have the right to:
             </p>
-            <ul className="ml-5 list-disc space-y-1.5">
+            <ul className="ms-5 list-disc space-y-1.5">
               <li><strong>Access</strong> — request a copy of the personal data we hold about you.</li>
               <li><strong>Rectification</strong> — correct inaccurate or incomplete data.</li>
               <li><strong>Erasure</strong> — request deletion where no legal obligation requires retention.</li>
@@ -263,7 +269,7 @@ function Table({ rows }: { rows: [string, string][] }) {
         <tbody>
           {rows.map(([label, desc], i) => (
             <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
-              <td className="w-48 border-r border-slate-100 px-4 py-3 font-semibold text-slate-800 align-top">{label}</td>
+              <td className="w-48 border-e border-slate-100 px-4 py-3 font-semibold text-slate-800 align-top">{label}</td>
               <td className="px-4 py-3 text-slate-600">{desc}</td>
             </tr>
           ))}

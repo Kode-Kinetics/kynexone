@@ -154,10 +154,10 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
               <label className="block text-xs text-slate-400 mb-1">Temp Password *</label>
               <div className="relative">
                 <input required type={showPwd ? 'text' : 'password'} value={form.adminPassword} onChange={e => change('adminPassword', e.target.value)}
-                  className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 pr-9 text-sm text-white focus:outline-none focus:border-sapphire/60 font-mono"
+                  className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 pe-9 text-sm text-white focus:outline-none focus:border-sapphire/60 font-mono"
                   placeholder="Min 8 characters" />
                 <button type="button" onClick={() => setShowPwd(p => !p)} title={showPwd ? 'Hide password' : 'Show password'}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors">
+                  className="absolute end-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors">
                   {showPwd ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                 </button>
               </div>
@@ -382,12 +382,12 @@ function BulkFeatureModal({ selectedCount, totalCount, onClose, onApply }: {
           <label className="block text-xs text-slate-400 mb-1.5">Target</label>
           <div className="space-y-1.5">
             <button type="button" disabled={selectedCount === 0} onClick={() => setApplyToAll(false)}
-              className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-sm border transition-colors text-left disabled:opacity-40 ${!applyToAll ? 'bg-sapphire/15 border-sapphire/40 text-white' : 'border-white/10 text-slate-400 hover:text-white'}`}>
+              className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-sm border transition-colors text-start disabled:opacity-40 ${!applyToAll ? 'bg-sapphire/15 border-sapphire/40 text-white' : 'border-white/10 text-slate-400 hover:text-white'}`}>
               <CheckCircle className={`h-3.5 w-3.5 ${!applyToAll ? 'text-sapphire' : 'text-slate-600'}`} />
               Selected tenants ({selectedCount})
             </button>
             <button type="button" onClick={() => setApplyToAll(true)}
-              className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-sm border transition-colors text-left ${applyToAll ? 'bg-amber-500/15 border-amber-500/40 text-white' : 'border-white/10 text-slate-400 hover:text-white'}`}>
+              className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-sm border transition-colors text-start ${applyToAll ? 'bg-amber-500/15 border-amber-500/40 text-white' : 'border-white/10 text-slate-400 hover:text-white'}`}>
               <Globe className={`h-3.5 w-3.5 ${applyToAll ? 'text-amber-400' : 'text-slate-600'}`} />
               ALL tenants ({totalCount}) — platform-wide
             </button>
@@ -435,8 +435,8 @@ function TenantRow({ t, onAction, selected, onToggle }: {
     <tr
       className={`border-b border-white/[0.04] hover:bg-white/[0.03] transition-colors cursor-pointer
         ${selected ? 'bg-sapphire/[0.07]' : ''}
-        ${risk === 'rose' ? 'bg-rose-950/20 border-l-2 border-l-rose-700' : ''}
-        ${risk === 'amber' ? 'bg-amber-950/20 border-l-2 border-l-amber-600' : ''}`}
+        ${risk === 'rose' ? 'bg-rose-950/20 border-s-2 border-s-rose-700' : ''}
+        ${risk === 'amber' ? 'bg-amber-950/20 border-s-2 border-s-amber-600' : ''}`}
       onClick={() => router.push(`/platform/tenants/${t.id}`)}
     >
       {/* Select checkbox */}
@@ -472,7 +472,7 @@ function TenantRow({ t, onAction, selected, onToggle }: {
         </span>
       </td>
       {/* MRR */}
-      <td className="px-3 py-3 text-right tabular-nums">
+      <td className="px-3 py-3 text-end tabular-nums">
         <span className="text-xs text-slate-300">
           {mrr > 0 ? `$${mrr.toLocaleString()}` : <span className="text-slate-700">—</span>}
         </span>
@@ -494,7 +494,7 @@ function TenantRow({ t, onAction, selected, onToggle }: {
         </div>
       </td>
       {/* Expiry */}
-      <td className="px-3 py-3 text-right tabular-nums">
+      <td className="px-3 py-3 text-end tabular-nums">
         <span className={`text-xs ${expiry.cls}`}>{expiry.text}</span>
       </td>
       {/* Actions */}
@@ -713,10 +713,10 @@ export default function TenantsPage() {
       {/* Filters */}
       <div className="flex items-center gap-3">
         <div className="relative flex-1 max-w-xs">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
+          <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search tenants…"
-            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg pl-8 pr-3 py-1.5 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-sapphire/60 transition-colors" />
+            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg ps-8 pe-3 py-1.5 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-sapphire/60 transition-colors" />
         </div>
         <select aria-label="Filter by status" value={statusFilter} onChange={e => setStatus(e.target.value)}
           className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-1.5 text-sm text-slate-300 focus:outline-none focus:border-sapphire/60">
@@ -794,7 +794,7 @@ export default function TenantsPage() {
                       className="h-3.5 w-3.5 rounded border-white/20 bg-white/[0.04] accent-sapphire cursor-pointer" />
                   </th>
                   {['Tenant', 'Plan', 'Status', 'MRR', 'Employees', 'Expires', ''].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>

@@ -154,7 +154,7 @@ public static class IntelliFlowDemoSeeder
             if (!roleMap.TryGetValue(roleName, out var role))
             {
                 logger.LogWarning(
-                    "IntelliFlowDemoSeeder: role '{Role}' not found — skipping user {Email}.", roleName, email);
+                    "IntelliFlowDemoSeeder: role '{Role}' not found — skipping that user.", roleName);
                 continue;
             }
             var u = new User
@@ -441,7 +441,7 @@ public static class IntelliFlowDemoSeeder
             if (!usersByEmail.TryGetValue(email, out var linkUser))
             {
                 logger.LogWarning(
-                    "IntelliFlowDemoSeeder: user '{Email}' was not seeded — skipping employee link.", email);
+                    "IntelliFlowDemoSeeder: no seeded user for employee {EmployeeId} — skipping employee link.", emp.Id);
                 continue;
             }
             db.EmployeeUserAccounts.Add(new EmployeeUserAccount
@@ -615,6 +615,7 @@ public static class IntelliFlowDemoSeeder
             Code       = "LEAVE-APPROVAL",
             Name       = "Leave Approval",
             EntityName = nameof(LeaveRequest),
+            IsDefault  = true,
             IsActive   = true,
         };
         leaveWorkflow.Steps.Add(new ApprovalWorkflowStep

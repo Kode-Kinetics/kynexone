@@ -232,7 +232,7 @@ export default function PlatformSettingsPage() {
               onClick={() => setMaintenance(m => !m)}
               className={`relative h-6 w-11 rounded-full transition-colors ${maintenance ? 'bg-amber-500' : 'bg-slate-700'}`}
             >
-              <span className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${maintenance ? 'translate-x-5' : ''}`} />
+              <span className={`absolute top-0.5 start-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${maintenance ? 'translate-x-5 rtl:-translate-x-5' : ''}`} />
             </button>
             <span className="text-sm text-slate-300">{maintenance ? 'Maintenance mode ON' : 'Maintenance mode OFF'}</span>
           </label>

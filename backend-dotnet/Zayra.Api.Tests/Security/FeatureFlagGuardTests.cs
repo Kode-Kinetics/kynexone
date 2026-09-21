@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Filters;
+using Zayra.Api.Infrastructure.Modules;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests.Security;
@@ -37,7 +38,8 @@ public class FeatureFlagGuardTests
     }
 
     private static FeatureFlagGuardFilter MakeFilter(ZayraDbContext db)
-        => new(db, new MemoryCache(new MemoryCacheOptions()), NullLogger<FeatureFlagGuardFilter>.Instance);
+        => new(new TenantModuleService(db, new MemoryCache(new MemoryCacheOptions())),
+               NullLogger<FeatureFlagGuardFilter>.Instance);
 
     private static async Task<IActionResult?> RunFilter(
         ZayraDbContext db, string path, Guid tenantId, bool featureEnabled, string featureKey)
@@ -135,71 +137,63 @@ public class FeatureFlagGuardTests
 
     // ── Newly-mapped routes ───────────────────────────────────────────────────
 
+    // ── Statutory routes: a flag cannot switch off a legal obligation ────────
+    //
+    // These four tests previously asserted the opposite, and the opposite was a defect rather
+    // than a decision:
+    //
+    //   * `/api/saudi-compliance` and `/api/gosi` were both gated by `qiwa_integration`, so a KSA
+    //     tenant who switched off the Qiwa portal integration — a preference — also switched off
+    //     Saudization reporting and GOSI contribution filing, which are compulsory.
+    //   * `/api/wps` was gated by `wps_export`, but no controller has ever served `/api/wps`
+    //     (WPS files are produced under `/api/payroll/payment-batches/...`). The test passed
+    //     because the guard blocked a path that did not exist; nothing was ever protected.
+    //
+    // Saudization and GOSI are now `ModuleLock.Statutory` in ModuleCatalog and cannot be
+    // disabled by a tenant to whom the obligation applies. A tenant with no localisation row has
+    // an unknown country, which the catalog treats as "the obligation applies" (fail-closed).
+
     [Fact]
-    public async Task SaudiCompliance_DisabledCompliance_Returns403()
+    public async Task SaudiCompliance_StoredDisableFlag_IsNotHonoured_BecauseSaudizationIsStatutory()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
 
-        var result = await RunFilter(db, "/api/saudi-compliance/reports", tenantId, false, FeatureKeys.Compliance);
+        var result = await RunFilter(db, "/api/saudi-compliance/reports", tenantId, false, ModuleKeys.Saudization);
 
-        result.Should().BeOfType<ObjectResult>()
-            .Which.StatusCode.Should().Be(403);
+        result.Should().BeNull("Saudization reporting is compulsory and a stored `false` must be ignored");
     }
 
     [Fact]
-    public async Task SaudiCompliance_EnabledCompliance_PassesThrough()
+    public async Task Gosi_StoredDisableFlag_IsNotHonoured_BecauseGosiIsStatutory()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
 
-        var result = await RunFilter(db, "/api/saudi-compliance/reports", tenantId, true, FeatureKeys.Compliance);
-
-        result.Should().BeNull();
-    }
-
-    [Fact]
-    public async Task Gosi_DisabledQiwaIntegration_Returns403()
-    {
-        await using var db = CreateDb();
-        var tenantId = Guid.NewGuid();
-
+        // The historical spelling: disabling Qiwa used to disable GOSI as a side effect.
         var result = await RunFilter(db, "/api/gosi/contributions", tenantId, false, FeatureKeys.QiwaIntegration);
 
-        result.Should().BeOfType<ObjectResult>()
-            .Which.StatusCode.Should().Be(403);
+        result.Should().BeNull("GOSI filing must not switch off as a side effect of a Qiwa preference");
     }
 
     [Fact]
-    public async Task Gosi_EnabledQiwaIntegration_PassesThrough()
+    public async Task Gosi_OwnKeyDisabled_IsStillNotHonoured_WhilePayrollRunsHere()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
 
-        var result = await RunFilter(db, "/api/gosi/contributions", tenantId, true, FeatureKeys.QiwaIntegration);
+        var result = await RunFilter(db, "/api/gosi/contributions", tenantId, false, ModuleKeys.Gosi);
 
-        result.Should().BeNull();
+        result.Should().BeNull("the GOSI obligation stands while payroll is run in KynexOne");
     }
 
     [Fact]
-    public async Task Wps_DisabledWpsExport_Returns403()
+    public async Task Gosi_Enabled_PassesThrough()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
 
-        var result = await RunFilter(db, "/api/wps/export", tenantId, false, FeatureKeys.WpsExport);
-
-        result.Should().BeOfType<ObjectResult>()
-            .Which.StatusCode.Should().Be(403);
-    }
-
-    [Fact]
-    public async Task Wps_EnabledWpsExport_PassesThrough()
-    {
-        await using var db = CreateDb();
-        var tenantId = Guid.NewGuid();
-
-        var result = await RunFilter(db, "/api/wps/export", tenantId, true, FeatureKeys.WpsExport);
+        var result = await RunFilter(db, "/api/gosi/contributions", tenantId, true, ModuleKeys.Gosi);
 
         result.Should().BeNull();
     }

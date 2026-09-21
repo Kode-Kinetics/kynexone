@@ -110,7 +110,7 @@ export function HelpTextManager() {
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-gray-200 text-left text-xs text-gray-500">
+              <tr className="border-b border-gray-200 text-start text-xs text-gray-500">
                 <th className="px-4 py-2.5 font-medium">Field Key</th>
                 <th className="px-4 py-2.5 font-medium">Custom Text</th>
                 <th className="px-4 py-2.5 font-medium">Updated</th>
@@ -123,8 +123,8 @@ export function HelpTextManager() {
                   <td className="px-4 py-2.5 font-mono text-xs text-gray-700">{item.fieldKey}</td>
                   <td className="px-4 py-2.5 text-gray-700">{item.text}</td>
                   <td className="px-4 py-2.5 text-xs text-gray-400 whitespace-nowrap">{new Date(item.updatedAtUtc).toLocaleDateString()}</td>
-                  <td className="px-4 py-2.5 whitespace-nowrap text-right">
-                    <button type="button" onClick={() => startEdit(item)} aria-label={`Edit ${item.fieldKey}`} className="mr-2 text-gray-400 hover:text-indigo-600">
+                  <td className="px-4 py-2.5 whitespace-nowrap text-end">
+                    <button type="button" onClick={() => startEdit(item)} aria-label={`Edit ${item.fieldKey}`} className="me-2 text-gray-400 hover:text-indigo-600">
                       <Pencil className="h-4 w-4" />
                     </button>
                     <button type="button" onClick={() => remove(item.fieldKey)} aria-label={`Delete ${item.fieldKey}`} className="text-gray-400 hover:text-red-600">

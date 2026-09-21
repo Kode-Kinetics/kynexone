@@ -126,14 +126,14 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
             <p className="text-xs text-slate-500">No companies yet — the default company is created by the backfill on first boot.</p>
           </div>
         ) : (
-          <table className="w-full text-left text-sm">
+          <table className="w-full text-start text-sm">
             <thead>
               <tr className="border-b border-white/[0.06] text-[11px] uppercase tracking-wide text-slate-500">
                 <th className="px-2 py-2 font-semibold">Company</th>
                 <th className="px-2 py-2 font-semibold">Code</th>
                 <th className="px-2 py-2 font-semibold">Country</th>
                 <th className="px-2 py-2 font-semibold">Status</th>
-                <th className="px-2 py-2 text-right font-semibold">Actions</th>
+                <th className="px-2 py-2 text-end font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -151,7 +151,7 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
                       <span className="rounded-full bg-white/[0.08] px-2 py-0.5 text-[10px] font-semibold text-slate-300">Suspended</span>
                     )}
                   </td>
-                  <td className="px-2 py-2.5 text-right">
+                  <td className="px-2 py-2.5 text-end">
                     {c.approvalStatus === 'Draft' && (
                       <button
                         type="button"

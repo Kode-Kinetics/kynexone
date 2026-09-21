@@ -81,28 +81,42 @@ export async function newApi(): Promise<APIRequestContext> {
 }
 
 /**
- * Returns null only when the frontend proxy reaches the real backend auth endpoint.
- * A 401 response from /api/auth/me proves that chain; accepting any sub-500
- * response previously let an unrelated Vite HTML page masquerade as a healthy HRM API.
+ * Hard pre-flight. THROWS when the stack is not reachable — it never returns a skip reason.
+ *
+ * ── Why this changed ─────────────────────────────────────────────────────────
+ * This used to be `stackDownReason()`, returning a string that every suite fed to
+ * `test.skip(reason !== null, reason)`. The README called it "CI-safe by design". It was not safe,
+ * it was BLIND: a completely dead backend produced a green run. Seven spec files — every suite in
+ * this directory — reported success while asserting nothing whatsoever, and nothing in the output
+ * distinguished "28 boundaries verified" from "the API was never contacted".
+ *
+ * A suite that cannot reach the system it tests has not passed. It has failed to run, and that is a
+ * failure. A 401 from /api/auth/me through the frontend proxy proves frontend AND backend are alive
+ * and talking; accepting any sub-500 response would let an unrelated dev server on the same port
+ * masquerade as a healthy HRM API.
  */
-export async function stackDownReason(): Promise<string | null> {
+export async function assertStackReachable(): Promise<void> {
   let api: APIRequestContext | null = null;
+  let failure: string | null = null;
   try {
     api = await pwRequest.newContext({ baseURL: BASE_URL, timeout: 15_000 });
     const resp = await api.get('/api/auth/me');
     const contentType = resp.headers()['content-type'] ?? '';
-    if (resp.status() === 401) return null;
+    if (resp.status() === 401) return;
 
     const preview = (await resp.text()).replace(/\s+/g, ' ').slice(0, 160);
-    return `Stack unhealthy: GET ${BASE_URL}/api/auth/me must return 401, but returned ` +
+    failure = `STACK UNHEALTHY: GET ${BASE_URL}/api/auth/me must return 401, but returned ` +
       `${resp.status()} ${contentType || '(no content-type)'}: ${preview}. ` +
       `The configured URL may point to an unrelated frontend or a broken API proxy.`;
-  } catch {
-    return `Stack not reachable at ${BASE_URL}. Start the backend + frontend first ` +
-      `(see e2e/group-company/README.md) or set PLAYWRIGHT_BASE_URL.`;
+  } catch (error) {
+    failure = `STACK UNREACHABLE at ${BASE_URL}: ` +
+      `${error instanceof Error ? error.message : String(error)}. ` +
+      `Start the backend + frontend first (see e2e/group-company/README.md) or set ` +
+      `PLAYWRIGHT_BASE_URL. This is a FAILURE, not a skip — a dead backend must never go green.`;
   } finally {
     await api?.dispose().catch(() => {});
   }
+  if (failure) throw new Error(failure);
 }
 
 /** Login via API; throws with details on failure. Returns the raw auth payload. */

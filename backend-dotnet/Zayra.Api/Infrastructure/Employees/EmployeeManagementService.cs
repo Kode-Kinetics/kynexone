@@ -130,7 +130,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // below is the backstop for other callers.
         var createIban = Clean(request.PayrollProfile?.Iban);
         if (!string.IsNullOrWhiteSpace(createIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(createIban))
-            throw new InvalidOperationException($"IBAN '{createIban}' is invalid — it fails the ISO 13616 mod-97 checksum. Enter a correct IBAN before saving.");
+            throw new InvalidOperationException($"IBAN '{createIban}' is invalid — its country format/length or ISO 13616 mod-97 checksum is incorrect. Enter a correct IBAN before saving.");
         employee.Status = "Draft";
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         // ESTABLISHMENT GUARD (path "create"): hard-enforced at the form save even though a Draft
@@ -692,7 +692,16 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// it entirely. Failing closed here means an unrecognised value is refused at the door instead of
     /// becoming a wrong payment months later.</para>
     /// </summary>
-    private static readonly string[] AllowedSeparationTypes =
+    /// <remarks>
+    /// S2-B3 — this is now PUBLIC. It used to be private, and the only caller was the
+    /// <c>PATCH /employees/{id}/status</c> terminate command. <c>OffboardingController.Initiate</c> — the
+    /// endpoint the offboarding SCREEN posts to — wrote <c>req.SeparationType</c> verbatim, so the closed
+    /// vocabulary this comment defends was bypassed by the product's own UI, which offered
+    /// "End of Contract" and "Other" (neither of which is in the set) and could not offer
+    /// <c>Article80</c>, <c>Death</c>, <c>ProbationFailure</c> or <c>Redundancy</c> at all. Publishing the
+    /// vocabulary lets the initiate path and the screen read the SAME list instead of drifting from it.
+    /// </remarks>
+    public static readonly string[] AllowedSeparationTypes =
     [
         "Termination", "Resignation", "Retirement", "EndOfContract", "Redundancy",
         // NOTE: no "Abscondment". PayrollController.NormalizeTerminationReason recognises only
@@ -700,9 +709,42 @@ public class EmployeeManagementService : IEmployeeManagementService
         // "Abscondment" would have paid a full gratuity in exactly the case this doc-comment cites as
         // the reason the vocabulary is closed. An absconding case is recorded as "Article80".
         "ProbationFailure", "Article80", "Death",
+        // The Art.85 EXCEPTIONS. Both are resignations in fact, and both pay the FULL Art.84 award.
+        // Without them the screen could only record "Resignation", which applies the Art.85 haircut —
+        // so a woman resigning within six months of marriage, or anyone leaving under Art.81 because
+        // the employer was at fault, was under-paid with no way for the operator to say otherwise.
+        "Article87", "Article81",
     ];
 
-    internal static string NormalizeSeparationType(string? requested)
+    /// <summary>
+    /// S2-B3 — the separation types that FORFEIT the end-of-service award outright.
+    /// <c>PayrollController.NormalizeTerminationReason</c> maps only "Article80" (and its aliases) to the
+    /// Art. 80 forfeiture branch; everything else is paid. Keying a summary dismissal as "Termination"
+    /// therefore pays a FULL Art. 84 award — which is exactly what happened while the screen could not
+    /// offer Article80. Callers use this to make the consequence explicit before the record is written.
+    /// </summary>
+    public static bool ForfeitsEndOfServiceAward(string? separationType) =>
+        string.Equals(separationType?.Trim(), "Article80", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// S2-B3 — non-throwing form of <see cref="NormalizeSeparationType"/> for the HTTP paths, which must
+    /// answer with a 400 naming the allowed values rather than a 500.
+    /// </summary>
+    public static bool TryNormalizeSeparationType(string? requested, out string normalized)
+    {
+        try
+        {
+            normalized = NormalizeSeparationType(requested);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            normalized = string.Empty;
+            return false;
+        }
+    }
+
+    public static string NormalizeSeparationType(string? requested)
     {
         // Conservative default for an employer-initiated command with nothing stated.
         if (string.IsNullOrWhiteSpace(requested)) return "Termination";
@@ -1108,7 +1150,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // the person entering it fixes it now. Empty is allowed (bank details filled in later).
         var cleanIban = Clean(request.Iban);
         if (!string.IsNullOrWhiteSpace(cleanIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(cleanIban))
-            throw new InvalidOperationException($"IBAN '{cleanIban}' is invalid — it fails the ISO 13616 mod-97 checksum. Enter a correct IBAN before saving.");
+            throw new InvalidOperationException($"IBAN '{cleanIban}' is invalid — its country format/length or ISO 13616 mod-97 checksum is incorrect. Enter a correct IBAN before saving.");
         profile.Iban = cleanIban;
         profile.AccountNumber = Clean(request.AccountNumber);
         profile.PaymentMethod = Clean(request.PaymentMethod);

@@ -223,8 +223,8 @@ function UsersTab() {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-52">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-          <input className={inp('pl-9')} placeholder="Search name or email…" value={search}
+          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+          <input className={inp('ps-9')} placeholder="Search name or email…" value={search}
             onChange={e => { setSearch(e.target.value); setPage(1); }} />
         </div>
         <select className={inp('w-40')} value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}>
@@ -244,7 +244,7 @@ function UsersTab() {
             <Plus className="h-4 w-4" /> Create User
           </button>
           {atUserLimit && usage && (
-            <div className="absolute bottom-full left-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
+            <div className="absolute bottom-full start-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
               User limit reached ({usage.activeUsers}/{usage.maxUsers}). Upgrade your plan to add more users.
             </div>
           )}
@@ -259,7 +259,7 @@ function UsersTab() {
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
             <tr>
               {['Name / Email', 'Status', 'Roles', 'Access Mode', 'Last Login', 'Actions'].map(h => (
-                <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">{h}</th>
+                <th key={h} className="px-4 py-2.5 text-start text-xs font-semibold text-slate-500">{h}</th>
               ))}
             </tr>
           </thead>
@@ -392,7 +392,7 @@ function UsersTab() {
                 <input className={inp()} value={editFields.fullName} onChange={e => setEditFields(f => ({ ...f, fullName: e.target.value }))} placeholder="Full name" />
               </FormField>
               <FormField label="Phone Number">
-                <input className={inp()} value={editFields.phoneNumber} onChange={e => setEditFields(f => ({ ...f, phoneNumber: e.target.value }))} placeholder="+1 555 000 0000" />
+                <input className={inp('field-ltr')} value={editFields.phoneNumber} onChange={e => setEditFields(f => ({ ...f, phoneNumber: e.target.value }))} placeholder="+1 555 000 0000" />
               </FormField>
               <FormField label="Preferred Language">
                 <select title="Preferred Language" className={inp()} value={editFields.preferredLanguage} onChange={e => setEditFields(f => ({ ...f, preferredLanguage: e.target.value }))}>
@@ -831,8 +831,8 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
                     <input className={inp()} value={overrideReason} onChange={e => setOverrideReason(e.target.value)} placeholder="e.g. Temporary project access" />
                   </FormField>
                   <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                    <input className={inp('pl-9')} placeholder="Filter permissions…" value={permSearch} onChange={e => setPermSearch(e.target.value)} />
+                    <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                    <input className={inp('ps-9')} placeholder="Filter permissions…" value={permSearch} onChange={e => setPermSearch(e.target.value)} />
                   </div>
                   <div className="space-y-2 max-h-80 overflow-y-auto">
                     {Object.entries(groupedPerms).sort().map(([module, perms]) => (
@@ -845,7 +845,7 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
                             const effectiveState = pending?.effect ?? (current ?? 'default');
                             return (
                               <div key={p.key} className="flex items-center justify-between px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                                <div className="min-w-0 flex-1 mr-3">
+                                <div className="min-w-0 flex-1 me-3">
                                   <p className="text-xs font-mono text-violet-700 dark:text-violet-400 truncate">{p.key}</p>
                                   <p className="text-xs text-slate-500 truncate">{p.description}</p>
                                 </div>
@@ -1186,7 +1186,7 @@ function RolesTab() {
           {roles.map(r => (
             <div key={r.id} className={`rounded-xl border ${r.isActive ? 'border-slate-200 dark:border-slate-700' : 'border-slate-200 dark:border-slate-700 opacity-60'}`}>
               <div className="flex items-center gap-3 px-4 py-3">
-                <button type="button" onClick={() => setExpanded(prev => prev === r.id ? null : r.id)} className="flex-1 text-left min-w-0">
+                <button type="button" onClick={() => setExpanded(prev => prev === r.id ? null : r.id)} className="flex-1 text-start min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-100 text-[10px] font-bold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 shrink-0">
                       {r.authorityLevel}
@@ -1251,8 +1251,8 @@ function PermissionsTab() {
   return (
     <div className="space-y-4">
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-        <input className={inp('pl-9 max-w-xs')} placeholder="Filter permissions…" value={search} onChange={e => setSearch(e.target.value)} />
+        <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+        <input className={inp('ps-9 max-w-xs')} placeholder="Filter permissions…" value={search} onChange={e => setSearch(e.target.value)} />
       </div>
       {loading ? <p className="text-sm text-slate-500">Loading…</p> : Object.entries(grouped).sort().map(([module, perms]) => (
         <div key={module} className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
@@ -1352,7 +1352,7 @@ function PermissionMatrixTab() {
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 dark:bg-slate-800/60">
-                <th className="sticky left-0 z-10 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 text-left font-semibold text-slate-600 dark:text-slate-400 min-w-[200px] border-b border-r border-slate-200 dark:border-slate-700">
+                <th className="sticky start-0 z-10 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 text-start font-semibold text-slate-600 dark:text-slate-400 min-w-[200px] border-b border-e border-slate-200 dark:border-slate-700">
                   Permission
                 </th>
                 {matrix.roles.map(role => (
@@ -1366,7 +1366,7 @@ function PermissionMatrixTab() {
             <tbody>
               {filteredMatrix.map((row, i) => (
                 <tr key={row.permissionKey} className={i % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50/50 dark:bg-slate-800/20'}>
-                  <td className="sticky left-0 z-10 bg-inherit px-3 py-1.5 border-r border-slate-200 dark:border-slate-700">
+                  <td className="sticky start-0 z-10 bg-inherit px-3 py-1.5 border-e border-slate-200 dark:border-slate-700">
                     <p className="font-mono text-violet-700 dark:text-violet-400 truncate">{row.permissionKey}</p>
                     <p className="text-slate-400 truncate text-[10px]">{row.description}</p>
                   </td>
@@ -1481,7 +1481,7 @@ function PermissionGrantorsTab() {
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
             <tr>
               {['User', 'Permission Scope', 'Can Sub-Delegate', 'Expires', 'Reason', 'Actions'].map(h => (
-                <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">{h}</th>
+                <th key={h} className="px-4 py-2.5 text-start text-xs font-semibold text-slate-500">{h}</th>
               ))}
             </tr>
           </thead>
@@ -1619,7 +1619,7 @@ function DelegationsTab() {
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
             <tr>
               {['From Emp', 'To Emp', 'Scope', 'Period', 'Status', 'Reason', 'Actions'].map(h => (
-                <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">{h}</th>
+                <th key={h} className="px-4 py-2.5 text-start text-xs font-semibold text-slate-500">{h}</th>
               ))}
             </tr>
           </thead>
@@ -1716,7 +1716,7 @@ function AuthoritiesTab() {
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
             <tr>
               {['Employee', 'Scope', 'Role', 'Limit', 'Final Approver', 'Status'].map(h => (
-                <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">{h}</th>
+                <th key={h} className="px-4 py-2.5 text-start text-xs font-semibold text-slate-500">{h}</th>
               ))}
             </tr>
           </thead>
@@ -1878,7 +1878,7 @@ function AuditLogsTab() {
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
             <tr>
               {['Action', 'Entity', 'Entity ID', 'IP Address', 'Date'].map(h => (
-                <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500">{h}</th>
+                <th key={h} className="px-4 py-2.5 text-start text-xs font-semibold text-slate-500">{h}</th>
               ))}
             </tr>
           </thead>

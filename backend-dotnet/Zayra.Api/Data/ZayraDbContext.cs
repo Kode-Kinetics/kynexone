@@ -814,6 +814,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PayrollPaymentBatch> PayrollPaymentBatches => Set<PayrollPaymentBatch>();
     public DbSet<PayrollPaymentRecord> PayrollPaymentRecords => Set<PayrollPaymentRecord>();
     public DbSet<PayrollOpeningBalance> PayrollOpeningBalances => Set<PayrollOpeningBalance>();
+    // Mid-year cutover — see Models/OpeningBalances.cs for the doctrine.
+    public DbSet<CompanyCutover> CompanyCutovers => Set<CompanyCutover>();
+    public DbSet<EmployeeEosbOpeningBalance> EmployeeEosbOpeningBalances => Set<EmployeeEosbOpeningBalance>();
+    public DbSet<OpeningBalanceOrigin> OpeningBalanceOrigins => Set<OpeningBalanceOrigin>();
     public DbSet<BankTransferFile> BankTransferFiles => Set<BankTransferFile>();
     public DbSet<WPSFileBatch> WPSFileBatches => Set<WPSFileBatch>();
     public DbSet<SIFFileRecord> SIFFileRecords => Set<SIFFileRecord>();
@@ -877,6 +881,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<ESSDashboardPreference> ESSDashboardPreferences => Set<ESSDashboardPreference>();
     public DbSet<EmployeeProfileChangeRequest> EmployeeProfileChangeRequests => Set<EmployeeProfileChangeRequest>();
     public DbSet<EmployeeDocumentRequest> EmployeeDocumentRequests => Set<EmployeeDocumentRequest>();
+
+    // ── B6: template-driven HR letters and the register of what was issued ────
+    public DbSet<HrLetterTemplate> HrLetterTemplates => Set<HrLetterTemplate>();
+    public DbSet<IssuedLetter> IssuedLetters => Set<IssuedLetter>();
+
     public DbSet<HRRequest> HRRequests => Set<HRRequest>();
     public DbSet<HRRequestCategory> HRRequestCategories => Set<HRRequestCategory>();
     public DbSet<HRRequestComment> HRRequestComments => Set<HRRequestComment>();
@@ -899,6 +908,18 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<TenantBranding> TenantBrandings => Set<TenantBranding>();
     public DbSet<CountryPayrollRule> CountryPayrollRules => Set<CountryPayrollRule>();
     public DbSet<StatutoryRule> StatutoryRules => Set<StatutoryRule>();
+
+    // ── KSA Nitaqat (Saudization banding) ─────────────────────────────────────
+    // Reference tables use INullableTenantOwned (TenantId null = platform default,
+    // the same override idiom as StatutoryRule). Establishment profile, per-employee
+    // weight overrides and trend snapshots are real tenant+company data.
+    public DbSet<NitaqatSizeTier> NitaqatSizeTiers => Set<NitaqatSizeTier>();
+    public DbSet<NitaqatActivity> NitaqatActivities => Set<NitaqatActivity>();
+    public DbSet<NitaqatBandThreshold> NitaqatBandThresholds => Set<NitaqatBandThreshold>();
+    public DbSet<NitaqatWeightRule> NitaqatWeightRules => Set<NitaqatWeightRule>();
+    public DbSet<NitaqatEstablishmentProfile> NitaqatEstablishmentProfiles => Set<NitaqatEstablishmentProfile>();
+    public DbSet<NitaqatEmployeeWeightOverride> NitaqatEmployeeWeightOverrides => Set<NitaqatEmployeeWeightOverride>();
+    public DbSet<NitaqatStandingSnapshot> NitaqatStandingSnapshots => Set<NitaqatStandingSnapshot>();
     public DbSet<CompanyTaxPolicy> CompanyTaxPolicies => Set<CompanyTaxPolicy>();
     public DbSet<CompanyComplianceProfile> CompanyComplianceProfiles => Set<CompanyComplianceProfile>();
     public DbSet<TenantFieldHelpText> TenantFieldHelpTexts => Set<TenantFieldHelpText>();
@@ -972,6 +993,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<ApprovalWorkflowStep> ApprovalWorkflowSteps => Set<ApprovalWorkflowStep>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
+
+    // ── Timesheets: weekly time entry, approved through the ONE approval engine, reconciled
+    //    against attendance. See Models/Timesheets.cs for the module note. ────────────────
+    public DbSet<Timesheet> Timesheets => Set<Timesheet>();
+    public DbSet<TimesheetEntry> TimesheetEntries => Set<TimesheetEntry>();
+    public DbSet<TimesheetDayReconciliation> TimesheetDayReconciliations => Set<TimesheetDayReconciliation>();
     public DbSet<ReportingLine> ReportingLines => Set<ReportingLine>();
     public DbSet<ApprovalPolicy> ApprovalPolicies => Set<ApprovalPolicy>();
     public DbSet<ApprovalPolicyStep> ApprovalPolicySteps => Set<ApprovalPolicyStep>();
@@ -1000,6 +1027,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<NotificationTemplate> NotificationTemplates => Set<NotificationTemplate>();
     public DbSet<AdminAuditLog> AdminAuditLogs => Set<AdminAuditLog>();
     public DbSet<WorkerHeartbeat> WorkerHeartbeats => Set<WorkerHeartbeat>();
+    // ── F3: durable background jobs + per-item checkpoints ────────────────────
+    public DbSet<BackgroundJob> BackgroundJobs => Set<BackgroundJob>();
+    public DbSet<BackgroundJobItem> BackgroundJobItems => Set<BackgroundJobItem>();
     // ── GOSI ───────────────────────────────────────────────────────────────────
     public DbSet<GosiContributionRule> GosiContributionRules => Set<GosiContributionRule>();
     // ── Qiwa Integration ───────────────────────────────────────────────────────
@@ -1053,6 +1083,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<UserEntityAccess> UserEntityAccesses => Set<UserEntityAccess>();
     // ── HR Workflow Configuration ──────────────────────────────────────────────
     public DbSet<TenantHrConfig> TenantHrConfigs => Set<TenantHrConfig>();
+    // ── W2-D: per-category notification preferences (S4) ───────────────────────
+    public DbSet<EmployeeNotificationCategoryPreference> EmployeeNotificationCategoryPreferences => Set<EmployeeNotificationCategoryPreference>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -1313,6 +1345,69 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("employee_document_requests");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+            entity.Property(x => x.LetterType).HasMaxLength(40);
+            entity.Property(x => x.Language).HasMaxLength(20);
+            entity.Property(x => x.AddresseeName).HasMaxLength(200);
+            entity.Property(x => x.DecisionNote).HasMaxLength(1000);
+            // The HR-side worklist: "everything still waiting on me, oldest first".
+            entity.HasIndex(x => new { x.TenantId, x.Status, x.CreatedAtUtc })
+                .HasDatabaseName("ix_employee_document_requests_tenant_status_created");
+        });
+
+        // ── B6: HR letter templates ───────────────────────────────────────────────
+        // Tenant isolation and the ICompanyScoped (config-tier) filter come from the
+        // interfaces via ApplyTenantQueryFilters — nothing to add here.
+        modelBuilder.Entity<HrLetterTemplate>(entity =>
+        {
+            entity.ToTable("hr_letter_templates");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.LetterType).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.NameEn).HasMaxLength(200);
+            entity.Property(x => x.NameAr).HasMaxLength(200);
+            entity.Property(x => x.Language).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.TitleEn).HasMaxLength(200);
+            entity.Property(x => x.TitleAr).HasMaxLength(200);
+            entity.Property(x => x.ClosingEn).HasMaxLength(500);
+            entity.Property(x => x.ClosingAr).HasMaxLength(500);
+            // One live template per (tenant, company, type). The partial filter is what lets a
+            // tenant keep superseded versions as soft-deleted history without tripping the index.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LetterType },
+                    "ux_hr_letter_templates_scope_type")
+                .IsUnique()
+                .HasFilter("is_deleted = false");
+        });
+
+        // ── B6: the register of issued letters ────────────────────────────────────
+        modelBuilder.Entity<IssuedLetter>(entity =>
+        {
+            entity.ToTable("issued_letters");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.LetterType).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.ReferenceNumber).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.EmployeeCode).HasMaxLength(60);
+            entity.Property(x => x.EmployeeName).HasMaxLength(200);
+            entity.Property(x => x.Language).HasMaxLength(20);
+            entity.Property(x => x.Purpose).HasMaxLength(500);
+            entity.Property(x => x.AddresseeName).HasMaxLength(200);
+            entity.Property(x => x.IssuedByName).HasMaxLength(200);
+            entity.Property(x => x.IssuedByTitle).HasMaxLength(200);
+            entity.Property(x => x.FileHash).HasMaxLength(64);
+            entity.Property(x => x.MergedValuesJson).HasColumnType("jsonb");
+            entity.Property(x => x.RenderedContentJson).HasColumnType("jsonb");
+
+            // THE point of the table. Two experience letters for one person in one month used to
+            // share the string EXP-{code}-{yyyyMM} because it was recomputed inline and stored
+            // nowhere. The reference is now allocated, stored, and unique in the database — a bank
+            // quoting one gets exactly one answer.
+            entity.HasIndex(x => new { x.TenantId, x.ReferenceNumber })
+                .IsUnique()
+                .HasDatabaseName("ux_issued_letters_tenant_reference");
+            // Backs the allocator: MAX(sequence_number) for a (tenant, type, year) series.
+            entity.HasIndex(x => new { x.TenantId, x.LetterType, x.SequenceYear, x.SequenceNumber })
+                .IsUnique()
+                .HasDatabaseName("ux_issued_letters_series_ordinal");
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.IssuedAtUtc })
+                .HasDatabaseName("ix_issued_letters_tenant_employee_issued");
         });
 
         modelBuilder.Entity<HRRequest>(entity =>
@@ -1599,6 +1694,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // key because "ADJ" is legitimately both an earning family and a deduction family.
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code, x.ComponentType });
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive, x.IsDeleted });
+            // F2 — effective dating. The raw-SQL UNIQUE is re-keyed to (tenant, company, code, type,
+            // effective_from) NULLS NOT DISTINCT in AddPayComponentEffectiveDating, so a component may carry
+            // several dated versions but never two versions starting on the same day in the same scope.
             entity.Property(x => x.Code).HasMaxLength(64);
             entity.Property(x => x.NameEn).HasMaxLength(200);
             entity.Property(x => x.NameAr).HasMaxLength(200);
@@ -1654,6 +1752,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("approval_workflows");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // F1 — the router's lookup: a tenant's active workflows for one entity, by org scope.
+            entity.HasIndex(x => new { x.TenantId, x.EntityName, x.IsActive, x.DepartmentId, x.GradeId })
+                .HasDatabaseName("IX_approval_workflows_routing");
             entity.HasMany(x => x.Steps).WithOne().HasForeignKey(x => x.WorkflowId).OnDelete(DeleteBehavior.Cascade);
         });
 
@@ -1703,6 +1804,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.ManagerEmployeeId, x.IsActive });
         });
 
+        // DEPRECATED (F1): approval_policies / approval_policy_steps are frozen — migrated into
+        // approval_workflows by ConvergeApprovalPolicyIntoWorkflow and read/written by nothing. They
+        // stay mapped for one release so an app rollback still finds its configuration; a follow-up
+        // migration drops them.
         modelBuilder.Entity<ApprovalPolicy>(entity =>
         {
             entity.ToTable("approval_policies");
@@ -1994,8 +2099,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<PayrollGroup>(entity => { entity.ToTable("payroll_groups"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique(); });
         modelBuilder.Entity<PayrollCycle>(entity => { entity.ToTable("payroll_cycles"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }); });
         modelBuilder.Entity<PayrollRunEmployee>(entity => { entity.ToTable("payroll_run_employees"); entity.HasKey(x => x.Id); entity.Property(x => x.GrossEarnings).HasPrecision(14,2); entity.Property(x => x.TotalDeductions).HasPrecision(14,2); entity.Property(x => x.NetPay).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
-        modelBuilder.Entity<PayrollEarning>(entity => { entity.ToTable("payroll_earnings"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
-        modelBuilder.Entity<PayrollDeduction>(entity => { entity.ToTable("payroll_deductions"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.IsEmployerContribution).HasDefaultValue(false); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
+        modelBuilder.Entity<PayrollEarning>(entity => { entity.ToTable("payroll_earnings"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.GlDriverKey).HasMaxLength(80); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
+        modelBuilder.Entity<PayrollDeduction>(entity => { entity.ToTable("payroll_deductions"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.GlDriverKey).HasMaxLength(80); entity.Property(x => x.IsEmployerContribution).HasDefaultValue(false); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
         modelBuilder.Entity<BenefitPlan>(entity => { entity.ToTable("benefit_plans"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive }); });
         modelBuilder.Entity<BenefitEligibilityRule>(entity => { entity.ToTable("benefit_eligibility_rules"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.CompanyId, x.GradeId, x.IsActive }); });
         modelBuilder.Entity<BenefitEnrollment>(entity => { entity.ToTable("benefit_enrollments"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
@@ -2120,6 +2225,39 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Amount).HasPrecision(14, 2);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Year, x.BalanceType, x.ComponentCode }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Year });
+        });
+        // ── Mid-year cutover ────────────────────────────────────────────────
+        modelBuilder.Entity<CompanyCutover>(entity =>
+        {
+            entity.ToTable("company_cutovers");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.SourceSystem).HasMaxLength(80);
+            // One cutover per legal entity. A group migrates in waves; each wave is one row.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId }).IsUnique();
+        });
+        modelBuilder.Entity<EmployeeEosbOpeningBalance>(entity =>
+        {
+            entity.ToTable("employee_eosb_opening_balances");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.AccruedAmount).HasPrecision(14, 2);
+            entity.Property(x => x.AccruedMonths).HasPrecision(9, 2);
+            entity.Property(x => x.Currency).HasMaxLength(3);
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.AsAtDate }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.AsAtDate });
+        });
+        modelBuilder.Entity<OpeningBalanceOrigin>(entity =>
+        {
+            entity.ToTable("opening_balance_origins");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CarriedAmount).HasPrecision(14, 2);
+            entity.Property(x => x.EntityType).HasMaxLength(30);
+            entity.Property(x => x.Currency).HasMaxLength(3);
+            // One provenance row per carried-in entity. Re-importing the same package updates this row
+            // rather than appending a second claim of origin for the same loan.
+            entity.HasIndex(x => new { x.TenantId, x.EntityType, x.EntityId }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.CutoverDate });
+            entity.HasIndex(x => new { x.TenantId, x.MigrationBatchId });
         });
         modelBuilder.Entity<BankTransferFile>(entity => { entity.ToTable("bank_transfer_files"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PaymentBatchId }); });
         modelBuilder.Entity<WPSFileBatch>(entity =>
@@ -2867,6 +3005,102 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.CountryCode, x.RuleKey, x.EffectiveFrom });
         });
 
+        // ── KSA Nitaqat reference + standing tables ──────────────────────────
+        // No HasQueryFilter and no (TenantId, CompanyId) index is written here:
+        // ApplyTenantQueryFilters / ApplyCompanyScopeIndexes generate both from the
+        // marker interfaces at the end of OnModelCreating.
+        modelBuilder.Entity<NitaqatSizeTier>(entity =>
+        {
+            entity.ToTable("nitaqat_size_tiers");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Code).HasMaxLength(40);
+            entity.Property(x => x.NameEn).HasMaxLength(120);
+            entity.Property(x => x.NameAr).HasMaxLength(120);
+            entity.Property(x => x.SourceNote).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.Code, x.EffectiveFrom }).IsUnique();
+        });
+
+        modelBuilder.Entity<NitaqatActivity>(entity =>
+        {
+            entity.ToTable("nitaqat_activities");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Code).HasMaxLength(60);
+            entity.Property(x => x.NameEn).HasMaxLength(200);
+            entity.Property(x => x.NameAr).HasMaxLength(200);
+            entity.Property(x => x.ActivityGroup).HasMaxLength(120);
+            entity.Property(x => x.SourceNote).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+        });
+
+        modelBuilder.Entity<NitaqatBandThreshold>(entity =>
+        {
+            entity.ToTable("nitaqat_band_thresholds");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ActivityCode).HasMaxLength(60);
+            entity.Property(x => x.SizeTierCode).HasMaxLength(40);
+            entity.Property(x => x.Band).HasMaxLength(30);
+            entity.Property(x => x.SourceNote).HasMaxLength(500);
+            entity.Property(x => x.MinSaudizationPercent).HasPrecision(6, 3);
+            // One row per cell of the (activity x size tier x band) matrix per effective date.
+            entity.HasIndex(x => new { x.TenantId, x.ActivityCode, x.SizeTierCode, x.Band, x.EffectiveFrom })
+                  .IsUnique();
+            entity.HasIndex(x => new { x.ActivityCode, x.SizeTierCode });
+        });
+
+        modelBuilder.Entity<NitaqatWeightRule>(entity =>
+        {
+            entity.ToTable("nitaqat_weight_rules");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.RuleCode).HasMaxLength(60);
+            entity.Property(x => x.Classification).HasMaxLength(20);
+            entity.Property(x => x.CountBasis).HasMaxLength(20);
+            entity.Property(x => x.Category).HasMaxLength(40);
+            entity.Property(x => x.SourceNote).HasMaxLength(500);
+            entity.Property(x => x.NumeratorWeight).HasPrecision(8, 4);
+            entity.Property(x => x.DenominatorWeight).HasPrecision(8, 4);
+            entity.HasIndex(x => new { x.TenantId, x.RuleCode, x.EffectiveFrom }).IsUnique();
+        });
+
+        modelBuilder.Entity<NitaqatEstablishmentProfile>(entity =>
+        {
+            entity.ToTable("nitaqat_establishment_profiles");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ActivityCode).HasMaxLength(60);
+            entity.Property(x => x.MhrsdEstablishmentNumber).HasMaxLength(40);
+            entity.Property(x => x.LabourOfficeCode).HasMaxLength(40);
+            entity.Property(x => x.QiwaReportedBand).HasMaxLength(30);
+            // One live profile per company. Filtered so a soft-deleted row does not
+            // block re-registration of the same company.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId })
+                  .IsUnique()
+                  .HasFilter("is_deleted = false");
+        });
+
+        modelBuilder.Entity<NitaqatEmployeeWeightOverride>(entity =>
+        {
+            entity.ToTable("nitaqat_employee_weight_overrides");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Category).HasMaxLength(40);
+            entity.Property(x => x.Justification).HasMaxLength(500);
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId })
+                  .IsUnique()
+                  .HasFilter("is_deleted = false");
+        });
+
+        modelBuilder.Entity<NitaqatStandingSnapshot>(entity =>
+        {
+            entity.ToTable("nitaqat_standing_snapshots");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ActivityCode).HasMaxLength(60);
+            entity.Property(x => x.SizeTierCode).HasMaxLength(40);
+            entity.Property(x => x.Band).HasMaxLength(30);
+            entity.Property(x => x.SaudiWeighted).HasPrecision(12, 4);
+            entity.Property(x => x.TotalWeighted).HasPrecision(12, 4);
+            entity.Property(x => x.AchievedPercent).HasPrecision(8, 4);
+            // One trend point per company per day; the standing read upserts today's.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.AsOfDate }).IsUnique();
+        });
+
         modelBuilder.Entity<StatutoryRule>(entity =>
         {
             entity.ToTable("statutory_rules");
@@ -3473,6 +3707,53 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.WorkerName, x.UpdatedAtUtc });
         });
 
+        // ── F3: durable job store ─────────────────────────────────────────────────
+        // Tenant isolation comes from ITenantOwned (ApplyTenantQueryFilters) — nothing to add here.
+        modelBuilder.Entity<BackgroundJob>(entity =>
+        {
+            entity.ToTable("background_jobs");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.JobType).HasMaxLength(100).IsRequired();
+            entity.Property(x => x.PayloadJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.IdempotencyKey).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.KeyRetention).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.ProgressMessage).HasMaxLength(500);
+            entity.Property(x => x.LeaseOwner).HasMaxLength(300);
+            entity.Property(x => x.LastError).HasMaxLength(4000);
+            entity.Property(x => x.ResultJson).HasColumnType("jsonb");
+            // Idempotent enqueue, enforced by the database rather than by a check-then-insert race:
+            //  (1) a key is held by at most ONE live job — double-click / concurrent enqueue safety;
+            //  (2) a Forever-retention key is additionally held by a SUCCEEDED job — at-most-once
+            //      operations (payroll Lock in Wave 2). Failed/Cancelled jobs release the key so the
+            //      operation can be retried deliberately.
+            // NAMED indexes: EF treats two unnamed HasIndex calls on the same columns as ONE index and the
+            // second silently overwrites the first — the active-key guarantee would vanish.
+            entity.HasIndex(x => new { x.TenantId, x.JobType, x.IdempotencyKey }, "ux_background_jobs_active_key")
+                  .IsUnique()
+                  .HasFilter("status IN ('Queued','Running')");
+            entity.HasIndex(x => new { x.TenantId, x.JobType, x.IdempotencyKey }, "ux_background_jobs_retained_key")
+                  .IsUnique()
+                  .HasFilter("key_retention = 'Forever' AND status IN ('Queued','Running','Succeeded')");
+            // Claim scan: Queued-and-due, or Running-with-expired-lease.
+            entity.HasIndex(x => new { x.Status, x.RunAfterUtc }).HasDatabaseName("ix_background_jobs_status_run_after");
+            entity.HasIndex(x => new { x.Status, x.LeaseExpiresAtUtc }).HasDatabaseName("ix_background_jobs_status_lease");
+            // Tenant listing.
+            entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc }).HasDatabaseName("ix_background_jobs_tenant_created");
+        });
+
+        modelBuilder.Entity<BackgroundJobItem>(entity =>
+        {
+            entity.ToTable("background_job_items");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ItemKey).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.ResultJson).HasColumnType("jsonb");
+            // The database-level "never applied twice" guarantee (the checkpoint set is the other).
+            entity.HasIndex(x => new { x.JobId, x.ItemKey }).IsUnique().HasDatabaseName("ux_background_job_items_job_item");
+            entity.HasIndex(x => new { x.TenantId, x.JobId }).HasDatabaseName("ix_background_job_items_tenant_job");
+            entity.HasOne<BackgroundJob>().WithMany().HasForeignKey(x => x.JobId).OnDelete(DeleteBehavior.Cascade);
+        });
+
         // ── Company governance (Phase 1B: per-legal-entity policy foundation) ─────
         modelBuilder.Entity<CompanyTaxPolicy>(entity =>
         {
@@ -3762,7 +4043,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("report_schedules");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.FiltersJson).HasColumnType("json");
+            entity.Property(x => x.LastFailureReason).HasMaxLength(1000);
             entity.HasIndex(x => new { x.TenantId, x.IsActive });
+            // Backs the "which of my schedules are broken?" filter the UI now shows.
+            entity.HasIndex(x => new { x.TenantId, x.ConsecutiveFailureCount })
+                .HasDatabaseName("ix_report_schedules_tenant_failures");
         });
 
         modelBuilder.Entity<ReportExecutionLog>(entity =>
@@ -3801,6 +4086,21 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasOne(x => x.User).WithMany(x => x.EntityAccesses).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.SetNull);
         });
+
+        // W2-D (S4) — per-category notification preferences. The spec's working name
+        // employee_notification_preferences is already the channel-master table.
+        modelBuilder.Entity<EmployeeNotificationCategoryPreference>(entity =>
+        {
+            entity.ToTable("employee_notification_category_preferences");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Channel).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Category).HasMaxLength(32).IsRequired();
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Channel, x.Category }).IsUnique();
+        });
+
+        // Timesheets keep their fluent configuration next to their model so this file stays
+        // append-only for the module (the convention Models/Timesheets.cs documents).
+        TimesheetModelConfiguration.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

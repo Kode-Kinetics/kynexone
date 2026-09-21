@@ -48,13 +48,14 @@ public class EmployeesController : ControllerBase
     private readonly IHijriDateService _hijri;
     private readonly IDataScopeService _scopeService;
     private readonly ILetterService _letters;
+    private readonly IHrLetterIssuer _letterIssuer;
     private readonly IApprovalWorkflowService _approvalWorkflow;
     private readonly ILogger<EmployeesController>? _logger;
     private readonly IEstablishmentGuard _establishmentGuard;
     private readonly IEmployeeActivationGuard _activationGuard;
     private readonly IEmployeeDuplicateDetector _duplicateDetector;
 
-    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null)
+    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHrLetterIssuer? letterIssuer = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -64,6 +65,11 @@ public class EmployeesController : ControllerBase
         _hijri = hijri;
         _scopeService = scopeService;
         _letters = letters;
+        // Optional and trailing so the ~10 hand-constructed EmployeesController instances across
+        // the test suite keep compiling. The fallback is not a stub: HrLetterIssuer is a
+        // stateless coordinator over exactly the three dependencies already passed above, so a
+        // caller that does not supply one still gets the real behaviour.
+        _letterIssuer = letterIssuer ?? new HrLetterIssuer(db, letters, documents);
         _approvalWorkflow = approvalWorkflow ?? new Zayra.Api.Infrastructure.Approvals.ApprovalWorkflowService(db, audit);
         _logger = logger;
         // Optional with concrete fallback (same pattern as _approvalWorkflow): DI supplies the
@@ -219,6 +225,22 @@ public class EmployeesController : ControllerBase
     private static IReadOnlyList<string> EmployeeCsvExampleRow =>
         Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.CsvExampleRow;
 
+    // A directory export is useful to HR operations and auditors, but it must not silently become a
+    // payroll/identity-document dump. Only the effective employees.sensitive claim (after per-user Deny
+    // overrides are applied at token issuance) unlocks these columns. Role names are deliberately not a
+    // bypass: denying employees.sensitive from an Admin/Payroll Officer must also mask their export.
+    private static readonly HashSet<string> SensitiveEmployeeExportHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "PersonalEmail", "Phone", "DateOfBirth", "MaritalStatus", "EmergencyContactName", "EmergencyContactPhone",
+        "BasicSalary", "HousingAllowance", "TransportAllowance", "FoodAllowance", "MobileAllowance", "OtherAllowance",
+        "FixedDeduction", "PaymentMethod", "IBAN", "AccountNumber", "BankName", "BankRoutingCode", "MolId",
+        "SocialInsuranceReference", "PassportNumber", "PassportIssueDate", "PassportExpiryDate", "VisaNumber",
+        "VisaIssueDate", "VisaExpiryDate", "VisaFileNumber", "IqamaNumber", "IqamaExpiry", "MuqeemNumber",
+        "GosiReference", "QiwaContractNumber", "EmiratesId", "EmiratesIdExpiry", "LaborCardNumber", "Qid",
+        "QidExpiry", "CivilId", "CivilIdExpiry", "WorkPermitNumber", "WorkPermitIssueDate", "ResidencyNumber",
+        "ResidencyIssueDate", "IdNumber", "SponsorName", "ContractReference", "WorkPermitReference", "QiwaEmployeeReference"
+    };
+
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
     public async Task<IActionResult> Export(CancellationToken ct)
@@ -235,7 +257,8 @@ public class EmployeesController : ControllerBase
             exportQuery = exportQuery.Where(e => e.CompanyId.HasValue && accessibleIds.Contains(e.CompanyId.Value));
         }
         var emps = await exportQuery.OrderBy(e => e.EmployeeCode).ToListAsync(ct);
-        var csv = await BuildEmployeesCsvAsync(emps, tenantId, ct);
+        var includesSensitive = User.HasPermission("employees.sensitive");
+        var csv = await BuildEmployeesCsvAsync(emps, tenantId, includesSensitive, ct);
         // Export audit: actor, row count, and company-scope dimension — no PII values.
         await _audit.WriteAsync("employees.exported", "Employee", "bulk", Context(),
             JsonSerializer.Serialize(new
@@ -244,6 +267,7 @@ public class EmployeesController : ControllerBase
                 groupScope = entityScope.IsGroupLevel,
                 companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
                 exportType = "employees_csv",
+                includesSensitive,
             }), ct);
         return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
@@ -254,7 +278,7 @@ public class EmployeesController : ControllerBase
     /// "export selected" path emit byte-identical output from ONE builder — a column can never drift between
     /// the two surfaces. Loads only the given rows' related data (never an unfiltered tenant scan).
     /// </summary>
-    private async Task<string> BuildEmployeesCsvAsync(IReadOnlyList<Employee> emps, Guid tenantId, CancellationToken ct)
+    private async Task<string> BuildEmployeesCsvAsync(IReadOnlyList<Employee> emps, Guid tenantId, bool includeSensitive, CancellationToken ct)
     {
         var empIds = emps.Select(e => e.Id).ToList();
         var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
@@ -377,7 +401,11 @@ public class EmployeesController : ControllerBase
                 ["QiwaEmployeeReference"] = e.QiwaEmployeeReference,
                 ["QiwaSyncStatus"] = e.QiwaSyncStatus,
             };
-            return (IReadOnlyList<object?>)headers.Select(h => v.GetValueOrDefault(h)).ToList();
+            return (IReadOnlyList<object?>)headers
+                .Select(h => !includeSensitive && SensitiveEmployeeExportHeaders.Contains(h)
+                    ? string.Empty
+                    : v.GetValueOrDefault(h))
+                .ToList();
         });
         return Csv.Build(headers, rows);
     }
@@ -948,7 +976,7 @@ public class EmployeesController : ControllerBase
         {
             var ibanRaw = rowData.GetValueOrDefault("IBAN", string.Empty).Trim();
             if (!string.IsNullOrWhiteSpace(ibanRaw) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanRaw))
-                warnings.Add($"Employee {emp.EmployeeCode}: IBAN '{ibanRaw}' fails the ISO 13616 mod-97 checksum — imported, but it must be corrected before this employee can be included in a payroll run.");
+                warnings.Add($"Employee {emp.EmployeeCode}: IBAN '{ibanRaw}' fails country format/length or the ISO 13616 mod-97 checksum — imported, but it must be corrected before this employee can be included in a payroll run.");
             var bankNameRaw = rowData.GetValueOrDefault("BankName", string.Empty).Trim();
             var molIdRaw = rowData.GetValueOrDefault("MolId", string.Empty).Trim();
             var accountRaw = rowData.GetValueOrDefault("AccountNumber", string.Empty).Trim();
@@ -962,14 +990,55 @@ public class EmployeesController : ControllerBase
             var currency = string.IsNullOrWhiteSpace(currencyRaw)
                 ? defaultCompany is null && string.Equals(tenantCurrency, "USD", StringComparison.OrdinalIgnoreCase) ? "SAR" : tenantCurrency
                 : currencyRaw.ToUpperInvariant();
-            _ = decimal.TryParse(rowData.GetValueOrDefault("BasicSalary", string.Empty), out var basicSalary);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("HousingAllowance", string.Empty), out var housing);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("TransportAllowance", string.Empty), out var transport);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("FoodAllowance", string.Empty), out var food);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("MobileAllowance", string.Empty), out var mobile);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("OtherAllowance", string.Empty), out var other);
-            _ = decimal.TryParse(rowData.GetValueOrDefault("FixedDeduction", string.Empty), out var fixedDeduction);
+            // ── A MALFORMED SALARY FIGURE IS NOW REPORTED, NOT SWALLOWED ────────────────────────────
+            // These seven lines used to read `_ = decimal.TryParse(...)`, discarding the result. A
+            // BasicSalary of "25,000" or "SAR 25000" — or a column the customer's extract simply spelled
+            // differently — therefore became 0.00 silently, while the row's own gate is `gross > 0` and
+            // gross includes the allowances. The employee was paid roughly the right net and accrued
+            // ZERO GOSI and ZERO end-of-service liability, because every GCC country pack computes
+            // covered wage, EOSB and LOP off basic. None of the 29 payroll validations catch it: the
+            // arithmetic is internally consistent. It surfaces when the employee resigns fourteen months
+            // later and the gratuity is a fraction of what it should be, or when GOSI audits the
+            // establishment. That is a legal exposure, not a support ticket.
+            //
+            // Import is the onboarding route for every new customer, so this was shipping wrong
+            // statutory data to every customer imported so far. The row is now rejected with the cell
+            // named, which is the same doctrine the opening-balance sections follow: a rejected file
+            // beats a silently-accepted wrong figure.
+            var salaryParseErrors = new List<string>();
+            decimal ParseMoneyCell(string column)
+            {
+                var raw = rowData.GetValueOrDefault(column, string.Empty).Trim();
+                if (raw.Length == 0) return 0m;
+                if (decimal.TryParse(raw, System.Globalization.NumberStyles.Number,
+                        System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+                    return parsed;
+                salaryParseErrors.Add($"{column} is not a number (found '{raw}')");
+                return 0m;
+            }
+
+            var basicSalary = ParseMoneyCell("BasicSalary");
+            var housing = ParseMoneyCell("HousingAllowance");
+            var transport = ParseMoneyCell("TransportAllowance");
+            var food = ParseMoneyCell("FoodAllowance");
+            var mobile = ParseMoneyCell("MobileAllowance");
+            var other = ParseMoneyCell("OtherAllowance");
+            var fixedDeduction = ParseMoneyCell("FixedDeduction");
             var gross = basicSalary + housing + transport + food + mobile + other;
+
+            if (salaryParseErrors.Count > 0)
+            {
+                warnings.Add($"Employee {emp.EmployeeCode}: {string.Join("; ", salaryParseErrors)}. No salary structure was created — correct the file and re-import, because a zero basic produces zero GOSI and zero end-of-service accrual.");
+                continue;
+            }
+            // A salary structure with a zero basic and a non-zero gross is the same defect arriving by a
+            // different door: the allowances alone clear the `gross > 0` gate below. PayrollController's
+            // own salary writer has always rejected `BasicSalary <= 0`; the import path did not.
+            if (gross > 0 && basicSalary <= 0)
+            {
+                warnings.Add($"Employee {emp.EmployeeCode}: BasicSalary is zero but the allowances total {gross}. No salary structure was created — basic salary drives GOSI, end-of-service and loss-of-pay in every country pack, so a zero basic is never a valid active structure.");
+                continue;
+            }
 
             var grade = emp.GradeId is not null ? lookups.GradeById.GetValueOrDefault(emp.GradeId.Value) : null;
 
@@ -1542,7 +1611,7 @@ public class EmployeesController : ControllerBase
             // Use the real ISO 13616 mod-97 check (not just structure) so a bad checksum is caught in
             // preview, matching what the payroll-run/WPS gate enforces later.
             if (!string.IsNullOrEmpty(ibanPreview) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanPreview))
-                rowWarnings.Add($"IBAN '{ibanPreview}' is invalid — fails ISO 13616 (mod-97) validation and will be stored as-is but must be corrected before this employee can be paid via WPS");
+                rowWarnings.Add($"IBAN '{ibanPreview}' is invalid — country format/length or ISO 13616 mod-97 validation failed; it will be stored as-is but must be corrected before this employee can be paid via WPS");
             var basicSalaryPreview = row.GetValueOrDefault("BasicSalary", string.Empty).Trim();
             if (!string.IsNullOrEmpty(basicSalaryPreview) && !decimal.TryParse(basicSalaryPreview, out _))
                 rowWarnings.Add($"BasicSalary '{basicSalaryPreview}' is not a valid number — salary will not be imported");
@@ -2765,7 +2834,8 @@ public class EmployeesController : ControllerBase
             var emps = await _db.Employees.AsNoTracking()
                 .Where(e => e.TenantId == tenantId && targetIds.Contains(e.Id))
                 .OrderBy(e => e.EmployeeCode).ToListAsync(cancellationToken);
-            var csv = await BuildEmployeesCsvAsync(emps, tenantId, cancellationToken);
+            var includesSensitive = User.HasPermission("employees.sensitive");
+            var csv = await BuildEmployeesCsvAsync(emps, tenantId, includesSensitive, cancellationToken);
             await _audit.WriteAsync("employees.exported", "Employee", "bulk", Context(), JsonSerializer.Serialize(new
             {
                 rowCount = emps.Count,
@@ -2773,6 +2843,7 @@ public class EmployeesController : ControllerBase
                 selectionType = idsMode ? "idset" : "allMatching",
                 groupScope = entityScope.IsGroupLevel,
                 companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
+                includesSensitive,
             }), cancellationToken);
             return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_selected_{DateTime.UtcNow:yyyyMMdd}.csv");
         }
@@ -3496,66 +3567,66 @@ public class EmployeesController : ControllerBase
         return Ok(new EmployeeAiResponseDto($"Found {incomplete.Count} employees with incomplete onboarding profiles.", incomplete.Select(ToListItem).ToList()));
     }
 
+    /// <summary>
+    /// Appointment letter and experience certificate.
+    ///
+    /// <para>These two used to call the hard-coded QuestPDF methods on <c>ILetterService</c>:
+    /// no tenant-editable wording, no Arabic, a company name that fell back to the literal
+    /// "KynexOne Technologies", a signature block reading "HR Department" over a row of
+    /// underscores, a reference recomputed inline as <c>EXP-{code}-{yyyyMM}</c> that collided
+    /// within the month, and no record anywhere that the document had been produced.</para>
+    ///
+    /// <para>They now go through <see cref="IHrLetterIssuer"/> like every other letter: tenant
+    /// template, bilingual, stored unique reference, register row. The routes and the response
+    /// shape are unchanged, so nothing calling them has to move.</para>
+    /// </summary>
     [HttpGet("{id:int}/letters/appointment")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public async Task<IActionResult> AppointmentLetter(int id, CancellationToken cancellationToken)
-    {
-        var tenantId = RequireTenant();
-        var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId && !x.IsDeleted, cancellationToken);
-        if (employee is null) return NotFound();
-        var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.IsActive && x.EffectiveDate <= today).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(cancellationToken);
-        var apptCurrency = !string.IsNullOrWhiteSpace(salary?.Currency)
-            ? salary.Currency
-            : await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
-        var data = new LetterData(
-            EmployeeName: employee.FullName,
-            EmployeeCode: employee.EmployeeCode,
-            Department: employee.Department,
-            Designation: employee.Designation,
-            JoiningDate: employee.JoiningDate,
-            LeavingDate: null,
-            BasicSalary: salary?.BasicSalary ?? employee.Salary ?? 0m,
-            Currency: apptCurrency,
-            CompanyName: tenant?.Name ?? "KynexOne Technologies",
-            IssuedBy: "HR Department",
-            IssuedDate: DateTime.UtcNow
-        );
-        var pdf = await _letters.GenerateAppointmentLetterAsync(data, cancellationToken);
-        await Audit("employee.letter.appointment", "Employee", id.ToString(), cancellationToken);
-        return File(pdf, "application/pdf", $"appointment-letter-{employee.EmployeeCode}.pdf");
-    }
+    public Task<IActionResult> AppointmentLetter(int id, [FromQuery] string language = HrLetterLanguages.Bilingual, CancellationToken cancellationToken = default)
+        => IssueRegisteredLetterAsync(id, HrLetterTypes.AppointmentLetter, language, cancellationToken);
 
     [HttpGet("{id:int}/letters/experience")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public async Task<IActionResult> ExperienceLetter(int id, CancellationToken cancellationToken)
+    public Task<IActionResult> ExperienceLetter(int id, [FromQuery] string language = HrLetterLanguages.Bilingual, CancellationToken cancellationToken = default)
+        => IssueRegisteredLetterAsync(id, HrLetterTypes.ExperienceCertificate, language, cancellationToken);
+
+    private async Task<IActionResult> IssueRegisteredLetterAsync(int id, string letterType, string language, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId && !x.IsDeleted, cancellationToken);
-        if (employee is null) return NotFound();
-        var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id && x.IsActive && x.EffectiveDate <= today).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(cancellationToken);
-        var expCurrency = !string.IsNullOrWhiteSpace(salary?.Currency)
-            ? salary.Currency
-            : await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
-        var data = new LetterData(
-            EmployeeName: employee.FullName,
-            EmployeeCode: employee.EmployeeCode,
-            Department: employee.Department,
-            Designation: employee.Designation,
-            JoiningDate: employee.JoiningDate,
-            LeavingDate: employee.ContractEndDate.HasValue ? employee.ContractEndDate.Value.ToDateTime(TimeOnly.MinValue) : null,
-            BasicSalary: salary?.BasicSalary ?? employee.Salary ?? 0m,
-            Currency: expCurrency,
-            CompanyName: tenant?.Name ?? "KynexOne Technologies",
-            IssuedBy: "HR Department",
-            IssuedDate: DateTime.UtcNow
-        );
-        var pdf = await _letters.GenerateExperienceLetterAsync(data, cancellationToken);
-        await Audit("employee.letter.experience", "Employee", id.ToString(), cancellationToken);
-        return File(pdf, "application/pdf", $"experience-letter-{employee.EmployeeCode}.pdf");
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        if (!scope.CanAccessEmployee(id)) return Forbid();
+
+        var issuerName = User.FindFirstValue("name") ?? User.FindFirstValue(ClaimTypes.Name) ?? "HR Department";
+        if (GetUserId() is Guid uid)
+        {
+            var dbName = await _db.Users.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Id == uid).Select(x => x.FullName)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (!string.IsNullOrWhiteSpace(dbName)) issuerName = dbName;
+        }
+        var issuerTitle = User.FindAll(ClaimTypes.Role).Select(c => c.Value)
+            .FirstOrDefault(r => r is "HR Manager" or "HR Officer" or "Admin") ?? "Human Resources";
+
+        var result = await _letterIssuer.IssueAsync(new IssueLetterCommand(
+            TenantId: tenantId,
+            EmployeeId: id,
+            LetterType: letterType,
+            Language: language,
+            Purpose: "the employee's personal records",
+            AddresseeName: string.Empty,
+            IssuedByUserId: GetUserId(),
+            IssuerName: issuerName,
+            IssuerTitle: issuerTitle), cancellationToken);
+
+        if (!result.Ok)
+        {
+            var payload = new { code = result.ErrorCode, message = result.ErrorMessage, unresolvedFields = result.UnresolvedTokens };
+            return result.ErrorCode == "employee_not_found" ? NotFound(payload) : Conflict(payload);
+        }
+
+        await Audit($"employee.letter.{letterType}", "Employee", id.ToString(), cancellationToken);
+        Response.Headers["X-Letter-Reference"] = result.Letter!.ReferenceNumber;
+        return File(result.Pdf!, "application/pdf", $"{result.Letter.ReferenceNumber}.pdf");
     }
 
     [HttpGet("{id:int}/templates/{templateType}")]

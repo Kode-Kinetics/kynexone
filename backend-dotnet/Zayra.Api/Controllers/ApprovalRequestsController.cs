@@ -21,7 +21,7 @@ public class ApprovalRequestsController : ControllerBase
     }
 
     [HttpGet]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
+    [HasPermission("approvals.read")]
     public async Task<ActionResult<PagedResult<ApprovalRequestDto>>> Search([FromQuery] string? status, [FromQuery] string? entityName, [FromQuery] string? queue, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
         var tenantId = this.GetTenantId();
@@ -30,7 +30,7 @@ public class ApprovalRequestsController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
+    [HasPermission("approvals.read")]
     public async Task<ActionResult<ApprovalRequestDto>> Get(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = this.GetTenantId();
@@ -50,6 +50,7 @@ public class ApprovalRequestsController : ControllerBase
             var approval = await _approvals.CreateRequestAsync(tenantId.Value, request, Context(), cancellationToken);
             return CreatedAtAction(nameof(Get), new { id = approval.Id }, approval);
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -67,6 +68,7 @@ public class ApprovalRequestsController : ControllerBase
         // Establishment matrix: the target seat was consumed after submission — the decision is
         // NOT recorded (approval stays Pending), the requester raises the budget and re-decides.
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

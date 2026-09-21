@@ -11,7 +11,6 @@ import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 import { LoginAuroraScene } from '../components/LoginAuroraScene';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
-
 type Mode = 'login' | 'forgot' | 'reset' | 'mfa' | 'mfa-enroll';
 
 export function LoginPage() {
@@ -191,8 +190,7 @@ export function LoginPage() {
         <header className="lx-rail-top">
           <div className="lx-lockup">
             <div className="lx-lockup-mark" ref={markRef}>
-              <Logo size="xl" collapsed theme="dark" />
-            </div>
+              <Logo size="xl" collapsed theme="dark" />            </div>
             <div className="lx-lockup-type">
               <span className="lx-wordmark">Kynex<em>One</em></span>
               <span className="lx-descriptor">Payroll, HR and compliance</span>
@@ -268,7 +266,6 @@ export function LoginPage() {
                     <Submit busy={busy} label="Send reset code" />
                   </form>
                 )}
-
                 {mode === 'reset' && (
                   <form onSubmit={handleReset} noValidate className="lx-form">
                     <Back onClick={() => go('forgot')} label="Back" />
@@ -402,8 +399,7 @@ function Field({ legend, htmlFor, aside, hint, children }: {
     <div className="lx-field">
       <div className="lx-legend">
         {htmlFor ? <label htmlFor={htmlFor}>{legend}</label> : <span>{legend}</span>}
-        {aside}
-      </div>
+        {aside}      </div>
       {children}
       {hint && <p className="lx-hint">{hint}</p>}
     </div>
@@ -434,8 +430,7 @@ function Feedback({ error, info }: { error: string; info: string }) {
   if (info) return (
     <div className="lx-ok" role="status">
       <CheckCircle2 aria-hidden />
-      <p>{info}</p>
-    </div>
+      <p>{info}</p>    </div>
   );
   return null;
 }

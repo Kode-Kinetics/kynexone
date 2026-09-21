@@ -9,7 +9,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    plan: free
+    plan: starter
     branch: main
     # P0-4/P2-18: single deploy trigger. autoDeploy is OFF so the ONLY path to production is the
     # CI-gated Render deploy hook (.github/workflows/ci.yml → deploy-backend), which fires only
@@ -24,10 +24,24 @@ services:
     # ── DB MIGRATIONS ON DEPLOY (P0-4) ──────────────────────────────────────────────
     # Migrations are applied by the CI `migrate-backend` job (dotnet ef database update against the
     # production DB) which the deploy hook depends on — so schema is always ahead of code.
-    # Render's native `preDeployCommand: dotnet Zayra.Api.dll --migrate` is the preferred mechanism
-    # and should be enabled once the WEB service is bumped to a Starter instance (pre-deploy commands
-    # are not available on plan:free). Until then, the CI migrate step + the /health/ready gate above
-    # are the enforced controls. See docs/DEPLOY_ROLLBACK_RUNBOOK.md.
+    # ENABLED 2026-09-17 (service moved to Starter, $7/mo — pre-deploy commands need a paid plan).
+    # Render runs this AFTER the new image builds but BEFORE any traffic shifts to it, and aborts
+    # the deploy if it exits non-zero. That ties migrations to the deploy itself and fixes the
+    # failure mode the CI `migrate-backend` job had: `concurrency: cancel-in-progress` in ci.yml
+    # could cancel a migrate job waiting on the `production` environment approval while the deploy
+    # still went ahead, putting new code on an old schema (42P01 relation does not exist).
+    #
+    # Program.cs:779-812 — `--migrate` applies EF migrations then returns, exiting 0.
+    # PRECONDITION: the builder-time seed-admin/JWT fail-fast guards (Program.cs:159) run on this
+    # invocation too, so SeedAdmin__Password and Jwt__SigningKey must be set or the pre-deploy job
+    # fails and blocks the deploy. Both are `sync: false` below and are already set in the
+    # dashboard — the web service could not boot otherwise.
+    #
+    # NOTE: this blueprint is NOT reliably synced to the live service (live autoDeploy has been on
+    # while this file said off), so confirm the command is actually present in the Render dashboard.
+    # The CI migrate step + the /health/ready gate remain as defence in depth; migrations are
+    # idempotent, so running both is safe. See docs/DEPLOY_ROLLBACK_RUNBOOK.md.
+    preDeployCommand: dotnet Zayra.Api.dll --migrate
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
         value: Production
@@ -116,16 +130,30 @@ services:
       - key: CORS_EXTRA_ORIGINS
         value: ""
 
-      # AI provider — set to "none" to disable AI features entirely.
+      # AI provider. "none" disables AI entirely; "ollama" uses Ollama Cloud.
+      # The live service runs Ollama Cloud, so this must NOT say "none" — a blueprint
+      # sync would silently switch the assistant off and the product would correctly
+      # report enabled=false with nobody having asked for that.
       - key: AI_PROVIDER
-        value: none
+        value: ollama
+      # Ollama Cloud base URL. AiAdvisoryService trusts AI_PROVIDER=ollama without
+      # checking this, so an empty value means a 100s hang against localhost:11434.
+      - key: OLLAMA_BASE_URL
+        value: https://ollama.com
+      # Secrets — set in the Render dashboard, never in the blueprint.
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: AI_MODEL
+        sync: false
 
       # ── DOCUMENT STORAGE (P0-5) ─────────────────────────────────────────────────────
-      # The dyno filesystem is EPHEMERAL on plan:free — LocalDocumentStorage would lose every
-      # uploaded compliance document (offer letters, IDs, contracts) on each restart/redeploy,
-      # breaking KSA/GOSI statutory retention. The app FAILS FAST at boot in Production unless a
-      # durable S3-compatible backend is configured (DocumentStorageRegistration.ResolveAndValidate).
-      # This keeps plan:free — documents live in object storage, not on the dyno disk.
+      # The dyno filesystem is EPHEMERAL on EVERY Render plan without a mounted persistent disk,
+      # not just on free — LocalDocumentStorage would lose every uploaded compliance document
+      # (offer letters, IDs, contracts) on each restart/redeploy, breaking KSA/GOSI statutory
+      # retention. The app FAILS FAST at boot in Production unless a durable S3-compatible backend
+      # is configured (DocumentStorageRegistration.ResolveAndValidate).
+      # Do NOT revert this now that the service is on a paid plan: leaving free did not make the
+      # filesystem durable. Documents live in object storage, not on the dyno disk.
       #
       # PDPL/GDPR RESIDENCY: pin the bucket to an APPROVED GCC/KSA (or adequacy) jurisdiction.
       # Set Storage__Region/Storage__Endpoint to that region's endpoint — do NOT leave a generic

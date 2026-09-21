@@ -12,7 +12,7 @@
  */
 import { test, expect } from '@playwright/test';
 import {
-  stackDownReason,
+  assertStackReachable,
   newApi,
   tryPlatformApiLogin,
   tryApiLogin,
@@ -47,8 +47,7 @@ async function findTenantBySlug(slug: string): Promise<any | null> {
 
 test.describe('Group→Company: platform admin', () => {
   test.beforeAll(async () => {
-    skipReason = await stackDownReason();
-    if (skipReason) return;
+    await assertStackReachable();   // hard-fails when the stack is down; never skips
     const api = await newApi();
     try {
       const login = await tryPlatformApiLogin(api);

@@ -272,7 +272,7 @@ export default function LeadsPage() {
               <button
                 type="button"
                 onClick={() => router.push('/platform/tenants')}
-                className="ml-2 underline hover:text-emerald-300 transition-colors"
+                className="ms-2 underline hover:text-emerald-300 transition-colors"
               >
                 View Tenants →
               </button>
@@ -311,7 +311,7 @@ export default function LeadsPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Company', 'Contact', 'Status', 'Source', 'Created', ''].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>

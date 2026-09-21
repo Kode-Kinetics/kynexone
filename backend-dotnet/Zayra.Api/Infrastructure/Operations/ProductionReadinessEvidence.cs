@@ -15,8 +15,12 @@ public static class ProductionReadinessEvidence
     public static async Task<ReadinessEvidence> BuildReadinessAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct)
     {
         var dbProbe = await ProbeDatabaseAsync(db, ct);
-        var tenantCount = dbProbe.Healthy ? await db.Tenants.AsNoTracking().CountAsync(ct) : 0;
-        var activeTenantCount = dbProbe.Healthy ? await db.Tenants.AsNoTracking().CountAsync(x => x.IsActive, ct) : 0;
+        var tenantCounts = dbProbe.Healthy
+            ? await db.Tenants.AsNoTracking()
+                .GroupBy(_ => 1)
+                .Select(g => new { Total = g.Count(), Active = g.Count(x => x.IsActive) })
+                .FirstOrDefaultAsync(ct)
+            : null;
 
         // P0-4: migration-parity gate. A migration-bearing image deployed against a DB that
         // has NOT yet had `dotnet Zayra.Api.dll --migrate` applied would 42703/42P01 tenant-wide.
@@ -39,8 +43,8 @@ public static class ProductionReadinessEvidence
                 QiwaDependency(config),
                 await SmtpDependencyAsync(db, ct),
                 workers),
-            tenantCount,
-            activeTenantCount,
+            tenantCounts?.Total ?? 0,
+            tenantCounts?.Active ?? 0,
             pendingMigrations,
             queues);
     }
@@ -174,15 +178,30 @@ public static class ProductionReadinessEvidence
         // provider messages, or other customer payloads are returned by readiness/telemetry.
         using var systemScope = SystemScopeContext.Begin();
         var now = DateTime.UtcNow;
+        // Readiness is polled continuously by the load balancer. Keep the seven independent queue
+        // counters in one database command so the health probe does not compete with user requests.
+        var counts = await db.Tenants.AsNoTracking()
+            .Select(_ => new
+            {
+                QiwaPending = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.Pending || x.Status == QiwaSyncLogStatuses.Processing),
+                QiwaDeadLetter = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.DeadLetter),
+                NotificationsPending = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Queued || x.Outcome == DeliveryOutcomes.Sending),
+                NotificationsFailed = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Failed || x.Outcome == DeliveryOutcomes.Unknown),
+                ReportsDue = db.ReportSchedules.Count(x => x.IsActive && !x.IsDeleted && (x.NextRunAtUtc == null || x.NextRunAtUtc <= now)),
+                ReportsFailed = db.ReportExecutionLogs.Count(x => x.Status == "Failed" && x.CreatedAtUtc >= now.AddHours(-24)),
+                ComplianceDue = db.ComplianceReminders.Count(x => x.Status == "Pending" && x.ScheduledAtUtc != null && x.ScheduledAtUtc <= now),
+            })
+            .FirstOrDefaultAsync(ct);
+
         return new QueueHealthEvidence(
             true,
-            await db.QiwaSyncLogs.CountAsync(x => x.Status == QiwaSyncLogStatuses.Pending || x.Status == QiwaSyncLogStatuses.Processing, ct),
-            await db.QiwaSyncLogs.CountAsync(x => x.Status == QiwaSyncLogStatuses.DeadLetter, ct),
-            await db.NotificationDeliveries.CountAsync(x => x.Outcome == DeliveryOutcomes.Queued || x.Outcome == DeliveryOutcomes.Sending, ct),
-            await db.NotificationDeliveries.CountAsync(x => x.Outcome == DeliveryOutcomes.Failed || x.Outcome == DeliveryOutcomes.Unknown, ct),
-            await db.ReportSchedules.CountAsync(x => x.IsActive && !x.IsDeleted && (x.NextRunAtUtc == null || x.NextRunAtUtc <= now), ct),
-            await db.ReportExecutionLogs.CountAsync(x => x.Status == "Failed" && x.CreatedAtUtc >= now.AddHours(-24), ct),
-            await db.ComplianceReminders.CountAsync(x => x.Status == "Pending" && x.ScheduledAtUtc != null && x.ScheduledAtUtc <= now, ct));
+            counts?.QiwaPending ?? 0,
+            counts?.QiwaDeadLetter ?? 0,
+            counts?.NotificationsPending ?? 0,
+            counts?.NotificationsFailed ?? 0,
+            counts?.ReportsDue ?? 0,
+            counts?.ReportsFailed ?? 0,
+            counts?.ComplianceDue ?? 0);
     }
 
     private static async Task<DependencyProbe> ProbeDatabaseAsync(ZayraDbContext db, CancellationToken ct)

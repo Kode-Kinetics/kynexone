@@ -101,7 +101,7 @@ export default function QuoteConvertPage() {
               <span className="text-white font-medium">{quote.companyName}</span> has been converted to a live tenant.
             </p>
           </div>
-          <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl px-6 py-4 w-full text-left space-y-2">
+          <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl px-6 py-4 w-full text-start space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="text-slate-500">Tenant ID</span>
               <span className="text-slate-300 font-mono">{success.tenantId}</span>
@@ -142,12 +142,12 @@ export default function QuoteConvertPage() {
             <h1 className="text-sm font-bold text-white">{quote.companyName}</h1>
             <p className="text-xs text-slate-500">{quote.contactEmail}</p>
           </div>
-          <span className={`ml-auto text-[10px] px-2 py-0.5 rounded font-medium ${quote.status === 'Converted' ? 'bg-emerald-900/50 text-emerald-300' : 'bg-blue-900/50 text-blue-300'}`}>
+          <span className={`ms-auto text-[10px] px-2 py-0.5 rounded font-medium ${quote.status === 'Converted' ? 'bg-emerald-900/50 text-emerald-300' : 'bg-blue-900/50 text-blue-300'}`}>
             {quote.status}
           </span>
         </div>
 
-        <div className="grid grid-cols-3 divide-x divide-white/[0.05] px-1">
+        <div className="grid grid-cols-3 divide-x rtl:divide-x-reverse divide-white/[0.05] px-1">
           {[
             { label: 'Org Type', value: quote.orgType },
             { label: 'Employees', value: quote.numEmployees.toLocaleString() },
@@ -172,7 +172,7 @@ export default function QuoteConvertPage() {
           {quote.convertedToTenantId && (
             <button type="button"
               onClick={() => router.push(`/platform/tenants/${quote.convertedToTenantId}`)}
-              className="ml-auto text-xs text-emerald-400 hover:text-emerald-300 underline whitespace-nowrap">
+              className="ms-auto text-xs text-emerald-400 hover:text-emerald-300 underline whitespace-nowrap">
               View Tenant →
             </button>
           )}

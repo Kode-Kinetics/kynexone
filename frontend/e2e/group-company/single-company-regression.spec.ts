@@ -11,7 +11,7 @@
  */
 import { test, expect } from '@playwright/test';
 import {
-  stackDownReason,
+  assertStackReachable,
   newApi,
   tryApiLogin,
   fetchMe,
@@ -30,8 +30,7 @@ let token: string | null = null;
 
 test.describe('Group→Company: single-company regression', () => {
   test.beforeAll(async () => {
-    skipReason = await stackDownReason();
-    if (skipReason) return;
+    await assertStackReachable();   // hard-fails when the stack is down; never skips
     const api = await newApi();
     try {
       const login = await tryApiLogin(api, DEFAULT_ADMIN_EMAIL, DEFAULT_TENANT_SLUG, DEFAULT_ADMIN_PASSWORD);

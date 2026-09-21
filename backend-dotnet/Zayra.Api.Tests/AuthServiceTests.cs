@@ -798,6 +798,321 @@ public sealed class AuthRefreshTokenSecurityTests
         string Password);
 }
 
+/// <summary>
+/// Regression cover for the P0 that logged every session out 30 minutes after login.
+///
+/// Program.cs registers Npgsql with <c>EnableRetryOnFailure</c>, so the ambient execution strategy
+/// is <c>NpgsqlRetryingExecutionStrategy</c>, which refuses a user-initiated
+/// <c>BeginTransactionAsync</c> unless the whole unit runs inside
+/// <c>Database.CreateExecutionStrategy().ExecuteAsync(...)</c>. AuthService took a bare
+/// transaction, so <c>POST /api/auth/refresh</c> threw
+/// <c>InvalidOperationException("... does not support user-initiated transactions ...")</c> on
+/// every single call and the API returned HTTP 400.
+///
+/// <para>The pre-existing <see cref="AuthRefreshTokenSecurityTests"/> missed it because
+/// <c>PostgresFixture.CreateDb()</c> does NOT enable retry — with no retrying strategy a bare
+/// transaction is perfectly legal. These tests therefore build their contexts with
+/// <see cref="CreateRetryingDb"/>, matching production, which is the only configuration that can
+/// catch this class of defect.</para>
+/// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
+public sealed class AuthRetryingExecutionStrategyTests
+{
+    private readonly PostgresFixture _fixture;
+    private static readonly RequestContext Context = new("203.0.113.11", "retry-strategy-tests");
+
+    public AuthRetryingExecutionStrategyTests(PostgresFixture fixture) => _fixture = fixture;
+
+    /// <summary>Production's provider configuration: Npgsql + EnableRetryOnFailure.</summary>
+    private ZayraDbContext CreateRetryingDb() => new(
+        new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fixture.ConnectionString, o => o.EnableRetryOnFailure(maxRetryCount: 3))
+            .Options);
+
+    [Fact]
+    public async Task RefreshAsync_UnderRetryingStrategy_ReturnsRotatedPairInsteadOfFailing()
+    {
+        var seeded = await SeedUserAsync();
+
+        string originalToken;
+        await using (var loginDb = CreateRetryingDb())
+        {
+            var login = await NoStrategyConflict(() => BuildService(loginDb).LoginAsync(
+                new LoginRequest(seeded.Email, seeded.Password, seeded.TenantSlug),
+                Context,
+                CancellationToken.None));
+            originalToken = login.Tokens!.RefreshToken;
+        }
+
+        AuthResponse refreshed;
+        await using (var refreshDb = CreateRetryingDb())
+        {
+            refreshed = await NoStrategyConflict(() => BuildService(refreshDb).RefreshAsync(
+                new RefreshTokenRequest(originalToken), Context, CancellationToken.None));
+        }
+
+        // A real rotated pair, not an echo of the presented credential.
+        Assert.False(string.IsNullOrWhiteSpace(refreshed.AccessToken));
+        Assert.False(string.IsNullOrWhiteSpace(refreshed.RefreshToken));
+        Assert.NotEqual(originalToken, refreshed.RefreshToken);
+
+        await using var verify = _fixture.CreateDb();
+        var tokens = await verify.RefreshTokens.AsNoTracking()
+            .Where(x => x.UserId == seeded.UserId)
+            .ToListAsync();
+        Assert.Equal(2, tokens.Count);
+        var parent = Assert.Single(tokens, x => x.TokenHash == HashToken(originalToken));
+        var descendant = Assert.Single(tokens, x => x.TokenHash == HashToken(refreshed.RefreshToken));
+        Assert.NotNull(parent.RevokedAtUtc);
+        Assert.Equal(descendant.TokenHash, parent.ReplacedByTokenHash);
+        Assert.Null(descendant.RevokedAtUtc);
+        Assert.Equal(parent.FamilyId, descendant.FamilyId);
+        // Rotation must not extend the absolute session lifetime.
+        Assert.Equal(parent.ExpiresAtUtc, descendant.ExpiresAtUtc);
+        // The whole unit committed, audit row included.
+        Assert.True(await verify.AuditLogs.AnyAsync(x =>
+            x.TenantId == seeded.TenantId && x.Action == "auth.refresh"));
+    }
+
+    [Fact]
+    public async Task RefreshAsync_UnderRetryingStrategy_RepeatedRotationKeepsWorking()
+    {
+        // 30 minutes of a demo is several rotations, and each one runs through the strategy.
+        var seeded = await SeedUserAsync();
+
+        await using var db = CreateRetryingDb();
+        var auth = BuildService(db);
+        var login = await NoStrategyConflict(() => auth.LoginAsync(
+            new LoginRequest(seeded.Email, seeded.Password, seeded.TenantSlug), Context, CancellationToken.None));
+
+        var current = login.Tokens!.RefreshToken;
+        var seen = new List<string> { current };
+        for (var i = 0; i < 3; i++)
+        {
+            var next = await NoStrategyConflict(() => auth.RefreshAsync(
+                new RefreshTokenRequest(current), Context, CancellationToken.None));
+            current = next.RefreshToken;
+            Assert.DoesNotContain(current, seen);
+            seen.Add(current);
+        }
+
+        await using var verify = _fixture.CreateDb();
+        var tokens = await verify.RefreshTokens.AsNoTracking()
+            .Where(x => x.UserId == seeded.UserId)
+            .ToListAsync();
+        Assert.Equal(4, tokens.Count);
+        Assert.Single(tokens.Select(x => x.FamilyId).Distinct());
+        // Exactly one live token — the newest; every ancestor consumed.
+        var active = Assert.Single(tokens, x => x.RevokedAtUtc == null);
+        Assert.Equal(HashToken(current), active.TokenHash);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_UnderRetryingStrategy_ReplayedAncestorStillRevokesFamily()
+    {
+        // Covers RevokeRefreshTokenFamilyForReuseAsync, which took its own bare transaction. Under
+        // the retrying strategy the replay path threw the execution-strategy error instead of
+        // killing the stolen lineage, so a replayed token was neither revoked nor audited — and the
+        // caller saw HTTP 400 rather than 401.
+        var seeded = await SeedUserAsync();
+
+        string ancestor;
+        await using (var db = CreateRetryingDb())
+        {
+            var auth = BuildService(db);
+            var login = await NoStrategyConflict(() => auth.LoginAsync(
+                new LoginRequest(seeded.Email, seeded.Password, seeded.TenantSlug), Context, CancellationToken.None));
+            ancestor = login.Tokens!.RefreshToken;
+            var child = await NoStrategyConflict(() => auth.RefreshAsync(
+                new RefreshTokenRequest(ancestor), Context, CancellationToken.None));
+            await NoStrategyConflict(() => auth.RefreshAsync(
+                new RefreshTokenRequest(child.RefreshToken), Context, CancellationToken.None));
+        }
+
+        await using (var replayDb = CreateRetryingDb())
+        {
+            var replay = await Record.ExceptionAsync(() => BuildService(replayDb).RefreshAsync(
+                new RefreshTokenRequest(ancestor), Context, CancellationToken.None));
+            AssertNotStrategyConflict(replay);
+            // The designed response to a replayed credential: 401, never 400.
+            Assert.IsType<UnauthorizedAccessException>(replay);
+        }
+
+        await using var verify = _fixture.CreateDb();
+        var tokens = await verify.RefreshTokens.AsNoTracking()
+            .Where(x => x.UserId == seeded.UserId)
+            .ToListAsync();
+        Assert.Equal(3, tokens.Count);
+        Assert.Single(tokens.Select(x => x.FamilyId).Distinct());
+        // Whole lineage terminated, including the previously-live descendant.
+        Assert.DoesNotContain(tokens, x => x.RevokedAtUtc == null);
+        var reuseAudit = await verify.AuditLogs.AsNoTracking().SingleAsync(x =>
+            x.TenantId == seeded.TenantId && x.Action == "auth.refresh_reuse_detected");
+        Assert.Contains(tokens[0].FamilyId.ToString("D"), reuseAudit.Metadata);
+    }
+
+    [Fact]
+    public async Task AcceptInvitationAsync_UnderRetryingStrategy_ConsumesInvitationAndIssuesSession()
+    {
+        // The third bare-transaction site. Under the retrying strategy every
+        // POST /api/auth/accept-invitation returned HTTP 400, so no invited employee could ever
+        // set a password.
+        var seeded = await SeedUserAsync();
+        const string invitationToken = "retry-strategy-invitation-token";
+
+        await using (var seedDb = _fixture.CreateDb())
+        {
+            seedDb.EmployeeUserAccounts.Add(new EmployeeUserAccount
+            {
+                TenantId = seeded.TenantId,
+                EmployeeId = 4242,
+                UserId = seeded.UserId,
+                AccessMode = AccessModes.EssOnly,
+                Status = "Invited",
+                RequiresPasswordSetup = true,
+                InvitationTokenHash = HashToken(invitationToken),
+                InvitationExpiresAtUtc = DateTime.UtcNow.AddHours(1)
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        AuthResponse accepted;
+        await using (var acceptDb = CreateRetryingDb())
+        {
+            accepted = await NoStrategyConflict(() => BuildService(acceptDb).AcceptInvitationAsync(
+                new AcceptInvitationRequest(seeded.Email, invitationToken, "NewPassword1!", seeded.TenantSlug),
+                Context,
+                CancellationToken.None));
+        }
+
+        Assert.False(string.IsNullOrWhiteSpace(accepted.AccessToken));
+        Assert.False(string.IsNullOrWhiteSpace(accepted.RefreshToken));
+
+        await using var verify = _fixture.CreateDb();
+        var link = await verify.EmployeeUserAccounts.AsNoTracking()
+            .SingleAsync(x => x.UserId == seeded.UserId);
+        Assert.Equal(string.Empty, link.InvitationTokenHash);
+        Assert.Null(link.InvitationExpiresAtUtc);
+        Assert.NotNull(link.InvitationAcceptedAtUtc);
+        Assert.False(link.RequiresPasswordSetup);
+        Assert.Equal("Active", link.Status);
+        // The session created inside the same unit committed with it.
+        var issued = await verify.RefreshTokens.AsNoTracking()
+            .SingleAsync(x => x.UserId == seeded.UserId && x.TokenHash == HashToken(accepted.RefreshToken));
+        Assert.Null(issued.RevokedAtUtc);
+        Assert.True(await verify.AuditLogs.AnyAsync(x =>
+            x.TenantId == seeded.TenantId && x.Action == "auth.invitation_accepted"));
+    }
+
+    // ── Failure reporting ─────────────────────────────────────────────────────
+    // The defect surfaced as InvalidOperationException, which AuthController's
+    // UnauthorizedAccessException handler does not catch, so it fell through to the generic
+    // handler as HTTP 400. Name it explicitly so a reintroduction is unmistakable.
+    private const string ConflictFragment = "does not support user-initiated transactions";
+
+    private static async Task<T> NoStrategyConflict<T>(Func<Task<T>> operation)
+    {
+        try
+        {
+            return await operation();
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains(ConflictFragment))
+        {
+            Assert.Fail(
+                "REGRESSION: a bare BeginTransactionAsync is back under the retrying execution " +
+                "strategy. Every /api/auth/refresh call will return HTTP 400 and log users out. " +
+                $"Wrap the unit in Database.CreateExecutionStrategy().ExecuteAsync(...). Original: {ex.Message}");
+            throw;
+        }
+    }
+
+    private static void AssertNotStrategyConflict(Exception? ex)
+    {
+        if (ex is InvalidOperationException invalid && invalid.Message.Contains(ConflictFragment))
+            Assert.Fail(
+                "REGRESSION: the refresh-token reuse path took a bare BeginTransactionAsync under " +
+                $"the retrying execution strategy, so the stolen family was never revoked. Original: {invalid.Message}");
+    }
+
+    private async Task<SeededAuthUser> SeedUserAsync()
+    {
+        await using var db = _fixture.CreateDb();
+        const string password = "CorrectPassword1!";
+        var tenantId = Guid.NewGuid();
+        var slug = $"retry-{Guid.NewGuid():N}";
+        var email = $"retry-{Guid.NewGuid():N}@example.test";
+        var tenant = new Tenant { Id = tenantId, Name = "Retry Strategy Tenant", Slug = slug };
+        var permission = new Permission
+        {
+            Id = Guid.NewGuid(),
+            Key = $"dashboard.read.{Guid.NewGuid():N}",
+            Module = "Dashboard",
+            Description = "Read"
+        };
+        var role = new Role
+        {
+            Id = Guid.NewGuid(),
+            TenantId = tenantId,
+            Tenant = tenant,
+            Name = "Admin",
+            NormalizedName = "ADMIN",
+            Description = "Admin"
+        };
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            TenantId = tenantId,
+            Tenant = tenant,
+            Email = email,
+            NormalizedEmail = email.ToUpperInvariant(),
+            FullName = "Retry Strategy Admin",
+            PasswordHash = new Pbkdf2PasswordHasher().Hash(password)
+        };
+        db.Tenants.Add(tenant);
+        db.SecuritySettings.Add(new SecuritySetting { Id = Guid.NewGuid(), TenantId = tenantId });
+        db.Permissions.Add(permission);
+        db.Roles.Add(role);
+        db.RolePermissions.Add(new RolePermission { RoleId = role.Id, PermissionId = permission.Id });
+        db.Users.Add(user);
+        db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
+        await db.SaveChangesAsync();
+        return new SeededAuthUser(tenantId, user.Id, slug, email, password);
+    }
+
+    private static AuthService BuildService(ZayraDbContext db, IAuditService? audit = null)
+    {
+        var jwt = Options.Create(new JwtOptions
+        {
+            Issuer = "Zayra.Tests",
+            TenantAudience = "kynexone-tenant-test",
+            PlatformAudience = "kynexone-platform-test",
+            SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_AUTH_TESTS",
+            AccessTokenMinutes = 30,
+            RefreshTokenDays = 7
+        });
+        return new AuthService(
+            db,
+            new Pbkdf2PasswordHasher(),
+            new JwtTokenService(jwt),
+            audit ?? new AuditService(db),
+            new FakeEmailService(),
+            jwt,
+            new NullMfaService(),
+            NullLogger<AuthService>.Instance);
+    }
+
+    private static string HashToken(string token) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
+
+    private sealed record SeededAuthUser(
+        Guid TenantId,
+        Guid UserId,
+        string TenantSlug,
+        string Email,
+        string Password);
+}
+
 file sealed class ThrowingRefreshAuditService : IAuditService
 {
     public Task WriteAsync(

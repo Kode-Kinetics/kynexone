@@ -30,6 +30,7 @@ import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { payrollApi } from '../api/payroll';
 import type { PayrollRun } from '../api/payroll';
+import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
@@ -228,13 +229,13 @@ function GroupContextBar({
       {(companyId || branchId) && (
         <button
           type="button"
-          className="ml-1 text-xs text-slate-400 underline hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+          className="ms-1 text-xs text-slate-400 underline hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
           onClick={() => { onCompanyChange(''); onBranchChange(''); }}
         >
           Clear
         </button>
       )}
-      <span className="ml-auto text-[11px] text-slate-400 dark:text-slate-500">
+      <span className="ms-auto text-[11px] text-slate-400 dark:text-slate-500">
         {companyId
           ? (branchId
             ? branches.find(b => b.id === branchId)?.nameEn ?? 'Branch'
@@ -278,18 +279,21 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
           {onLeave.length === 0 ? (
             <p className="text-sm text-slate-400">No employees on leave today.</p>
           ) : (
-            <div className="space-y-3">
+            // A real list of employee records, so marked up as one. Every other module renders its
+            // records as a <table>; Leave was the only one building record lists out of anonymous
+            // <div>s, which left assistive technology with no list or item semantics at all.
+            <ul className="space-y-3">
               {onLeave.slice(0, 6).map((e, i) => (
-                <div key={i} className="flex items-center gap-3">
+                <li key={`${e.employeeId}-${e.startDate}-${i}`} data-id={e.employeeId} className="flex items-center gap-3">
                   <LeaveColorDot color={e.colorCode || '#2F6BFF'} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{e.employeeName}</p>
                     <p className="text-xs text-slate-400">{e.departmentName} · {e.leaveTypeName}</p>
                   </div>
                   <span className="text-xs tabular-nums text-slate-400">{e.totalDays}d</span>
-                </div>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
         </div>
 
@@ -301,17 +305,17 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
           {pending.length === 0 ? (
             <p className="text-sm text-slate-400">No pending approvals.</p>
           ) : (
-            <div className="space-y-3">
+            <ul className="space-y-3">
               {pending.map(r => (
-                <div key={r.id} className="flex items-start justify-between gap-2">
+                <li key={r.id} data-id={r.id} className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.employeeName}</p>
                     <p className="text-xs text-slate-400">{r.leaveTypeName} · {fmtDate(r.startDate)} – {fmtDate(r.endDate)}</p>
                   </div>
                   <span className="shrink-0 text-xs font-semibold text-amber-600 dark:text-amber-400">{r.totalDays}d</span>
-                </div>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
         </div>
 
@@ -327,10 +331,10 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
               ['Leave Insights', 'ai-insights', Zap],
             ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, t, Icon]) => (
               <button key={t} type="button" onClick={() => onNavigate(t)}
-                className="flex w-full items-center gap-3 rounded-lg p-2.5 text-left hover:bg-slate-50 dark:hover:bg-white/5">
+                className="flex w-full items-center gap-3 rounded-lg p-2.5 text-start hover:bg-slate-50 dark:hover:bg-white/5">
                 <Icon className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" />
                 <span className="text-sm text-slate-700 dark:text-slate-300">{label}</span>
-                <ChevronRight className="ml-auto h-3.5 w-3.5 text-slate-300" />
+                <ChevronRight className="ms-auto h-3.5 w-3.5 text-slate-300" />
               </button>
             ))}
           </div>
@@ -383,7 +387,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
           {[year - 1, year, year + 1].map(y => <option key={y} value={y}>{y}</option>)}
         </select>
         {!selfEmployeeId && <button type="button" className={btn.primary} onClick={load}>Search</button>}
-        <p className="ml-auto text-sm text-slate-400">{balances.length} balance{balances.length !== 1 ? 's' : ''}</p>
+        <p className="ms-auto text-sm text-slate-400">{balances.length} balance{balances.length !== 1 ? 's' : ''}</p>
       </div>
 
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : balances.length === 0 ? (
@@ -666,7 +670,7 @@ function MyRequestsTab() {
           ))}
         </select>
         <p className="text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
-        <div className="ml-auto">
+        <div className="ms-auto">
           <ImportExportToolbar
             entityName="Leave Requests"
             onExport={leaveRequestsImportExport.export}
@@ -850,7 +854,7 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
             const isToday = day !== null && day === today.getDate() && month === today.getMonth() && calYear === today.getFullYear();
             const dayEntries = day !== null ? entriesForDay(day) : [];
             return (
-              <div key={i} className={`min-h-[80px] border-b border-r border-slate-100 p-1.5 dark:border-white/5 ${!day ? 'bg-slate-50/50 dark:bg-white/[0.02]' : ''}`}>
+              <div key={i} className={`min-h-[80px] border-b border-e border-slate-100 p-1.5 dark:border-white/5 ${!day ? 'bg-slate-50/50 dark:bg-white/[0.02]' : ''}`}>
                 {day && (
                   <>
                     <span className={`text-xs font-medium ${isToday ? 'flex h-5 w-5 items-center justify-center rounded-full bg-sapphire text-white' : 'text-slate-600 dark:text-slate-400'}`}>{day}</span>
@@ -1001,8 +1005,10 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
     appliesOnProbation: existing?.appliesOnProbation ?? false,
     annualEntitlementDays: existing?.annualEntitlementDays ?? 21,
     accrualMethod: existing?.accrualMethod ?? 'Monthly',
-    carryForwardMax: existing?.carryForwardMax ?? 0,
-    carryForwardExpiry: existing?.carryForwardExpiry ?? 0,
+    // Pinned to 0, not echoed from the stored policy: a legacy row may hold a cap that was never
+    // applied, and sending it back would make every edit of that policy fail the API's refusal.
+    carryForwardMax: 0,
+    carryForwardExpiry: 0,
     encashmentAllowed: existing?.encashmentAllowed ?? false,
     encashmentMaxDays: existing?.encashmentMaxDays ?? 0,
     minimumDaysPerRequest: existing?.minimumDaysPerRequest ?? 1,
@@ -1075,7 +1081,12 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
                 {['Monthly', 'Yearly', 'Prorated'].map(m => <option key={m}>{m}</option>)}
               </select>
             </Field>
-            <Field label="Carry-Forward Max (0=none)"><input type="number" step="0.5" className={inp} value={form.carryForwardMax} onChange={e => set('carryForwardMax', Number(e.target.value))} /></Field>
+            {/* "Carry-Forward Max" was removed, not hidden. There is no leave year-end process of
+                any kind — no accrual job, no roll-over job, no expiry job — so a cap entered here
+                was stored, read back on screen, and consulted by nothing: on 1 January no balance
+                moved. The API now refuses a non-zero cap (leave_carry_forward_not_implemented), so
+                offering the input would only produce an error the client cannot act on. It comes
+                back in the same change that builds the year-end job. */}
           </div>
         </div>
 
@@ -1314,7 +1325,10 @@ function HolidayCalendarTab() {
       date: toInputDate(h.date),
       hijriDate: h.hijriDate ?? '',
       holidayType: h.holidayType ?? 'National',
-      isRecurring: h.isRecurring ?? false,
+      // Always false, never h.isRecurring: a legacy row may carry the flag, and echoing it back
+      // would make every edit of that holiday fail the API's refusal. Clearing it on the next save
+      // is the honest outcome — the holiday never recurred.
+      isRecurring: false,
       isOptional: h.isOptional ?? false,
     });
     setHolidayModal('edit');
@@ -1350,11 +1364,11 @@ function HolidayCalendarTab() {
               {calendars.map(c => (
                 <div key={c.id}
                   className={`group flex items-start justify-between rounded-lg p-3 transition ${selected?.id === c.id ? 'bg-sapphire/10 dark:bg-sapphire/20' : 'hover:bg-slate-50 dark:hover:bg-white/5'}`}>
-                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setSelected(c)}>
+                  <button type="button" className="min-w-0 flex-1 text-start" onClick={() => setSelected(c)}>
                     <p className={`text-sm font-medium truncate ${selected?.id === c.id ? 'text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}>{c.name}</p>
                     <p className="text-xs text-slate-400">{c.countryCode} · {c.calendarYear}</p>
                   </button>
-                  <div className="ml-1 flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="ms-1 flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button type="button" title="Edit calendar" className="rounded p-1 text-slate-400 hover:text-sapphire dark:hover:text-cyanAccent" onClick={() => { setSelected(c); openEditCal(c); }}>
                       <Settings className="h-3 w-3" />
                     </button>
@@ -1391,7 +1405,9 @@ function HolidayCalendarTab() {
                         {h.hijriDate && <span className="text-xs text-slate-400">({h.hijriDate} Hijri)</span>}
                         <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-white/10">{h.holidayType}</span>
                         {h.isOptional && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Optional</span>}
-                        {h.isRecurring && <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">Recurring</span>}
+                        {/* The "Recurring" badge is gone with the checkbox: it was the visible half
+                            of the promise. A holiday marked recurring on a legacy row still never
+                            rolled forward, so showing the badge would keep asserting it. */}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
@@ -1484,10 +1500,12 @@ function HolidayCalendarTab() {
               </select>
             </Field>
             <div className="flex gap-4">
-              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                <input type="checkbox" checked={holidayForm.isRecurring} onChange={e => setHolidayForm(f => ({ ...f, isRecurring: e.target.checked }))} className="rounded" />
-                Recurring
-              </label>
+              {/* The "Recurring" checkbox was removed. Nothing has ever expanded a recurring
+                  holiday into the next year: calendars are per CalendarYear and no scheduled job
+                  exists that could roll one forward. Ticking it promised a rollover that never
+                  happened, and next January's calendar arrived empty with every leave working-day
+                  count wrong from day one. The API now refuses it
+                  (holiday_recurrence_not_implemented). */}
               <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                 <input type="checkbox" checked={holidayForm.isOptional} onChange={e => setHolidayForm(f => ({ ...f, isOptional: e.target.checked }))} className="rounded" />
                 Optional
@@ -1819,7 +1837,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                 <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{r.employeeName}</p>
                 <p className="text-xs text-slate-400">{r.departmentName} · {r.leaveTypeName}</p>
               </div>
-              <div className="text-right">
+              <div className="text-end">
                 <p className="text-xs text-slate-500">{fmtDate(r.startDate)} – {fmtDate(r.endDate)}</p>
                 <p className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{r.totalDays}d</p>
               </div>
@@ -1839,7 +1857,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                   <div className="flex-1 rounded-full bg-slate-100 dark:bg-white/10">
                     <div className="h-2 rounded-full bg-amber-400" style={{ width: `${Math.min(100, (m.totalDays / Math.max(...sickTrend.map(x => x.totalDays), 1)) * 100)}%` }} />
                   </div>
-                  <span className="w-20 text-right text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{m.totalDays}d / {m.count}</span>
+                  <span className="w-20 text-end text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{m.totalDays}d / {m.count}</span>
                 </div>
               ))}
             </div>
@@ -2016,18 +2034,15 @@ export function LeavePage() {
         />
       )}
 
-      <div className="overflow-x-auto pb-1">
-        <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]" style={{ width: 'max-content' }}>
-          {visibleTabs.map(tb => (
-            <button key={tb.id} type="button" onClick={() => setTab(tb.id)}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition ${tab === tb.id ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>
-              <tb.icon className="h-3.5 w-3.5" />
-              {t(tb.label)}
-            </button>
-          ))}
-        </div>
-      </div>
+      <RovingTabList
+        items={visibleTabs.map(({ id, label, icon }) => ({ id, label: t(label), icon }))}
+        activeId={tab}
+        onChange={setTab}
+        idPrefix="leave"
+        label="Leave and absence sections"
+      />
 
+      <TabPanel idPrefix="leave" tabId={tab}>
       {tab === 'dashboard'  && <DashboardTab onNavigate={setTab} groupFilter={groupFilter} />}
       {tab === 'balance'    && <BalanceTab selfEmployeeId={isEmployee ? selfEmployeeId : undefined} groupFilter={groupFilter} />}
       {tab === 'apply'      && <ApplyLeaveTab selfEmployeeId={isEmployee ? selfEmployeeId : undefined} isEmployee={isEmployee} />}
@@ -2042,6 +2057,7 @@ export function LeavePage() {
       {tab === 'absences'   && <AbsencesTab groupFilter={groupFilter} />}
       {tab === 'reports'    && <ReportsTab groupFilter={groupFilter} />}
       {tab === 'ai-insights'&& <AIInsightsTab />}
+      </TabPanel>
     </div>
   );
 }

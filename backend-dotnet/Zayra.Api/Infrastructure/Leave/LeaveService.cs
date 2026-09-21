@@ -1,8 +1,13 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
@@ -11,15 +16,89 @@ namespace Zayra.Api.Infrastructure.Leave;
 public class LeaveService : ILeaveService
 {
     private readonly ZayraDbContext _db;
-    private readonly IApprovalPolicyService _policyService;
+    private readonly IApprovalRouter _router;
     private readonly IWorkWeekService _workWeek;
+    private readonly IStatutoryRuleReader _rules;
 
-    public LeaveService(ZayraDbContext db, IApprovalPolicyService policyService, IWorkWeekService? workWeek = null)
+    public LeaveService(ZayraDbContext db, IApprovalRouter router, IWorkWeekService? workWeek = null)
     {
         _db = db;
-        _policyService = policyService;
+        _router = router;
         // Optional so existing callers/tests keep working; DI always supplies the real one.
         _workWeek = workWeek ?? new WorkWeekService(db);
+        // Constructed rather than injected for the same reason: this service is hand-constructed in
+        // several call sites and tests, and widening the ctor would break all of them.
+        // StatutoryRuleReader memoizes per instance, which is what we want for an accrual sweep.
+        _rules = new StatutoryRuleReader(db);
+    }
+
+    // ── KSA statutory leave (Royal Decree M/51 Art. 109 and Art. 117) ────────────────────────────
+    // Both statutes are FLOORS, so everything below can only ever raise entitlement or leave it
+    // alone; a tenant's own policy is honoured wherever it is more generous than statute.
+
+    /// <summary>
+    /// True when this employee's legal entity is a KSA company. Accepts ISO-2 ("SA") and ISO-3
+    /// ("SAU") because the product stores both: <c>Company.CountryCode</c> is canonically ISO-2 while
+    /// <c>StatutoryRule.CountryCode</c> is seeded ISO-3 (<see cref="CountryCodes.Saudi"/>). Rules are
+    /// always READ on the ISO-3 constant, so this resolver is correct whichever way the company row
+    /// is stored. [NOTE] That ISO-2/ISO-3 split is a pre-existing hazard elsewhere — see the report.
+    /// </summary>
+    internal static bool IsKsaCountry(string? countryCode)
+    {
+        var cc = (countryCode ?? string.Empty).Trim();
+        return cc.Equals("SA", StringComparison.OrdinalIgnoreCase)
+            || cc.Equals("SAU", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The employee's legal-entity country code, or empty when unresolvable.</summary>
+    private async Task<string> ResolveEmployeeCountryAsync(Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        // The company filter must be dropped, and it goes through ScopedBypass rather than a raw
+        // .IgnoreQueryFilters() so the tenant predicate is re-applied for us and the intent is in the
+        // type system rather than in a comment.
+        var companies = ScopedBypass.TenantWide(_db.Companies, tenantId,
+            "Resolving an employee's legal entity in order to select the statutory country pack is a "
+            + "SYSTEM/config read. It must succeed regardless of the approving user's own company "
+            + "claims, because whether KSA Art.109 and Art.117 apply is a property of the EMPLOYER's "
+            + "jurisdiction, not of the caller's permissions — an HR approver scoped to one entity "
+            + "must not cause a different entity's employee to be paid off the wrong statutory scale. "
+            + "Only the country code is projected; no company data crosses the boundary.")
+            .AsNoTracking();
+
+        return await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.Id == employeeId)
+            .Join(companies, e => e.CompanyId, c => (Guid?)c.Id, (e, c) => c.CountryCode)
+            .FirstOrDefaultAsync(ct) ?? string.Empty;
+    }
+
+    private Task<decimal> KsaDecimalAsync(string key, decimal fallback, DateOnly on, CancellationToken ct)
+        => KsaDecimalCoreAsync(key, fallback, on, ct);
+
+    private async Task<decimal> KsaDecimalCoreAsync(string key, decimal fallback, DateOnly on, CancellationToken ct)
+        => await _rules.GetDecimalAsync(CountryCodes.Saudi, Jurisdictions.KsaMainland, key, on, null, ct) ?? fallback;
+
+    /// <summary>
+    /// KSA Art. 109(1) statutory annual-leave days for an employee at a point in time:
+    /// 21 days, rising to 30 once five consecutive years of service are complete.
+    /// Returns null when the employee is not on a KSA entity or has no usable joining date.
+    /// </summary>
+    private async Task<decimal?> ResolveKsaAnnualEntitlementAsync(
+        string? countryCode, DateTime joiningDate, DateOnly on, CancellationToken ct)
+    {
+        if (!IsKsaCountry(countryCode)) return null;
+        if (joiningDate == default) return null;
+
+        var serviceStart = DateOnly.FromDateTime(joiningDate);
+        var years = KsaAnnualLeaveScale.ContinuousServiceYears(serviceStart, on);
+
+        var baseDays = await KsaDecimalAsync(
+            KsaLeaveHoursRuleKeys.AnnualLeaveBaseDays, KsaLeaveHoursDefaults.AnnualLeaveBaseDays, on, ct);
+        var tieredDays = await KsaDecimalAsync(
+            KsaLeaveHoursRuleKeys.AnnualLeaveTieredDays, KsaLeaveHoursDefaults.AnnualLeaveTieredDays, on, ct);
+        var threshold = await KsaDecimalAsync(
+            KsaLeaveHoursRuleKeys.AnnualLeaveTierThresholdYears, KsaLeaveHoursDefaults.AnnualLeaveTierThresholdYears, on, ct);
+
+        return KsaAnnualLeaveScale.EntitlementDays(years, baseDays, tieredDays, threshold);
     }
 
     /// <summary>
@@ -132,7 +211,7 @@ public class LeaveService : ILeaveService
         var currentYear = accrualMonth.Year;
         var employees = await _db.Employees
             .Where(e => e.TenantId == tenantId && e.Status == "Active")
-            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender })
+            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender, e.JoiningDate })
             .ToListAsync(ct);
         var companyCountries = await _db.Companies
             .AsNoTracking()
@@ -140,10 +219,25 @@ public class LeaveService : ILeaveService
             .Select(c => new { c.Id, c.CountryCode })
             .ToDictionaryAsync(c => c.Id, c => c.CountryCode, ct);
 
+        // Which leave types are ANNUAL leave? The Art. 109 tier applies to annual leave only — it must
+        // not silently inflate a sick, maternity or unpaid balance. Matches the same way the rest of
+        // this service identifies a category (Category first, then the English name).
+        var annualLeaveTypeIds = (await _db.LeaveTypes.AsNoTracking()
+                .Where(t => t.TenantId == tenantId && t.IsActive)
+                .Select(t => new { t.Id, t.Category, t.NameEn })
+                .ToListAsync(ct))
+            .Where(t => string.Equals(t.Category, "Annual", StringComparison.OrdinalIgnoreCase)
+                     || t.NameEn.Contains("Annual", StringComparison.OrdinalIgnoreCase))
+            .Select(t => t.Id)
+            .ToHashSet();
+
+        var accrualOn = DateOnly.FromDateTime(accrualMonth);
+
         foreach (var policy in activePolicies)
         {
             var monthlyAccrual = Math.Round(policy.AnnualEntitlementDays / 12, 4);
             var accrualReference = $"MONTHLY-ACCRUAL-{currentYear}-{accrualMonth.Month:00}";
+            bool policyIsAnnualLeave = annualLeaveTypeIds.Contains(policy.LeaveTypeId);
             foreach (var emp in employees)
             {
                 var employeeCountryCode = emp.CompanyId.HasValue && companyCountries.TryGetValue(emp.CompanyId.Value, out var companyCountry)
@@ -168,9 +262,36 @@ public class LeaveService : ILeaveService
                         && t.Year == currentYear && t.TransactionType == "Accrual" && t.Reference == accrualReference, ct))
                     continue;
 
+                // ── KSA Art. 109(1) — the annual-leave tier ────────────────────────────────────────
+                // "not less than 21 days, to be increased to a period of not less than 30 days if the
+                // worker spends five consecutive years in the service of the employer."
+                // The accrual engine had NO tenure dimension at all: every employee accrued
+                // policy.AnnualEntitlementDays / 12 forever, so a KSA employee crossing five years
+                // kept accruing 21 days and was under-accrued by 9 days a year, indefinitely.
+                //
+                // Applied as a FLOOR, exactly as KsaEndOfServiceCalculator treats the Art. 84 scale: a
+                // policy more generous than statute is untouched, a policy below statute is raised.
+                // Non-KSA entities and non-annual leave types are completely unaffected.
+                var effectiveAnnualDays = policy.AnnualEntitlementDays;
+                var accrualReason = "Monthly accrual";
+                if (policyIsAnnualLeave)
+                {
+                    var statutoryDays = await ResolveKsaAnnualEntitlementAsync(
+                        employeeCountryCode, emp.JoiningDate, accrualOn, ct);
+                    if (statutoryDays is decimal floorDays && floorDays > effectiveAnnualDays)
+                    {
+                        effectiveAnnualDays = floorDays;
+                        accrualReason = $"Monthly accrual (KSA Art.109 statutory floor {floorDays:0.##} days/yr "
+                                      + $"applied above the configured {policy.AnnualEntitlementDays:0.##})";
+                    }
+                }
+                var employeeMonthlyAccrual = effectiveAnnualDays == policy.AnnualEntitlementDays
+                    ? monthlyAccrual
+                    : Math.Round(effectiveAnnualDays / 12, 4);
+
                 var balance = await GetOrCreateBalanceAsync(tenantId, emp.Id, policy.LeaveTypeId, currentYear, ct);
                 balance.EmployeeName = emp.FullName;
-                balance.Accrued += monthlyAccrual;
+                balance.Accrued += employeeMonthlyAccrual;
                 balance.UpdatedAtUtc = DateTime.UtcNow;
 
                 var txn = new LeaveBalanceTransaction
@@ -181,11 +302,11 @@ public class LeaveService : ILeaveService
                     LeaveTypeId = policy.LeaveTypeId,
                     Year = currentYear,
                     TransactionType = "Accrual",
-                    Amount = monthlyAccrual,
-                    BalanceBefore = balance.Accrued - monthlyAccrual,
+                    Amount = employeeMonthlyAccrual,
+                    BalanceBefore = balance.Accrued - employeeMonthlyAccrual,
                     BalanceAfter = balance.Accrued,
                     Reference = accrualReference,
-                    Reason = "Monthly accrual",
+                    Reason = accrualReason,
                     PerformedByName = "System"
                 };
                 _db.LeaveBalanceTransactions.Add(txn);
@@ -420,6 +541,20 @@ public class LeaveService : ILeaveService
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == request.EmployeeId && !e.IsDeleted, ct)
             ?? throw new InvalidOperationException("Employee not found.");
 
+        var blackout = await _db.LeaveBlackoutDates.AsNoTracking()
+            .Where(b => b.TenantId == tenantId
+                && b.StartDate <= request.EndDate && b.EndDate >= request.StartDate
+                && (b.IsCompanyWide
+                    || (!string.IsNullOrWhiteSpace(b.DepartmentName)
+                        && b.DepartmentName == employee.Department)))
+            .OrderBy(b => b.StartDate)
+            .Select(b => new { b.NameEn, b.StartDate, b.EndDate, b.Reason })
+            .FirstOrDefaultAsync(ct);
+        if (blackout is not null)
+            throw new InvalidOperationException(
+                $"Leave cannot be requested during blackout '{blackout.NameEn}' " +
+                $"({blackout.StartDate:yyyy-MM-dd} to {blackout.EndDate:yyyy-MM-dd}). {blackout.Reason}".Trim());
+
         var effectivePolicy = await ResolveLeavePolicyAsync(tenantId, employee, request.LeaveTypeId, request.PolicyId, ct);
         request.PolicyId = effectivePolicy?.Id;
         request.CompanyId = employee.CompanyId;
@@ -484,54 +619,29 @@ public class LeaveService : ILeaveService
         request.LeaveTypeName = leaveType.NameEn;
         request.SubmittedAtUtc = DateTime.UtcNow;
 
-        // Resolve approver from hierarchy policy. A missing tenant policy must still produce an
-        // actionable queue item: leaving the request in bare "Submitted" created no LeaveApproval,
-        // while the UI promised manager approval and both operational queues showed zero work.
-        // Fall back to the employee's direct manager; if no usable manager account exists, route
-        // visibly to the HR Manager role instead of silently orphaning the request.
-        var resolvedPolicy = await _policyService.ResolveAsync(tenantId, request.EmployeeId, "Leave", ct);
-        LeaveApproval firstApproval;
-        int? firstApproverEmployeeId;
-        if (resolvedPolicy is not null && resolvedPolicy.Steps.Count > 0)
-        {
-            var firstStep = resolvedPolicy.Steps[0];
-            request.Status = "PendingManagerApproval";
-            firstApproverEmployeeId = firstStep.ApproverEmployeeId;
-            firstApproval = new LeaveApproval
-            {
-                TenantId = tenantId,
-                LeaveRequestId = request.Id,
-                StepNumber = firstStep.StepOrder,
-                ApproverRole = ResolvedApproverRole(firstStep),
-                ApproverId = firstStep.ApproverEmployeeId.HasValue
-                    ? await ResolveUserIdAsync(tenantId, firstStep.ApproverEmployeeId.Value, ct)
-                    : null,
-                ApproverName = firstStep.ApproverEmployeeName ?? string.Empty,
-                Decision = "Pending",
-            };
-        }
-        else
-        {
-            var fallbackManager = employee.ManagerEmployeeId.HasValue
-                ? await _db.Employees.AsNoTracking()
-                    .Where(e => e.TenantId == tenantId && e.Id == employee.ManagerEmployeeId.Value && !e.IsDeleted)
-                    .Select(e => new { e.UserAccountId, e.FullName })
-                    .FirstOrDefaultAsync(ct)
-                : null;
-
-            request.Status = "PendingManagerApproval";
-            firstApproverEmployeeId = employee.ManagerEmployeeId;
-            firstApproval = new LeaveApproval
-            {
-                TenantId = tenantId,
-                LeaveRequestId = request.Id,
-                StepNumber = 1,
-                ApproverRole = fallbackManager?.UserAccountId is not null ? "Manager" : "HR Manager",
-                ApproverId = fallbackManager?.UserAccountId,
-                ApproverName = fallbackManager?.FullName ?? string.Empty,
-                Decision = "Pending",
-            };
-        }
+        // F1 — route through the ONE approval router. The tenant's ApprovalWorkflow for LeaveRequest
+        // decides the chain; there is no hard-coded fallback any more. Before F1 this read the separate
+        // ApprovalPolicy table, found nothing for tenants that configure ApprovalWorkflow, and invented
+        // a single "manager, else HR Manager" step — so a configured two-step chain executed as one
+        // click. A tenant with no applicable workflow now gets ApprovalRouteNotConfiguredException: the
+        // submission is refused, this transaction rolls back, and no balance is reserved.
+        //
+        // Per-leave-type routing: the effective policy's ApprovalWorkflowId, if it names an active
+        // LeaveRequest workflow, wins over the specificity match. That field has been settable on
+        // leave policies since before F1 and was read by nothing — "sick leave is approved by HR
+        // only, annual goes line manager → HR, unpaid needs the MD" saved, read back, and then every
+        // type routed through the one department-level workflow, so the line manager saw the sick
+        // notes. A pin that no longer resolves (workflow deleted, deactivated, or moved to another
+        // entity) falls through to the tier match rather than refusing the submission.
+        var route = (effectivePolicy?.ApprovalWorkflowId is { } pinnedWorkflowId
+                        ? await _router.ResolvePinnedAsync(tenantId, pinnedWorkflowId, nameof(LeaveRequest), ct)
+                        : null)
+                    ?? await _router.ResolveAsync(tenantId, request.EmployeeId, nameof(LeaveRequest), ct);
+        var firstStep = route.FirstStep;
+        var firstApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, firstStep, ct);
+        request.Status = StatusForPendingStep(firstStep);
+        var firstApproverEmployeeId = firstApprover.EmployeeId;
+        var firstApproval = BuildPendingApproval(tenantId, request.Id, firstStep, firstApprover);
 
         _db.LeaveApprovals.Add(firstApproval);
         _db.LeaveRequests.Add(request);
@@ -555,8 +665,9 @@ public class LeaveService : ILeaveService
             request,
             firstApproval,
             firstApproverEmployeeId,
-            resolvedPolicy?.PolicyId ?? Guid.Empty,
-            requestedByUserId ?? employee.UserAccountId));
+            route.WorkflowId,
+            requestedByUserId ?? employee.UserAccountId,
+            firstStep.EscalationAfterHours));
 
         foreach (var segment in yearSegments)
             await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year,
@@ -590,39 +701,35 @@ public class LeaveService : ILeaveService
         await EnsureMakerCheckerAsync(request, approverId, ct);
 
         var previousStatus = request.Status;
-        var resolvedPolicy = await _policyService.ResolveAsync(tenantId, request.EmployeeId, "Leave", ct);
         var pendingApproval = await _db.LeaveApprovals
             .Where(a => a.TenantId == tenantId && a.LeaveRequestId == requestId && a.Decision == "Pending")
             .OrderBy(a => a.StepNumber)
             .FirstOrDefaultAsync(ct);
 
         var currentApproval = await EnsureCanonicalApprovalAsync(request, pendingApproval, ct);
+        // F1 — the chain executes against the workflow this request was ROUTED by (pinned in
+        // ApprovalRequest.WorkflowId at submission), not a fresh lookup. A fresh lookup is how the
+        // pre-F1 code lost the chain: it re-resolved from a table tenants never configured, got null,
+        // found no next step, and approved at step 1.
+        var route = await ResolvePinnedRouteAsync(request, ct);
         await ConsumePendingApprovalAsync(currentApproval, "Approved", approverId, approverName, notes ?? string.Empty, ct);
 
         var currentStepNumber = currentApproval.StepNumber;
-        var nextStep = resolvedPolicy?.Steps
-            .Where(s => s.StepOrder > currentStepNumber)
-            .OrderBy(s => s.StepOrder)
-            .FirstOrDefault();
-
-        if (nextStep is not null)
+        var currentStep = route.FindStep(currentStepNumber);
+        // Only the step marked IsFinalStep completes the request and moves the balance. A step that
+        // is not final hands to the next step; if there is none the workflow is broken and the
+        // decision is refused (the transaction rolls back) rather than approved by default.
+        if (currentStep is null || !currentStep.IsFinalStep)
         {
+            var nextStep = route.NextStepAfter(currentStepNumber)
+                ?? throw new ApprovalRouteInvalidException(tenantId, nameof(LeaveRequest), route.WorkflowId, route.Code,
+                    $"step {currentStepNumber} is not final and no step follows it.");
+            var nextApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, nextStep, ct);
             request.Status = StatusForPendingStep(nextStep);
-            var nextApproval = new LeaveApproval
-            {
-                TenantId = tenantId,
-                LeaveRequestId = requestId,
-                StepNumber = nextStep.StepOrder,
-                ApproverRole = ResolvedApproverRole(nextStep),
-                ApproverId = nextStep.ApproverEmployeeId.HasValue
-                    ? await ResolveUserIdAsync(tenantId, nextStep.ApproverEmployeeId.Value, ct)
-                    : null,
-                ApproverName = nextStep.ApproverEmployeeName ?? string.Empty,
-                Decision = "Pending",
-            };
+            var nextApproval = BuildPendingApproval(tenantId, requestId, nextStep, nextApprover);
             _db.LeaveApprovals.Add(nextApproval);
             await SyncApprovalProjectionAsync(request, currentApproval, "Approved", approverId,
-                notes ?? string.Empty, nextApproval, nextStep.ApproverEmployeeId, ct);
+                notes ?? string.Empty, nextApproval, nextApprover.EmployeeId, ct, nextStep.EscalationAfterHours);
 
             await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "ApprovalStepApproved",
                 previousStatus, request.Status, notes ?? string.Empty, approverName, ct);
@@ -675,6 +782,20 @@ public class LeaveService : ILeaveService
                 Status = "Pending",
             });
         }
+        else if (leaveType is not null && leaveType.IsPaid && request.TotalDays > 0
+            && !await _db.LeavePayrollImpacts.AnyAsync(x => x.TenantId == tenantId && x.LeaveRequestId == requestId, ct))
+        {
+            // ── KSA Art. 117 — the sick-leave pay scale ─────────────────────────────────────────
+            // Before this, a PAID leave type produced no payroll impact at all, so KSA sick leave was
+            // paid at 100% for every day without limit. Art. 117 grants full wage for the first 30
+            // days, three quarters for the next 60, and nothing for the following 30, "during a single
+            // year, whether such leaves are continuous or intermittent".
+            //
+            // Paying above the scale is LAWFUL — Art. 117 is a floor — so this is not a defect being
+            // fixed so much as statute being implemented, and it can be switched off wholesale by
+            // 'leave.sick_apply_statutory_scale' for an employer whose contracts promise full sick pay.
+            await ApplyKsaSickLeaveScaleAsync(tenantId, request, leaveType, ct);
+        }
 
         await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "Approved",
             previousStatus, "Approved", notes ?? string.Empty, approverName, ct);
@@ -690,6 +811,135 @@ public class LeaveService : ILeaveService
 
         await _db.SaveChangesAsync(ct);
         return request;
+    }
+
+    /// <summary>
+    /// Is this leave type sick leave? Matches the same way <see cref="GenerateInsightsAsync"/> and
+    /// LeaveReportsController already do — Category first, then the English name — so the product
+    /// never disagrees with itself about what counts as sick leave.
+    /// </summary>
+    internal static bool IsSickLeaveType(string? category, string? nameEn)
+        => string.Equals(category, "Sick", StringComparison.OrdinalIgnoreCase)
+        || (nameEn ?? string.Empty).Contains("Sick", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Applies KSA Labour Law Art. 117 to an approved, paid sick-leave request by writing a
+    /// LeavePayrollImpact for the UNPAID PORTION only. Full-pay days produce no impact, so an
+    /// employee inside the first 30 days sees exactly the behaviour they saw before this existed.
+    ///
+    /// The Amount is snapshotted here at approval and stamped Processed by the payroll run, which is
+    /// what keeps a rule change from retroactively altering a closed payroll: an impact already
+    /// Processed is never recomputed.
+    /// </summary>
+    private async Task ApplyKsaSickLeaveScaleAsync(
+        Guid tenantId, LeaveRequest request, LeaveType leaveType, CancellationToken ct)
+    {
+        if (!IsSickLeaveType(leaveType.Category, leaveType.NameEn)) return;
+
+        var countryCode = await ResolveEmployeeCountryAsync(tenantId, request.EmployeeId, ct);
+        if (!IsKsaCountry(countryCode)) return;
+
+        var on = request.StartDate;
+        bool apply = await StatutoryFlag.ReadAsync(
+            _rules, CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            KsaLeaveHoursRuleKeys.SickApplyStatutoryScale, on, true, ct);
+        if (!apply) return;
+
+        var bands = new[]
+        {
+            new SickLeaveBand(
+                await KsaDecimalAsync(KsaLeaveHoursRuleKeys.SickBand1Days, KsaLeaveHoursDefaults.SickBand1Days, on, ct),
+                await KsaDecimalAsync(KsaLeaveHoursRuleKeys.SickBand1PayRate, KsaLeaveHoursDefaults.SickBand1PayRate, on, ct)),
+            new SickLeaveBand(
+                await KsaDecimalAsync(KsaLeaveHoursRuleKeys.SickBand2Days, KsaLeaveHoursDefaults.SickBand2Days, on, ct),
+                await KsaDecimalAsync(KsaLeaveHoursRuleKeys.SickBand2PayRate, KsaLeaveHoursDefaults.SickBand2PayRate, on, ct)),
+            new SickLeaveBand(
+                await KsaDecimalAsync(KsaLeaveHoursRuleKeys.SickBand3Days, KsaLeaveHoursDefaults.SickBand3Days, on, ct),
+                await KsaDecimalAsync(KsaLeaveHoursRuleKeys.SickBand3PayRate, KsaLeaveHoursDefaults.SickBand3PayRate, on, ct)),
+        };
+
+        // The Art. 117 entitlement year is anchored on the employee's FIRST sick leave, not on the
+        // calendar year: "A single year shall mean the year which begins from the date of the first
+        // sick leave." Find that anchor across every sick leave type this tenant has.
+        var sickTypeIds = (await _db.LeaveTypes.AsNoTracking()
+                .Where(t => t.TenantId == tenantId)
+                .Select(t => new { t.Id, t.Category, t.NameEn })
+                .ToListAsync(ct))
+            .Where(t => IsSickLeaveType(t.Category, t.NameEn))
+            .Select(t => t.Id)
+            .ToHashSet();
+
+        var priorSick = await _db.LeaveRequests.AsNoTracking()
+            .Where(r => r.TenantId == tenantId
+                     && r.EmployeeId == request.EmployeeId
+                     && r.Id != request.Id
+                     && r.Status == "Approved"
+                     && sickTypeIds.Contains(r.LeaveTypeId))
+            .Select(r => new { r.StartDate, r.TotalDays })
+            .ToListAsync(ct);
+
+        // Anchor = the earliest sick leave on record, or this request if it is the first.
+        var anchor = priorSick.Count == 0
+            ? request.StartDate
+            : priorSick.Min(r => r.StartDate) <= request.StartDate ? priorSick.Min(r => r.StartDate) : request.StartDate;
+
+        var windowStart = KsaSickLeaveScale.EntitlementYearStart(anchor, request.StartDate);
+        var windowEnd = windowStart.AddDays(365);
+
+        // A whole request is assigned to the window of its START date — see the [COUNSEL] note on
+        // KsaSickLeaveScale.EntitlementYearStart for the boundary-straddling question.
+        decimal priorDaysInWindow = priorSick
+            .Where(r => r.StartDate >= windowStart && r.StartDate < windowEnd)
+            .Sum(r => r.TotalDays);
+
+        var allocation = KsaSickLeaveScale.Allocate(priorDaysInWindow, request.TotalDays, bands);
+        if (allocation.UnpaidEquivalentDays <= 0m) return;   // wholly inside the full-pay band
+
+        // [COUNSEL] Art. 117 says "three quarters of the WAGE", and Art. 2 defines wage as basic plus
+        // all due increments — so the strict reading measures the reduction on the full wage. The
+        // default here is BASIC, which deducts LESS and therefore over-pays the employee relative to
+        // statute. Over-paying is lawful (Art. 117 is a floor) and is the safe direction to be wrong
+        // in; it also matches the base the unpaid-leave deduction above already uses, so one payslip
+        // never carries two different day-rates for the same economic fact.
+        var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.EmployeeId == request.EmployeeId && s.IsActive && s.EffectiveDate <= request.StartDate)
+            .OrderByDescending(s => s.EffectiveDate)
+            .FirstOrDefaultAsync(ct);
+        if (salary is null) return;
+
+        var wageBase = (await _rules.GetStringAsync(
+            CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            KsaLeaveHoursRuleKeys.SickReductionWageBase, on, null, ct) ?? "basic").Trim().ToLowerInvariant();
+
+        decimal monthlyBase = wageBase == "wage"
+            ? salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance
+              + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance
+            : salary.BasicSalary;
+        if (monthlyBase <= 0m) return;
+
+        var divisor = await ResolveLopDayDivisorAsync(tenantId, request.EmployeeId, request.StartDate, ct);
+        var amount = Math.Round(monthlyBase / divisor * allocation.UnpaidEquivalentDays, 2);
+        if (amount <= 0m) return;
+
+        var bandSummary = string.Join(" + ", allocation.Bands.Select(b => $"{b.Days:0.##}d@{b.PayRate * 100m:0.##}%"));
+        _db.LeavePayrollImpacts.Add(new LeavePayrollImpact
+        {
+            TenantId = tenantId,
+            LeaveRequestId = request.Id,
+            EmployeeId = request.EmployeeId,
+            PayPeriod = $"{request.StartDate.Year}-{request.StartDate.Month:00}",
+            ImpactType = $"Leave Deduction (KSA Art.117 sick-leave scale: {bandSummary})",
+            Days = allocation.UnpaidEquivalentDays,
+            Amount = amount,
+            Status = "Pending",
+        });
+
+        await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "Art117SickLeaveScale",
+            $"{request.TotalDays:0.##} sick day(s) requested; {priorDaysInWindow:0.##} already taken in the "
+            + $"entitlement year beginning {windowStart:yyyy-MM-dd}",
+            $"{bandSummary} → {allocation.UnpaidEquivalentDays:0.####} unpaid-equivalent day(s), "
+            + $"deduction {amount:N2} on a {wageBase} base of {monthlyBase:N2} ÷ {divisor:0.##}",
+            "KSA Labour Law Art. 117", "System", ct);
     }
 
     public async Task<LeaveRequest> RejectRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string reason, CancellationToken ct = default)
@@ -998,14 +1248,6 @@ public class LeaveService : ILeaveService
 
     private sealed record LeaveYearSegment(int Year, decimal Days);
 
-    // Resolves the UserAccountId for an employee (used to route the LeaveApproval record to the right user inbox)
-    private async Task<Guid?> ResolveUserIdAsync(Guid tenantId, int employeeId, CancellationToken ct)
-        => await _db.Employees
-            .AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.Id == employeeId)
-            .Select(e => e.UserAccountId)
-            .FirstOrDefaultAsync(ct);
-
     private async Task EnsureMakerCheckerAsync(LeaveRequest request, Guid approverId, CancellationToken ct)
     {
         var employeeUserId = await _db.Employees.AsNoTracking()
@@ -1066,8 +1308,12 @@ public class LeaveService : ILeaveService
                 .Where(e => e.TenantId == request.TenantId && e.Id == request.EmployeeId && !e.IsDeleted)
                 .Select(e => e.UserAccountId)
                 .FirstOrDefaultAsync(ct);
+            // Legacy bridge for rows that pre-date routing projections: route now so the projection
+            // carries a real ApprovalWorkflow.Id (never Guid.Empty). No applicable workflow is a
+            // configuration error surfaced to the decider, not a reason to invent one.
+            var legacyRoute = await _router.ResolveAsync(request.TenantId, request.EmployeeId, nameof(LeaveRequest), ct);
             _db.ApprovalRequests.Add(BuildApprovalProjection(
-                request, pendingApproval, approverEmployeeId, Guid.Empty, requestedBy));
+                request, pendingApproval, approverEmployeeId, legacyRoute.WorkflowId, requestedBy, null));
             changed = true;
         }
 
@@ -1125,7 +1371,8 @@ public class LeaveService : ILeaveService
         string comments,
         LeaveApproval? nextApproval,
         int? nextApproverEmployeeId,
-        CancellationToken ct)
+        CancellationToken ct,
+        int? nextStepSlaHours = null)
     {
         var projection = _db.ApprovalRequests.Local.FirstOrDefault(x => x.Id == request.Id)
             ?? await _db.ApprovalRequests.FirstAsync(
@@ -1155,6 +1402,7 @@ public class LeaveService : ILeaveService
             projection.CurrentQueue = nextApproval.ApproverId.HasValue
                 ? $"{nextApproval.ApproverRole}:{nextApproval.ApproverName}"
                 : $"Role:{role}";
+            projection.SlaHours = Math.Clamp(nextStepSlaHours ?? 24, 1, 720);
             projection.DueAtUtc = now.AddHours(projection.SlaHours);
             projection.LastRoutedAtUtc = now;
             projection.CompletedAtUtc = null;
@@ -1170,25 +1418,71 @@ public class LeaveService : ILeaveService
         projection.DueAtUtc = null;
     }
 
-    private static string StatusForPendingStep(ResolvedApprovalStep step)
+    private static string StatusForPendingStep(ApprovalRouteStep step)
         => string.Equals(step.ApproverType, "HR", StringComparison.OrdinalIgnoreCase)
             || string.Equals(step.ApproverType, "HRBusinessPartner", StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(step.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
+                && step.ApproverRole.Trim().StartsWith("HR", StringComparison.OrdinalIgnoreCase))
             ? "PendingHRApproval"
             : "PendingManagerApproval";
 
-    private static string ResolvedApproverRole(ResolvedApprovalStep step)
-        => string.Equals(step.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(step.ApproverRole)
-                ? step.ApproverRole.Trim()
-                : step.ApproverType;
+    /// <summary>
+    /// The LeaveApproval role label for a routed step. A role step records its role; a person step
+    /// records its approver type (the label LeaveRequestsController authorises against). An escalated
+    /// person step records the HR Manager queue it was escalated to.
+    /// </summary>
+    private static string ResolvedApproverRole(ApprovalRouteStep step, ResolvedApprover approver)
+    {
+        if (approver.Escalated) return ApprovalRouter.HrManagerRole;
+        return string.Equals(step.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
+               && !string.IsNullOrWhiteSpace(step.ApproverRole)
+            ? step.ApproverRole.Trim()
+            : step.ApproverType;
+    }
+
+    private static LeaveApproval BuildPendingApproval(Guid tenantId, Guid leaveRequestId, ApprovalRouteStep step, ResolvedApprover approver)
+        => new()
+        {
+            TenantId = tenantId,
+            LeaveRequestId = leaveRequestId,
+            StepNumber = step.StepOrder,
+            ApproverRole = ResolvedApproverRole(step, approver),
+            ApproverId = approver.UserId,
+            ApproverName = approver.Name,
+            Decision = "Pending",
+        };
+
+    /// <summary>
+    /// The workflow a leave request is pinned to. Requests routed since F1 carry it in their
+    /// projection's WorkflowId. Requests in flight from before F1 carry Guid.Empty (the old fallback)
+    /// or an ApprovalPolicy id — which the F1 migration re-keyed as an ApprovalWorkflow with the SAME
+    /// id, so those load directly. Anything else is routed now and pinned, so the rest of its chain
+    /// executes against a real, recorded workflow.
+    /// </summary>
+    private async Task<ApprovalRoute> ResolvePinnedRouteAsync(LeaveRequest request, CancellationToken ct)
+    {
+        var projection = _db.ApprovalRequests.Local.FirstOrDefault(x => x.Id == request.Id)
+            ?? await _db.ApprovalRequests.FirstOrDefaultAsync(x => x.TenantId == request.TenantId && x.Id == request.Id, ct)
+            ?? throw new InvalidOperationException("The leave request has no approval routing record.");
+
+        var pinned = await _router.LoadAsync(request.TenantId, projection.WorkflowId, ct);
+        if (pinned is not null) return pinned;
+
+        var routed = await _router.ResolveAsync(request.TenantId, request.EmployeeId, nameof(LeaveRequest), ct);
+        projection.WorkflowId = routed.WorkflowId;
+        return routed;
+    }
 
     private static ApprovalRequest BuildApprovalProjection(
         LeaveRequest request,
         LeaveApproval currentApproval,
         int? currentApproverEmployeeId,
         Guid workflowId,
-        Guid? requestedByUserId)
+        Guid? requestedByUserId,
+        int? slaHours)
     {
+        if (workflowId == Guid.Empty)
+            throw new InvalidOperationException("An approval routing projection must reference a real approval workflow.");
         var approverRole = NormalizeApproverRole(currentApproval.ApproverRole);
         var now = DateTime.UtcNow;
         return new ApprovalRequest
@@ -1214,8 +1508,8 @@ public class LeaveService : ILeaveService
             CurrentQueue = currentApproval.ApproverId.HasValue
                 ? $"{currentApproval.ApproverRole}:{currentApproval.ApproverName}"
                 : $"Role:{approverRole}",
-            SlaHours = 24,
-            DueAtUtc = now.AddHours(24),
+            SlaHours = Math.Clamp(slaHours ?? 24, 1, 720),
+            DueAtUtc = now.AddHours(Math.Clamp(slaHours ?? 24, 1, 720)),
             LastRoutedAtUtc = now,
             CreatedAtUtc = request.SubmittedAtUtc ?? now,
             Priority = request.IsEmergency ? "High" : "Normal"

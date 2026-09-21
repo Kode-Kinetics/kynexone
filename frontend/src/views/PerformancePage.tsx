@@ -155,7 +155,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
               { label: 'Calibration Pending', val: pa?.calibrationPending ?? 0, color: 'bg-purple-500', tab: 'calibration' as Tab },
               { label: 'Appeals Pending', val: pa?.appealsPending ?? 0, color: 'bg-rose-500', tab: 'team-reviews' as Tab },
             ].map(row => (
-              <button key={row.label} type="button" onClick={() => onNavigate(row.tab)} className="flex w-full items-center gap-3 rounded-lg p-1 text-left hover:bg-slate-50 dark:hover:bg-white/5">
+              <button key={row.label} type="button" onClick={() => onNavigate(row.tab)} className="flex w-full items-center gap-3 rounded-lg p-1 text-start hover:bg-slate-50 dark:hover:bg-white/5">
                 <div className={`h-2 w-2 shrink-0 rounded-full ${row.color}`} />
                 <span className="flex-1 text-sm text-slate-700 dark:text-slate-300">{row.label}</span>
                 <span className="text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{row.val}</span>
@@ -355,7 +355,7 @@ function CyclesTab() {
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{c.name}</p>
                 <p className="mt-0.5 text-xs text-slate-400">{c.cycleType} · {fmtDate(c.reviewPeriodStart)} – {fmtDate(c.reviewPeriodEnd)} · {c.enrolledCount ?? 0} enrolled</p>
               </div>
-              <div className="ml-4 flex shrink-0 items-center gap-3">
+              <div className="ms-4 flex shrink-0 items-center gap-3">
                 {statusBadge(c.status)}
                 {c.status === 'Draft' && (
                   <button type="button" onClick={() => launch(c.id)} disabled={launching === c.id} className={btn.primary}>
@@ -445,7 +445,7 @@ function MyReviewsTab() {
                   <p className={`mt-1 text-xs font-semibold ${scoreColor(r.finalScore)}`}>Score: {r.finalScore} — {r.finalRating}</p>
                 )}
               </div>
-              <div className="ml-4 flex shrink-0 items-center gap-3">
+              <div className="ms-4 flex shrink-0 items-center gap-3">
                 {statusBadge(r.status)}
                 {r.status === 'SelfAssessmentDue' && (
                   <button type="button" className={btn.primary} onClick={() => setSelected(r)}>Start Assessment</button>
@@ -565,7 +565,7 @@ function TeamReviewsTab() {
                 <p className="mt-0.5 text-xs text-slate-400">{r.departmentName} · {r.designationTitle} · {r.cycleName}</p>
                 {r.finalScore > 0 && <p className={`mt-1 text-xs font-semibold ${scoreColor(r.finalScore)}`}>Score: {r.finalScore} — {r.finalRating}</p>}
               </div>
-              <div className="ml-4 flex shrink-0 items-center gap-3">
+              <div className="ms-4 flex shrink-0 items-center gap-3">
                 {statusBadge(r.status)}
                 {['SelfAssessmentSubmitted', 'ManagerReview'].includes(r.status) && (
                   <button type="button" className={btn.primary} onClick={() => setSelected(r)}>Review</button>
@@ -1226,7 +1226,7 @@ function PIPProbationTab() {
                     <p className="mt-0.5 text-xs text-slate-400">{p.departmentName} · {fmtDate(p.startDate)} – {fmtDate(p.endDate)}</p>
                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 line-clamp-1">{p.improvementGoals}</p>
                   </div>
-                  <div className="ml-4 flex shrink-0 items-center gap-3">
+                  <div className="ms-4 flex shrink-0 items-center gap-3">
                     {statusBadge(p.status)}
                     {p.status === 'Active' && (
                       <button type="button" className={btn.ghost} onClick={() => { setStatusModal({ id: p.id, name: p.employeeName }); setNewStatus('Improved'); setStatusNotes(''); }}>Update Status</button>
@@ -1256,7 +1256,7 @@ function PIPProbationTab() {
                     <p className="text-xs text-slate-400">Probation: {fmtDate(p.probationStartDate)} – {fmtDate(p.probationEndDate)}</p>
                     {p.managerRecommendation && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Manager: {p.managerRecommendation}</p>}
                   </div>
-                  <div className="ml-4 flex shrink-0 items-center gap-2">
+                  <div className="ms-4 flex shrink-0 items-center gap-2">
                     {statusBadge(p.status)}
                     {p.status === 'ManagerReviewed' && (
                       <div className="flex gap-1">
@@ -1345,7 +1345,7 @@ function AnalyticsTab() {
                       <div className="flex-1 rounded-full bg-slate-100 dark:bg-white/10">
                         <div className="h-2 rounded-full bg-sapphire" style={{ width: `${d.pct}%` }} />{/* dynamic — inline required */}
                       </div>
-                      <span className="w-12 text-right text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{d.count} ({d.pct}%)</span>
+                      <span className="w-12 text-end text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{d.count} ({d.pct}%)</span>
                     </div>
                   ))}
                 </div>
@@ -1363,7 +1363,7 @@ function AnalyticsTab() {
                       <div className="w-32 rounded-full bg-slate-100 dark:bg-white/10">
                         <div className={`h-2 rounded-full ${d.avgScore >= 75 ? 'bg-emerald-500' : d.avgScore >= 60 ? 'bg-sapphire' : 'bg-rose-400'}`} style={{ width: `${d.avgScore}%` }} />
                       </div>
-                      <span className="w-8 text-right text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{d.avgScore}</span>
+                      <span className="w-8 text-end text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{d.avgScore}</span>
                     </div>
                   ))}
                 </div>
@@ -1385,7 +1385,7 @@ function AnalyticsTab() {
                         <p className="text-xs text-slate-400">{p.departmentName}</p>
                       </div>
                     </div>
-                    <div className="text-right">
+                    <div className="text-end">
                       <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">{p.finalScore}</p>
                       <p className="text-xs text-slate-400">{p.finalRating}</p>
                     </div>
@@ -1409,7 +1409,7 @@ function AnalyticsTab() {
                       <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{m.managerName}</p>
                       <p className="text-xs text-slate-400">{m.count} direct reports rated</p>
                     </div>
-                    <div className="text-right">
+                    <div className="text-end">
                       <p className={`text-sm font-bold tabular-nums ${scoreColor(m.avgScore)}`}>{m.avgScore} avg</p>
                       {m.possibleLeniency && <span className="text-[10px] text-amber-500">Possible leniency</span>}
                       {m.possibleSeverity && <span className="text-[10px] text-rose-500">Possible severity</span>}

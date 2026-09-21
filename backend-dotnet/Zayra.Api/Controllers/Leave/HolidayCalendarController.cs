@@ -74,6 +74,34 @@ public class HolidayCalendarController : ControllerBase
         return Ok(holidays);
     }
 
+    /// <summary>
+    /// "Recurring" was a badge, not a behaviour. The flag was written, round-tripped and rendered as
+    /// a blue "Recurring" pill on the holiday row — and nothing has ever expanded a recurring
+    /// holiday into the next year. Calendars are per CalendarYear, and there is no scheduled job of
+    /// any kind that could roll one forward (the product registers exactly one background job type,
+    /// attendance.process). An HR admin ticks the box on National Day, skips it next January, and
+    /// arrives at an empty calendar with every leave working-day count wrong from the first day of
+    /// the year, while the badge still says it recurs.
+    ///
+    /// <para>Refused rather than quietly accepted, per the rule this codebase states in
+    /// ApprovalPoliciesController. Hijri-dated holidays are the reason "just copy the calendar" is
+    /// not a safe silent default: they move about eleven days a year and must be confirmed by a
+    /// person, not computed behind one.</para>
+    /// </summary>
+    private IActionResult? RefuseRecurring(bool isRecurring)
+        => isRecurring
+            ? BadRequest(new
+            {
+                error = "holiday_recurrence_not_implemented",
+                message =
+                    "Holidays do not roll forward in this build. Marking one recurring would store a flag that "
+                    + "nothing reads: calendars are per year, and no process creates next year's instance — so the "
+                    + "badge would promise a rollover that never happens and next January's calendar would be empty. "
+                    + "Create each year's calendar explicitly. Hijri-dated holidays move every year and must be "
+                    + "confirmed rather than computed.",
+            })
+            : null;
+
     [HttpPost("calendars/{id:guid}/holidays")]
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> AddHoliday(Guid id, [FromBody] AddHolidayRequest req, CancellationToken ct)
@@ -84,6 +112,8 @@ public class HolidayCalendarController : ControllerBase
         var calendarExists = await _db.PublicHolidayCalendars
             .AnyAsync(c => c.Id == id && c.TenantId == tenantId, ct);
         if (!calendarExists) return NotFound();
+
+        if (RefuseRecurring(req.IsRecurring) is { } recurringRefusal) return recurringRefusal;
 
         var holiday = new PublicHoliday
         {
@@ -149,6 +179,8 @@ public class HolidayCalendarController : ControllerBase
         var holiday = await _db.PublicHolidays
             .FirstOrDefaultAsync(h => h.Id == id && h.TenantId == tenantId, ct);
         if (holiday is null) return NotFound();
+
+        if (RefuseRecurring(req.IsRecurring) is { } recurringRefusal) return recurringRefusal;
 
         holiday.NameEn = req.NameEn;
         holiday.NameAr = req.NameAr ?? string.Empty;

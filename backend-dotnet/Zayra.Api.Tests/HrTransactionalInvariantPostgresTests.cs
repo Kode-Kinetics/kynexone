@@ -178,7 +178,7 @@ public sealed class HrTransactionalInvariantPostgresTests
         {
             await using var db = _fixture.CreateDb();
             await gate.Task;
-            await new LeaveService(db, new ApprovalPolicyService(db))
+            await new LeaveService(db, new ApprovalRouter(db))
                 .AccrueMonthlyAsync(tenantId, CancellationToken.None);
         }
 

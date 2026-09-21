@@ -10,6 +10,15 @@
     </AssemblyAttribute>
   </ItemGroup>
 
+  <!-- Noto Sans Arabic (SIL OFL 1.1, Assets/Fonts/OFL.txt) is embedded rather than copied to
+       the output directory: the production container must not depend on a file landing next to
+       the DLL, and DocumentFonts turns QuestPDF's host-font fallback OFF so this is the ONLY
+       source of Arabic glyphs. A missing resource fails at startup, not at issuance. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Fonts\NotoSansArabic-Regular.ttf" LogicalName="Zayra.Api.Assets.Fonts.NotoSansArabic-Regular.ttf" />
+    <EmbeddedResource Include="Assets\Fonts\NotoSansArabic-Bold.ttf" LogicalName="Zayra.Api.Assets.Fonts.NotoSansArabic-Bold.ttf" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="AWSSDK.S3" Version="3.7.400.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.11" />
@@ -29,5 +38,10 @@
     <PackageReference Include="MailKit" Version="4.16.0" />
     <PackageReference Include="StackExchange.Redis" Version="2.8.16" />
     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.11" />
+    <!-- W2-D (S3): profile-photo re-encode (decode JPEG/PNG, orient, downscale to 512px, re-encode
+         JPEG with NO metadata). MIT-licensed. The NoDependencies Linux asset bundles libSkiaSharp for
+         the Debian aspnet:8.0 runtime image without needing fontconfig/libfreetype apt packages. -->
+    <PackageReference Include="SkiaSharp" Version="3.119.2" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.2" />
   </ItemGroup>
 </Project>

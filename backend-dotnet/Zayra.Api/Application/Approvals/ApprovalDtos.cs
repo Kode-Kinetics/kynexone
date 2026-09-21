@@ -9,7 +9,10 @@ public record ApprovalWorkflowDto(
     string Name,
     string EntityName,
     bool IsActive,
-    IReadOnlyCollection<ApprovalWorkflowStepDto> Steps);
+    IReadOnlyCollection<ApprovalWorkflowStepDto> Steps,
+    Guid? DepartmentId = null,
+    Guid? GradeId = null,
+    bool IsDefault = false);
 
 public record ApprovalWorkflowStepDto(
     Guid Id,
@@ -26,7 +29,11 @@ public record ApprovalWorkflowRequest(
     [Required, MaxLength(180)] string Name,
     [Required, MaxLength(120)] string EntityName,
     bool IsActive,
-    [Required, MinLength(1)] IReadOnlyCollection<ApprovalWorkflowStepRequest> Steps);
+    [Required, MinLength(1)] IReadOnlyCollection<ApprovalWorkflowStepRequest> Steps,
+    // F1 — org scoping folded in from the deprecated ApprovalPolicy model. Both null = tenant-wide.
+    Guid? DepartmentId = null,
+    Guid? GradeId = null,
+    bool IsDefault = false);
 
 public record ApprovalWorkflowStepRequest(
     [Range(1, 50)] int StepOrder,
@@ -67,8 +74,12 @@ public record ApprovalRequestDto(
     IReadOnlyCollection<ApprovalDecisionDto> Decisions,
     bool CanDecide);
 
+/// <param name="WorkflowId">
+/// An explicit workflow, or null to let <c>IApprovalRouter</c> choose the workflow for
+/// <paramref name="EntityName"/> and <paramref name="RequestedForEmployeeId"/> (the normal case).
+/// </param>
 public record CreateApprovalRequest(
-    [Required] Guid WorkflowId,
+    Guid? WorkflowId,
     [Required, MaxLength(120)] string EntityName,
     [Required, MaxLength(80)] string EntityId,
     [Required, MaxLength(240)] string Title,
@@ -96,7 +107,10 @@ public static class ApprovalMappings
         workflow.Name,
         workflow.EntityName,
         workflow.IsActive,
-        workflow.Steps.OrderBy(x => x.StepOrder).Select(x => x.ToDto()).ToList());
+        workflow.Steps.OrderBy(x => x.StepOrder).Select(x => x.ToDto()).ToList(),
+        workflow.DepartmentId,
+        workflow.GradeId,
+        workflow.IsDefault);
 
     public static ApprovalWorkflowStepDto ToDto(this ApprovalWorkflowStep step) => new(
         step.Id,

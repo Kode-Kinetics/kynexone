@@ -119,6 +119,88 @@ export interface PayrollValidationResult {
   isResolved: boolean;
 }
 
+/** One member of a run's resolved population, on whichever of the three lists they landed. */
+export interface PayrollPopulationMember {
+  employeeId: number;
+  code: string;
+  name: string;
+  /** Present on `excluded` and `notEligible` only. */
+  reason?: string;
+}
+
+export interface PayrollRunPopulation {
+  runId: string;
+  runType: string;
+  includesRecurringPay: boolean;
+  populationMode: string;
+  eligibleCount: number;
+  includedCount: number;
+  excludedCount: number;
+  notEligibleCount: number;
+  included: PayrollPopulationMember[];
+  /** Deliberate hold-outs. The approver must state this count to approve the run. */
+  excluded: PayrollPopulationMember[];
+  notEligible: PayrollPopulationMember[];
+}
+
+/** A blocking compliance error a human consciously cleared, with the reason they gave. */
+export interface PayrollValidationOverride {
+  id: string;
+  code: string;
+  employeeId: number | null;
+  reason: string;
+  overriddenByUserId: string | null;
+  overriddenByName: string;
+  createdAtUtc: string;
+}
+
+export interface PayrollValidationOverrideReport {
+  runId: string;
+  overrides: PayrollValidationOverride[];
+  /** Codes a human is allowed to override at all. */
+  overridableCodes: string[];
+  /** Codes that can never be overridden — these must be fixed at source. */
+  nonOverridableCodes: string[];
+}
+
+export interface AuditIntegrityFailure {
+  auditLogId: string;
+  createdAtUtc: string;
+  action: string;
+  entityName: string;
+  /** unsealed_row · entry_hash_mismatch · sequence_out_of_order · previous_hash_mismatch */
+  reason: string;
+}
+
+export interface AuditIntegrityReport {
+  isValid: boolean;
+  checkedEntries: number;
+  firstEntryUtc: string | null;
+  lastEntryUtc: string | null;
+  failures: AuditIntegrityFailure[];
+}
+
+/**
+ * The void endpoint's elections, all query-string by design — they are things the SYSTEM cannot
+ * know and the operator must state. Only the ones a UI can honestly collect are surfaced.
+ */
+export interface VoidRunOptions {
+  /** Book the reversal AND the replacement into the current open month, so a closed month stays closed. */
+  priorPeriodAdjustment?: boolean;
+  /** yyyy-MM. Only meaningful with priorPeriodAdjustment. */
+  adjustmentPeriod?: string;
+  /** The operator states that the ERP posting has been handled outside this product. */
+  acknowledgeErpPosted?: boolean;
+}
+
+function voidParams(o: VoidRunOptions): Record<string, string | boolean> {
+  const params: Record<string, string | boolean> = {};
+  if (o.priorPeriodAdjustment) params.priorPeriodAdjustment = true;
+  if (o.priorPeriodAdjustment && o.adjustmentPeriod) params.adjustmentPeriod = o.adjustmentPeriod;
+  if (o.acknowledgeErpPosted) params.acknowledgeErpPosted = true;
+  return params;
+}
+
 export interface Payslip {
   id: string;
   payrollRunId: string;
@@ -440,8 +522,63 @@ export const payrollApi = {
   deleteRun: (id: string) =>
     client.delete(`/api/payroll/runs/${id}`).then((r) => r.data),
 
-  approveRun: (id: string, notes?: string) =>
-    client.post<PayrollRun>(`/api/payroll/runs/${id}/approve`, { notes }).then((r) => r.data),
+  // The two acknowledgement counts are NOT optional decoration. The backend refuses with 409
+  // `excluded_employees_not_acknowledged` / `overridden_errors_not_acknowledged` whenever the run
+  // carries a deliberate exclusion or a consciously-overridden compliance error and the approver has
+  // not stated the number. Until this signature existed the client sent neither, so the very first
+  // run with one exclusion could not be approved from the UI at all. The caller must read the real
+  // counts from `runPopulation` / `runValidationOverrides` and have a human affirm them — this is a
+  // cash count, so a client that silently echoes the server's number back would be no control.
+  approveRun: (
+    id: string,
+    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null } = {},
+  ) =>
+    client
+      .post<PayrollRun>(`/api/payroll/runs/${id}/approve`, {
+        notes: body.notes,
+        expectedExcludedCount: body.expectedExcludedCount ?? null,
+        expectedOverriddenCount: body.expectedOverriddenCount ?? null,
+      })
+      .then((r) => r.data),
+
+  // Who this run pays, who it deliberately does NOT pay, and why. The `excluded` list is what the
+  // approver must acknowledge; `EMPLOYEE_EXCLUDED_FROM_RUN` is only a Warning by design and a normal
+  // run carries dozens of warnings, so a warning alone is invisible in practice.
+  runPopulation: (id: string) =>
+    client.get<PayrollRunPopulation>(`/api/payroll/runs/${id}/population`).then((r) => r.data),
+
+  runValidationOverrides: (id: string) =>
+    client.get<PayrollValidationOverrideReport>(`/api/payroll/runs/${id}/validation-overrides`).then((r) => r.data),
+
+  /** Clears ONE blocking validation error, durably, with a mandatory reason on the audit chain. */
+  resolveValidationResult: (runId: string, resultId: string, reason: string) =>
+    client
+      .post<{ message?: string }>(`/api/payroll/runs/${runId}/validation/${resultId}/resolve`, { reason })
+      .then((r) => r.data),
+
+  /**
+   * Reopen a Draft/Processed/PendingFinanceReview/Approved run back to Draft, releasing the loan
+   * installments, attendance/leave/overtime impacts and bonuses it had consumed. Refused outright
+   * once any Payroll GL row exists — which is exactly the post-Lock case.
+   */
+  reopenRun: (id: string, reason: string) =>
+    client.post<unknown>(`/api/payroll/runs/${id}/reopen`, { reason }).then((r) => r.data),
+
+  /**
+   * Soft-delete a run. Never a hard delete: the status goes to Voided, payslips are voided and any
+   * posted GL is contra-entered. The reason is mandatory — this is an irreversible financial action.
+   */
+  voidRun: (id: string, reason: string, options: VoidRunOptions = {}) =>
+    client
+      .post<unknown>(`/api/payroll/runs/${id}/void`, { notes: reason }, { params: voidParams(options) })
+      .then((r) => r.data),
+
+  /**
+   * POD-A3 — the tamper-evident PAYROLL audit chain, verified end to end. Admin and the read-only
+   * Auditor role only: the roles that create payroll-audit events cannot self-attest their integrity.
+   */
+  auditIntegrity: () =>
+    client.get<AuditIntegrityReport>('/api/payroll/audit/integrity').then((r) => r.data),
 
   sendBackRun: (id: string, notes?: string) =>
     client.post<PayrollRun>(`/api/payroll/runs/${id}/send-back`, { notes }).then((r) => r.data),

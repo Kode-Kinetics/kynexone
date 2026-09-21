@@ -57,7 +57,7 @@ public class BusinessLogicContinuityTests
         await db.SaveChangesAsync();
 
         // Submit 3-day leave
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var request = new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
@@ -113,7 +113,7 @@ public class BusinessLogicContinuityTests
         });
         await db.SaveChangesAsync();
 
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var request = new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
@@ -167,7 +167,7 @@ public class BusinessLogicContinuityTests
         });
         await db.SaveChangesAsync();
 
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         await svc.AccrueMonthlyAsync(tenantId, CancellationToken.None);
 
         var activeBal = await db.EmployeeLeaveBalances
@@ -210,7 +210,7 @@ public class BusinessLogicContinuityTests
         });
         await db.SaveChangesAsync();
 
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var start = DateOnly.FromDateTime(DateTime.Today.AddDays(3));
         var request = new LeaveRequest
         {
@@ -249,7 +249,7 @@ public class BusinessLogicContinuityTests
         });
         await db.SaveChangesAsync();
 
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var start = DateOnly.FromDateTime(DateTime.Today.AddDays(5));
         var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
@@ -288,7 +288,7 @@ public class BusinessLogicContinuityTests
         });
         await db.SaveChangesAsync();
 
-        var svc = new LeaveService(db, new NullApprovalPolicyService());
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
         var start = DateOnly.FromDateTime(DateTime.Today.AddDays(4));
         var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
@@ -452,7 +452,16 @@ public class BusinessLogicContinuityTests
             .Where(i => i.OvertimeRequestId == otRequest.Id).ToListAsync();
         impacts.Should().HaveCount(1, "exactly one payroll impact per approved OT");
         impacts[0].Hours.Should().Be(2.0m, "120 minutes = 2 hours");
-        impacts[0].ApprovedMultiplier.Should().Be(1.25m, "Wednesday = RegularDay → 1.25x");
+        // The policy configures 1.25 for a regular day, but a configured multiplier is now a
+        // CANDIDATE that is floored at the jurisdiction's statutory rate — the same
+        // OvertimeStatutoryCalculator.EffectiveMultiplier check the payroll run applies to this
+        // very field. This fixture has no Company row, no TenantLocalizationSettings and no
+        // seeded StatutoryRule, so the country pack is unresolved and the floor is the fallback
+        // the payroll run has always used, 1.5. Asserting 1.25 here was asserting precisely the
+        // defect: the controller stamped 1.25 on the impact while payroll paid the hour at 1.5.
+        impacts[0].ApprovedMultiplier.Should().Be(1.5m,
+            "Wednesday = RegularDay, and the policy's 1.25 is floored at the statutory 1.5 that "
+            + "payroll would apply to this impact anyway");
         impacts[0].EmployeeId.Should().Be(emp.Id);
         impacts[0].Status.Should().Be("PendingPayroll", "impact awaits next payroll run");
 
@@ -790,8 +799,3 @@ file sealed class NullLetterService : ILetterService
     public Task<byte[]> GenerateOfferLetterAsync(OfferLetterData d, CancellationToken ct) => Task.FromResult(Array.Empty<byte>());
 }
 
-file sealed class NullApprovalPolicyService : IApprovalPolicyService
-{
-    public Task<ResolvedApprovalPolicy?> ResolveAsync(Guid tenantId, int employeeId, string workflowType, CancellationToken ct)
-        => Task.FromResult<ResolvedApprovalPolicy?>(null);
-}

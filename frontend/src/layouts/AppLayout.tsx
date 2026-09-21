@@ -400,7 +400,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                     {searchHistory.map((item) => (
                       <div key={item} className="group flex items-center gap-2 rounded-xl px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-white/[0.05]">
                         <Clock className="h-3.5 w-3.5 shrink-0 text-slate-300 dark:text-slate-600" />
-                        <button type="button" className="flex-1 text-left text-sm text-slate-600 dark:text-slate-300" onClick={() => setCommandQuery(item)}>
+                        <button type="button" className="flex-1 text-start text-sm text-slate-600 dark:text-slate-300" onClick={() => setCommandQuery(item)}>
                           {item}
                         </button>
                         <button type="button" onClick={() => removeHistoryItem(item)} title="Remove from history" className="opacity-0 group-hover:opacity-100 transition grid h-5 w-5 place-items-center rounded text-slate-300 hover:text-slate-500 dark:text-slate-600 dark:hover:text-slate-400">
@@ -426,7 +426,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                             key={`employee-${item.id}`}
                             type="button"
                             onClick={() => openEmployeeResult(item.id)}
-                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
+                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-start transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
                           >
                             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sapphire/10 text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent">
                               <Search className="h-4 w-4" />
@@ -456,7 +456,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                             key={`user-${item.id}`}
                             type="button"
                             onClick={() => openUserResult(item.searchText)}
-                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
+                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-start transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
                           >
                             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-slate-300">
                               <Search className="h-4 w-4" />
@@ -486,7 +486,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                             key={`report-${item.key}`}
                             type="button"
                             onClick={() => openReportResult(item.key)}
-                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
+                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-start transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
                           >
                             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-slate-300">
                               <Search className="h-4 w-4" />
@@ -521,7 +521,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                       key={`${item.path}-${item.label}`}
                       type="button"
                       onClick={() => runCommand(item.path)}
-                      className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
+                      className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-start transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
                     >
                       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-slate-300">
                         {isAssistant ? <MessageSquareText className="h-4 w-4" /> : <Search className="h-4 w-4" />}

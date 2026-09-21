@@ -117,7 +117,7 @@ export default function PlansPage() {
                         {plan.monthlyPrice > 0 && <span className="text-xs text-slate-600">/mo</span>}
                         <button type="button"
                           onClick={() => { setEditing(plan.name); setPrice(plan.monthlyPrice); }}
-                          className="ml-auto text-slate-600 hover:text-white transition-colors">
+                          className="ms-auto text-slate-600 hover:text-white transition-colors">
                           <Edit3 className="h-3.5 w-3.5" />
                         </button>
                       </div>

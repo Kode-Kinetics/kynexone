@@ -65,6 +65,9 @@ public sealed class ReportScheduleWorkerTests
         services.AddSingleton(db);
         services.AddSingleton<IEmailService>(email);
         services.AddSingleton<Zayra.Api.Application.Common.IDataScopeService>(new DataScopeService(db));
+        // The worker now tells a human when a schedule fails (F3), so it resolves
+        // INotificationService alongside the email service.
+        services.AddSingleton<Zayra.Api.Infrastructure.Notifications.INotificationService>(TestNotifications.For(db));
         return services.BuildServiceProvider();
     }
 

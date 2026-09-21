@@ -156,7 +156,7 @@ export default function AIAssistantPage() {
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Workspace Assistant</h1>
           <p className="text-sm text-gray-500">Advisory only — assists HR decisions but never replaces them</p>
         </div>
-        <div className="ml-auto flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-full text-xs text-amber-700 font-medium">
+        <div className="ms-auto flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-full text-xs text-amber-700 font-medium">
           Advisory Label Active
         </div>
       </div>
@@ -209,7 +209,7 @@ export default function AIAssistantPage() {
                       <div className="flex items-center gap-1.5 mb-1.5">
                         <div className="w-4 h-4 rounded-full bg-sapphire"></div>
                         <span className="text-xs font-semibold text-sapphire">Assistant</span>
-                        <span className="text-xs text-gray-400 ml-auto">Advisory</span>
+                        <span className="text-xs text-gray-400 ms-auto">Advisory</span>
                       </div>
                     )}
                     <p className="whitespace-pre-wrap">{msg.text}</p>
@@ -265,7 +265,7 @@ export default function AIAssistantPage() {
                   <button
                     key={i}
                     onClick={() => sendQuery(s)}
-                    className="w-full text-left text-xs px-3 py-2 bg-gray-50 hover:bg-sapphire/10 hover:text-sapphire rounded-lg border border-gray-100 transition-colors"
+                    className="w-full text-start text-xs px-3 py-2 bg-gray-50 hover:bg-sapphire/10 hover:text-sapphire rounded-lg border border-gray-100 transition-colors"
                   >
                     {s}
                   </button>
@@ -353,12 +353,12 @@ export default function AIAssistantPage() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Employee</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Department</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Employee</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Department</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">Churn Risk</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">Burnout Risk</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">Overall</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Recommendation</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Recommendation</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -421,10 +421,10 @@ export default function AIAssistantPage() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Time</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Role</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Query</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Intent</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Time</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Role</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Query</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Intent</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">Blocked</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">Tokens</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">ms</th>

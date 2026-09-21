@@ -44,6 +44,10 @@ public static class NotificationProviderSecrets
         "Sms.ApiKey", "Sms.ApiSecret", "Sms.AuthToken", "Sms.Password",
         "WhatsApp.AccessToken", "WhatsApp.ApiKey", "WhatsApp.AppSecret",
         "Push.ServerKey", "Push.ApiKey", "Push.ServiceAccountJson", "Push.P8Key", "Push.PrivateKey",
+        // Expo "Enhanced Security" access token (ExpoPushProvider). It is a bearer credential for the
+        // whole Expo project, and the substring matcher in SetupSettingsController.IsSecretSetting does
+        // NOT catch it either — so it belongs on this explicit list, not on that heuristic.
+        "Push.AccessToken",
     };
 
     public static bool IsSecretKey(string settingKey) => Keys.Contains(settingKey);
