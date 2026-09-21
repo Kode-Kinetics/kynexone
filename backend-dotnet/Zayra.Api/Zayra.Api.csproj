@@ -19,6 +19,16 @@
     <EmbeddedResource Include="Assets\Fonts\NotoSansArabic-Bold.ttf" LogicalName="Zayra.Api.Assets.Fonts.NotoSansArabic-Bold.ttf" />
   </ItemGroup>
 
+  <!-- Migration id manifest. Written by ./Dockerfile immediately BEFORE it deletes Migrations/ to
+       keep the Render build under its memory limit. Embedding the ids (a few KB of text) lets the
+       readiness check know what the build should have applied even though the migration classes are
+       gone, so /health/ready's pending-migration count stops being a hard zero. Absent for every
+       build that keeps Migrations/ (local, tests, CI), which is why this is conditional — those
+       builds read the real list off the assembly. See Infrastructure/Operations/MigrationManifest.cs. -->
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)/Migrations.manifest')">
+    <EmbeddedResource Include="Migrations.manifest" LogicalName="Zayra.Api.Migrations.manifest" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="AWSSDK.S3" Version="3.7.400.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.11" />
