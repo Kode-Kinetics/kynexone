@@ -208,6 +208,36 @@ export interface PerformanceImprovementPlan {
   initiatedByName: string;
   createdAtUtc: string;
   closedAtUtc: string | null;
+  /** The monitoring record, read back. PIPCheckIn.Outcome previously had no read site at all. */
+  latestCheckInOutcome?: string | null;
+  checkInCount?: number;
+}
+
+export interface AppraisalAppeal {
+  id: string;
+  reviewId: string;
+  employeeId: number;
+  employeeName: string;
+  appealReason: string;
+  employeeJustification: string;
+  status: string;
+  hrResponse: string;
+  reviewedByName: string;
+  submittedAt: string;
+  reviewedAt: string | null;
+}
+
+export interface PipTerminationQueueItem {
+  id: string;
+  employeeId: number;
+  employeeName: string;
+  departmentName: string;
+  performanceGaps: string;
+  startDate: string;
+  endDate: string;
+  closedAtUtc: string | null;
+  recommendationReason: string;
+  action: string;
 }
 
 export interface PIPCheckIn {
@@ -394,8 +424,12 @@ export const reviewsApi = {
   appeal: (id: string, appealReason: string, justification?: string) =>
     client.post(`/api/performance/reviews/${id}/appeal`, { appealReason, justification }).then(r => r.data),
 
+  listAppeals: (status?: string) =>
+    client.get<AppraisalAppeal[]>('/api/performance/reviews/appeals', { params: { status } }).then(r => r.data),
+
   respondToAppeal: (appealId: string, decision: string, response: string) =>
-    client.post(`/api/performance/reviews/appeals/${appealId}/respond`, { decision, response }).then(r => r.data),
+    client.post<{ appeal: AppraisalAppeal; reviewStatus: string; compensationPermitted: boolean; nextStep: string }>(
+      `/api/performance/reviews/appeals/${appealId}/respond`, { decision, response }).then(r => r.data),
 
   computeAttendance: (id: string) =>
     client.post<{ attendanceScore: number }>(`/api/performance/reviews/${id}/compute-attendance`).then(r => r.data),
@@ -460,7 +494,11 @@ export const pipApi = {
   }) => client.post<PerformanceImprovementPlan>('/api/performance/pip', body).then(r => r.data),
 
   updateStatus: (id: string, status: string, notes?: string) =>
-    client.post<PerformanceImprovementPlan>(`/api/performance/pip/${id}/status`, { status, notes }).then(r => r.data),
+    client.post<{ pip: PerformanceImprovementPlan; routedTo: string | null; nextStep: string | null }>(
+      `/api/performance/pip/${id}/status`, { status, notes }).then(r => r.data),
+
+  terminationQueue: () =>
+    client.get<{ items: PipTerminationQueueItem[]; total: number }>('/api/performance/pip/termination-queue').then(r => r.data),
 
   addCheckIn: (id: string, body: { checkInDate: string; notes: string; outcome: string }) =>
     client.post(`/api/performance/pip/${id}/checkin`, body).then(r => r.data),
@@ -479,8 +517,15 @@ export const probationApi = {
     performanceSummary: string; overallRating: number; recommendation: string; notes?: string;
   }) => client.post<ProbationReview>(`/api/performance/probation/${id}/manager-review`, body).then(r => r.data),
 
-  hrDecision: (id: string, decision: string, notes?: string) =>
-    client.post<ProbationReview>(`/api/performance/probation/${id}/hr-decision`, { decision, notes }).then(r => r.data),
+  hrDecision: (id: string, decision: string, notes?: string, extra?: { effectiveDate?: string; newProbationEndDate?: string }) =>
+    client.post<{
+      probationReview: ProbationReview;
+      employeeStatus: string;
+      confirmationDate: string | null;
+      probationEndDate: string | null;
+      separationRaised: boolean;
+      separationType: string | null;
+    }>(`/api/performance/probation/${id}/hr-decision`, { decision, notes, ...extra }).then(r => r.data),
 };
 
 export const feedbackApi = {

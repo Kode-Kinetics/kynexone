@@ -13,13 +13,46 @@ tenant-wide `42703`/`42P01` outages. Read this before promoting or reverting a b
 3. `deploy-backend` (gated on `migrate-backend`) POSTs the Render deploy hook (`RENDER_DEPLOY_HOOK_URL`).
    `render.yaml` has `autoDeploy: false`, so this hook is the **only** trigger — no double deploys.
 4. Render brings up the new instance and polls `healthCheckPath: /health/ready`. That endpoint
-   returns **503 while `GetPendingMigrations()` is non-empty** (`ProductionReadinessEvidence.ResolveStatus`),
-   so an image whose migrations have not been applied is **never promoted to serve traffic** — the
-   previous instance keeps serving. This backstop works on any plan, including `plan: free`.
+   returns **503 while migrations are pending** (`ProductionReadinessEvidence.ResolveStatus`), so
+   the previous instance keeps serving. This backstop works on any plan, including `plan: free`.
+
+   > **This step did not work between 2026-08 and 2026-09-21, and the wording here said it did.**
+   > `./Dockerfile` deletes `Migrations/` before publishing (a real fix for an 8 GB builder OOM),
+   > and `GetPendingMigrationsAsync()` is *migrations compiled into the assembly minus applied
+   > history*. In the deployed image that subtracts from an empty set, so it returned `0` pending
+   > for **every** database, permanently. `/health/ready` reported `ready` against a production DB
+   > missing twelve migrations, and a release was promoted onto an un-migrated schema on the
+   > strength of it. Measured on the live service on 2026-09-21: `{"status":"ready",
+   > "pendingMigrations":0}` while production had 70 of 72 migrations applied.
+   >
+   > It works now because the Docker build records the migration ids into an embedded
+   > `Migrations.manifest` *before* stripping the classes, and the readiness check diffs that
+   > against `__EFMigrationsHistory`. If neither the assembly nor a manifest knows any migrations
+   > the check returns the `-1` unknown sentinel and reports `not_ready` — it **fails closed**
+   > instead of reporting a comfortable zero. See `Infrastructure/Operations/MigrationManifest.cs`.
+
+5. **Before any of the above**, two CI gates must pass. Both exist because the checks that were
+   supposed to cover this ground did not:
+   - `scripts/check_render_env.py` — every key `render.yaml` marks `sync: false` must actually be
+     set on the Render service. `sync: false` is a note to a human; Render does not enforce it.
+     An unset `Proxy__KnownNetworks` made the app's proxy guard throw, which killed the pre-deploy
+     migration job ~10s in, twice, before it reached the database.
+   - `scripts/check-migration-visibility.sh` — `ls Migrations/*.cs` must equal
+     `dotnet ef migrations list`. Three migrations hand-written without a `[Migration]` attribute
+     were invisible to EF — and therefore to *every* tool here, all of which are `dotnet ef`-based —
+     for 70 days. 72 files on disk, 69 visible.
 
 ### Required GitHub secrets
 - `PROD_DATABASE_URL` — production Neon connection string (used only by `migrate-backend`).
 - `RENDER_DEPLOY_HOOK_URL` — Render deploy hook for the web service.
+- `RENDER_API_KEY` — read access to `srv-d8slkb77f7vs73d2k92g`, for the required-env-var gate.
+
+> **Secret placement is not currently a control.** `PROD_DATABASE_URL` and
+> `RENDER_DEPLOY_HOOK_URL` are **repository** secrets, and the `production` GitHub environment
+> holds **zero** secrets (verified 2026-09-21). The environment's approval gate therefore protects
+> the *job*, not the *credential*: any workflow on any branch can reference either secret without
+> an approval. Moving all three to the `production` environment is what would make the boundary
+> real. `RENDER_API_KEY` should be created there from the start.
 
 ### Optional hardening (paid web instance)
 Once the web service is on a Render **Starter** instance, enable the native pre-deploy migrate as

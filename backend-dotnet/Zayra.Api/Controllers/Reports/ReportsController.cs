@@ -450,7 +450,16 @@ public class ReportsController : ControllerBase
                 .Select(e => e.Id).ToListAsync(ct);
             q = q.Where(x => empIds.Contains(x.EmployeeId));
         }
-        return await q.Select(x => new { x.EmployeeId, x.EmployeeName, x.LeaveTypeName, Entitled = x.Entitled, Used = x.Used, Available = x.Entitled + x.Accrued + x.CarriedForward + x.ManualAdjustment - x.Used - x.Pending - x.Encashed })
+        // Must match EmployeeLeaveBalance.Available exactly. It is re-spelt rather than called because
+        // Available is [Ignore]d and cannot be translated to SQL — so: Math.Max(Entitled, Accrued),
+        // NOT Entitled + Accrued (they are two representations of one grant, see the property's
+        // remarks), and it subtracts Expired, which this copy silently omitted.
+        return await q.Select(x => new
+            {
+                x.EmployeeId, x.EmployeeName, x.LeaveTypeName, Entitled = x.Entitled, Used = x.Used,
+                Available = Math.Max(x.Entitled, x.Accrued) + x.CarriedForward + x.ManualAdjustment
+                          - x.Used - x.Pending - x.Encashed - x.Expired
+            })
             .OrderBy(x => x.EmployeeName).ToListAsync(ct);
     }
 

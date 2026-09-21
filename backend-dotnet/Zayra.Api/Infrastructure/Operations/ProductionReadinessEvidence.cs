@@ -95,14 +95,47 @@ public static class ProductionReadinessEvidence
             statuses);
     }
 
+    /// <summary>
+    /// Migrations this build expects to exist, newest source of truth first.
+    /// </summary>
+    /// <remarks>
+    /// Prefers the assembly's own migration classes. Falls back to the build-time manifest for the
+    /// production image, which deletes Migrations/ to keep the Render build under its memory limit
+    /// (see <see cref="MigrationManifest"/>). Returns empty only when BOTH are absent — a state the
+    /// caller treats as unknown, never as zero.
+    /// </remarks>
+    internal static IReadOnlyCollection<string> ResolveExpectedMigrations(IEnumerable<string> assemblyMigrations)
+    {
+        var fromAssembly = assemblyMigrations as IReadOnlyCollection<string> ?? assemblyMigrations.ToList();
+        if (fromAssembly.Count > 0) return fromAssembly;
+        return MigrationManifest.Ids;
+    }
+
     private static async Task<int> CountPendingMigrationsAsync(ZayraDbContext db, bool dbHealthy, CancellationToken ct)
     {
         if (!dbHealthy) return 0; // DB probe already reports not_ready; don't double-count.
         if (!db.Database.IsRelational()) return 0;
         try
         {
-            var pending = await db.Database.GetPendingMigrationsAsync(ct);
-            return pending.Count();
+            // DO NOT "simplify" this back to GetPendingMigrationsAsync(). That call is
+            // GetMigrations() minus the applied history, and GetMigrations() reads the migration
+            // classes compiled into THIS assembly. The production Dockerfile deletes Migrations/
+            // before publishing, so in the deployed image that set is empty and the subtraction
+            // returns zero pending for every database, unconditionally. This check was a no-op by
+            // construction from the day the strip landed: /health/ready reported `ready` with twelve
+            // migrations missing, which is how a release was promoted against an un-migrated
+            // database. A gate that cannot fail is not a gate.
+            var expected = ResolveExpectedMigrations(db.Database.GetMigrations());
+            if (expected.Count == 0)
+            {
+                // Fail closed. We know nothing about what this build should have applied, so we
+                // cannot claim parity. -1 is the unknown sentinel; ResolveStatus turns it into
+                // not_ready and Render keeps the previous instance serving.
+                return -1;
+            }
+
+            var applied = await db.Database.GetAppliedMigrationsAsync(ct);
+            return expected.Except(applied, StringComparer.Ordinal).Count();
         }
         catch
         {

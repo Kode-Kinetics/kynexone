@@ -16,10 +16,25 @@ services:
     # AFTER tests + security gates + the DB-migration step succeed. Two triggers (autoDeploy + hook)
     # risked overlapping deploys per commit.
     autoDeploy: false
-    # P0-4: gate traffic on migration parity. /health/ready returns 503 while EF reports pending
-    # migrations (ProductionReadinessEvidence.ResolveStatus), so a migration-bearing image deployed
-    # against an un-migrated DB is NEVER promoted to serve traffic — Render keeps the old instance
-    # live until `--migrate` has run. This backstop works on ANY plan (including free).
+    # Gate traffic on migration parity. /health/ready returns 503 while migrations are pending
+    # (ProductionReadinessEvidence.ResolveStatus), so Render keeps the old instance live until
+    # `--migrate` has run.
+    #
+    # THIS CLAIM WAS FALSE FROM 2026-08 UNTIL 2026-09-21 AND IS WORTH KNOWING WHY. The text here
+    # used to promise that "a migration-bearing image deployed against an un-migrated DB is NEVER
+    # promoted". It could not have been: ./Dockerfile deletes Migrations/ before publishing, and
+    # GetPendingMigrationsAsync() is "migrations compiled into the assembly MINUS applied history",
+    # so in the deployed image it subtracted from an empty set and returned 0 pending for EVERY
+    # database. /health/ready reported `ready` against a DB missing twelve migrations, and that is
+    # how a release was promoted onto an un-migrated schema. The gate was a no-op by construction
+    # for as long as the promise was written here.
+    #
+    # What makes it true now: the Dockerfile records the migration ids into an embedded
+    # Migrations.manifest BEFORE stripping the classes, and the readiness check diffs that against
+    # __EFMigrationsHistory. If neither the assembly nor a manifest knows any migrations, the check
+    # returns the -1 unknown sentinel and reports not_ready — it fails CLOSED instead of reporting
+    # a comfortable zero. See Infrastructure/Operations/MigrationManifest.cs and
+    # Zayra.Api.Tests/DeployHardeningTests.cs, which fails if this comment's mechanism is removed.
     healthCheckPath: /health/ready
     # ── DB MIGRATIONS ON DEPLOY (P0-4) ──────────────────────────────────────────────
     # Migrations are applied by the CI `migrate-backend` job (dotnet ef database update against the
@@ -31,16 +46,30 @@ services:
     # could cancel a migrate job waiting on the `production` environment approval while the deploy
     # still went ahead, putting new code on an old schema (42P01 relation does not exist).
     #
-    # Program.cs:779-812 — `--migrate` applies EF migrations then returns, exiting 0.
-    # PRECONDITION: the builder-time seed-admin/JWT fail-fast guards (Program.cs:159) run on this
-    # invocation too, so SeedAdmin__Password and Jwt__SigningKey must be set or the pre-deploy job
-    # fails and blocks the deploy. Both are `sync: false` below and are already set in the
-    # dashboard — the web service could not boot otherwise.
+    # `--migrate` is handled at the TOP of Program.cs by MigrateOnlyEntryPoint: it applies EF
+    # migrations and exits without constructing the web host at all.
     #
-    # NOTE: this blueprint is NOT reliably synced to the live service (live autoDeploy has been on
-    # while this file said off), so confirm the command is actually present in the Render dashboard.
-    # The CI migrate step + the /health/ready gate remain as defence in depth; migrations are
-    # idempotent, so running both is safe. See docs/DEPLOY_ROLLBACK_RUNBOOK.md.
+    # ITS ONLY PRECONDITION IS ConnectionStrings__Default. That is a deliberate change, made
+    # because the previous arrangement caused this outage. `--migrate` used to be handled near the
+    # END of Program.cs, after the whole service graph had been built, so every fail-fast guard in
+    # it was a precondition of migrating. The comment that stood here named the seed-admin and JWT
+    # guards — and missed the reverse-proxy guard 100 lines earlier, which fires FIRST and is the
+    # one that actually killed the job: Proxy__TrustForwardedHeaders was "true" with neither
+    # Proxy__KnownProxies nor Proxy__KnownNetworks set, so the pre-deploy job threw
+    # InvalidOperationException ~10s in, twice, and never opened a connection to the database.
+    # A comment that lists the guards it knows about is a hazard when the list is incomplete.
+    #
+    # THIS BLUEPRINT IS NOT SYNCED TO THE LIVE SERVICE. Read that literally before relying on any
+    # line in this file. Verified against the Render API on 2026-09-21 for srv-d8slkb77f7vs73d2k92g:
+    #   autoDeploy        = no        (matches this file)
+    #   healthCheckPath   = /health/ready (matches this file)
+    #   preDeployCommand  = NOT SET   (this file says `dotnet Zayra.Api.dll --migrate`)
+    # So the pre-deploy migration declared below does not currently run at all. The active
+    # migration path is the CI `migrate-backend` job (`dotnet ef database update` against
+    # PROD_DATABASE_URL, gated on the `production` environment approval). Setting the pre-deploy
+    # command in the dashboard is a product-owner action; until then this line is an intention.
+    # Migrations are idempotent, so running both paths is safe.
+    # See docs/DEPLOY_ROLLBACK_RUNBOOK.md.
     preDeployCommand: dotnet Zayra.Api.dll --migrate
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
@@ -53,8 +82,12 @@ services:
       # secure links, scheme checks, audit IPs, and rate-limit partitions reflect the real request.
       - key: Proxy__TrustForwardedHeaders
         value: "true"
-      # REQUIRED: trusted Render proxy CIDR(s), comma-separated. Deployment intentionally
-      # fails closed if forwarding is enabled without an explicit trust boundary.
+      # REQUIRED: trusted Render proxy CIDR(s), comma-separated (Render's internal network is
+      # 10.0.0.0/8). The app fails closed if forwarding is enabled without an explicit trust
+      # boundary — correctly, but this key being unset is what broke the 2026-09-21 release.
+      # `sync: false` is a note to a human, not a control: Render does not enforce it. The
+      # scripts/check_render_env.py CI gate is what turns every `sync: false` below into a
+      # verified precondition of deploying.
       - key: Proxy__KnownNetworks
         sync: false
       # Fail closed on unexpected Host headers instead of appsettings' local-development wildcard.

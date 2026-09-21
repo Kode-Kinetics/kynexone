@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
+using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Modules;
@@ -260,8 +261,13 @@ public class DashboardController : ControllerBase
                 Total = _db.Employees.Count(e => e.TenantId == tenantId),
                 Active = _db.Employees.Count(e => e.TenantId == tenantId && e.Status == "Active"),
                 Present = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today && a.Status == "Present"),
+                // The processor writes "On leave" (lower-case L); this compared only against "Leave"
+                // and "On Leave", so the tile was structurally ZERO on every processed day. Both older
+                // spellings are still present in live tenant data, so all three are accepted.
                 OnLeave = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today
-                    && (a.Status == "Leave" || a.Status == "On Leave")),
+                    && (a.Status == AttendanceStatuses.OnLeave
+                     || a.Status == AttendanceStatuses.LeaveLegacy
+                     || a.Status == AttendanceStatuses.OnLeaveTitle)),
                 Absent = _db.AttendanceRecords.Count(a => a.TenantId == tenantId && a.WorkDate == today && a.Status == "Absent"),
                 // Hours are safe to aggregate as REAL as well as NUMERIC; this keeps the query
                 // portable to the SQLite regression harness without changing the decimal API.
@@ -307,9 +313,10 @@ public class DashboardController : ControllerBase
             .Select(g => new { Status = g.Key, Count = g.Count() })
             .ToListAsync(ct);
 
-        var present = todayBuckets.Where(b => b.Status == "Present").Sum(b => b.Count);
-        var onLeave = todayBuckets.Where(b => b.Status == "Leave" || b.Status == "On Leave").Sum(b => b.Count);
-        var absent  = todayBuckets.Where(b => b.Status == "Absent").Sum(b => b.Count);
+        var present = todayBuckets.Where(b => b.Status == AttendanceStatuses.Present).Sum(b => b.Count);
+        // Same case mismatch as the unscoped summary above: the processor writes "On leave".
+        var onLeave = todayBuckets.Where(b => AttendanceStatuses.IsOnLeave(b.Status)).Sum(b => b.Count);
+        var absent  = todayBuckets.Where(b => b.Status == AttendanceStatuses.Absent).Sum(b => b.Count);
 
         var overtimeHours = await _db.AttendanceRecords
             .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today && ids.Contains(a.EmployeeId))
@@ -334,15 +341,34 @@ public class DashboardController : ControllerBase
         var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var firstMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-(months - 1));
 
+        // THE ATTENDANCE RATE = days attended ÷ days the employee was ROSTERED TO WORK.
+        //
+        // This used to be PresentCount ÷ g.Count(): every row in the month went into the denominator,
+        // so a rest day, an approved leave day and a public holiday each counted against the employee
+        // as a failure to turn up, and a "Late" day — on which they DID turn up, and are already
+        // docked through the short-hours deduction — counted against them as well. Evostel's
+        // dashboard read 69.9% (158 Present ÷ 226 rows) where the true figure is 87.1%
+        // (158 Present + 24 Late = 182 attended ÷ 226 − 8 rest days − 9 leave days = 209 rostered).
+        //
+        // Both the numerator and the denominator now come from AttendanceStatuses, which is also what
+        // AttendanceService.DashboardAsync uses, so the two screens no longer answer differently for
+        // the same day. Spelled out inline rather than called as a method because this expression is
+        // translated to SQL; the constants translate, a helper call would not.
         var grouped = await _db.AttendanceRecords
             .Where(a => a.TenantId == tenantId && a.WorkDate >= firstMonth && a.WorkDate <= today)
             .GroupBy(a => new { a.WorkDate.Year, a.WorkDate.Month })
             .Select(g => new
             {
                 g.Key.Year, g.Key.Month,
-                Total        = g.Count(),
-                PresentCount = g.Count(a => a.Status == "Present"),
-                OvertimeSum  = g.Sum(a => (decimal?)a.OvertimeHours) ?? 0m,
+                RosteredCount = g.Count(a => a.Status != AttendanceStatuses.RestDay
+                                          && a.Status != AttendanceStatuses.PublicHoliday
+                                          && a.Status != AttendanceStatuses.OnLeave
+                                          && a.Status != AttendanceStatuses.LeaveLegacy
+                                          && a.Status != AttendanceStatuses.OnLeaveTitle),
+                AttendedCount = g.Count(a => a.Status == AttendanceStatuses.Present
+                                          || a.Status == AttendanceStatuses.Late
+                                          || a.Status == AttendanceStatuses.HalfDay),
+                OvertimeSum   = g.Sum(a => (decimal?)a.OvertimeHours) ?? 0m,
             })
             .ToListAsync(ct);
 
@@ -350,7 +376,9 @@ public class DashboardController : ControllerBase
         {
             var month = firstMonth.AddMonths(offset);
             var row   = grouped.FirstOrDefault(r => r.Year == month.Year && r.Month == month.Month);
-            var rate  = row is { Total: > 0 } ? Math.Round(row.PresentCount * 100m / row.Total, 1) : 0m;
+            // A month of nothing but rest days has no rostered days and therefore no rate to report;
+            // 0% would assert that nobody turned up on days nobody was asked to.
+            var rate  = row is { RosteredCount: > 0 } ? Math.Round(row.AttendedCount * 100m / row.RosteredCount, 1) : 0m;
             return new DashboardTrendDto(month.ToString("MMM"), rate, row?.OvertimeSum ?? 0m);
         }).ToList();
     }

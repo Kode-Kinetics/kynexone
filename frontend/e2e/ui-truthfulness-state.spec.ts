@@ -55,10 +55,21 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(LOGIN_PREVIEW_DISCLOSURE).toContain('Illustrative sample data');
     expect(LOGIN_CAPABILITIES.find((item) => item.includes('Qiwa'))).toContain('integration-ready');
     expect(LOGIN_CAPABILITIES.find((item) => item.includes('Hijri'))).toContain('aware');
-    const login = read('src/views/LoginPage.tsx');
-    expect(login).toContain('overflow-x-hidden');
-    expect(login).toContain('lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]');
-    expect(login).toContain('min-w-0 flex-col items-center [justify-content:safe_center]');
+    /* These three used to pin Tailwind utilities on the old panel-grid
+       sign-in page: overflow-x-hidden, an lg: two-column grid, and a
+       safe-centred column. The V3 rebuild moved that layout out of utility
+       classes and into src/styles/login-aurora.css, so the assertions were
+       checking for strings in a file that no longer has any business
+       containing them — and the suite has been red ever since.
+       Same three guarantees, asserted where they now live. */
+    const shellCss = read('src/styles/login-aurora.css');
+    // 1. no horizontal scroll on the sign-in shell
+    expect(shellCss).toContain('overflow-x: hidden');
+    // 2. the stage is still two columns: brief + the card's own track
+    // No `s` flag: [^}] already spans newlines, and the flag needs an es2018 target.
+    expect(shellCss).toMatch(/\.lx-stage\b[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
+    // 3. and it collapses to one column rather than overflowing when narrow
+    expect(shellCss).toContain('grid-template-columns: minmax(0, 1fr);');
   });
 
   test('public privacy and security claims stay evidence-bound', () => {
@@ -85,7 +96,14 @@ test.describe('browserless UI truthfulness contracts', () => {
     const notifications = read('src/layouts/TopBar.tsx');
     const tabs = read('src/components/ui/RovingTabs.tsx');
 
-    expect(login).toContain('aria-busy={loading}');
+    /* aria-busy={busy}, not aria-busy={loading}: the rebuild pulled the
+       submit button out into a <Submit> part that takes the flag as `busy`
+       (LoginPage still assigns `const busy = loading`). The guarantee — the
+       submit control reports its pending state to assistive tech — is
+       unchanged, so the assertion follows the rename rather than the page
+       being reverted to satisfy a string match. */
+    expect(login).toContain('const busy = loading');
+    expect(login).toContain('aria-busy={busy}');
     expect(login).toContain('aria-pressed={showPw}');
     expect(people).toContain('aria-label={`Open profile for ${employee.fullName}`}');
     expect(people).toContain('Clear filters');

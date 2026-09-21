@@ -1358,7 +1358,7 @@ function PermissionMatrixTab() {
                 {matrix.roles.map(role => (
                   <th key={role.id} className="px-2 py-2.5 text-center font-medium text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 min-w-[80px]">
                     <span title={role.description} className="block truncate max-w-[76px]">{role.name}</span>
-                    <span className="text-[9px] text-slate-400 font-normal block">L{role.authorityLevel}</span>
+                    <span className="text-[10px] text-slate-400 font-normal block">L{role.authorityLevel}</span>
                   </th>
                 ))}
               </tr>

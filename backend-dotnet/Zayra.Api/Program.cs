@@ -44,6 +44,20 @@ using Zayra.Api.Infrastructure.Operations;
 using Zayra.Api.Infrastructure.Qiwa;
 using Zayra.Api.Models;
 
+// ── MIGRATION-ONLY FAST PATH — must stay the FIRST statement in this file ─────────────────────
+// `dotnet Zayra.Api.dll --migrate` applies migrations and exits. It returns here, BEFORE
+// WebApplication.CreateBuilder, so not one line of web-host configuration below can stop a
+// migration from running.
+//
+// This is not defensive tidying. The Render pre-deploy migrate job died ~10s in, twice, at the
+// reverse-proxy guard immediately below — Proxy__TrustForwardedHeaders was "true" with neither
+// trust key set — and never reached the database. The backend could then neither ship nor roll
+// back. Every guard between here and the old handling site (~line 860) was a precondition of
+// migrating: the proxy trust boundary, the JWT signing key, the seed-admin password, the document
+// storage provider. A migration needs a connection string. See MigrateOnlyEntryPoint.
+if (MigrateOnlyEntryPoint.ShouldHandle(args))
+    return await MigrateOnlyEntryPoint.RunAsync(args);
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Reverse-proxy headers are trusted only when deployment configuration opts in. Cloud load
@@ -490,7 +504,22 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.AttendanceProcess
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobTypeRegistry>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Jobs.BackgroundJobStore>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobRunner>();
+builder.Services.AddSingleton(Zayra.Api.Infrastructure.Retention.DataRetentionSweepJobHandler.Descriptor);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.DataRetentionSweepJobHandler>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Jobs.BackgroundJobWorker>();
+
+// D3 — data retention. EVERY SWITCH IS OFF BY DEFAULT and the defaults are the safe ones:
+// DataRetention__ScheduleEnabled=true starts producing a daily DRY-RUN report and nothing else;
+// DataRetention__ApplyDeletions=true is what actually lets a record be anonymised or deleted;
+// DataRetention__AllowTenantErasure=true is additionally required before a soft-deleted tenant's data
+// is erased. See scratchpad/data-retention.md for the per-entity policy and the enable procedure.
+var dataRetentionOptions = builder.Configuration.GetSection(Zayra.Api.Infrastructure.Retention.DataRetentionOptions.SectionName)
+    .Get<Zayra.Api.Infrastructure.Retention.DataRetentionOptions>() ?? new Zayra.Api.Infrastructure.Retention.DataRetentionOptions();
+builder.Services.AddSingleton(dataRetentionOptions);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.ExpiredEmployeeRecordRule>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.ExpiredRefreshTokenRule>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.SoftDeletedTenantRule>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Retention.DataRetentionScheduler>();
 
 builder.Services.AddHttpClient<ILlmClient, LlmClient>();
 builder.Services.AddHttpContextAccessor();
@@ -806,12 +835,12 @@ app.MapGet("/health", async (ZayraDbContext db, ILoggerFactory loggerFactory) =>
 
 // ── Migration mode ────────────────────────────────────────────────────────────
 // In Production the web process NEVER runs migrations on startup to avoid crashing
-// the web service when TiDB or network is unavailable.
+// the web service when the database or network is unavailable.
 // Migrations run via a one-off command:
 //   dotnet Zayra.Api.dll --migrate
-// or via Render pre-deploy job. Set Database__RunMigrationsOnStartup=true ONLY
-// for local dev convenience (it defaults false in Production).
-var isMigrateMode = args.Contains("--migrate");
+// which is handled at the TOP of this file and never reaches here — see
+// MigrateOnlyEntryPoint. Database__RunMigrationsOnStartup below is a LOCAL DEV
+// convenience only (it defaults false in Production).
 var isPurgeDemoMode = args.Contains("--purge-demo");
 var isSundayDemoFixtureMode = args.Contains("--seed-sunday-demo-fixture");
 var runMigrationsOnStartup = app.Configuration.GetValue<bool>("Database:RunMigrationsOnStartup");
@@ -830,7 +859,7 @@ using (var scope = app.Services.CreateScope())
         CompanyScopeBootAssertion.ResolveStrictMode(app.Environment.IsProduction()),
         logger);
 
-    if (isMigrateMode || runMigrationsOnStartup)
+    if (runMigrationsOnStartup)
     {
         logger.LogInformation("Running EF Core migrations...");
         await dbContext.Database.MigrateAsync();
@@ -839,12 +868,6 @@ using (var scope = app.Services.CreateScope())
     else
     {
         logger.LogInformation("Skipping EF Core migrations on startup. Set Database:RunMigrationsOnStartup=true or run --migrate.");
-    }
-
-    if (isMigrateMode)
-    {
-        logger.LogInformation("--migrate mode complete. Exiting.");
-        return; // exit 0 — Render one-off job succeeds
     }
 
     // Explicit one-off, disposable fixture for the 20-Sep-2026 client-demo gate. The seeder owns
@@ -860,7 +883,7 @@ using (var scope = app.Services.CreateScope())
             app.Environment,
             logger);
         logger.LogInformation("--seed-sunday-demo-fixture mode complete. Exiting.");
-        return;
+        return 0;
     }
 
     // Phase 1B default-company backfill — idempotent (only touches null CompanyId rows),
@@ -890,7 +913,7 @@ using (var scope = app.Services.CreateScope())
         await Zayra.Api.Infrastructure.Seed.DemoPurgeRunner.RunAsync(
             dbContext, app.Configuration["SeedAdmin:TenantSlug"], logger);
         logger.LogInformation("--purge-demo mode complete. Exiting.");
-        return; // exit 0 — Render one-off job succeeds
+        return 0; // Render one-off job succeeds
     }
 
     // Seed data — each step is independently non-fatal so one failure never
@@ -1071,6 +1094,11 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.Run();
+
+// Explicit exit code. The entry point returns int now that `--migrate` short-circuits at the top
+// of this file and reports success or failure to the Render pre-deploy job; app.Run() returns only
+// on graceful shutdown, which is a clean exit.
+return 0;
 
 // Top-level statements generate an INTERNAL Program class. WebApplicationFactory<Program> in
 // Zayra.Api.Tests boots THIS file — the real middleware order, the real JWT TokenValidationParameters,

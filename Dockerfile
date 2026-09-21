@@ -22,14 +22,35 @@ COPY backend-dotnet/Zayra.Api/ ./
 # disproves it — #40 "workstation GC + trimmed Docker build" came FIRST and was insufficient, which
 # is why #41 landed this line and called it "decisive". Migrations have since grown 38 -> 59, each
 # Designer ~23k lines, so the compile load is now LARGER than when GC tuning already failed.
-# The 59 migration Designer.cs files embed ~1.4M lines of duplicate model snapshots — the bulk of
-# the compiler's memory. The RUNTIME app never applies migrations (Database__RunMigrationsOnStartup
-# is "false"; schema is applied by CI's `dotnet ef database update` — a SEPARATE build that keeps the
-# migrations — before the deploy hook fires). EF builds its runtime model from ZayraDbContext
+# The Designer.cs files embed ~1.4M lines of duplicate model snapshots — the bulk of the compiler's
+# memory. The RUNTIME app never applies migrations (Database__RunMigrationsOnStartup is "false";
+# schema is applied by the Render pre-deploy `--migrate` and CI's `dotnet ef database update` — both
+# SEPARATE builds that keep the migrations). EF builds its runtime model from ZayraDbContext
 # .OnModelCreating, NOT from these snapshots, so dropping them here is safe and cuts peak build
-# memory from >8GB (Server GC) to ~2GB. NOTE: this makes the /health/ready pending-migration check a
-# no-op inside the image (it sees 0 migrations) — acceptable because CI applies migrations ahead of
-# deploy; the permanent fix is squashing the migrations (tracked) which restores that gate.
+# memory from >8GB (Server GC) to ~2GB.
+#
+# ── WHAT THIS USED TO BREAK, AND WHY IT NO LONGER DOES ──
+# Deleting the directory left the image with ZERO migrations, and GetPendingMigrationsAsync() is
+# "migrations in the assembly MINUS applied history" — so it returned 0 pending for every database,
+# forever. /health/ready reported `ready` against a database missing twelve migrations, which is how
+# a release was promoted onto an un-migrated schema. The old comment here called that "acceptable
+# because CI applies migrations ahead of deploy"; the incident proved otherwise, and render.yaml's
+# promotion guarantee was false for as long as this line existed unaccompanied.
+#
+# The manifest below is the fix: record the migration ids (a few KB of text) BEFORE deleting the
+# classes, embed them, and let ProductionReadinessEvidence diff them against __EFMigrationsHistory.
+# The gate becomes real without reintroducing the compile cost. `test -s` means the image can never
+# ship without one — and if a manifest is somehow absent, the readiness check fails CLOSED rather
+# than reporting a comfortable zero. Squashing the migrations is still tracked and would let this
+# whole block go away.
+RUN ls Migrations/*.cs \
+      | grep -v '\.Designer\.cs$' \
+      | grep -v 'ModelSnapshot\.cs$' \
+      | xargs -n1 basename \
+      | sed 's/\.cs$//' \
+      | sort > Migrations.manifest \
+    && test -s Migrations.manifest \
+    && echo "Recorded $(wc -l < Migrations.manifest) migration ids into Migrations.manifest"
 RUN rm -rf Migrations
 RUN dotnet publish Zayra.Api.csproj -c Release -o /app/publish --no-restore \
     -p:RunAnalyzers=false -p:UseSharedCompilation=false -maxcpucount:1

@@ -38,9 +38,14 @@ public sealed class PayComponentMigrationBackfillTests : IAsyncLifetime
         await using (var db = CreateDb())
         {
             await db.Database.GetInfrastructure().GetRequiredService<IMigrator>().MigrateAsync(PreF2Migration);
+            // Raw SQL, not db.Tenants.Add: the context's model is the CURRENT one, so an EF insert
+            // writes every column the Tenant entity has today — including any added after PreF2Migration,
+            // which do not exist in the schema at this point. Naming the pre-F2 column list explicitly
+            // (as this test already does for pay_components) is what makes it survive the next column.
             foreach (var t in new[] { empty, seeded, relabelled })
-                db.Tenants.Add(new Tenant { Id = t, Name = $"T {t:N}", Slug = $"t-{t:N}" });
-            await db.SaveChangesAsync();
+                await db.Database.ExecuteSqlRawAsync(
+                    $"INSERT INTO tenants (id, name, slug, is_active, created_at_utc) " +
+                    $"VALUES ('{t}', 'T {t:N}', 't-{t:N}', TRUE, now());");
             // Pre-F2 column list only (no effective_from / effective_to yet).
             const string cols = "id, tenant_id, company_id, code, name_en, name_ar, component_type, calc_method, structure_field, " +
                                 "value, formula_expression, provider_key, is_taxable, gosi_subject, wps_included, eosb_included, " +

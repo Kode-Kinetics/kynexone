@@ -15,9 +15,9 @@ import {
   pipApi, probationApi, recommendationsApi, reviewsApi, templatesApi,
 } from '../api/performance';
 import type {
-  AppraisalReview, BonusRecommendation, CycleAnalytics, EmployeeGoal,
+  AppraisalAppeal, AppraisalReview, BonusRecommendation, CycleAnalytics, EmployeeGoal,
   IncrementRecommendation, PerformanceCycle, PerformanceImprovementPlan,
-  ProbationReview, PromotionRecommendation, ScorecardTemplate,
+  PipTerminationQueueItem, ProbationReview, PromotionRecommendation, ScorecardTemplate,
 } from '../api/performance';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -523,6 +523,105 @@ function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalRev
 
 // ── Team Reviews Tab ──────────────────────────────────────────────────────────
 
+/**
+ * Open appeals, and the decision that resolves them.
+ *
+ * `respondToAppeal` existed in the API client with ZERO call sites, so an appeal — including one HR
+ * meant to reject — could never be decided from the product. Submitting one parked the review at
+ * "Appealed", and every increment, promotion and bonus for that employee was refused from then on,
+ * permanently. This panel is the missing entry point.
+ */
+function OpenAppealsPanel({ onResolved }: { onResolved: () => void }) {
+  const [appeals, setAppeals] = useState<AppraisalAppeal[]>([]);
+  const [deciding, setDeciding] = useState<{ appeal: AppraisalAppeal; decision: string } | null>(null);
+  const [response, setResponse] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = () => { reviewsApi.listAppeals().then(setAppeals).catch(() => setAppeals([])); };
+  useEffect(load, []);
+
+  const decide = async () => {
+    if (!deciding) return;
+    if (!response.trim()) { setError('Record the reasoning given to the employee.'); return; }
+    setSaving(true); setError('');
+    try {
+      const r = await reviewsApi.respondToAppeal(deciding.appeal.id, deciding.decision, response.trim());
+      setDeciding(null); setResponse(''); load(); onResolved();
+      alert(`Appeal ${deciding.decision.toLowerCase()}. Review is now ${r.reviewStatus}. ${r.nextStep}`);
+    } catch { setError('The decision could not be recorded.'); }
+    finally { setSaving(false); }
+  };
+
+  if (appeals.length === 0) return null;
+
+  return (
+    <div className="surface border-s-4 border-s-rose-500 p-5">
+      <div className="flex items-center gap-2">
+        <AlertTriangle className="h-4 w-4 text-rose-500" />
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+          Open appeals ({appeals.length})
+        </h3>
+      </div>
+      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+        While an appeal is open, no increment, promotion or bonus can be raised for that employee. Decide it
+        to release them.
+      </p>
+      <div className="mt-3 divide-y divide-slate-100 dark:divide-white/5">
+        {appeals.map(a => (
+          <div key={a.id} className="flex items-start justify-between gap-4 py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">{a.employeeName}</p>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{a.appealReason}</p>
+              {a.employeeJustification && (
+                <p className="mt-1 text-xs text-slate-400">{a.employeeJustification}</p>
+              )}
+              <p className="mt-1 text-xs text-slate-400">Submitted {fmtDate(a.submittedAt)}</p>
+            </div>
+            <div className="flex shrink-0 gap-1">
+              <button type="button" className={btn.ghost}
+                onClick={() => { setDeciding({ appeal: a, decision: 'Rejected' }); setResponse(''); setError(''); }}>
+                Reject appeal
+              </button>
+              <button type="button" className={btn.primary}
+                onClick={() => { setDeciding({ appeal: a, decision: 'Upheld' }); setResponse(''); setError(''); }}>
+                Uphold appeal
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {deciding && (
+        <Modal title={`${deciding.decision === 'Upheld' ? 'Uphold' : 'Reject'} appeal — ${deciding.appeal.employeeName}`}
+          onClose={() => setDeciding(null)}>
+          <div className="space-y-4">
+            <div className={`rounded-lg border p-3 text-xs ${deciding.decision === 'Upheld'
+              ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'
+              : 'border-slate-200 bg-slate-50 text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300'}`}>
+              {deciding.decision === 'Upheld'
+                ? 'Upholding withdraws the published result for revision. The review returns to Final Approval; revise the scores (a written reason is required) and publish again to re-issue it. Compensation stays paused until you do.'
+                : 'Rejecting confirms the published result. The employee returns to where they were and becomes eligible for increment, promotion and bonus recommendations again.'}
+            </div>
+            <Field label="Response to the employee *">
+              <textarea title="Appeal response" className={inp} rows={4} value={response}
+                onChange={e => setResponse(e.target.value)}
+                placeholder="What was considered, and why this outcome…" />
+            </Field>
+            {error && <p className="text-xs text-rose-500">{error}</p>}
+            <div className="flex justify-end gap-2">
+              <button type="button" className={btn.ghost} onClick={() => setDeciding(null)}>Cancel</button>
+              <button type="button" className={btn.primary} onClick={decide} disabled={saving}>
+                {saving ? 'Recording…' : `Record ${deciding.decision.toLowerCase()}`}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function TeamReviewsTab() {
   const [reviews, setReviews] = useState<AppraisalReview[]>([]);
   const [loading, setLoading] = useState(true);
@@ -541,10 +640,11 @@ function TeamReviewsTab() {
 
   return (
     <div className="space-y-4">
+      <OpenAppealsPanel onResolved={load} />
       <div className="flex items-center gap-3">
         <select className={`${sel} w-56`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
           <option value="">All Statuses</option>
-          {['SelfAssessmentDue', 'SelfAssessmentSubmitted', 'ManagerReview', 'Calibration', 'FinalApproval', 'Published', 'Acknowledged'].map(s => (
+          {['SelfAssessmentDue', 'SelfAssessmentSubmitted', 'ManagerReview', 'Calibration', 'FinalApproval', 'Published', 'Acknowledged', 'Appealed'].map(s => (
             <option key={s} value={s}>{s}</option>
           ))}
         </select>
@@ -1173,31 +1273,58 @@ function PIPProbationTab() {
   const [subTab, setSubTab] = useState<'pip' | 'probation'>('pip');
   const [pips, setPips] = useState<PerformanceImprovementPlan[]>([]);
   const [probations, setProbations] = useState<ProbationReview[]>([]);
+  const [terminationQueue, setTerminationQueue] = useState<PipTerminationQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreatePIP, setShowCreatePIP] = useState(false);
   const [statusModal, setStatusModal] = useState<{ id: string; name: string } | null>(null);
   const [newStatus, setNewStatus] = useState('Improved');
   const [statusNotes, setStatusNotes] = useState('');
+  const [statusError, setStatusError] = useState('');
+  const [probationModal, setProbationModal] = useState<{ p: ProbationReview; decision: string } | null>(null);
+  const [probationNotes, setProbationNotes] = useState('');
+  const [probationDate, setProbationDate] = useState('');
+  const [probationError, setProbationError] = useState('');
 
   const load = () => {
     setLoading(true);
     Promise.all([
       pipApi.list().then(setPips),
       probationApi.list().then(setProbations),
+      pipApi.terminationQueue().then(r => setTerminationQueue(r.items)).catch(() => setTerminationQueue([])),
     ]).finally(() => setLoading(false));
   };
   useEffect(load, []);
 
   const updatePIPStatus = async () => {
     if (!statusModal) return;
-    try { await pipApi.updateStatus(statusModal.id, newStatus, statusNotes); setStatusModal(null); load(); }
-    catch { alert('Status update failed.'); }
+    setStatusError('');
+    try {
+      const r = await pipApi.updateStatus(statusModal.id, newStatus, statusNotes);
+      setStatusModal(null); load();
+      if (r.nextStep) alert(r.nextStep);
+    } catch (e) {
+      // The adverse-close guard answers 409 with a machine-readable code; show what it said.
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setStatusError(msg ?? 'Status update failed.');
+    }
   };
 
-  const hrDecideProbation = async (id: string, decision: string) => {
-    const notes = prompt('HR notes (optional):') ?? '';
-    try { await probationApi.hrDecision(id, decision, notes); load(); }
-    catch { alert('Decision failed.'); }
+  const submitProbationDecision = async () => {
+    if (!probationModal) return;
+    setProbationError('');
+    const { p, decision } = probationModal;
+    try {
+      const r = await probationApi.hrDecision(p.id, decision, probationNotes, decision === 'Extended'
+        ? { newProbationEndDate: probationDate }
+        : probationDate ? { effectiveDate: probationDate } : undefined);
+      setProbationModal(null); load();
+      alert(r.separationRaised
+        ? `${p.employeeName} is now ${r.employeeStatus}. A '${r.separationType}' separation was raised — complete the offboarding checklist and final settlement in Offboarding.`
+        : `Recorded. Probation now ends ${r.probationEndDate ?? '—'}${r.confirmationDate ? `; confirmed from ${r.confirmationDate}` : ''}.`);
+    } catch (e) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setProbationError(msg ?? 'The decision could not be recorded.');
+    }
   };
 
   return (
@@ -1209,6 +1336,31 @@ function PIPProbationTab() {
 
       {subTab === 'pip' && (
         <div className="space-y-4">
+          {terminationQueue.length > 0 && (
+            <div className="surface border-s-4 border-s-rose-500 p-5">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-rose-500" />
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                  Awaiting an employment decision ({terminationQueue.length})
+                </h3>
+              </div>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                A PIP was closed with a termination recommendation and no separation has been raised for that
+                person. This is a recommendation, not a termination — HR and leadership decide. Each entry clears
+                once a separation exists in Offboarding.
+              </p>
+              <div className="mt-3 divide-y divide-slate-100 dark:divide-white/5">
+                {terminationQueue.map(q => (
+                  <div key={q.id} className="py-3">
+                    <p className="text-sm font-semibold text-slate-900 dark:text-white">{q.employeeName}</p>
+                    <p className="mt-0.5 text-xs text-slate-400">{q.departmentName} · recommended {fmtDate(q.closedAtUtc)}</p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{q.recommendationReason}</p>
+                    <p className="mt-1 text-xs text-slate-400">{q.action}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex justify-end">
             <button type="button" className={btn.primary} onClick={() => setShowCreatePIP(true)}><Plus className="h-4 w-4" /> New PIP</button>
           </div>
@@ -1225,6 +1377,9 @@ function PIPProbationTab() {
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{p.employeeName}</p>
                     <p className="mt-0.5 text-xs text-slate-400">{p.departmentName} · {fmtDate(p.startDate)} – {fmtDate(p.endDate)}</p>
                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 line-clamp-1">{p.improvementGoals}</p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      {p.checkInCount ? `${p.checkInCount} check-in${p.checkInCount === 1 ? '' : 's'} · latest: ${p.latestCheckInOutcome}` : 'No check-ins recorded yet'}
+                    </p>
                   </div>
                   <div className="ms-4 flex shrink-0 items-center gap-3">
                     {statusBadge(p.status)}
@@ -1260,9 +1415,18 @@ function PIPProbationTab() {
                     {statusBadge(p.status)}
                     {p.status === 'ManagerReviewed' && (
                       <div className="flex gap-1">
-                        <button type="button" className={btn.primary} onClick={() => hrDecideProbation(p.id, 'Confirmed')}>Confirm</button>
-                        <button type="button" className={btn.ghost} onClick={() => hrDecideProbation(p.id, 'Extended')}>Extend</button>
-                        <button type="button" className={btn.danger} onClick={() => hrDecideProbation(p.id, 'Terminated')}>Terminate</button>
+                        {['Confirmed', 'Extended', 'Terminated'].map(d => (
+                          <button key={d} type="button"
+                            className={d === 'Terminated' ? btn.danger : d === 'Confirmed' ? btn.primary : btn.ghost}
+                            onClick={() => {
+                              setProbationModal({ p, decision: d });
+                              setProbationNotes('');
+                              setProbationDate(d === 'Terminated' ? p.probationEndDate.slice(0, 10) : '');
+                              setProbationError('');
+                            }}>
+                            {d === 'Confirmed' ? 'Confirm' : d === 'Extended' ? 'Extend' : 'Terminate'}
+                          </button>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -1274,6 +1438,41 @@ function PIPProbationTab() {
       )}
 
       {showCreatePIP && <CreatePIPModal onClose={() => setShowCreatePIP(false)} onSaved={() => { setShowCreatePIP(false); load(); }} />}
+      {probationModal && (
+        <Modal title={`${probationModal.decision === 'Confirmed' ? 'Confirm' : probationModal.decision === 'Extended' ? 'Extend' : 'Terminate'} probation — ${probationModal.p.employeeName}`}
+          onClose={() => setProbationModal(null)}>
+          <div className="space-y-4">
+            <div className={`rounded-lg border p-3 text-xs ${probationModal.decision === 'Terminated'
+              ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-400'
+              : 'border-slate-200 bg-slate-50 text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300'}`}>
+              {probationModal.decision === 'Terminated'
+                ? 'This ENDS the employment. A separation of type "Probation not passed" is raised, the WPS payroll footprint is deactivated and the offboarding record is created for final settlement. It is not reversible from this screen. A dismissal for cause (Article 80, which forfeits the end-of-service award) must be raised through Offboarding instead.'
+                : probationModal.decision === 'Confirmed'
+                  ? 'This ends the probation period from the effective date. Leave policies that exclude probationers start applying from that date, and the employee leaves the probation headcount.'
+                  : 'An extension must state the new probation end date. The leave rules and the probation headcount follow that date.'}
+            </div>
+            <Field label={probationModal.decision === 'Extended' ? 'New probation end date *'
+              : probationModal.decision === 'Terminated' ? 'Last working day *' : 'Effective date'}>
+              <input type="date"
+                title={probationModal.decision === 'Extended' ? 'New probation end date' : 'Effective date'}
+                className={inp} value={probationDate} onChange={e => setProbationDate(e.target.value)} />
+            </Field>
+            <Field label="HR notes">
+              <textarea title="HR notes" className={inp} rows={3} value={probationNotes}
+                onChange={e => setProbationNotes(e.target.value)} />
+            </Field>
+            {probationError && <p className="text-xs text-rose-500">{probationError}</p>}
+            <div className="flex justify-end gap-2">
+              <button type="button" className={btn.ghost} onClick={() => setProbationModal(null)}>Cancel</button>
+              <button type="button"
+                className={probationModal.decision === 'Terminated' ? btn.danger : btn.primary}
+                onClick={submitProbationDecision}>
+                Record decision
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {statusModal && (
         <Modal title={`Update PIP Status — ${statusModal.name}`} onClose={() => setStatusModal(null)}>
           <div className="space-y-4">
@@ -1288,6 +1487,7 @@ function PIPProbationTab() {
               </div>
             )}
             <Field label="Notes"><textarea title="Status Notes" className={inp} rows={3} value={statusNotes} onChange={e => setStatusNotes(e.target.value)} /></Field>
+            {statusError && <p className="text-xs text-rose-500">{statusError}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setStatusModal(null)}>Cancel</button>
               <button type="button" className={newStatus === 'TerminationRecommended' || newStatus === 'Failed' ? btn.danger : btn.primary} onClick={updatePIPStatus}>Update</button>

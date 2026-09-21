@@ -352,7 +352,7 @@ function FeedItem({ item }: { item: ActivityFeedItem }) {
           {humaniseAction(item.action)}
         </p>
         <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400 dark:text-slate-500">
-          <span className={`rounded px-1 py-px text-[9px] font-bold uppercase tracking-wide ${MODULE_COLOR[mod] ?? ''}`}>
+          <span className={`rounded px-1 py-px text-[10px] font-bold uppercase tracking-wide ${MODULE_COLOR[mod] ?? ''}`}>
             {mod}
           </span>
           · {item.actor !== 'System' ? item.actor : 'System'} · {timeAgo(item.occurredAt)}
@@ -1026,7 +1026,7 @@ export function DashboardPage() {
                       <span className={`font-mono text-base font-extrabold leading-none ${value > 0 ? cls : 'text-slate-300 dark:text-slate-700'}`}>
                         {value}
                       </span>
-                      <span className="text-[9px] font-medium text-slate-400 dark:text-slate-600">{label}</span>
+                      <span className="text-[10px] font-medium text-slate-400 dark:text-slate-600">{label}</span>
                     </button>
                   ))}
                 </div>

@@ -494,11 +494,19 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(160)")
                         .HasColumnName("name");
 
+                    b.Property<DateTime?>("PurgedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("purged_at_utc");
+
                     b.Property<string>("Slug")
                         .IsRequired()
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)")
                         .HasColumnName("slug");
+
+                    b.Property<DateTime?>("SoftDeletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("soft_deleted_at_utc");
 
                     b.HasKey("Id");
 
@@ -22405,6 +22413,87 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "ParseStatus");
 
                     b.ToTable("resume_parse_results", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.RetentionPurgeAudit", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("DetailsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("details_json");
+
+                    b.Property<string>("Disposition")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("disposition");
+
+                    b.Property<bool>("DryRun")
+                        .HasColumnType("boolean")
+                        .HasColumnName("dry_run");
+
+                    b.Property<string>("EntityId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("entity_id");
+
+                    b.Property<string>("EntityName")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("entity_name");
+
+                    b.Property<Guid?>("JobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("job_id");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTime?>("RetentionUntilUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("retention_until_utc");
+
+                    b.Property<string>("RuleKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("rule_key");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EntityName", "EntityId")
+                        .HasDatabaseName("ix_retention_purge_audits_entity");
+
+                    b.HasIndex("TenantId", "CreatedAtUtc")
+                        .HasDatabaseName("ix_retention_purge_audits_tenant_created");
+
+                    b.HasIndex("TenantId", "RuleKey", "CreatedAtUtc")
+                        .HasDatabaseName("ix_retention_purge_audits_tenant_rule");
+
+                    b.ToTable("retention_purge_audits", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.RoleCompetency", b =>
