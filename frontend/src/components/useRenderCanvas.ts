@@ -114,7 +114,9 @@ export interface UseRenderCanvasOptions<M extends RenderMode> {
   resize?: (frame: RenderFrame<M>) => void;
   /** Upper bound on devicePixelRatio. Default 2. */
   maxDpr?: number;
-  /** Per-frame easing factor for the pointer, 0..1. Default 0.08. */
+  /** Easing factor for the pointer, 0..1: the fraction of the remaining distance
+   *  closed in one 60Hz frame. Scaled to the real frame interval, so the settle
+   *  takes the same WALL TIME on a machine drawing at 4fps as at 60fps. */
   pointerEase?: number;
   /** Element the pointer is measured against. Default: the canvas itself. */
   pointerTarget?: 'canvas' | 'parent' | (() => HTMLElement | null);
@@ -282,6 +284,12 @@ export function createScreenQuad(gl: AnyGL, program: WebGLProgram, attribName = 
 /* ─────────────────────────────── hook ─────────────────────────────── */
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+
+/** Residual (in the pointer's own -1..1 units) below which the ease snaps to its
+ *  target. The widest consumer maps this signal to ±6px, so 1e-3 is 0.006px —
+ *  an order of magnitude under the 0.01px that an inline transform string can
+ *  even express, and three orders under a device pixel. */
+const POINTER_SNAP = 1e-3;
 
 function acquire(
   canvas: HTMLCanvasElement,
@@ -504,7 +512,8 @@ export function useRenderCanvas<M extends RenderMode>(
       // error — skip the frame and let the ResizeObserver wake us.
       if (!f.width || !f.height) { if (!measure()) return; }
       if (!started) { started = now; last = now; }
-      f.dt = Math.min((now - last) / 1000, 1 / 15);
+      const rawDt = (now - last) / 1000;
+      f.dt = Math.min(rawDt, 1 / 15);
       f.time = (now - started) / 1000;
       last = now;
       f.isStatic = isStatic;
@@ -512,8 +521,37 @@ export function useRenderCanvas<M extends RenderMode>(
       if (isStatic) {
         p.x = p.targetX; p.y = p.targetY;
       } else {
-        p.x += (p.targetX - p.x) * ease;
-        p.y += (p.targetY - p.y) * ease;
+        /* Frame-rate INDEPENDENT easing.
+           `p.x += (target - x) * ease` closes a fixed fraction per FRAME, so the
+           settle takes a fixed number of frames and its wall time is whatever the
+           machine's frame interval happens to be. On a GPU-less machine — CI's
+           SwiftShader, a VM, a Chrome install with the GPU blocklisted — this
+           scene runs at 4–10fps, and ~68 frames of easing became 7–25 SECONDS
+           during which the sign-in card was still drifting under the pointer.
+           Measured: 68 frames to settle at both 104ms/frame (6.8s) and
+           116ms/frame (7.6s) — a constant frame count, not a constant duration.
+           That is what timed out e2e/login-contract.spec.ts and e2e/tenant-auth
+           .spec.ts in the Browser Pilot lane, and it is the same wait a customer
+           on such a machine sits through before the form stops moving.
+
+           Re-expressed against elapsed time, `ease` is the fraction closed per
+           60Hz frame and the curve is identical at 60fps — only slow machines
+           change, and they now settle in the same ~1.7s everyone else does.
+
+           Deliberately computed from the UNCLAMPED interval. f.dt is capped at
+           1/15s so a long stall cannot teleport an *animation*; the pointer is
+           not an animation, it is a position the user already chose, and after a
+           stall the settled value is exactly the right one to arrive at. */
+        const k = rawDt > 0 ? 1 - Math.pow(1 - ease, rawDt * 60) : ease;
+        p.x += (p.targetX - p.x) * k;
+        p.y += (p.targetY - p.y) * k;
+        // An exponential ease never actually arrives. Consumers render the
+        // signal at sub-pixel precision, so past this point every further frame
+        // writes a new value that cannot change a pixel — and every one of those
+        // writes is another frame in which the element is not "stable" to a
+        // browser-automation actionability check, or to a user's eye.
+        if (Math.abs(p.targetX - p.x) < POINTER_SNAP) p.x = p.targetX;
+        if (Math.abs(p.targetY - p.y) < POINTER_SNAP) p.y = p.targetY;
       }
       p.u = (p.x + 1) / 2;
       p.v = (p.y + 1) / 2;
