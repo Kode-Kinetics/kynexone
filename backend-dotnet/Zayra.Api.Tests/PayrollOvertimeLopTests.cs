@@ -240,6 +240,65 @@ public class PayrollOvertimeLopTests
         Assert.False(hasLop, "No LOP deduction should exist when no absences were recorded");
     }
 
+    // ── (8) DEFECT PROOF — an absent day must be deducted ONCE, not twice ─────────────────
+    //
+    // Every other LOP test in this file (and in PayrollRecoveryB3Tests, PodC3IndependentSmeTests,
+    // PayrollProrationArrearsTests, GosiReconciliationTieOutTests, PayrollRunTypeTests) seeds
+    // ImpactType = "Absence". PRODUCTION NEVER WRITES THAT STRING. AttendanceService.cs:1138 writes
+    // "Absence deduction". This test uses the production string and nothing else changes.
+    //
+    // PayrollController.cs:2204-2207 selects the short-hours (late/early) deduction with
+    //     x.ImpactType.Contains("deduction", StringComparison.OrdinalIgnoreCase)
+    // which also matches "Absence deduction". PayrollController.cs:2213-2223 then charges the SAME
+    // rows again as LOP. The absent day is therefore deducted twice — once at basic/240 per hour and
+    // once at basic/30 per day — and the employee is short-paid by a full day's basic per absence.
+    //
+    // The employee here was never late and never left early, so a payslip line captioned
+    // "Late/early attendance deduction" (PayrollController.cs:2720) must not exist at all.
+    // WATCHED FAIL, THEN PASS (2026-09-21, real Postgres, `dotnet test --filter`):
+    //   defect present -> "Employee was never late or early, yet a 'Late/early attendance
+    //                      deduction' of 900.00 was charged — the absence deducted a second time."
+    //                      Failed: 1, Passed: 0
+    //   one-line fix   -> Passed: 1, Failed: 0
+    // The fix was then REVERTED: Evostel is live and this is payroll arithmetic. See the report.
+    [Fact]
+    public async Task AbsenceDeduction_ProductionImpactTypeString_IsNotChargedTwice()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        // Expat: no employee GOSI, so net arithmetic is legible without a statutory term.
+        var (emp, run) = await SeedPayrollContext(db, tenantId, basic: 9_000m, housing: 2_000m, nationality: "Indian");
+
+        // Exactly what AttendanceService.UpsertImpacts writes for three absent days.
+        SeedAttendanceImpact(db, tenantId, emp.Id, new DateOnly(2026, 6, 5), "Absence deduction", 480);
+        SeedAttendanceImpact(db, tenantId, emp.Id, new DateOnly(2026, 6, 6), "Absence deduction", 480);
+        SeedAttendanceImpact(db, tenantId, emp.Id, new DateOnly(2026, 6, 7), "Absence deduction", 480);
+        SeedAttendanceDailyRecord(db, tenantId, emp.Id, new DateOnly(2026, 6, 5));
+        await db.SaveChangesAsync();
+
+        var result = await BuildCtrl(db, tenantId).Process(run.Id, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(result);
+
+        // The one correct charge: 3 days × (9,000 / 30) = 900.00
+        var lopLine = await db.PayrollDeductions.AsNoTracking()
+            .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.EmployeeId == emp.Id && d.ComponentCode == "LOP_DEDUCTION");
+        Assert.NotNull(lopLine);
+        Assert.Equal(900m, lopLine.Amount);
+
+        // No lateness, no early exit ⇒ no short-hours line. Today this line exists and is
+        // (3 × 480) / 60 × (9,000 / 240) = 24 × 37.50 = 900.00 — the absence charged a second time.
+        var shortHoursLine = await db.PayrollDeductions.AsNoTracking()
+            .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.EmployeeId == emp.Id && d.ComponentCode == "ATTENDANCE");
+        Assert.True(shortHoursLine is null,
+            $"Employee was never late or early, yet a 'Late/early attendance deduction' of " +
+            $"{shortHoursLine?.Amount} was charged — the absence deducted a second time.");
+
+        // Net must be gross − the single LOP charge: 11,000 − 900 = 10,100.
+        var slip = await db.PayrollSlips.AsNoTracking()
+            .FirstAsync(s => s.TenantId == tenantId && s.EmployeeId == emp.Id);
+        Assert.Equal(10_100m, slip.NetSalary, precision: 2);
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     /// <summary>Seeds company + employee + salary + payroll profile + run in Draft status.</summary>
