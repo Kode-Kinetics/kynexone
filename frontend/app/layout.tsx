@@ -1,6 +1,24 @@
 import type { Metadata, Viewport } from 'next';
 import { Providers } from '@/src/components/Providers';
+
 import '@/src/styles/index.css';
+
+/* Archivo and IBM Plex Mono used to be declared here as --font-kx-sans /
+ * --font-kx-mono. They are gone, and nothing lost a face.
+ *
+ * They were referenced in exactly one stylesheet — login-aurora.css — and
+ * always in SECOND position: `var(--lx-sans), var(--font-kx-sans), Inter, …`.
+ * --lx-sans and --lx-mono are set by app/login/page.tsx on the wrapper that
+ * contains every element those rules match, so the fallback slot was never
+ * reached. Declaring them in the ROOT layout made all ~40 routes download and
+ * apply five extra font weights to serve a branch of a font stack that only
+ * /login can enter and that /login never takes. IBM Plex Mono was also being
+ * fetched twice on /login — once here, once as --lx-mono.
+ *
+ * The comment in app/login/page.tsx states the rule this restores: the sign-in
+ * surface's type stack is loaded on the login route, "never in the root
+ * layout, so no other route pays for it".
+ */
 
 export const metadata: Metadata = {
   title: 'KynexOne — One Platform for Every Workforce Operation',

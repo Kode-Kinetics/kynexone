@@ -872,7 +872,7 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                       {dayEntries.slice(0, 3).map((e, j) => (
                         <div key={j} className="truncate rounded px-1 py-0.5 text-[10px] font-medium text-white" style={{ backgroundColor: e.colorCode || '#2F6BFF' }}>{e.employeeName.split(' ')[0]}</div>
                       ))}
-                      {dayEntries.length > 3 && <p className="text-[9px] text-slate-400">+{dayEntries.length - 3} more</p>}
+                      {dayEntries.length > 3 && <p className="text-[10px] text-slate-400">+{dayEntries.length - 3} more</p>}
                     </div>
                   </>
                 )}
