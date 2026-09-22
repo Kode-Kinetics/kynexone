@@ -496,6 +496,96 @@ async function activateEmployees(adminToken: string, slug: string, floor: number
   return active;
 }
 
+// ── Leave, attendance and the approval queue ──────────────────────────────────────────────────
+
+/**
+ * The three module lists `pilot-critical.spec.ts` asserts are NOT empty — /attendance, /leave and
+ * /approvals — plus the leave and attendance rows `tenant-isolation.spec.ts` counts per tenant.
+ *
+ * `expectNonEmptyList` calls an empty Attendance or Leave screen "the blank-module failure the pilot
+ * feared" and fails, correctly: an HR product showing no leave and no attendance is indistinguishable
+ * to a viewer from one whose API is returning 500s. So the world has to contain some.
+ *
+ * Every row goes in through the product: a leave BALANCE adjustment (HR's own tool) followed by a
+ * real leave submission, which is what puts an item in the approval queue, then a CSV punch import
+ * followed by the attendance processor. Nothing is inserted behind the modules' backs.
+ */
+async function ensureLeaveAndAttendance(
+  adminToken: string, slug: string, companies: Array<{ code: string; id: string; countryCode: string }>,
+): Promise<string> {
+  const leaveTypes = items((await call('GET', '/api/leave/types', { token: adminToken })).body);
+  const annual = leaveTypes.find((t: any) => (t.code ?? t.Code) === 'ANNUAL') ?? leaveTypes[0];
+  if (!annual) return 'no leave types provisioned';
+
+  const company = companies[0];
+  const employees = items((await call(
+    'GET', '/api/employees?page=1&pageSize=200', { token: adminToken, companyId: company.id },
+  )).body).filter((e: any) => String(e.status ?? e.Status) === 'Active').slice(0, 3);
+  if (employees.length === 0) return 'no active employees to give leave or attendance to';
+
+  const existingLeave = (await call('GET', '/api/leave/requests?page=1&pageSize=5', { token: adminToken })).body;
+  let leaveCreated = 0;
+  if (items(existingLeave).length === 0) {
+    for (const [index, employee] of employees.entries()) {
+      const id = employee.id ?? employee.Id;
+      // Entitlement first: LeaveRequestsController refuses a request with "Insufficient leave
+      // balance", and rightly so — the balance is the product's control, not a formality.
+      expectOk(await call('POST', '/api/leave/balances/adjust', {
+        token: adminToken, companyId: company.id,
+        body: { employeeId: id, leaveTypeId: annual.id, amount: 21, reason: 'e2e fixture world opening balance' },
+      }), `grant leave balance to employee ${id}`, [200, 201, 204]);
+
+      const start = new Date(Date.now() + (14 + index * 7) * 86_400_000);
+      const end = new Date(start.getTime() + 2 * 86_400_000);
+      const res = await call('POST', '/api/leave/requests', {
+        token: adminToken, companyId: company.id,
+        body: {
+          employeeId: id, leaveTypeId: annual.id,
+          startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10),
+          reason: 'e2e fixture world', isEmergency: false,
+        },
+      });
+      if (res.status === 200 || res.status === 201) leaveCreated++;
+      else console.log(
+        `[bootstrap] ${slug}: leave request for employee ${id} refused `
+        + `(HTTP ${res.status}: ${(res.body?.message ?? res.text).slice(0, 140)}).`,
+      );
+    }
+  }
+
+  // Attendance: two punches a day for the last five days, then the processor turns the raw events
+  // into the daily rows the /attendance screen actually lists.
+  const from = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
+  const to = new Date(Date.now() - 1 * 86_400_000).toISOString().slice(0, 10);
+  const existingAttendance = (await call(
+    'GET', `/api/attendance/daily?from=${from}&to=${to}&page=1&pageSize=5`, { token: adminToken },
+  )).body;
+  let punches = 0;
+  if (items(existingAttendance).length === 0) {
+    const rows = ['employeeCode,punchTimestamp,punchDirection'];
+    for (let day = 5; day >= 1; day--) {
+      const date = new Date(Date.now() - day * 86_400_000).toISOString().slice(0, 10);
+      for (const employee of employees) {
+        rows.push(`${employee.employeeCode},${date}T05:00:00Z,In`);
+        rows.push(`${employee.employeeCode},${date}T14:00:00Z,Out`);
+        punches += 2;
+      }
+    }
+    expectOk(await call('POST', '/api/attendance/events/import', {
+      token: adminToken, companyId: company.id,
+      body: { fileName: 'e2e-fixture-world.csv', csvContent: rows.join('\n') },
+    }), 'import attendance punches', [200, 201]);
+    // No X-Company-Id here, deliberately. AttendanceController.Process refuses a tenant-wide
+    // reprocess from a caller whose scope is not unrestricted, and pinning a company IS a narrowing —
+    // so passing the header the other calls use turns the group admin into a 403.
+    expectOk(await call('POST', '/api/attendance/process', {
+      token: adminToken,
+      body: { fromDate: from, toDate: to, employeeId: null },
+    }), 'process attendance punches', [200, 201]);
+  }
+  return `${leaveCreated} leave request(s), ${punches} punch(es)`;
+}
+
 // ── Salaries ──────────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -682,12 +772,13 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId);
     const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
     const salaries = await ensureSalaries(adminToken, companies);
+    const hrData = await ensureLeaveAndAttendance(adminToken, fixture.slug, companies);
     const payroll = fixture.payroll ? await ensurePayrollRuns(fixture, adminToken, companies) : 'no payroll';
     manifest.tenants.push({ slug: fixture.slug, tenantId, companies });
     console.log(
       `[bootstrap] ${fixture.slug}: ${companies.length} compan${companies.length === 1 ? 'y' : 'ies'}, `
       + `${fixture.users.length + 1} users, ${active} active employees, `
-      + `${salaries} salary assignment(s), ${payroll}.`,
+      + `${salaries} salary assignment(s), ${hrData}, ${payroll}.`,
     );
   }
 
