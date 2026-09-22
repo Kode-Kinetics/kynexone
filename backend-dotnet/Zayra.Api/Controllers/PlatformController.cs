@@ -166,6 +166,11 @@ public class PlatformController : ControllerBase
         {
             // Environment credentials are maintenance bootstrap inputs only. A public login
             // request must never materialize a privileged principal or mint its first session.
+            // Once any platform principal exists, an unknown email is indistinguishable from a
+            // wrong password (401), so this endpoint is not an account-enumeration oracle.
+            if (await _db.PlatformUsers.AnyAsync(ct))
+                return Unauthorized(new { message = "Invalid platform admin credentials." });
+
             return StatusCode(503, new
             {
                 error = "platform_principal_not_provisioned",
@@ -1467,10 +1472,11 @@ public class PlatformController : ControllerBase
         var results = new List<BulkOpItem>();
         foreach (var id in ids)
         {
-            var outcome = await ApplyTenantLifecycleAsync(id, false, req.Reason, ct);
+            var outcome = await ApplyTenantLifecycleAsync(id, false, req.Reason, ct, skipIfAlreadyInTargetState: true);
             if (!outcome.TenantFound) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
             if (!outcome.Allowed) { results.Add(BulkOpItem.Skip(id, outcome.BlockReason ?? "Deleted tenant lifecycle is blocked.")); continue; }
             if (!outcome.SubscriptionFound) { results.Add(BulkOpItem.Skip(id, "No subscription record.")); continue; }
+            if (outcome.AlreadyInTargetState) { results.Add(BulkOpItem.Skip(id, "Already suspended.")); continue; }
             results.Add(BulkOpItem.Ok(id, outcome.TenantName));
         }
         return Ok(BulkSummary("suspend", results));
@@ -1568,13 +1574,15 @@ public class PlatformController : ControllerBase
         int UsersInvalidated,
         int SessionsRevoked,
         bool Allowed,
-        string? BlockReason);
+        string? BlockReason,
+        bool AlreadyInTargetState = false);
 
     private async Task<TenantLifecycleOutcome> ApplyTenantLifecycleAsync(
         Guid tenantId,
         bool activate,
         string? reason,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool skipIfAlreadyInTargetState = false)
     {
         var changedAtUtc = DateTime.UtcNow;
         var auditId = Guid.NewGuid();
@@ -1616,6 +1624,14 @@ public class PlatformController : ControllerBase
             if (subscription is null)
             {
                 outcome = new(true, false, tenant.Name, 0, 0, true, null);
+                return true;
+            }
+
+            // Bulk operations are idempotent: a tenant already in the target state is skipped
+            // with no mutation, no audit row and no session revocation.
+            if (skipIfAlreadyInTargetState && subscription.Status == targetStatus)
+            {
+                outcome = new(true, true, tenant.Name, 0, 0, true, null, AlreadyInTargetState: true);
                 return true;
             }
 

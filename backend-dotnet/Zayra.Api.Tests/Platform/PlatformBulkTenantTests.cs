@@ -60,6 +60,8 @@ public class PlatformBulkTenantTests : PlatformTestBase
         var json = Json(result);
         json.Should().Contain("\"succeeded\":0");
         json.Should().Contain("\"skipped\":2");
+        json.Should().Contain("Already suspended.");
+        (await db.AdminAuditLogs.CountAsync()).Should().Be(0, "a skipped tenant must not be re-suspended or audited");
     }
 
     [Fact]
@@ -91,10 +93,19 @@ public class PlatformBulkTenantTests : PlatformTestBase
         (await db.TenantSubscriptions.FirstAsync(s => s.TenantId == a.Id)).Status.Should().Be("Active");
     }
 
-    // ── Delete ─────────────────────────────────────────────────────────────────
+    // ── Delete (fail-closed) ───────────────────────────────────────────────────
+    // Bulk tenant deletion is deliberately disabled pending an atomic credential-revocation
+    // and recovery workflow. These tests pin the fail-closed contract: 409 with a stable error
+    // code, and ZERO mutation of tenant, subscription, users, tokens or audit log.
+
+    private static void AssertBulkDeleteDisabled(IActionResult result)
+    {
+        var conflict = result.Should().BeOfType<ConflictObjectResult>().Subject;
+        JsonSerializer.Serialize(conflict.Value).Should().Contain("bulk_tenant_delete_disabled");
+    }
 
     [Fact]
-    public async Task BulkDelete_WithoutConfirm_Returns400()
+    public async Task BulkDelete_WithoutConfirm_FailsClosedWith409()
     {
         await using var db = CreateDb();
         var a = await SeedTenant(db, "alpha");
@@ -103,11 +114,12 @@ public class PlatformBulkTenantTests : PlatformTestBase
         var result = await controller.BulkDeleteTenants(
             new BulkDeleteTenantsRequest(new List<Guid> { a.Id }, ""), CancellationToken.None);
 
-        result.Should().BeOfType<BadRequestObjectResult>();
+        AssertBulkDeleteDisabled(result);
+        (await db.Tenants.FindAsync(a.Id))!.IsActive.Should().BeTrue();
     }
 
     [Fact]
-    public async Task BulkDelete_SoftDeletes_FreesSlug_DeactivatesUsers_RevokesTokens()
+    public async Task BulkDelete_WithConfirm_FailsClosed_WithZeroMutation()
     {
         await using var db = CreateDb();
         var a = await SeedTenant(db, "alpha");
@@ -120,26 +132,29 @@ public class PlatformBulkTenantTests : PlatformTestBase
         var result = await controller.BulkDeleteTenants(
             new BulkDeleteTenantsRequest(new List<Guid> { a.Id }, "DELETE"), CancellationToken.None);
 
-        Json(result).Should().Contain("\"succeeded\":1");
+        AssertBulkDeleteDisabled(result);
+        db.ChangeTracker.Clear();
         var tenant = await db.Tenants.FindAsync(a.Id);
-        tenant!.IsActive.Should().BeFalse();
-        tenant.Slug.Should().Contain("__deleted_");
-        (await db.Users.FindAsync(user.Id))!.IsActive.Should().BeFalse();
-        (await db.RefreshTokens.FirstAsync(t => t.UserId == user.Id)).RevokedAtUtc.Should().NotBeNull();
-        (await db.TenantSubscriptions.FirstAsync(s => s.TenantId == a.Id)).Status.Should().Be("Cancelled");
+        tenant!.IsActive.Should().BeTrue();
+        tenant.Slug.Should().Be("alpha");
+        (await db.Users.FindAsync(user.Id))!.IsActive.Should().BeTrue();
+        (await db.RefreshTokens.FirstAsync(t => t.UserId == user.Id)).RevokedAtUtc.Should().BeNull();
+        (await db.TenantSubscriptions.FirstAsync(s => s.TenantId == a.Id)).Status.Should().Be("Active");
+        (await db.AdminAuditLogs.CountAsync()).Should().Be(0);
     }
 
     [Fact]
-    public async Task BulkDelete_SkipsAlreadyDeleted()
+    public async Task BulkDelete_RepeatedCalls_StayFailClosed()
     {
         await using var db = CreateDb();
         var a = await SeedTenant(db, "alpha");
         var controller = CreateController(db);
 
-        await controller.BulkDeleteTenants(new BulkDeleteTenantsRequest(new List<Guid> { a.Id }, "DELETE"), CancellationToken.None);
-        var second = await controller.BulkDeleteTenants(new BulkDeleteTenantsRequest(new List<Guid> { a.Id }, "DELETE"), CancellationToken.None);
-
-        Json(second).Should().Contain("\"skipped\":1");
+        AssertBulkDeleteDisabled(await controller.BulkDeleteTenants(
+            new BulkDeleteTenantsRequest(new List<Guid> { a.Id }, "DELETE"), CancellationToken.None));
+        AssertBulkDeleteDisabled(await controller.BulkDeleteTenants(
+            new BulkDeleteTenantsRequest(new List<Guid> { a.Id }, "DELETE"), CancellationToken.None));
+        (await db.Tenants.FindAsync(a.Id))!.Slug.Should().Be("alpha");
     }
 
     // ── Bulk feature flags ──────────────────────────────────────────────────────
