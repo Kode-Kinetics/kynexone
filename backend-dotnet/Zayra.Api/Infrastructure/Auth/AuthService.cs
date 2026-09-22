@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Data;
 using System.Buffers;
 using System.Data;
 using System.Globalization;
@@ -619,7 +620,7 @@ public class AuthService : IAuthService
             await _db.SaveChangesAsync(ct);
         }
 
-        await RunCredentialTransactionAsync(ResetOnceAsync, auditId, cancellationToken);
+        await RunCredentialTransactionAsync(ResetOnceAsync, reference.TenantId, auditId, cancellationToken);
     }
 
     /// <summary>
@@ -677,7 +678,7 @@ public class AuthService : IAuthService
     /// execution strategy. The audit row (saved last, same transaction) is the commit marker used
     /// to detect an already-committed attempt when the strategy replays after a lost ack.
     /// </summary>
-    private async Task RunCredentialTransactionAsync(Func<CancellationToken, Task> operation, Guid auditId, CancellationToken cancellationToken)
+    private async Task RunCredentialTransactionAsync(Func<CancellationToken, Task> operation, Guid tenantId, Guid auditId, CancellationToken cancellationToken)
     {
         if (!_db.Database.IsRelational())
         {
@@ -692,7 +693,9 @@ public class AuthService : IAuthService
                 await operation(ct);
                 return true;
             },
-            async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+            async ct => await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                    "Commit-marker check: the company filter is dropped so the exact audit row this unit wrote is found; tenant stays pinned.")
+                .AsNoTracking()
                 .AnyAsync(x => x.Id == auditId, ct),
             IsolationLevel.ReadCommitted,
             cancellationToken);
@@ -1486,7 +1489,7 @@ public class AuthService : IAuthService
             await _db.SaveChangesAsync(ct);
         }
 
-        await RunCredentialTransactionAsync(ChangeOnceAsync, auditId, cancellationToken);
+        await RunCredentialTransactionAsync(ChangeOnceAsync, route.TenantId, auditId, cancellationToken);
     }
 
     private async Task<User?> LoadUserGraph(string email, string tenantSlug, CancellationToken cancellationToken)
