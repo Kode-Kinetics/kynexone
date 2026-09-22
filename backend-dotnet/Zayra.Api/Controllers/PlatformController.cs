@@ -1340,6 +1340,102 @@ public class PlatformController : ControllerBase
 
     // ── Create Tenant User (any role) ─────────────────────────────────────────
 
+    /// <summary>The legal-entity scope a platform-created account will be born with, plus whether
+    /// the operator asked for it or it came from the role default.</summary>
+    private readonly record struct CreatedUserScope(string Mode, IReadOnlyList<Guid> CompanyIds, bool WasExplicit);
+
+    /// <summary>
+    /// Resolves <c>entityScope</c> (+ <c>companyIds</c>) onto a real <see cref="EntityGrantModes"/>
+    /// decision, or returns the refusal that explains why the account would have been blind.
+    ///
+    /// <para>Accepted values, in the operator's vocabulary: <c>group</c> (every company, now and in
+    /// future — what a tenant Admin gets), <c>allCurrentCompanies</c> (the companies that exist
+    /// today), and <c>companies</c> with an explicit <c>companyIds</c> list.</para>
+    ///
+    /// <para>Default when the caller says nothing: <c>group</c> for the tenant Admin role, which is
+    /// what this endpoint has always done and what an Admin means; <c>allCurrentCompanies</c> for
+    /// every other role, because a tenant-level role such as HR Manager or a payroll approver is
+    /// hired to work across the tenant's entities, and the previous default — nothing at all — is
+    /// not a safer answer, it is a broken account. RBAC still decides what they may DO; this decides
+    /// only which legal entities they can SEE.</para>
+    ///
+    /// <para>FAIL CLOSED: any non-group resolution that would reach zero companies is refused, so
+    /// the failure surfaces to the operator creating the account instead of to the user as a 404.</para>
+    /// </summary>
+    private async Task<(CreatedUserScope Scope, IActionResult? Error)> ResolveCreatedUserScopeAsync(
+        Guid tenantId, string normalizedRoleName, CreateTenantUserRequest req, CancellationToken ct)
+    {
+        var requested = req.EntityScope?.Trim();
+        var explicitScope = !string.IsNullOrWhiteSpace(requested);
+        var requestedIds = (req.CompanyIds ?? Array.Empty<Guid>()).Distinct().ToList();
+
+        string mode;
+        if (!explicitScope)
+        {
+            mode = normalizedRoleName == "ADMIN"
+                ? EntityGrantModes.AllCurrentAndFutureCompanies
+                : EntityGrantModes.AllCurrentCompanies;
+        }
+        else if (string.Equals(requested, "group", StringComparison.OrdinalIgnoreCase))
+            mode = EntityGrantModes.AllCurrentAndFutureCompanies;
+        else if (string.Equals(requested, "allCurrentCompanies", StringComparison.OrdinalIgnoreCase))
+            mode = EntityGrantModes.AllCurrentCompanies;
+        else if (string.Equals(requested, "companies", StringComparison.OrdinalIgnoreCase))
+            mode = EntityGrantModes.SelectedCompanies;
+        else
+            return (default, BadRequest(new
+            {
+                error = "invalid_entity_scope",
+                message = $"entityScope '{requested}' is not recognised. Use 'group' (all companies, now and in future), "
+                        + "'allCurrentCompanies', or 'companies' together with companyIds.",
+            }));
+
+        if (mode != EntityGrantModes.SelectedCompanies && requestedIds.Count > 0)
+            return (default, BadRequest(new
+            {
+                error = "company_ids_not_applicable",
+                message = "companyIds may only be supplied with entityScope 'companies'.",
+            }));
+
+        // The companies this tenant actually has. Read with IgnoreQueryFilters because a platform
+        // operator carries no tenant claim — the tenantId is re-applied explicitly right here, and
+        // no other tenant's rows can be reached.
+        var activeCompanyIds = await _db.Companies.IgnoreQueryFilters().AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+
+        if (mode == EntityGrantModes.SelectedCompanies)
+        {
+            if (requestedIds.Count == 0)
+                return (default, BadRequest(new
+                {
+                    error = "company_ids_required",
+                    message = "entityScope 'companies' needs at least one company id — a user granted no company sees nothing.",
+                }));
+            var unknown = requestedIds.Where(id => !activeCompanyIds.Contains(id)).ToList();
+            if (unknown.Count > 0)
+                return (default, BadRequest(new
+                {
+                    error = "unknown_company",
+                    message = "Every companyId must be an active legal entity of this tenant.",
+                    unknownCompanyIds = unknown,
+                }));
+            return (new CreatedUserScope(mode, requestedIds, explicitScope), null);
+        }
+
+        if (mode == EntityGrantModes.AllCurrentCompanies && activeCompanyIds.Count == 0)
+            return (default, Conflict(new
+            {
+                error = "tenant_has_no_companies",
+                message = "This tenant has no active legal entity, so a company-scoped account would be able to see "
+                        + "nothing at all. Create the legal entity first, or create this user with entityScope 'group' "
+                        + "so it follows the tenant as entities are added.",
+            }));
+
+        return (new CreatedUserScope(mode, Array.Empty<Guid>(), explicitScope), null);
+    }
+
     [HttpPost("tenants/{tenantId:guid}/users")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> CreateTenantUser(Guid tenantId, [FromBody] CreateTenantUserRequest req, CancellationToken ct)
@@ -1369,6 +1465,18 @@ public class PlatformController : ControllerBase
             role = await _db.Roles.FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Name == roleName && !r.IsDeleted, ct);
             if (role is null) return BadRequest(new { message = $"Role '{roleName}' not found for this tenant." });
         }
+
+        // ── ENTITY (legal-entity) SCOPE ──────────────────────────────────────────────────────────
+        // A user with no scope is invisible to itself: every company-owned row is filtered out of
+        // its queries, so a payroll approver got a flat 404 from /runs/{id}/approve for a run that
+        // plainly existed. This endpoint used to set IsGroupScope for the Admin role and nothing at
+        // all for any other, and had no scope parameter — so the operator could not have got it
+        // right even if they had known. The scope is now an explicit, audited part of the request,
+        // and a request that would resolve to zero accessible companies is REFUSED rather than
+        // creating an account that cannot see the tenant it belongs to.
+        var scopeResolution = await ResolveCreatedUserScopeAsync(tenantId, role.NormalizedName, req, ct);
+        if (scopeResolution.Error is { } scopeError) return scopeError;
+        var scope = scopeResolution.Scope;
 
         // There is a UNIQUE index on (TenantId, NormalizedEmail) that ignores IsDeleted,
         // so a previously soft-deleted user with this email still occupies the slot.
@@ -1405,7 +1513,7 @@ public class PlatformController : ControllerBase
             user.LockoutEnd = null;
             user.FailedLoginCount = 0;
             user.MustChangePassword = req.MustChangePassword ?? false;
-            if (role.NormalizedName == "ADMIN") user.IsGroupScope = true;
+            user.IsGroupScope = scope.Mode == EntityGrantModes.AllCurrentAndFutureCompanies;
             user.UpdatedAtUtc = DateTime.UtcNow;
             _db.UserRoles.RemoveRange(user.UserRoles);
             _db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
@@ -1423,11 +1531,35 @@ public class PlatformController : ControllerBase
                 Status = "Active",
                 IsActive = true,
                 IsEmailConfirmed = true,
-                IsGroupScope = role.NormalizedName == "ADMIN",
+                IsGroupScope = scope.Mode == EntityGrantModes.AllCurrentAndFutureCompanies,
                 MustChangePassword = req.MustChangePassword ?? false
             };
             user.UserRoles.Add(new UserRole { User = user, Role = role });
             _db.Users.Add(user);
+        }
+
+        // The grants that make the account able to see its own tenant. Group scope needs none —
+        // EntityScopeClaims.Resolve short-circuits on User.IsGroupScope — so writing one would be a
+        // second, divergent source of truth for the same decision.
+        if (scope.Mode != EntityGrantModes.AllCurrentAndFutureCompanies)
+        {
+            _db.UserEntityAccesses.RemoveRange(
+                await _db.UserEntityAccesses.Where(g => g.TenantId == tenantId && g.UserId == user.Id).ToListAsync(ct));
+            foreach (var companyId in scope.Mode == EntityGrantModes.SelectedCompanies
+                         ? scope.CompanyIds.Select(id => (Guid?)id)
+                         : new Guid?[] { null })
+            {
+                _db.UserEntityAccesses.Add(new UserEntityAccess
+                {
+                    TenantId = tenantId,
+                    UserId = user.Id,
+                    CompanyId = companyId,
+                    GrantMode = scope.Mode,
+                    Role = roleName,
+                    IsActive = true,
+                    GrantedAt = DateTime.UtcNow,
+                });
+            }
         }
 
         _db.AdminAuditLogs.Add(new AdminAuditLog
@@ -1436,14 +1568,27 @@ public class PlatformController : ControllerBase
             EntityType = "User",
             EntityId = user.Id.ToString(),
             Action = restored ? "UserRestored" : "UserCreated",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { email = user.Email, fullName = user.FullName, role = roleName, restored }),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                email = user.Email, fullName = user.FullName, role = roleName, restored,
+                entityScope = scope.Mode,
+                companyIds = scope.CompanyIds,
+                entityScopeSource = scope.WasExplicit ? "request" : "role-default",
+            }),
             PerformedByName = "platform_admin",
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
         await _db.SaveChangesAsync(ct);
 
-        return Ok(new { user.Id, user.Email, user.FullName, role = roleName, restored, tenantSlug = tenant.Slug });
+        return Ok(new
+        {
+            user.Id, user.Email, user.FullName, role = roleName, restored, tenantSlug = tenant.Slug,
+            // Echoed so the operator can see what the account can actually reach, rather than
+            // discovering it as a 404 on the user's first working day.
+            entityScope = scope.Mode,
+            companyIds = scope.CompanyIds,
+        });
     }
 
     // ── Tenant Suspend / Reactivate ───────────────────────────────────────────
@@ -4465,7 +4610,17 @@ public record SetAccountTypeRequest(string AccountType);
 public record SetCompanyCreationModeRequest(string Mode);
 
 public record AddTenantAdminRequest(string Email, string? FullName, string Password);
-public record CreateTenantUserRequest(string Email, string? FullName, string Password, string? RoleName, bool? MustChangePassword);
+/// <param name="EntityScope">
+/// Which legal entities the new account may see: "group" (every company, now and in future),
+/// "allCurrentCompanies", or "companies" with <paramref name="CompanyIds"/>. Omitted, it defaults to
+/// "group" for the tenant Admin role and "allCurrentCompanies" for every other role. It is NOT
+/// optional in effect — an account with no scope resolves to zero companies and every
+/// company-owned row disappears from its queries — which is why the endpoint now refuses a request
+/// that would land there rather than creating an account that cannot see its own tenant.
+/// </param>
+public record CreateTenantUserRequest(
+    string Email, string? FullName, string Password, string? RoleName, bool? MustChangePassword,
+    string? EntityScope = null, IReadOnlyCollection<Guid>? CompanyIds = null);
 public record TenantActionRequest(string? Reason);
 
 // ── Bulk tenant operation DTOs ──────────────────────────────────────────────
