@@ -211,23 +211,46 @@ jobs:
       - name: Build backend
         run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Release
 
-      # The seed passwords below are LOCAL TEST FIXTURES for an ephemeral CI database that is destroyed
-      # with the runner. They are not secrets and grant nothing anywhere else. Real credentials would
-      # belong in GitHub secrets; putting fixtures there would only obscure what the gate authenticates as.
-      - name: Start backend (enterprise-group seed + platform operator)
+      # ── Fixture credentials ────────────────────────────────────────────────────────────────────
+      # GENERATED PER RUN, never committed. The database is ephemeral and dies with the runner, so
+      # these grant nothing anywhere — but a working password in the repository is still a working
+      # password, and e2e/world.ts refuses to fall back to one when CI=true. They are exported to
+      # GITHUB_ENV so the backend (which bootstraps the platform owner from them), the bootstrap
+      # step and the spec step all see the SAME values: a mismatch would show up as "wrong password"
+      # against a world that was provisioned correctly.
+      - name: Generate per-run fixture credentials
+        run: |
+          set -euo pipefail
+          gen() { echo "Ci$(openssl rand -hex 12)!aA9"; }
+          {
+            echo "PLATFORM_ADMIN_PASSWORD=$(gen)"
+            echo "E2E_GROUP_PASSWORD=$(gen)"
+            echo "E2E_INTELLIFLOW_PASSWORD=$(gen)"
+            echo "E2E_RASALMANAR_PASSWORD=$(gen)"
+            echo "E2E_EVOSTEL_PASSWORD=$(gen)"
+          } >> "$GITHUB_ENV"
+
+      - name: Start backend (platform owner only — the database starts EMPTY)
         env:
           ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=zayra;Username=postgres;Password=ci'
           Jwt__Issuer: 'Zayra.Api'
           Jwt__TenantAudience: 'kynexone-tenant'
           Jwt__PlatformAudience: 'kynexone-platform'
           Jwt__SigningKey: 'CI_ONLY_EPHEMERAL_SIGNING_KEY_NOT_A_PRODUCTION_SECRET_0123456789'
-          SeedAdmin__TenantSlug: 'zayra'
-          SeedAdmin__Email: 'admin@zayra.local'
-          SeedAdmin__Password: 'ChangeMe123!'
-          SeedAdmin__SeedDemoData: 'false'
-          SEED_ENTERPRISE_TEST_DATA: 'true'
+          # SeedAdmin__* and SEED_ENTERPRISE_TEST_DATA used to live here. Both are gone: every
+          # demo/fixture seeder was deleted (docs/DATA_ENTRY_PATHS.md) and
+          # Zayra.Api.Tests/Security/NoSideDoorDataTests.cs fails the build if one returns. Leaving
+          # the variables set would have been worse than useless — they would read as though this job
+          # still seeds a tenant, while the gate silently authenticated against an empty database.
+          # PLATFORM_ADMIN_* is the ONE sanctioned bootstrap: PlatformOwnerBootstrap creates the first
+          # platform operator, and that operator then creates the whole fixture world over HTTP.
           PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
-          PLATFORM_ADMIN_PASSWORD: 'YourPassword123!'
+          # Higher than the production default ONLY on this disposable stack: the bootstrap
+          # authenticates ~12 fixture accounts in a few seconds to provision through their own APIs.
+          # The gate's OWN logins are still paced under the production limit by the setup project —
+          # the brute-force control itself is never relaxed for the suite under test.
+          RateLimit__LoginPermitLimit: '200'
+          RateLimit__PlatformLoginPermitLimit: '50'
           ASPNETCORE_ENVIRONMENT: 'Development'
           ASPNETCORE_URLS: 'http://localhost:5117'
           # This ephemeral CI database starts EMPTY, so something has to create the schema. Without
@@ -279,12 +302,22 @@ jobs:
           tail -60 /tmp/fe.log
           exit 1
 
+      # Migrations leave an EMPTY database. Nothing the gate logs in as exists until this runs, and
+      # it must run AFTER the schema and BEFORE any spec. It talks to the API directly rather than
+      # through the frontend proxy, so a frontend problem cannot masquerade as a provisioning one.
+      - name: Provision the e2e fixture world (platform-admin API only)
+        working-directory: frontend
+        env:
+          E2E_API_BASE_URL: 'http://localhost:5117'
+          PLAYWRIGHT_BASE_URL: 'http://localhost:5173'
+          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
+        run: npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
+
       - name: Run the Chrome security gate
         working-directory: frontend
         env:
           PLAYWRIGHT_BASE_URL: 'http://localhost:5173'
           PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
-          PLATFORM_ADMIN_PASSWORD: 'YourPassword123!'
         run: npx playwright test --config=playwright.security.config.ts
 
       - name: Upload failure evidence
@@ -516,14 +549,33 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Start clean enterprise demo stack
+      # ── Fixture credentials ────────────────────────────────────────────────────────────────────
+      # Generated per run and exported to every later step; see the same step in chrome-security-gate
+      # for why they are not committed. PLATFORM_ADMIN_PASSWORD also reaches the compose stack, which
+      # is what lets PlatformOwnerBootstrap create the one operator the bootstrap then works as.
+      - name: Generate per-run fixture credentials
+        run: |
+          set -euo pipefail
+          gen() { echo "Ci$(openssl rand -hex 12)!aA9"; }
+          {
+            echo "PLATFORM_ADMIN_PASSWORD=$(gen)"
+            echo "E2E_GROUP_PASSWORD=$(gen)"
+            echo "E2E_INTELLIFLOW_PASSWORD=$(gen)"
+            echo "E2E_RASALMANAR_PASSWORD=$(gen)"
+            echo "E2E_EVOSTEL_PASSWORD=$(gen)"
+          } >> "$GITHUB_ENV"
+
+      - name: Start clean stack (EMPTY database — no seeders exist any more)
         env:
-          SEED_DEMO_DATA: 'true'
-          SEED_ENTERPRISE_TEST_DATA: 'true'
-          # Browser setup authenticates ten distinct enterprise personas and the dedicated auth
-          # spec then exercises ten real login outcomes. This override is isolated to the disposable
-          # CI stack; docker-compose and deployed environments retain the 10/minute default.
-          LOGIN_PERMIT_LIMIT: '25'
+          # SEED_DEMO_DATA / SEED_ENTERPRISE_TEST_DATA are deliberately absent: the seeders they
+          # switched on were deleted (docs/DATA_ENTRY_PATHS.md) and NoSideDoorDataTests fails the
+          # build if one returns. The fixture world is provisioned two steps below, over HTTP.
+          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
+          # Browser setup authenticates twelve distinct personas, and the bootstrap authenticates as
+          # every tenant administrator to provision through the tenant API. This override is isolated
+          # to the disposable CI stack; docker-compose and deployed environments retain the default.
+          LOGIN_PERMIT_LIMIT: '200'
+          PLATFORM_LOGIN_PERMIT_LIMIT: '50'
           JWT_SIGNING_KEY: 'CI_ONLY_BROWSER_PILOT_SIGNING_KEY_64_CHARS_MINIMUM_12345678901234567890'
         run: docker compose -p zayra-browser-ci up -d --build
 
@@ -542,13 +594,26 @@ jobs:
           docker compose -p zayra-browser-ci logs --no-color --tail=200
           exit 1
 
+      # The stack is up and its database is EMPTY. Provision the fixture world before any spec —
+      # tenants, companies, users and their entity scope, employees, salaries, leave, attendance and
+      # a locked payroll run — entirely through /api/platform/** and the tenants' own APIs.
+      - name: Provision the e2e fixture world (platform-admin API only)
+        working-directory: frontend
+        env:
+          E2E_API_BASE_URL: http://127.0.0.1:5117
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
+        run: npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
+
       - name: Run client-pilot browser gate
         working-directory: frontend
         env:
           PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
           E2E_DEFAULT_TENANT_SLUG: intelliflow
           E2E_DEFAULT_ADMIN_EMAIL: admin@intelliflow.com
-          E2E_DEFAULT_ADMIN_PASSWORD: 'IntelliFlow@2026!'
+          # The password is the generated one from GITHUB_ENV, not a literal. It was hard-coded here
+          # AND in e2e/helpers.ts, so the two could disagree with nothing to catch it.
+          E2E_DEFAULT_ADMIN_PASSWORD: ${{ env.E2E_INTELLIFLOW_PASSWORD }}
           E2E_MIN_EMPLOYEES: '12'
         run: npx playwright test --project=tenant-pilot
 
@@ -556,6 +621,7 @@ jobs:
         working-directory: frontend
         env:
           PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
         run: npx playwright test --project=chromium
 
       - name: Upload browser evidence

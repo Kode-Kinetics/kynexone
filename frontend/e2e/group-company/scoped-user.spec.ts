@@ -8,7 +8,7 @@
 import { test, expect } from '@playwright/test';
 import {
   assertStackReachable,
-  groupSeedMissingReason,
+  assertFixtureWorld,
   newApi,
   apiLogin,
   fetchMe,
@@ -23,21 +23,17 @@ import {
   ALMARAI,
   ALMARAI_SIBLING_CODES,
   empCodePrefix,
+  groupUser,
 } from './helpers';
 
-const SCOPED = 'scoped.admin@almarai-test.local';
+const SCOPED = groupUser('scoped.admin'); // scoped.admin@almarai-test.local
 const ALLOWED = ['ALM-DAIRY-KSA', 'ALM-POULTRY-KSA'];
 
-let skipReason: string | null = null;
 
 test.describe('Group→Company: selected-companies user (scoped.admin, almarai-test)', () => {
   test.beforeAll(async () => {
     await assertStackReachable();   // hard-fails when the stack is down; never skips
-    skipReason = (await groupSeedMissingReason(SCOPED));
-  });
-
-  test.beforeEach(() => {
-    test.skip(skipReason !== null, skipReason ?? '');
+    await assertFixtureWorld(SCOPED);
   });
 
   test('API: /api/auth/me and /api/companies expose exactly the two granted companies', async () => {

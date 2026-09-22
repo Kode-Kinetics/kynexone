@@ -11,7 +11,7 @@
 import { test, expect, Page } from '@playwright/test';
 import {
   assertStackReachable,
-  groupSeedMissingReason,
+  assertFixtureWorld,
   uiLogin,
   bodyText,
   crashIndicators,
@@ -24,7 +24,6 @@ import {
 const ALM_COMPLIANCE = groupUser('compliance', ALMARAI.slug);
 const TATA_COMPLIANCE = groupUser('compliance', TATA.slug);
 
-let skipReason: string | null = null;
 
 /**
  * Best-effort company selection on /compliance-profiles without fabricating
@@ -85,11 +84,7 @@ async function openComplianceProfiles(page: Page): Promise<void> {
 test.describe('Group→Company: compliance profiles', () => {
   test.beforeAll(async () => {
     await assertStackReachable();   // hard-fails when the stack is down; never skips
-    skipReason = (await groupSeedMissingReason(ALM_COMPLIANCE));
-  });
-
-  test.beforeEach(() => {
-    test.skip(skipReason !== null, skipReason ?? '');
+    await assertFixtureWorld(ALM_COMPLIANCE);
   });
 
   test('KSA profile for ALM-DAIRY-KSA: country SA, IqamaNumber missing > 0, disclaimer', async ({ page }) => {
