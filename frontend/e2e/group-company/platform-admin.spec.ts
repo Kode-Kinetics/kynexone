@@ -106,11 +106,23 @@ test.describe('Group→Company: platform admin', () => {
         const deleted = await api.delete(`/api/platform/tenants/${createdId}?confirm=DELETE`, {
           headers: platformHeaders(),
         });
-        expect(deleted.ok(), await deleted.text()).toBe(true);
-        const purged = await api.delete(`/api/platform/tenants/${createdId}/purge?confirm=PURGE`, {
-          headers: platformHeaders(),
-        });
-        expect(purged.ok(), await purged.text()).toBe(true);
+        const body = await deleted.text();
+        // PlatformController.DeleteTenant is currently a deliberate stub answering 409
+        // `tenant_delete_disabled`. That is a product decision, not a test failure — but the
+        // throwaway tenant then SURVIVES, so say so instead of leaving a silent leak. Every other
+        // refusal still fails the test.
+        if (deleted.status() === 409 && body.includes('tenant_delete_disabled')) {
+          console.log(
+            `[platform-admin] Tenant deletion is disabled in this build; throwaway tenant ${slug} `
+            + '(id ' + createdId + ') is left behind. The e2e database is disposable.',
+          );
+        } else {
+          expect(deleted.ok(), body).toBe(true);
+          const purged = await api.delete(`/api/platform/tenants/${createdId}/purge?confirm=PURGE`, {
+            headers: platformHeaders(),
+          });
+          expect(purged.ok(), await purged.text()).toBe(true);
+        }
       }
       await api.dispose().catch(() => {});
     }
