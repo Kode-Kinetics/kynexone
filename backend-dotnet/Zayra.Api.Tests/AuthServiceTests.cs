@@ -693,31 +693,6 @@ public class AuthServiceTests
         Assert.Equal(exUnknown.Message, exWrongPwd.Message);
     }
 
-    // ── Demo seeder gate ─────────────────────────────────────────────────────
-
-    [Fact]
-    public void DemoSeeder_ShouldNotRunInProduction_WhenEnvVarNotSet()
-    {
-        // Guard: if SEED_DEMO_DATA is not set, the demo seeder must not be invoked.
-        // This test verifies the flag-reading logic in isolation.
-        var envValue     = Environment.GetEnvironmentVariable("SEED_DEMO_DATA");
-        var configValue  = "false"; // simulating appsettings SeedAdmin:SeedDemoData=false (default)
-
-        var shouldSeed =
-            string.Equals(envValue,    "true", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(configValue, "true", StringComparison.OrdinalIgnoreCase);
-
-        Assert.False(shouldSeed, "Demo seeder must NOT run when SEED_DEMO_DATA is absent/false");
-    }
-
-    [Fact]
-    public void DemoSeeder_ShouldRun_WhenEnvVarIsTrue()
-    {
-        const string simulatedEnvValue = "true";
-        var shouldSeed = string.Equals(simulatedEnvValue, "true", StringComparison.OrdinalIgnoreCase);
-        Assert.True(shouldSeed, "Demo seeder must run when SEED_DEMO_DATA=true");
-    }
-
     // Regression for the 2026-09-20/21 OOM kills (12 on the 512 MB Render instance). The per-request
     // session check and the /me by-id load pulled roles×permissions×overrides×accounts×grants as ONE
     // cartesian query. On a relational provider (InMemory ignores query splitting) this pins: the

@@ -58,16 +58,12 @@ public class RawSqlExecutionRatchetTests
         ["Infrastructure/Auth/AccessManagementService.cs"] = 2,
         ["Infrastructure/Finance/FinanceDecisionSerializer.cs"] = 1,
         ["Infrastructure/Organization/EstablishmentGuardService.cs"] = 1,
-        ["Infrastructure/Seed/SundayKsaDemoFixtureSeeder.cs"] = 1,
 
         // ── Real statements. Each one's WHERE clause IS its tenant boundary. ─────────────────
 
         // Interpolated, and parameterised on the tenant/employee being processed.
         ["Infrastructure/Attendance/AttendanceService.cs"] = 1,
         ["Infrastructure/Leave/LeaveService.cs"] = 1,
-
-        // DDL executed at boot to bootstrap columns the model expects; touches no tenant rows.
-        ["Infrastructure/Seed/EmployeeModuleSchemaBootstrapper.cs"] = 1,
 
         // 2 -> 1. The survivor is the Admin role_permissions backfill: a set-based INSERT that is
         // cross-tenant BY DESIGN (every tenant's Admin role gets every permission — that is the
