@@ -23,9 +23,10 @@ import {
   ALMARAI,
   ALMARAI_SIBLING_CODES,
   empCodePrefix,
+  groupUser,
 } from './helpers';
 
-const SCOPED = 'scoped.admin@almarai-test.local';
+const SCOPED = groupUser('scoped.admin'); // scoped.admin@almarai-test.local
 const ALLOWED = ['ALM-DAIRY-KSA', 'ALM-POULTRY-KSA'];
 
 

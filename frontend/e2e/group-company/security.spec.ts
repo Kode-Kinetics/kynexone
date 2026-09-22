@@ -24,7 +24,7 @@ import {
 import { MISSING_WORLD } from '../world';
 
 const AUDITOR = groupUser('auditor'); // auditor@almarai-test.local
-const SCOPED = 'scoped.admin@almarai-test.local';
+const SCOPED = groupUser('scoped.admin'); // scoped.admin@almarai-test.local
 const OWNER = groupUser('owner');
 const BAKERY = 'ALM-BAKERY-KSA';
 
