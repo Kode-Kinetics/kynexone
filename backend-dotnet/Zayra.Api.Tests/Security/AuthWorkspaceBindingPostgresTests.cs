@@ -588,7 +588,21 @@ public sealed class AuthWorkspaceBindingPostgresTests : PlatformTestBase
 
         return new DuplicateSeed(
             tenantA.Id, tenantB.Id, userA.Id, userB.Id,
-            tenantA.Slug, tenantB.Slug, email, passwordA, userB.PasswordHash, userB.UpdatedAtUtc);
+            tenantA.Slug, tenantB.Slug, email, passwordA, userB.PasswordHash,
+            await StoredUpdatedAtUtcAsync(userB.Id));
+    }
+
+    /// <summary>
+    /// The security stamp as PostgreSQL holds it (microsecond precision), which is what a
+    /// "this row was not touched" assertion has to compare against. A tracked entity's DateTime
+    /// keeps 100ns ticks the column cannot store, so on a Linux clock the two disagree by a
+    /// fraction of a microsecond while a macOS clock — microsecond-granular — never notices.
+    /// </summary>
+    private async Task<DateTime?> StoredUpdatedAtUtcAsync(Guid userId)
+    {
+        await using var read = _fixture.CreateRetryingDb();
+        return await read.Users.AsNoTracking().Where(x => x.Id == userId)
+            .Select(x => x.UpdatedAtUtc).SingleAsync();
     }
 
     private async Task<SimpleSeed> SeedSimpleAuthUserAsync()
@@ -674,7 +688,8 @@ public sealed class AuthWorkspaceBindingPostgresTests : PlatformTestBase
         await db.SaveChangesAsync();
         return new RecoverySeed(
             tenantA.Id, user.Id, tenantA.Slug, tenantB.Slug,
-            user.PasswordHash, user.UpdatedAtUtc, rawCredential, credentialId, refresh.Id);
+            // Stored, not tracked — see StoredUpdatedAtUtcAsync.
+            user.PasswordHash, await StoredUpdatedAtUtcAsync(user.Id), rawCredential, credentialId, refresh.Id);
     }
 
     private static User MakeUser(Tenant tenant, string email, string name, string passwordHash) => new()
