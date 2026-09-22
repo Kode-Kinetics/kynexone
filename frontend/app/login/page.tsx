@@ -1,4 +1,3 @@
-import { Suspense } from 'react';
 import type { Metadata } from 'next';
 import {
   Manrope, Instrument_Serif, IBM_Plex_Mono, IBM_Plex_Sans_Arabic,
@@ -49,9 +48,7 @@ export const metadata: Metadata = {
 export default function Page() {
   return (
     <div className={`${manrope.variable} ${instrument.variable} ${plexMono.variable} ${plexArabic.variable}`}>
-      <Suspense fallback={null}>
-        <LoginPage />
-      </Suspense>
+      <LoginPage />
     </div>
   );
 }

@@ -1490,17 +1490,29 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     private async Task UpsertEmployeeSalaryStructure(Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken)
     {
-        if (employee.TenantId is null || employee.GradeId is null) return;
-        var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
-        if (grade is null) return;
+        // A GRADE IS NO LONGER THE GATE. It used to be: an employee without a grade returned here
+        // before the breakdown was ever read, so an explicit salaryBreakdown on the create/update
+        // request was accepted with 200 and silently dropped — employee.Salary stayed 0, no
+        // EmployeeSalaryStructure row was written, and the employee joined payroll on nothing. A
+        // 14-employee run then reported a gross total of the one person who happened to have a
+        // grade. The repo rule is refuse rather than guess; silent partial success is neither, so
+        // the operator's numbers are now honoured whether or not a grade resolves.
+        if (employee.TenantId is null) return;
+        var grade = employee.GradeId is null
+            ? null
+            : await _db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
 
-        var components = await _db.GradePayScaleComponents
-            .AsNoTracking()
-            .Where(x => x.TenantId == employee.TenantId && x.GradeId == grade.Id && x.IsActive)
-            .OrderBy(x => x.SortOrder)
-            .ToListAsync(cancellationToken);
+        var components = grade is null
+            ? new List<GradePayScaleComponent>()
+            : await _db.GradePayScaleComponents
+                .AsNoTracking()
+                .Where(x => x.TenantId == employee.TenantId && x.GradeId == grade.Id && x.IsActive)
+                .OrderBy(x => x.SortOrder)
+                .ToListAsync(cancellationToken);
 
         var salary = BuildSalaryBreakdown(request, components);
+        // Nothing to assign: no grade pay scale AND no supplied figures. Unchanged behaviour — this
+        // is the ordinary "the salary section of the form was left empty" case, not a dropped value.
         if (GrossSalary(salary) <= 0) return;
 
         var effectiveDate = request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate);
@@ -1509,17 +1521,25 @@ public class EmployeeManagementService : IEmployeeManagementService
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.IsActive, false), cancellationToken);
 
         var structureCode = Clean(request?.SalaryStructureCode);
-        if (string.IsNullOrWhiteSpace(structureCode)) structureCode = $"GRADE-{grade.Code}";
+        if (string.IsNullOrWhiteSpace(structureCode))
+            structureCode = grade is null ? DirectSalaryStructureCode : $"GRADE-{grade.Code}";
         var structure = await _db.SalaryStructures.FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted, cancellationToken);
         if (structure is null)
         {
+            // Currency, most specific first: what the operator typed, then the grade's, then the
+            // employing company's default. Never a hard-coded literal — the entity default is "AED".
+            var structureCurrency = Clean(request?.Currency) is { Length: > 0 } requestCurrency
+                ? requestCurrency.ToUpperInvariant()
+                : grade?.Currency is { Length: > 0 } gradeCurrency
+                    ? gradeCurrency
+                    : await ResolveCompanyCurrencyAsync(employee, cancellationToken);
             structure = new SalaryStructure
             {
                 TenantId = employee.TenantId.Value,
                 CompanyId = employee.CompanyId,
                 Code = structureCode,
-                Name = $"{grade.Name} salary structure",
-                Currency = Clean(request?.Currency) is { Length: > 0 } requestCurrency ? requestCurrency.ToUpperInvariant() : grade.Currency,
+                Name = grade is null ? "Direct salary structure" : $"{grade.Name} salary structure",
+                Currency = structureCurrency,
                 EffectiveDate = effectiveDate,
                 CreatedBy = context.UserId
             };
@@ -1561,6 +1581,22 @@ public class EmployeeManagementService : IEmployeeManagementService
         _db.EmployeeSalaryStructures.Add(assignment);
         employee.Salary = GrossSalary(salary);
         employee.PayrollProfileCode = string.IsNullOrWhiteSpace(employee.PayrollProfileCode) ? structure.Code : employee.PayrollProfileCode;
+    }
+
+    /// <summary>Code of the structure that carries a salary entered directly on the employee, with no
+    /// grade pay scale behind it. One per tenant, mirroring the GRADE-{code} convention above.</summary>
+    private const string DirectSalaryStructureCode = "DIRECT";
+
+    /// <summary>The employing company's default currency — the last fallback when neither the request
+    /// nor a grade names one.</summary>
+    private async Task<string> ResolveCompanyCurrencyAsync(Employee employee, CancellationToken cancellationToken)
+    {
+        if (employee.CompanyId is not Guid companyId) return "AED";
+        var currency = await _db.Companies.AsNoTracking()
+            .Where(x => x.TenantId == employee.TenantId && x.Id == companyId)
+            .Select(x => x.DefaultCurrency)
+            .FirstOrDefaultAsync(cancellationToken);
+        return string.IsNullOrWhiteSpace(currency) ? "AED" : currency.Trim().ToUpperInvariant();
     }
 
     private static EmployeeSalaryBreakdownRequest BuildSalaryBreakdown(EmployeeSalaryBreakdownRequest? request, IReadOnlyCollection<GradePayScaleComponent> components)
