@@ -359,6 +359,12 @@ async function ensureEmployees(
     );
     const have = new Set(items(existing.body).map((e: any) => String(e.employeeCode ?? e.EmployeeCode ?? '')));
 
+    // The first employee of each company is everyone else's reporting manager. Not decoration: the
+    // leave approval route resolves its FIRST step from the reporting line, so an employee with no
+    // manager submits straight to `PendingHRApproval` — and the /leave screen's default tab lists
+    // `PendingManagerApproval`. Without a reporting line the module renders an empty table while the
+    // API happily returns three requests, which reads exactly like the blank-module bug.
+    let managerId: number | null = null;
     for (let n = 1; n <= fixture.employeesPerCompany; n++) {
       const code = `${company.code}-E${n}`;
       if (have.has(code)) continue;
@@ -376,7 +382,7 @@ async function ensureEmployees(
       // because the activation guard's required set IS nationality-aware: it demands an Iqama of a
       // non-Saudi and not of a Saudi. An expatriate with the gap simply never activates.
       const iqamaGap = fixture.slug !== 'intelliflow' && n % 3 === 0;
-      const res = await call('POST', '/api/employees', {
+      const res: Res<any> = await call('POST', '/api/employees', {
         token: adminToken,
         companyId: company.id,
         body: {
@@ -391,7 +397,8 @@ async function ensureEmployees(
           // Only the first employee holds the grade — the benefits eligibility rule needs a
           // population it INCLUDES and a population it EXCLUDES to prove anything.
           gradeId: n === 1 ? gradeId : null,
-          jobTitle: 'Specialist',
+          reportingManagerEmployeeId: n === 1 ? null : managerId,
+          jobTitle: n === 1 ? 'Head of Department' : 'Specialist',
           employmentType: 'FullTime',
           contractType: 'Unlimited',
           joiningDate: '2024-01-01T00:00:00Z',
@@ -404,7 +411,10 @@ async function ensureEmployees(
             salaryCurrency: company.code.endsWith('-IN') ? 'INR' : 'SAR',
             wpsEligible: true,
             eosbEligible: true,
-            socialInsuranceReference: isSaudi ? `GOSI-${code}` : null,
+            // Unconditional: the activation guard asks every employee for a social-insurance
+            // reference, not only the Saudi ones (the India-pack companies were refused on exactly
+            // this key), and GosiReference is a separate field that does not satisfy it.
+            socialInsuranceReference: `SI-${code}`,
             // KSA regulatory reporting blocks approval without it.
             molId: `MOL-${code}`,
           },
@@ -443,6 +453,7 @@ async function ensureEmployees(
         },
       });
       expectOk(res, `create employee '${code}'`, [200, 201]);
+      if (n === 1) managerId = Number(res.body?.id ?? res.body?.Id) || null;
       created++;
     }
   }
@@ -566,8 +577,10 @@ async function ensureComplianceProfiles(
  * followed by the attendance processor. Nothing is inserted behind the modules' backs.
  */
 async function ensureLeaveAndAttendance(
-  adminToken: string, slug: string, companies: Array<{ code: string; id: string; countryCode: string }>,
+  adminToken: string, fixture: FixtureTenant,
+  companies: Array<{ code: string; id: string; countryCode: string }>,
 ): Promise<string> {
+  const slug = fixture.slug;
   const leaveTypes = items((await call('GET', '/api/leave/types', { token: adminToken })).body);
   const annual = leaveTypes.find((t: any) => (t.code ?? t.Code) === 'ANNUAL') ?? leaveTypes[0];
   if (!annual) return 'no leave types provisioned';
@@ -580,6 +593,7 @@ async function ensureLeaveAndAttendance(
 
   const existingLeave = (await call('GET', '/api/leave/requests?page=1&pageSize=5', { token: adminToken })).body;
   let leaveCreated = 0;
+  let approveTarget: string | null = null;
   if (items(existingLeave).length === 0) {
     for (const [index, employee] of employees.entries()) {
       const id = employee.id ?? employee.Id;
@@ -590,8 +604,16 @@ async function ensureLeaveAndAttendance(
         body: { employeeId: id, leaveTypeId: annual.id, amount: 21, reason: 'e2e fixture world opening balance' },
       }), `grant leave balance to employee ${id}`, [200, 201, 204]);
 
-      const start = new Date(Date.now() + (14 + index * 7) * 86_400_000);
-      const end = new Date(start.getTime() + 2 * 86_400_000);
+      // The FIRST one spans today, on purpose. The /leave module opens on its Dashboard tab, whose
+      // only record list is "On Leave Today" — so a tenant whose every leave request is in the future
+      // renders an empty module however many requests it holds, and `expectNonEmptyList` calls that
+      // the blank-module failure. It is right to: nobody is on leave today.
+      // TODAY, not yesterday: the default leave policy enforces its advance-notice rule against the
+      // start date, so a backdated request is refused outright ("requires 0 day(s) advance notice").
+      const start = index === 0
+        ? new Date()
+        : new Date(Date.now() + (14 + index * 7) * 86_400_000);
+      const end = new Date(start.getTime() + 4 * 86_400_000);
       const res = await call('POST', '/api/leave/requests', {
         token: adminToken, companyId: company.id,
         body: {
@@ -600,10 +622,39 @@ async function ensureLeaveAndAttendance(
           reason: 'e2e fixture world', isEmergency: false,
         },
       });
-      if (res.status === 200 || res.status === 201) leaveCreated++;
-      else console.log(
+      if (res.status === 200 || res.status === 201) {
+        leaveCreated++;
+        if (index === 0) approveTarget = (res.body?.id ?? res.body?.Id) ?? null;
+      } else console.log(
         `[bootstrap] ${slug}: leave request for employee ${id} refused `
         + `(HTTP ${res.status}: ${(res.body?.message ?? res.text).slice(0, 140)}).`,
+      );
+    }
+  }
+
+  // Approve the spanning request so the employee is genuinely ON LEAVE today. It has to be a
+  // DIFFERENT human: LeaveRequestsController enforces maker-checker and refuses the requester's own
+  // approval — correctly, and the bootstrap respects it rather than working around it.
+  let approved = false;
+  if (approveTarget) {
+    // LeaveRequestsController.Approve admits only Manager, HR Manager and Admin — an HR DIRECTOR is
+    // refused, which is not obvious from the title and cost one debugging round. The approver must
+    // also be able to reach the employee's company.
+    const reaches = (u: FixtureUser) =>
+      (!u.companyCode && !u.companyCodes) || (u.companyCodes ?? [u.companyCode!]).includes(companies[0].code);
+    const approver = fixture.users.find(
+      (u) => (u.role === 'HR Manager' || u.role === 'Manager') && reaches(u),
+    );
+    if (approver) {
+      const approverToken = await requireTenantLogin(approver, slug);
+      const res = await call('POST', `/api/leave/requests/${approveTarget}/approve`, {
+        token: approverToken, body: { notes: 'e2e fixture world' },
+      });
+      approved = res.status === 200;
+      if (!approved) console.log(
+        `[bootstrap] ${slug}: could not approve the spanning leave request as ${approver.email} `
+        + `(HTTP ${res.status}: ${(res.body?.message ?? res.text).slice(0, 140)}). `
+        + 'The /leave dashboard will show nobody on leave today.',
       );
     }
   }
@@ -638,7 +689,7 @@ async function ensureLeaveAndAttendance(
       body: { fromDate: from, toDate: to, employeeId: null },
     }), 'process attendance punches', [200, 201]);
   }
-  return `${leaveCreated} leave request(s), ${punches} punch(es)`;
+  return `${leaveCreated} leave request(s)${approved ? ' (one approved and live today)' : ''}, ${punches} punch(es)`;
 }
 
 // ── Salaries ──────────────────────────────────────────────────────────────────────────────────
@@ -827,7 +878,7 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId);
     const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
     const salaries = await ensureSalaries(adminToken, companies);
-    const hrData = await ensureLeaveAndAttendance(adminToken, fixture.slug, companies);
+    const hrData = await ensureLeaveAndAttendance(adminToken, fixture, companies);
     const profiles = await ensureComplianceProfiles(adminToken, companies);
     const payroll = fixture.payroll ? await ensurePayrollRuns(fixture, adminToken, companies) : 'no payroll';
     manifest.tenants.push({ slug: fixture.slug, tenantId, companies });
