@@ -34,7 +34,12 @@ import {
 
 const API_BASE = (process.env.E2E_API_BASE_URL ?? 'http://localhost:5117').replace(/\/$/, '');
 
-/** Named employees the benefits-admin spec searches for by name, in creation order. */
+/**
+ * Named employees the benefits-admin spec searches for by name, from the company's SECOND employee
+ * onward. The first is the department head everyone else reports to, and it stays anonymous: the
+ * named people need a manager above them, because timesheet submission resolves its approver from
+ * the reporting line and 422s `no_approval_route` for someone at the top of it.
+ */
 const NAMED_EMPLOYEES = ['Liu Wei', 'Carlos Mendez', 'Aisha Al-Harbi', 'Omar Siddiqui'];
 const FILLER_NAMES = [
   'Noura Al-Qahtani', 'Rashid Al-Otaibi', 'Fatima Zahra', 'Daniel Okonkwo', 'Priya Nair',
@@ -456,9 +461,13 @@ async function ensureEmployees(
       if (have.has(code)) continue;
       // The first names are literal, not suffixed: benefits-admin.spec.ts searches for the exact
       // strings "Liu Wei" and "Carlos Mendez".
-      const name = NAMED_EMPLOYEES[n - 1] ?? `${FILLER_NAMES[(n - 1) % FILLER_NAMES.length]} ${n}`;
-      // Attach the declared portal logins to real people, starting at the first company's SECOND
-      // employee (the first is everyone's manager). See FixtureTenant.employeePortalLogins.
+      const name = n === 1
+        ? 'Noura Al-Qahtani'
+        : NAMED_EMPLOYEES[n - 2] ?? `${FILLER_NAMES[(n - 1) % FILLER_NAMES.length]} ${n}`;
+      // Attach the declared portal logins to real people, in order, from the first company's SECOND
+      // employee. The order matters beyond tidiness: benefits-admin.spec.ts enrols the employee
+      // holding the IFL-STD grade and then signs in as the FIRST declared portal login to see that
+      // enrolment, so those two have to be the same person.
       const portalLogin = company.code === companies[0].code
         ? fixture.employeePortalLogins?.[n - 2]
         : undefined;
@@ -486,9 +495,10 @@ async function ensureEmployees(
           personalEmail: `${code.toLowerCase()}@${fixture.slug}.local`,
           workEmail: portalLogin,
           companyId: company.id,
-          // Only the first employee holds the grade — the benefits eligibility rule needs a
-          // population it INCLUDES and a population it EXCLUDES to prove anything.
-          gradeId: n === 1 ? gradeId : null,
+          // Only ONE employee holds the grade: the benefits eligibility rule needs a population it
+          // INCLUDES and a population it EXCLUDES to prove anything. It is the second employee, the
+          // first of the named ones, and the same person as the first portal login.
+          gradeId: n === 2 ? gradeId : null,
           departmentId,
           designationId,
           reportingManagerEmployeeId: n === 1 ? null : managerId,
@@ -646,7 +656,7 @@ async function ensureEmployeePortalLogins(
     // Matched by employee CODE, not by work email: the employee LIST dto does not carry a work
     // email (only the detail one does), so matching on it silently found nothing. The codes are
     // deterministic and assigned in the same order as `employeePortalLogins`, starting at the
-    // company's second employee — the first is everyone's manager.
+    // company's second employee.
     const wanted = `${companies[0].code}-E${index + 2}`;
     const employee = employees.find((e: any) => String(e.employeeCode ?? e.EmployeeCode) === wanted);
     if (!employee) {
@@ -779,10 +789,15 @@ async function ensureLeaveAndAttendance(
   if (!annual) return 'no leave types provisioned';
 
   const company = companies[0];
-  const employees = items((await call(
+  const active = items((await call(
     'GET', '/api/employees?page=1&pageSize=200', { token: adminToken, companyId: company.id },
-  )).body).filter((e: any) => String(e.status ?? e.Status) === 'Active').slice(0, 3);
-  if (employees.length === 0) return 'no active employees to give leave or attendance to';
+  )).body).filter((e: any) => String(e.status ?? e.Status) === 'Active');
+  if (active.length === 0) return 'no active employees to give leave or attendance to';
+  // Leave for a handful; ATTENDANCE FOR EVERYONE. Timesheet submission validates logged hours
+  // against recorded attendance and refuses `over_allocated` for a day with none, so punching only
+  // the first few employees made whether the ESS timesheet could be submitted depend on where the
+  // portal-login employee happened to land in an unordered list.
+  const employees = active.slice(0, 3);
 
   const existingLeave = (await call('GET', '/api/leave/requests?page=1&pageSize=5', { token: adminToken })).body;
   let leaveCreated = 0;
@@ -864,7 +879,7 @@ async function ensureLeaveAndAttendance(
     const rows = ['employeeCode,punchTimestamp,punchDirection'];
     for (let day = 5; day >= 1; day--) {
       const date = new Date(Date.now() - day * 86_400_000).toISOString().slice(0, 10);
-      for (const employee of employees) {
+      for (const employee of active) {
         rows.push(`${employee.employeeCode},${date}T05:00:00Z,In`);
         rows.push(`${employee.employeeCode},${date}T14:00:00Z,Out`);
         punches += 2;

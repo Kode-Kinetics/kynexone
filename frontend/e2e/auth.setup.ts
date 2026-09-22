@@ -5,7 +5,8 @@ import {
 } from './helpers';
 import {
   ALMARAI_SLUG, companyEmail, EVOSTEL_ADMIN, EVOSTEL_SLUG, GROUP_PASSWORD, groupEmail,
-  INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_FINANCE, INTELLIFLOW_HR_MGR, INTELLIFLOW_SLUG,
+  INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_EMP2, INTELLIFLOW_FINANCE, INTELLIFLOW_HR_MGR,
+  INTELLIFLOW_SLUG,
   RASALMANAR_ADMIN, RASALMANAR_SLUG, TATA_SLUG,
 } from './world';
 import { provisionLimitedTenantFixture } from './limited-tenant-fixture';
@@ -57,6 +58,10 @@ setup('authenticate platform admin and provision isolated limited tenant', async
   const personas = [
     { ...INTELLIFLOW_ADMIN, slug: INTELLIFLOW_SLUG },
     { ...INTELLIFLOW_EMP1, slug: INTELLIFLOW_SLUG },
+    // A SECOND employee. Employee-self-service specs mutate their own week/enrolment, so two of them
+    // running against one persona interfere: the first submits the week and the second then finds no
+    // Submit control. Two people is what the product would have.
+    { ...INTELLIFLOW_EMP2, slug: INTELLIFLOW_SLUG },
     // Payroll maker/checker personas. The two-step approval in payroll-run-to-wps.spec.ts needs
     // THREE distinct users (the processor cannot approve, and the maker cannot finalise), so the
     // sessions are minted once here rather than three logins per test run.

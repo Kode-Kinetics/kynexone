@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   apiLogin, tenantLogin, mainText,
-  INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_SLUG,
+  INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_EMP2, INTELLIFLOW_SLUG,
 } from './helpers';
 
 /**
@@ -202,8 +202,18 @@ test.describe('Timesheets', () => {
     expect((await submitted.json()).status).toBe('Submitted');
   });
 
+  // Driven as an EMPLOYEE, not as the tenant administrator.
+  //
+  // "My week" is an employee-self-service surface: EssTimesheetsController resolves the caller
+  // through `Employee.UserAccountId`, so a login with no employee behind it gets a named 409 and the
+  // grid never renders. The administrator created by `POST /api/platform/tenants` is exactly such a
+  // login — it is an operator account, not a person on the payroll — and nothing in the product
+  // links an already-existing user to an employee record. The old seeder happened to make the
+  // administrator an employee too; that was a property of the seeder, not of the product.
   test('the weekly grid renders seven named days', async ({ page }) => {
-    await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
+    // The SECOND employee, not the first: the test above submits the first employee's current week,
+    // after which the page correctly shows "Awaiting HR Manager" instead of the Submit control.
+    await tenantLogin(page, INTELLIFLOW_EMP2.email, INTELLIFLOW_EMP2.password, INTELLIFLOW_SLUG);
     await page.goto('/timesheets');
     await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
 
