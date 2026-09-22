@@ -166,7 +166,11 @@ const companyUser = (
 export const ALMARAI_USERS: FixtureUser[] = [
   groupUser('hr', 'HR Director', 'Almarai Group HR Director'),
   groupUser('finance', 'Finance Approver', 'Almarai Group Finance Approver'),
-  groupUser('compliance', 'HR Manager', 'Almarai Group Compliance Officer'),
+  // 'Compliance Officer', not 'HR Manager': the role is what
+  // CompanyComplianceProfilesController authorizes on, and it is the only non-Admin role permitted
+  // to AUTHOR a company compliance profile. Given HR Manager, this persona got a 403 from
+  // /api/company-compliance-profiles and the compliance suite saw a page with no profile on it.
+  groupUser('compliance', 'Compliance Officer', 'Almarai Group Compliance Officer'),
   groupUser('auditor', 'Auditor', 'Almarai Group Auditor'),
   {
     ...groupUser('scoped.admin', 'HR Manager', 'Almarai Selected-Companies Admin'),
@@ -213,7 +217,7 @@ export const TENANTS: FixtureTenant[] = [
     users: [],
     // Cross-tenant isolation specs compare real employee rows against IntelliFlow's.
     employeesPerCompany: 4,
-    minActiveEmployees: 2,
+    minActiveEmployees: 4,
     payroll: false,
   },
   {
@@ -228,9 +232,10 @@ export const TENANTS: FixtureTenant[] = [
     companies: ALMARAI_COMPANY_CODES.map(saCompany),
     users: ALMARAI_USERS,
     employeesPerCompany: 3,
-    // 15 created, every third deliberately left without an Iqama so the compliance profile's
-    // "Missing" column is a real number — those five are correctly refused activation.
-    minActiveEmployees: 10,
+    // All 15 activate. Every third is deliberately left without an Iqama so the compliance
+    // profile's "Missing" column is a real number, and readiness counts only ACTIVE employees —
+    // so the gap has to be on an activated one, not on a Draft.
+    minActiveEmployees: 15,
     payroll: true,
   },
   {
@@ -243,11 +248,12 @@ export const TENANTS: FixtureTenant[] = [
     maxCompanies: 0,
     admin: { ...groupUser('owner', 'Admin', 'Tata Group Owner', TATA_SLUG) },
     companies: TATA_COMPANY_CODES.map((code) => ({ code, countryCode: 'IN', currency: 'INR' })),
-    users: [groupUser('compliance', 'HR Manager', 'Tata Group Compliance Officer', TATA_SLUG)],
+    users: [groupUser('compliance', 'Compliance Officer', 'Tata Group Compliance Officer', TATA_SLUG)],
     employeesPerCompany: 2,
-    // India pack; the group-company compliance spec only reads this tenant's PROFILE, not its
-    // headcount, so no activation floor is claimed for it.
-    minActiveEmployees: 0,
+    // India pack. The group-company compliance spec reads this tenant's PROFILE for the country
+    // contrast rather than its headcount, so the floor is modest — but it is not zero, because
+    // "every employee failed to activate" must not pass quietly.
+    minActiveEmployees: 8,
     payroll: false,
   },
 ];

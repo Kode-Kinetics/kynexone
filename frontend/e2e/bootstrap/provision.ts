@@ -366,10 +366,16 @@ async function ensureEmployees(
       // strings "Liu Wei" and "Carlos Mendez".
       const name = NAMED_EMPLOYEES[n - 1] ?? `${FILLER_NAMES[(n - 1) % FILLER_NAMES.length]} ${n}`;
       const isSaudi = company.countryCode === 'SA';
-      // An expatriate with no Iqama on file. Deliberate, and only outside IntelliFlow: it is what
+      // Every third employee outside IntelliFlow is a SAUDI NATIONAL with no Iqama on file — which
+      // is not a data defect, it is what a Saudi national's record looks like. That is precisely what
       // gives group-company/compliance.spec.ts a non-zero "Missing" count for the Iqama requirement.
-      // Their activation is correctly blocked by the statutory guard, so they stay in Draft.
-      const expatWithGap = isSaudi && fixture.slug !== 'intelliflow' && n % 3 === 0;
+      //
+      // The gap has to sit on an ACTIVE employee: ComplianceReadinessCalculator counts only
+      // `Status == "Active"` rows, so a Draft employee with a missing Iqama is invisible to readiness
+      // and the "Missing" cell reads 0. It also has to sit on a national rather than an expatriate,
+      // because the activation guard's required set IS nationality-aware: it demands an Iqama of a
+      // non-Saudi and not of a Saudi. An expatriate with the gap simply never activates.
+      const iqamaGap = fixture.slug !== 'intelliflow' && n % 3 === 0;
       const res = await call('POST', '/api/employees', {
         token: adminToken,
         companyId: company.id,
@@ -379,7 +385,7 @@ async function ensureEmployees(
           englishName: name,
           gender: n % 2 === 0 ? 'Female' : 'Male',
           dateOfBirth: '1990-01-15',
-          nationality: expatWithGap ? 'Indian' : isSaudi ? 'Saudi' : 'Indian',
+          nationality: isSaudi || iqamaGap ? 'Saudi' : 'Indian',
           personalEmail: `${code.toLowerCase()}@${fixture.slug}.local`,
           companyId: company.id,
           // Only the first employee holds the grade — the benefits eligibility rule needs a
@@ -419,11 +425,11 @@ async function ensureEmployees(
           // an Emirates ID and a Qatar ID. That looks like a product bug rather than a fixture
           // concern, but the bootstrap's job is to build the world the product will accept, so it
           // supplies the whole set and the oddity is recorded here rather than hidden.
-          complianceRecords: expatWithGap || !isSaudi ? [] : [
+          complianceRecords: [
             idRecord('civil_id', 'Civil ID', `1${String(200000000 + seq).slice(0, 9)}`),
             idRecord('id_number', 'Government ID number', `1${String(300000000 + seq).slice(0, 9)}`),
             idRecord('gosi_reference', 'GOSI reference', `GOSI-${code}`),
-            idRecord('iqama_number', 'Iqama Number', `2${String(400000000 + seq).slice(0, 9)}`),
+            ...(iqamaGap ? [] : [idRecord('iqama_number', 'Iqama Number', `2${String(400000000 + seq).slice(0, 9)}`)]),
             idRecord('emirates_id', 'Emirates ID', `784-1990-${String(1000000 + seq).slice(0, 7)}-1`),
             idRecord('work_permit', 'Work permit number', `WP-${code}`),
             idRecord('passport_number', 'Passport number', `P${String(10000000 + seq).slice(0, 8)}`),
@@ -494,6 +500,55 @@ async function activateEmployees(adminToken: string, slug: string, floor: number
     console.log(`[bootstrap] ${slug}: ${active} active, ${blocked.length} left in Draft by the activation guard (expected).`);
   }
   return active;
+}
+
+// ── Compliance profiles ───────────────────────────────────────────────────────────────────────
+
+/**
+ * One active compliance profile per company, with the statutory fields the readiness view counts.
+ *
+ * `CompanyComplianceProfilesController.Readiness` returns an EMPTY required-fields list when a
+ * company has no profile, so /compliance-profiles renders a page with no Country row and no table —
+ * and `group-company/compliance.spec.ts` times out waiting for a row that nothing will ever draw.
+ * Nothing creates these by default; they are a tenant-configuration step, so the bootstrap performs
+ * it as the tenant's own Compliance Officer, which is the only non-Admin role permitted to.
+ */
+async function ensureComplianceProfiles(
+  adminToken: string, companies: Array<{ code: string; id: string; countryCode: string }>,
+): Promise<number> {
+  const existing = items((await call(
+    'GET', '/api/company-compliance-profiles', { token: adminToken },
+  )).body);
+  const have = new Set(existing.map((p: any) => String(p.companyId ?? p.CompanyId)));
+
+  // IqamaNumber is deliberately first: the KSA suite reads its "Missing" cell, and the expatriate
+  // employees the bootstrap leaves without one are what make that number non-zero.
+  const required: Record<string, string[]> = {
+    SA: ['IqamaNumber', 'GosiReference', 'IdNumber'],
+    IN: ['IdNumber', 'PassportNumber'],
+  };
+
+  let created = 0;
+  for (const company of companies) {
+    if (have.has(company.id)) continue;
+    const fields = required[company.countryCode] ?? ['IdNumber'];
+    const res = await call('POST', '/api/company-compliance-profiles', {
+      token: adminToken, companyId: company.id,
+      body: {
+        companyId: company.id,
+        countryCode: company.countryCode,
+        jurisdiction: company.countryCode,
+        compliancePack: `${company.countryCode}-BASE`,
+        effectiveFrom: '2024-01-01',
+        status: 'Active',
+        requiredFieldsJson: JSON.stringify(fields.map((field) => ({ field, failClosed: false }))),
+        notes: 'Provisioned by the e2e fixture-world bootstrap.',
+      },
+    });
+    expectOk(res, `create the compliance profile for '${company.code}'`, [200, 201]);
+    created++;
+  }
+  return created;
 }
 
 // ── Leave, attendance and the approval queue ──────────────────────────────────────────────────
@@ -773,12 +828,13 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
     const salaries = await ensureSalaries(adminToken, companies);
     const hrData = await ensureLeaveAndAttendance(adminToken, fixture.slug, companies);
+    const profiles = await ensureComplianceProfiles(adminToken, companies);
     const payroll = fixture.payroll ? await ensurePayrollRuns(fixture, adminToken, companies) : 'no payroll';
     manifest.tenants.push({ slug: fixture.slug, tenantId, companies });
     console.log(
       `[bootstrap] ${fixture.slug}: ${companies.length} compan${companies.length === 1 ? 'y' : 'ies'}, `
       + `${fixture.users.length + 1} users, ${active} active employees, `
-      + `${salaries} salary assignment(s), ${hrData}, ${payroll}.`,
+      + `${salaries} salary assignment(s), ${profiles} compliance profile(s), ${hrData}, ${payroll}.`,
     );
   }
 

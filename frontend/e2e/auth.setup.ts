@@ -2,10 +2,12 @@ import { test as setup } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import {
   platformLogin, PLATFORM_STATE, TENANT_STATE, tenantSessionKey,
-  INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1,
-  INTELLIFLOW_HR_MGR, INTELLIFLOW_FINANCE,
-  RASALMANAR_SLUG, RASALMANAR_ADMIN, EVOSTEL_SLUG, EVOSTEL_ADMIN,
 } from './helpers';
+import {
+  ALMARAI_SLUG, companyEmail, EVOSTEL_ADMIN, EVOSTEL_SLUG, GROUP_PASSWORD, groupEmail,
+  INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_FINANCE, INTELLIFLOW_HR_MGR, INTELLIFLOW_SLUG,
+  RASALMANAR_ADMIN, RASALMANAR_SLUG, TATA_SLUG,
+} from './world';
 import { provisionLimitedTenantFixture } from './limited-tenant-fixture';
 
 /**
@@ -46,7 +48,12 @@ setup('authenticate platform admin and provision isolated limited tenant', async
   if (!token) throw new Error('Platform login completed without persisting a platform access token.');
   await provisionLimitedTenantFixture(request, token);
 
-  const groupPassword = process.env.E2E_GROUP_PASSWORD ?? 'GroupDemo123!x';
+  // Every address and password below comes from e2e/world.ts — the same declaration
+  // e2e/bootstrap/provision.ts provisions from. They were literals here, so a persona could be
+  // spelled one way in this file and created another way by whatever seeded the database, and the
+  // only symptom was a login failure in a setup project that fails the entire browser lane.
+  const group = (role: string, slug = ALMARAI_SLUG) =>
+    ({ email: groupEmail(role, slug), password: GROUP_PASSWORD, slug });
   const personas = [
     { ...INTELLIFLOW_ADMIN, slug: INTELLIFLOW_SLUG },
     { ...INTELLIFLOW_EMP1, slug: INTELLIFLOW_SLUG },
@@ -57,12 +64,12 @@ setup('authenticate platform admin and provision isolated limited tenant', async
     { ...INTELLIFLOW_FINANCE, slug: INTELLIFLOW_SLUG },
     { ...RASALMANAR_ADMIN, slug: RASALMANAR_SLUG },
     { ...EVOSTEL_ADMIN, slug: EVOSTEL_SLUG },
-    { email: 'owner@almarai-test.local', password: groupPassword, slug: 'almarai-test' },
-    { email: 'admin@alm-dairy-ksa.almarai-test.local', password: groupPassword, slug: 'almarai-test' },
-    { email: 'scoped.admin@almarai-test.local', password: groupPassword, slug: 'almarai-test' },
-    { email: 'auditor@almarai-test.local', password: groupPassword, slug: 'almarai-test' },
-    { email: 'compliance@almarai-test.local', password: groupPassword, slug: 'almarai-test' },
-    { email: 'compliance@tata-test.local', password: groupPassword, slug: 'tata-test' },
+    group('owner'),
+    { email: companyEmail('admin', 'ALM-DAIRY-KSA'), password: GROUP_PASSWORD, slug: ALMARAI_SLUG },
+    group('scoped.admin'),
+    group('auditor'),
+    group('compliance'),
+    group('compliance', TATA_SLUG),
   ];
   const sessions: Record<string, { accessToken: string; refreshToken: string }> = {};
   for (const [index, persona] of personas.entries()) {
