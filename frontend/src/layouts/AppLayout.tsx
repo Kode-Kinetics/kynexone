@@ -5,6 +5,11 @@ import { MessageSquareText, Clock, Search, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
+import dynamic from 'next/dynamic';
+
+// The drawer's code loads the first time someone opens it, not on every page load.
+const AssistantDrawer = dynamic(() => import('./AssistantDrawer').then((m) => m.AssistantDrawer), { ssr: false });
+import { MobileBottomNav } from './MobileBottomNav';
 import { employeesApi } from '../api/employees';
 import { reportsApi } from '../api/reports';
 import { usersApi } from '../api/identity';
@@ -50,6 +55,9 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && localStorage.getItem('sidebar-collapsed') === 'true');
   const [commandOpen, setCommandOpen] = useState(false);
+  // Lives here, not in a page: <main> is keyed by pathname and remounts on navigation.
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantUsed, setAssistantUsed] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [employeeResults, setEmployeeResults] = useState<Array<{ id: number; label: string; sublabel: string }>>([]);
@@ -337,7 +345,9 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
 
   return (
     <LocaleProvider>
-    <div className="tenant-app-shell min-h-screen overflow-x-hidden bg-lightBg text-slate-950 dark:bg-midnight dark:text-white">
+    {/* overflow-x-CLIP, not hidden: `hidden` turns this div into a scroll container, which
+        silently disabled every position:sticky inside it (the command bar scrolled away). */}
+    <div className="tenant-app-shell wg-canvas min-h-screen overflow-x-clip text-slate-950 dark:text-white">
       <div className="flex min-h-screen">
         <Sidebar
           isOpen={sidebarOpen}
@@ -355,11 +365,15 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             onToggleTheme={onToggleTheme}
             onOpenSidebar={() => setSidebarOpen(true)}
             onOpenSearch={openCommandPalette}
-            onAskKynexOne={() => router.push('/ai-assistant')}
+            onAskKynexOne={() => { setAssistantUsed(true); setAssistantOpen(true); }}
           />
-          <main key={pathname} className="animate-fade-in-up px-4 py-6 sm:px-6 lg:px-8">{children}</main>
+          {/* Bottom padding below lg clears the fixed bottom nav and the device safe area. */}
+          <main key={pathname} className="animate-fade-in-up px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-6 sm:px-6 lg:px-8 lg:pb-8">{children}</main>
         </div>
       </div>
+
+      <MobileBottomNav onOpenMore={() => setSidebarOpen(true)} />
+      {assistantUsed && <AssistantDrawer open={assistantOpen} onClose={() => setAssistantOpen(false)} />}
 
       {commandOpen && (
         <div

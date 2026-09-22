@@ -152,9 +152,10 @@ public class DashboardAttendanceRateTests
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "T", Slug = $"t-{tenantId:N}" });
         db.Employees.Add(new Employee { Id = 1, TenantId = tenantId, EmployeeCode = "E1", FullName = "A", Status = "Active" });
-        db.AttendanceRecords.Add(new AttendanceRecord
+        // Today's tiles read AttendanceDailyRecords (the processor's primary output), not the legacy mirror.
+        db.AttendanceDailyRecords.Add(new AttendanceDailyRecord
         {
-            Id = 1, TenantId = tenantId, EmployeeId = 1, WorkDate = today, Status = AttendanceStatuses.OnLeave,
+            TenantId = tenantId, EmployeeId = 1, WorkDate = today, Status = AttendanceStatuses.OnLeave,
         });
         await db.SaveChangesAsync();
 
