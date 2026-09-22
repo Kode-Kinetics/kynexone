@@ -137,6 +137,11 @@ interface Row {
   itemsAr: string[];
   /** Present on 'pack' rows only. Absent is not zero — it is "not a country". */
   heads?: number;
+  /** Further detail shown ONLY on the drum, where a capability face would
+      otherwise hold one line over an empty middle. The flat register keeps
+      its one phrase so it still fits a short screen. Evidenced like `items`. */
+  more?: string[];
+  moreAr?: string[];
   /** A face that exists only on the turning drum. The flat register below
       1280px stays the six rows it was designed as, so it still fits a short
       laptop screen without scrolling. */
@@ -181,6 +186,10 @@ const ROWS: Row[] = [
        it and every line here, including this one, changes direction. */
     items: ['Mirrored layout, not strings'],
     itemsAr: ['تخطيط معكوس، لا مجرد ترجمة'],
+    /* HrLettersController.cs: Arabic and bilingual templates (BodyAr).
+       mobile/src/config/i18n.ts: the app ships Arabic. */
+    more: ['Bilingual letters', 'Arabic on web and mobile'],
+    moreAr: ['خطابات ثنائية اللغة', 'عربي على الويب والجوال'],
   },
   {
     code: 'HIJ',
@@ -191,6 +200,10 @@ const ROWS: Row[] = [
        in both calendars by usePeriod(). */
     items: ['Alongside Gregorian'],
     itemsAr: ['إلى جانب الميلادي'],
+    /* HijriDateService.cs wraps UmAlQuraCalendar; HolidayCalendarController.cs
+       stores HijriDate on each holiday. */
+    more: ['Umm al-Qura', 'Hijri-dated holidays'],
+    moreAr: ['تقويم أم القرى', 'عطلات بالتاريخ الهجري'],
   },
   {
     code: 'CUR',
@@ -201,6 +214,10 @@ const ROWS: Row[] = [
        Never "converted": there is no FX table in this product. */
     items: ['Per company, one group'],
     itemsAr: ['لكل شركة، ضمن مجموعة'],
+    /* GroupDashboardController.cs; CostCentersController.cs. Still never a
+       consolidated money figure: there is no FX table. */
+    more: ['Group dashboard', 'Cost centres'],
+    moreAr: ['لوحة المجموعة', 'مراكز التكلفة'],
   },
   /* ── THE DRUM'S BACK HALF. Six more capabilities that ride the turn in from
      behind. Same kind as the three above ('wide': typeset as the claim's
@@ -221,8 +238,10 @@ const ROWS: Row[] = [
     extra: true,
     name: 'WPS files',
     nameAr: 'ملفات حماية الأجور',
-    items: ['Generated for all three'],
-    itemsAr: ['للدول الثلاث'],
+    /* KsaWageProtectionExporter (Mudad), UaeWageProtectionExporter (SIF),
+       QatarWageProtectionExporter */
+    items: ['Mudad file', 'UAE SIF', 'Qatar WPS'],
+    itemsAr: ['ملف مدد', 'ملف SIF الإماراتي', 'حماية الأجور القطري'],
   },
   {
     code: 'EOS',
@@ -230,8 +249,10 @@ const ROWS: Row[] = [
     extra: true,
     name: 'End-of-service',
     nameAr: 'نهاية الخدمة',
-    items: ['Calculated at exit'],
-    itemsAr: ['تُحتسب عند المغادرة'],
+    /* FinalSettlement in EmployeesController.cs / PayrollController.cs;
+       Controllers/Leave/EncashmentController.cs */
+    items: ['Calculated at exit', 'Final settlement', 'Leave encashment'],
+    itemsAr: ['تُحتسب عند المغادرة', 'التسوية النهائية', 'صرف رصيد الإجازات'],
   },
   {
     code: 'APR',
@@ -239,8 +260,10 @@ const ROWS: Row[] = [
     extra: true,
     name: 'Approvals',
     nameAr: 'الموافقات',
-    items: ['Maker-checker on payroll'],
-    itemsAr: ['إعداد ومراجعة للرواتب'],
+    /* HRRequestCenterController.cs, ApprovalRequestsController.cs;
+       Controllers/Leave/LeaveDelegationController.cs */
+    items: ['Maker-checker on payroll', 'Leave and HR requests', 'Delegation'],
+    itemsAr: ['إعداد ومراجعة للرواتب', 'طلبات الإجازات والموارد البشرية', 'التفويض'],
   },
   {
     code: 'GEO',
@@ -248,8 +271,9 @@ const ROWS: Row[] = [
     extra: true,
     name: 'Geofenced attendance',
     nameAr: 'الحضور الجغرافي',
-    items: ['Clock-in on site'],
-    itemsAr: ['تسجيل الحضور في الموقع'],
+    /* ShiftsController.cs, OvertimeController.cs, Controllers/Timesheets/ */
+    items: ['Clock-in on site', 'Shifts and overtime', 'Timesheets'],
+    itemsAr: ['تسجيل الحضور في الموقع', 'الورديات والعمل الإضافي', 'سجلات الدوام'],
   },
   {
     code: 'ESS',
@@ -257,8 +281,9 @@ const ROWS: Row[] = [
     extra: true,
     name: 'Self-service',
     nameAr: 'الخدمة الذاتية',
-    items: ['Web and mobile app'],
-    itemsAr: ['الويب وتطبيق الجوال'],
+    /* EmployeeSelfServiceController.cs: payslips, leave balance, letters */
+    items: ['Web and mobile app', 'Payslips and leave', 'HR letters'],
+    itemsAr: ['الويب وتطبيق الجوال', 'قسائم الرواتب والإجازات', 'الخطابات'],
   },
   {
     code: 'VISA',
@@ -266,8 +291,9 @@ const ROWS: Row[] = [
     extra: true,
     name: 'Visa & Iqama',
     nameAr: 'التأشيرات والإقامات',
-    items: ['Expiry tracking'],
-    itemsAr: ['متابعة تواريخ الانتهاء'],
+    /* Controllers/Compliance/{VisaTracking,Contracts,ComplianceReports}Controller.cs */
+    items: ['Expiry tracking', 'Contracts', 'Compliance reports'],
+    itemsAr: ['متابعة تواريخ الانتهاء', 'العقود', 'تقارير الامتثال'],
   },
   /* ── THE OTHER THREE GCC STATES. Placed LAST so that, on the turning ring,
      they arrive immediately before Saudi Arabia wraps back round and all six
@@ -367,10 +393,13 @@ const EN: Copy = {
     + 'every Gulf market — an Arabic interface whose layout mirrors rather than '
     + 'only its strings being translated, the Hijri calendar alongside the '
     + 'Gregorian one, and a currency per company inside one group. Six more '
-    + 'capabilities turn past on the drum: wage-protection files for all three '
-    + 'jurisdictions, end-of-service calculated at exit, maker-checker approvals '
-    + 'on payroll, geofenced attendance, employee self-service on web and mobile, '
-    + 'and visa and iqama expiry tracking. Kuwait, Bahrain and Oman also turn '
+    + 'capabilities turn past on the drum: wage-protection files (the Mudad '
+    + 'file, the UAE SIF and Qatar WPS); end-of-service calculated at exit, with '
+    + 'final settlement and leave encashment; maker-checker approvals on payroll, '
+    + 'leave and HR requests, and delegation; geofenced attendance with shifts, '
+    + 'overtime and timesheets; employee self-service on web and mobile for '
+    + 'payslips, leave and HR letters; and visa and iqama expiry tracking with '
+    + 'contracts and compliance reports. Kuwait, Bahrain and Oman also turn '
     + 'past, with their social-insurance and labour authorities named and no '
     + 'headcount.',
   /* Shown while the panel is in English, so it is written in Arabic: it is the
@@ -979,6 +1008,9 @@ export function Brief() {
                        what keeps a screen reader from running "GOSIQiwa"
                        together once the middot is a ::before. */
                     <span className="lx-reg-i" key={it}>{i ? ' ' : ''}{it}</span>
+                  ))}
+                  {((ar ? r.moreAr : r.more) ?? []).map(it => (
+                    <span className="lx-reg-i is-more" key={it}>{' '}{it}</span>
                   ))}
                 </span>
               </th>

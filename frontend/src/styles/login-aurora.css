@@ -682,6 +682,8 @@
 /* Drum-only faces (see `extra` in LoginMarketing.tsx). The flat register stays
    the six rows it was designed as; the drum's face rule below re-shows them. */
 .lx-reg-row[data-extra] { display: none; }
+/* Drum-only detail lines (`more`), for the same reason. */
+.lx-reg-i.is-more { display: none; }
 .lx-reg-row:hover .lx-reg-name { color: #FFFFFF; }
 .lx-reg-main { min-width: 0; }
 .lx-reg-name {
@@ -1323,7 +1325,8 @@
   /* ONE SYSTEM PER LINE, and no separator to strand at a break. Four lines
      under Saudi Arabia against two under the UAE and Qatar is the statutory
      depth stated as a shape, before a word of it is read. */
-  .lx-reg-drum .lx-reg-i { display: block; }
+  .lx-reg-drum .lx-reg-i,
+  .lx-reg-drum .lx-reg-i.is-more { display: block; }
   .lx-reg-drum .lx-reg-i + .lx-reg-i::before { content: none; }
 
   /* A 'wide' face has no figure, so without this its phrase would sit in the
