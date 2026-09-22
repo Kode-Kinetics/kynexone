@@ -45,10 +45,36 @@ client.interceptors.request.use((config) => {
 let isRefreshing = false;
 const pendingRefreshes = new RefreshQueue();
 
+// Backend restarts (Render redeploys behind the Vercel /api/* rewrite) surface as a brief
+// window of 502/503/504 or a dropped connection. GET requests are safe to replay — they have
+// no side effect — so retry them ONCE, after a short delay, to ride out that window instead of
+// bubbling a spurious error to the UI. A request-scoped flag (_getRetried) caps this at exactly
+// one attempt per request, so a persistently-down backend fails fast instead of looping.
+// Never applies to POST/PUT/PATCH/DELETE: those include single-use calls (login, password
+// reset, accept-invitation) and other mutations where a blind replay could duplicate a write.
+const RETRYABLE_GATEWAY_STATUSES = new Set([502, 503, 504]);
+const GET_RETRY_DELAY_MS = 1500;
+
+function isRetryableGetFailure(err: { config?: any; response?: { status?: number } }): boolean {
+  const original = err.config;
+  if (!original || original._getRetried) return false;
+  const method = (original.method ?? 'get').toLowerCase();
+  if (method !== 'get') return false;
+  if (!err.response) return true; // network error / timeout — no response at all
+  return RETRYABLE_GATEWAY_STATUSES.has(err.response.status ?? 0);
+}
+
 client.interceptors.response.use(
   (res) => res,
   async (err) => {
     const original = err.config;
+
+    if (isRetryableGetFailure(err)) {
+      original._getRetried = true;
+      await new Promise((resolve) => setTimeout(resolve, GET_RETRY_DELAY_MS));
+      return client(original);
+    }
+
     // The tenant API client must never drive navigation or auth side-effects on
     // the platform console — it has its own axios (platform.ts) and auth flow.
     // Without this, the globally-mounted tenant providers' calls hijacked the
