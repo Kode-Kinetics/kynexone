@@ -94,6 +94,23 @@ services:
       - key: AllowedHosts
         value: zayra-ai-workforce.onrender.com;localhost
 
+      # ── Memory, logging and rate limits: set on the live service 2026-09-22 after 12 OOM kills ──
+      # GC values are parsed as HEX — keep the 0x prefix (see the Dockerfile's runtime stage).
+      # 0x14000000 = 320 MiB for the 512 MB Starter plan; use 0x60000000 (1.5 GiB) on Standard.
+      - key: DOTNET_gcServer
+        value: "0"
+      - key: DOTNET_GCHeapHardLimit
+        value: "0x14000000"
+      # Per-statement SQL logging at Information cost CPU and memory on every request.
+      - key: Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command
+        value: Warning
+      # Limits are per client IP. Raised so a room of users on one network does not share the
+      # default 10 logins/min; revisit once real client IPs are verified behind the Vercel proxy.
+      - key: RateLimit__LoginPermitLimit
+        value: "100"
+      - key: RateLimit__RefreshPermitLimit
+        value: "300"
+
       # ── REQUIRED SECRETS: set these in the Render dashboard (Environment → Secret Files / Env Vars) ──
       #
       # ConnectionStrings__Default

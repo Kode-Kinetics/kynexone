@@ -180,13 +180,19 @@ public class AuthService : IAuthService
         CancellationToken cancellationToken)
     {
         var tokenHash = _tokenService.HashToken(request.RefreshToken);
-        var route = await RefreshTokensWithUserGraph()
-            .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.TokenHash == tokenHash, cancellationToken);
+        // TokenHash is unique, so the split graph load is deterministic; it runs in a snapshot.
+        var route = await AuthGraphSnapshot.ReadAsync(_db, async ct =>
+        {
+            var routed = await RefreshTokensWithUserGraph()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.TokenHash == tokenHash, ct);
+            return routed?.User is not null && await AuthTenantGraphIntegrity.IsValidAsync(routed.User, _db, ct)
+                ? routed
+                : null;
+        }, cancellationToken);
 
         // Routing only. All issuance authority is re-established under locks below.
-        if (route?.User?.Tenant is null
-            || !await AuthTenantGraphIntegrity.IsValidAsync(route.User, _db, cancellationToken))
+        if (route?.User?.Tenant is null)
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
 
         var presentedTokenId = route.Id;
@@ -418,8 +424,11 @@ public class AuthService : IAuthService
     /// <summary>The exact refresh-token + user graph token issuance needs. Shared by the initial
     /// lookup and by the execution-strategy retry reload so the two can never drift (a narrower
     /// reload would silently issue an access token with fewer permissions).</summary>
+    /// Split (see AuthGraphSnapshot): both callers filter on a unique key (TokenHash / Id) and run
+    /// inside an explicit transaction — the routing snapshot or the anchored rotation transaction.
     private IQueryable<RefreshToken> RefreshTokensWithUserGraph() =>
         _db.RefreshTokens
+            .AsSplitQuery()
             .Include(x => x.User).ThenInclude(x => x!.Tenant)
             .Include(x => x.User).ThenInclude(x => x!.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
             .Include(x => x.User).ThenInclude(x => x!.EmployeeUserAccounts)
@@ -1286,30 +1295,40 @@ public class AuthService : IAuthService
     private async Task<User?> LoadUserGraph(string email, string tenantSlug, CancellationToken cancellationToken)
     {
         var normalizedEmail = Normalize(email);
-        var user = await _db.Users
-            .Include(x => x.Tenant)
-            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
-            .Include(x => x.EmployeeUserAccounts)
-            .Include(x => x.PermissionOverrides)
-            .Include(x => x.EntityAccesses)
-            .FirstOrDefaultAsync(
-                x => x.NormalizedEmail == normalizedEmail
-                    && !x.IsDeleted
-                    && x.Tenant!.Slug == tenantSlug,
-                cancellationToken);
-        return await AuthTenantGraphIntegrity.IsValidAsync(user, _db, cancellationToken) ? user : null;
+        // Split is deterministic here: Tenant.Slug is unique and (TenantId, NormalizedEmail) is
+        // unique, so the filter matches at most one user. Runs in a snapshot (AuthGraphSnapshot).
+        return await AuthGraphSnapshot.ReadAsync(_db, async ct =>
+        {
+            var user = await _db.Users.AsSplitQuery()
+                .Include(x => x.Tenant)
+                .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+                .Include(x => x.EmployeeUserAccounts)
+                .Include(x => x.PermissionOverrides)
+                .Include(x => x.EntityAccesses)
+                .FirstOrDefaultAsync(
+                    x => x.NormalizedEmail == normalizedEmail
+                        && !x.IsDeleted
+                        && x.Tenant!.Slug == tenantSlug,
+                    ct);
+            return await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct) ? user : null;
+        }, cancellationToken);
     }
 
     private async Task<User?> LoadUserGraph(Guid userId, CancellationToken cancellationToken)
     {
-        var user = await _db.Users
-            .Include(x => x.Tenant)
-            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
-            .Include(x => x.EmployeeUserAccounts)
-            .Include(x => x.PermissionOverrides)
-            .Include(x => x.EntityAccesses)
-            .FirstOrDefaultAsync(x => x.Id == userId && !x.IsDeleted, cancellationToken);
-        return await AuthTenantGraphIntegrity.IsValidAsync(user, _db, cancellationToken) ? user : null;
+        // Split on the primary key, inside the caller's anchored transaction when there is one,
+        // otherwise inside a snapshot (AuthGraphSnapshot). The single-query form is the OOM shape.
+        return await AuthGraphSnapshot.ReadAsync(_db, async ct =>
+        {
+            var user = await _db.Users.AsSplitQuery()
+                .Include(x => x.Tenant)
+                .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+                .Include(x => x.EmployeeUserAccounts)
+                .Include(x => x.PermissionOverrides)
+                .Include(x => x.EntityAccesses)
+                .FirstOrDefaultAsync(x => x.Id == userId && !x.IsDeleted, ct);
+            return await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct) ? user : null;
+        }, cancellationToken);
     }
 
     private async Task<string> AddRefreshTokenAsync(User user, RequestContext context, SecuritySetting? policy, CancellationToken cancellationToken)

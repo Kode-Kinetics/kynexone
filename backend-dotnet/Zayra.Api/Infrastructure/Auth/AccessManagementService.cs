@@ -413,7 +413,8 @@ public class AccessManagementService : IAccessManagementService
                 foreach (var grantor in staleGrantorRecords)
                     grantor.IsActive = false;
 
-                user = await _db.Users.IgnoreQueryFilters()
+                // Split: primary-key filter inside this anchored transaction (AuthGraphSnapshot).
+                user = await _db.Users.IgnoreQueryFilters().AsSplitQuery()
                     .Include(x => x.Tenant)
                     .Include(x => x.UserRoles).ThenInclude(x => x.Role)
                     .Include(x => x.EmployeeUserAccounts)
@@ -1918,14 +1919,16 @@ public class AccessManagementService : IAccessManagementService
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
+    // Split on (tenant, primary key), inside the caller's anchored transaction when there is one,
+    // otherwise inside a snapshot (AuthGraphSnapshot), so every split statement sees one graph.
     private async Task<User?> LoadAccessUser(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken) =>
-        await _db.Users
+        await AuthGraphSnapshot.ReadAsync(_db, ct => _db.Users.AsSplitQuery()
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
             .Include(x => x.EmployeeUserAccounts)
             .Include(x => x.PermissionOverrides)
             .ApplyEntityScope(_db, tenantId, entityScope)
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId, cancellationToken);
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId, ct), cancellationToken);
 
     private static IReadOnlyCollection<string> DefaultRoles(string accessMode) => accessMode switch
     {

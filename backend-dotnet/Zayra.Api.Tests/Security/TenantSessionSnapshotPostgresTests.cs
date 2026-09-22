@@ -194,9 +194,11 @@ public sealed class TenantSessionSnapshotPostgresTests
             return result;
         }
 
+        // The user graph is read as split statements (OOM fix, 2026-09-22); pause after the FIRST
+        // one (the root users row). Every later split statement and the company read must then
+        // come from the same snapshot, which is the stronger form of this test. Matches the
+        // single-statement shape too, so it does not depend on how the graph is loaded.
         private static bool IsInitialUserGraphRead(string sql) =>
-            sql.Contains("users", StringComparison.OrdinalIgnoreCase)
-            && sql.Contains("user_roles", StringComparison.OrdinalIgnoreCase)
-            && sql.Contains("user_entity_access", StringComparison.OrdinalIgnoreCase);
+            sql.Contains("users", StringComparison.OrdinalIgnoreCase);
     }
 }

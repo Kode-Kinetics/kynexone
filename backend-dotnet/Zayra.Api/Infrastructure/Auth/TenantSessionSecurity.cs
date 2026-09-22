@@ -73,9 +73,7 @@ public static class TenantSessionSecurity
         var strategy = db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
-            var isolation = db.Database.IsNpgsql()
-                ? IsolationLevel.RepeatableRead
-                : IsolationLevel.Serializable;
+            var isolation = AuthGraphSnapshot.SnapshotIsolation(db.Database);
             await using var transaction = await db.Database.BeginTransactionAsync(isolation, ct);
             var current = await IsCurrentSnapshotAsync(
                 principal, db, userId, tenantId, stamp, validationTimeUtc, ct);
@@ -93,8 +91,13 @@ public static class TenantSessionSecurity
         DateTime validationTimeUtc,
         CancellationToken ct)
     {
-
-        var user = await db.Users.AsNoTracking()
+        // Runs on EVERY authenticated request (JWT OnTokenValidated). Five collection includes in
+        // one query return roles×permissions×overrides×accounts×grants rows, and AsNoTracking
+        // materialises each duplicate — that burst OOM-killed the 512 MB instance (2026-09-21).
+        // Split queries cost the SUM of the collections instead of their PRODUCT. Allowed here
+        // (see AuthGraphSnapshot) because the filter is the primary key and every caller path
+        // reaches this method inside a repeatable-read/serializable transaction.
+        var user = await db.Users.AsNoTracking().AsSplitQuery()
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
             .Include(x => x.PermissionOverrides)

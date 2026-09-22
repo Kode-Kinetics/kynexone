@@ -714,6 +714,45 @@ public class AuthServiceTests
         var shouldSeed = string.Equals(simulatedEnvValue, "true", StringComparison.OrdinalIgnoreCase);
         Assert.True(shouldSeed, "Demo seeder must run when SEED_DEMO_DATA=true");
     }
+
+    // Regression for the 2026-09-20/21 OOM kills (12 on the 512 MB Render instance). The per-request
+    // session check and the /me by-id load pulled roles×permissions×overrides×accounts×grants as ONE
+    // cartesian query. On a relational provider (InMemory ignores query splitting) this pins: the
+    // checks stay correct on a production-sized graph, no statement joins the sibling collections,
+    // and every split statement runs inside a transaction (the split-query security contract).
+    [Fact]
+    public async Task SessionCheck_ProductionSizedAdmin_IsCorrectAndUsesSplitQueries()
+    {
+        var recorder = new Zayra.Api.Tests.Security.ReaderCommandRecorder();
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseSqlite(connection).AddInterceptors(recorder).Options);
+        await db.Database.EnsureCreatedAsync();
+        var seeded = await Zayra.Api.Tests.Security.ProductionSizedAdminSeed.SeedAsync(db);
+        var principal = await Zayra.Api.Tests.Security.ProductionSizedAdminSeed.PrincipalAsync(db, seeded);
+
+        recorder.Reset();
+        Assert.True(await TenantSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None));
+        AssertSplitInsideTransaction(recorder, "session check");
+
+        recorder.Reset();
+        db.ChangeTracker.Clear();
+        var me = await BuildService(db).GetCurrentUserAsync(seeded.UserId, CancellationToken.None);
+        Assert.NotNull(me);
+        AssertSplitInsideTransaction(recorder, "/me by-id load");
+    }
+
+    private static void AssertSplitInsideTransaction(Zayra.Api.Tests.Security.ReaderCommandRecorder recorder, string path)
+    {
+        Assert.False(recorder.AnyCartesianUserGraphCommand,
+            $"{path}: a single statement joined role permissions with overrides/entity grants (cartesian).");
+        // Root + role graph + overrides + employee accounts + entity grants.
+        Assert.True(recorder.UserGraphCommands.Count >= 5,
+            $"{path}: expected split user-graph statements, saw {recorder.UserGraphCommands.Count}.");
+        Assert.All(recorder.Commands, c => Assert.True(c.InTransaction,
+            $"{path}: statement ran outside a transaction: {c.Sql[..Math.Min(120, c.Sql.Length)]}"));
+    }
 }
 
 [Trait("Category", "Integration")]
