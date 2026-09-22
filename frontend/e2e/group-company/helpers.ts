@@ -31,7 +31,7 @@ import {
 
 export const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173';
 
-// ── Enterprise group seed data (EnterpriseGroupSeeder) ───────────────────────
+// ── Group tenant, provisioned by e2e/bootstrap from e2e/world.ts ─────────────
 
 export { GROUP_PASSWORD } from '../world';
 

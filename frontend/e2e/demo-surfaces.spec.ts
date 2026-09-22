@@ -187,7 +187,7 @@ test.describe('Timesheets', () => {
     // THE POINT OF THIS TEST. Saving is not the feature; submitting is. Submit 422s with
     // `no_approval_route` on any tenant that has no ApprovalWorkflow for entity 'Timesheet'.
     // TenantProvisioningBundle seeds one for newly provisioned tenants, but the demo seeders
-    // (IntelliFlowDemoSeeder / CleanDemoKsaSeeder) seed only LEAVE-APPROVAL — so on the demo
+    // (e2e/bootstrap/provision.ts) provisions only LEAVE-APPROVAL — so on the fixture
     // tenants the grid fills in and the Submit button can never succeed.
     const submitted = await request.post(`/api/ess/timesheets/${sheet.id}/submit`, { headers: auth });
     if (submitted.status() === 422) {

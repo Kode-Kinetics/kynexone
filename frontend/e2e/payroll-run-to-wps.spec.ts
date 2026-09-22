@@ -46,11 +46,13 @@
  *   • no `innerText().length > N` as a "page loaded" proxy — assertions name rendered values
  *   • no `.catch(() => '')`, no swallowed errors, no `expect([200, 4xx]).toContain(status)`
  *
- * DATA. Runs against the IntelliFlow demo tenant (IntelliFlowDemoSeeder, SEED_DEMO_DATA=true). It
- * does not depend on a seeded `Processed` run — no seeder produces one — it CREATES the run through
- * the real Runs tab, which is itself tenant-side mutation coverage that was missing. The period is
- * the first month with no existing run, so the spec is re-runnable and retry-safe against a
- * persistent database.
+ * DATA. Runs against the IntelliFlow tenant that e2e/bootstrap/provision.ts creates through the
+ * platform-admin API — there is no seeder any more (docs/DATA_ENTRY_PATHS.md), so the three personas
+ * above, the employees and their salary structures are all provisioned rather than assumed. It does
+ * not depend on finding a `Processed` run: it CREATES one through the real Runs tab, which is itself
+ * tenant-side mutation coverage that was missing. The period is the first month with no existing run,
+ * so the spec is re-runnable and retry-safe against a persistent database — note the bootstrap
+ * already occupies LAST month with its own locked run.
  */
 import { test, expect, Browser, Locator, Page } from '@playwright/test';
 import {

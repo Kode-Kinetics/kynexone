@@ -45,6 +45,23 @@ Applied when the platform admin creates a tenant, and idempotently afterwards:
 ## 5. Schema
 EF Core migrations only (`dotnet Zayra.Api.dll --migrate`).
 
+## 6. Test and demo data (the e2e fixture world)
+There is no seeder, so a migrated database has no tenant to test against.
+`frontend/e2e/bootstrap/` builds the whole fixture world through §1 + §2 and the tenants' own APIs —
+no SQL, no side door — and CI runs it after migrations, before any spec lane:
+
+```bash
+cd frontend && npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
+```
+
+- `frontend/e2e/world.ts` is the single declaration of every fixture identity; the specs and the
+  bootstrap both read it, so they cannot drift.
+- Idempotent and non-destructive: re-running it is a no-op, and it never deletes a tenant.
+- Guarded by `disposable-host.guard.ts` — loopback (or an explicitly allowlisted throwaway host)
+  only, because it writes tenants and users.
+- Passwords come from the environment. CI generates them per run; outside CI a documented local
+  default is used. Nothing here is a production credential.
+
 ## Repair passes (create nothing)
 `Infrastructure/Boot/CompanyScopeBackfill.cs` runs at boot and only assigns rows with a null
 `CompanyId` to the tenant's existing company. A tenant with no active company is logged and
