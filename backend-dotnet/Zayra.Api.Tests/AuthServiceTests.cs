@@ -488,7 +488,9 @@ public class AuthServiceTests
             EmployeeCode = "AUTH-42",
             FullName = "Invitation User",
             Status = "Active",
-            JoiningDate = DateTime.UtcNow.AddYears(-1)
+            JoiningDate = DateTime.UtcNow.AddYears(-1),
+            // Invitation issuance writes the bidirectional identity link; acceptance requires it.
+            UserAccountId = user.Id
         });
         db.EmployeeUserAccounts.Add(new EmployeeUserAccount
         {
@@ -1176,7 +1178,9 @@ public sealed class AuthRetryingExecutionStrategyTests
                 EmployeeCode = $"AUTH-{Guid.NewGuid():N}",
                 FullName = "Invitation User",
                 Status = "Active",
-                JoiningDate = DateTime.UtcNow.AddYears(-1)
+                JoiningDate = DateTime.UtcNow.AddYears(-1),
+                // Invitation issuance writes the bidirectional identity link; acceptance requires it.
+                UserAccountId = seeded.UserId
             };
             seedDb.Employees.Add(employee);
             await seedDb.SaveChangesAsync();

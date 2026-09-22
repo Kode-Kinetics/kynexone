@@ -75,6 +75,7 @@ public class AccessManagementService : IAccessManagementService
         {
             if (expectedRoleIds is null) return null;
             _db.ChangeTracker.Clear();
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var committed = await _db.Users.IgnoreQueryFilters().AsNoTracking()
                 .Include(x => x.Tenant)
                 .Include(x => x.UserRoles).ThenInclude(x => x.Role)
@@ -102,6 +103,7 @@ public class AccessManagementService : IAccessManagementService
             if (!committedRoleIds.SequenceEqual(expectedRoleIds)) return null;
             if (committed.UserRoles.Any(x => x.Role is not { IsActive: true, IsDeleted: false })) return null;
 
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             var markerMetadata = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.Id == auditId
                     && x.TenantId == tenantId
@@ -125,6 +127,7 @@ public class AccessManagementService : IAccessManagementService
                 .SingleOrDefaultAsync(x => x.Id == tenantId && x.IsActive, ct)
                 ?? throw new InvalidOperationException("Tenant not found.");
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var policy = await _db.SecuritySettings.IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForShareTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId, ct);
@@ -140,6 +143,7 @@ public class AccessManagementService : IAccessManagementService
             if (conflictingUsers.Count != 0)
                 throw new InvalidOperationException("A user with this email already exists in this tenant.");
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var roles = await _db.Roles.IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForShareTag)
                 .Where(x => normalizedRoleNames.Contains(x.NormalizedName)
@@ -248,6 +252,7 @@ public class AccessManagementService : IAccessManagementService
                 return null;
 
             _db.ChangeTracker.Clear();
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var committed = await _db.EmployeeUserAccounts.IgnoreQueryFilters().AsNoTracking()
                 .Include(x => x.User).ThenInclude(x => x!.Tenant)
                 .Include(x => x.User).ThenInclude(x => x!.UserRoles)
@@ -296,6 +301,7 @@ public class AccessManagementService : IAccessManagementService
             if (!committedRoleIds.SequenceEqual(issuedRoleIds)) return null;
 
             var expectedEmployeePointer = accessMode == AccessModes.NoLogin ? (Guid?)null : issuedUserId.Value;
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var employeeMatches = await _db.Employees.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.TenantId == tenantId
                     && x.Id == request.EmployeeId
@@ -338,6 +344,7 @@ public class AccessManagementService : IAccessManagementService
             if (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status))
                 throw new InvalidOperationException(
                     "Login invitations are available only for active or invited employees.");
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var employeeLinks = await _db.EmployeeUserAccounts.IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted)
@@ -355,6 +362,7 @@ public class AccessManagementService : IAccessManagementService
                 throw new InvalidOperationException("Employee login requires a work email or explicit email.");
             var normalizedEmail = AuthService.Normalize(email);
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var matchingIds = await _db.Users.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.TenantId == tenantId && x.NormalizedEmail == normalizedEmail)
                 .Select(x => x.Id).Take(2).ToListAsync(ct);
@@ -389,6 +397,7 @@ public class AccessManagementService : IAccessManagementService
                 if (employeeLinks.Any(x => x.UserId != existingId))
                     throw new InvalidOperationException(
                         "The employee is already linked to a different login identity.");
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
                 await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                     .Where(x => x.Id == existingId && x.TenantId == tenantId)
                     .Select(x => x.Id)
@@ -399,6 +408,7 @@ public class AccessManagementService : IAccessManagementService
                 await _db.UserRoles.TagWith(RowLockingInterceptor.ForUpdateTag)
                     .Where(x => x.UserId == existingId)
                     .OrderBy(x => x.RoleId).Select(x => x.RoleId).ToListAsync(ct);
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
                 await _db.UserEntityAccesses.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                     .Where(x => x.TenantId == tenantId && x.UserId == existingId)
                     .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
@@ -414,6 +424,7 @@ public class AccessManagementService : IAccessManagementService
                     grantor.IsActive = false;
 
                 // Split: primary-key filter inside this anchored transaction (AuthGraphSnapshot).
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
                 user = await _db.Users.IgnoreQueryFilters().AsSplitQuery()
                     .Include(x => x.Tenant)
                     .Include(x => x.UserRoles).ThenInclude(x => x.Role)
@@ -786,6 +797,7 @@ public class AccessManagementService : IAccessManagementService
             var strategy = _db.Database.CreateExecutionStrategy();
             await strategy.ExecuteInTransactionAsync(
                 ChangeOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
                 async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                     .AnyAsync(x => x.Id == auditId && x.Action == "access.mode_changed", ct),
                 IsolationLevel.ReadCommitted,
@@ -1303,6 +1315,7 @@ public class AccessManagementService : IAccessManagementService
             var strategy = _db.Database.CreateExecutionStrategy();
             await strategy.ExecuteInTransactionAsync(
                 UpdateOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
                 async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                     .AnyAsync(x => x.Id == auditId && x.Action == "access.security_settings_updated", ct),
                 IsolationLevel.ReadCommitted,
@@ -1356,6 +1369,7 @@ public class AccessManagementService : IAccessManagementService
             var grantorUser = lockedUsers.SingleOrDefault(x => x.Id == request.GrantorUserId && !x.IsDeleted)
                 ?? throw new InvalidOperationException("User not found.");
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             await _db.PermissionGrantorRecords.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && idsToLock.Contains(x.GrantorUserId))
                 .OrderBy(x => x.Id)
@@ -1424,6 +1438,7 @@ public class AccessManagementService : IAccessManagementService
         _db.ChangeTracker.Clear();
         var committed = await _db.PermissionGrantorRecords.AsNoTracking()
             .SingleAsync(x => x.TenantId == tenantId && x.Id == recordId, cancellationToken);
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         var committedUser = await _db.Users.IgnoreQueryFilters().AsNoTracking()
             .SingleAsync(x => x.TenantId == tenantId && x.Id == request.GrantorUserId, cancellationToken);
         return new PermissionGrantorDto(
@@ -1460,6 +1475,7 @@ public class AccessManagementService : IAccessManagementService
             var users = await LockUsersAsync(tenantId, new[] { targetUserId.Value }, ct);
             var user = users.SingleOrDefault()
                 ?? throw new InvalidOperationException("User not found.");
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var record = await _db.PermissionGrantorRecords.IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == recordId, ct)
@@ -1510,6 +1526,7 @@ public class AccessManagementService : IAccessManagementService
             var target = lockedUsers.SingleOrDefault(x => x.Id == targetUserId && !x.IsDeleted)
                 ?? throw new InvalidOperationException("User not found.");
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             await _db.UserPermissionOverrides.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && x.UserId == targetUserId)
                 .OrderBy(x => x.Id)
@@ -1532,6 +1549,7 @@ public class AccessManagementService : IAccessManagementService
                     throw new InvalidOperationException("You are not authorised to grant or revoke this permission.");
             }
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var existing = await _db.UserPermissionOverrides.IgnoreQueryFilters()
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId
                     && x.UserId == targetUserId
@@ -1641,6 +1659,7 @@ public class AccessManagementService : IAccessManagementService
             var target = lockedUsers.SingleOrDefault(x => x.Id == targetUserId && !x.IsDeleted)
                 ?? throw new InvalidOperationException("User not found.");
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             await _db.UserPermissionOverrides.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && x.UserId == targetUserId)
                 .OrderBy(x => x.Id)
@@ -1682,6 +1701,7 @@ public class AccessManagementService : IAccessManagementService
                     throw new InvalidOperationException($"Unknown permission key(s): {string.Join(", ", unknown.Take(5))}.");
             }
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var existingOverrides = await _db.UserPermissionOverrides.IgnoreQueryFilters()
                 .Where(x => x.TenantId == tenantId && x.UserId == targetUserId)
                 .ToListAsync(ct);
@@ -2085,6 +2105,7 @@ public class AccessManagementService : IAccessManagementService
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId, ct)
                 ?? throw new InvalidOperationException("Tenant not found.");
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var role = await _db.Roles.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted, ct)
                 ?? throw new InvalidOperationException("Role not found.");
@@ -2152,6 +2173,7 @@ public class AccessManagementService : IAccessManagementService
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId, ct)
                 ?? throw new InvalidOperationException("Tenant not found.");
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var role = await _db.Roles.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted, ct)
                 ?? throw new InvalidOperationException("Role not found.");
@@ -2190,6 +2212,7 @@ public class AccessManagementService : IAccessManagementService
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId, ct)
                 ?? throw new InvalidOperationException("Tenant not found.");
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var role = await _db.Roles.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted, ct)
                 ?? throw new InvalidOperationException("Role not found.");
@@ -2230,6 +2253,7 @@ public class AccessManagementService : IAccessManagementService
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId, ct)
                 ?? throw new InvalidOperationException("Tenant not found.");
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var role = await _db.Roles.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted, ct)
                 ?? throw new InvalidOperationException("Role not found.");
@@ -2373,6 +2397,7 @@ public class AccessManagementService : IAccessManagementService
         var strategy = _db.Database.CreateExecutionStrategy();
         await strategy.ExecuteInTransactionAsync(
             operation,
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId && x.Action == auditAction, ct),
             IsolationLevel.ReadCommitted,
@@ -2383,6 +2408,7 @@ public class AccessManagementService : IAccessManagementService
         Guid tenantId,
         CancellationToken cancellationToken)
     {
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         var adminIds = await _db.Users.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.TenantId == tenantId
                 && !x.IsDeleted
@@ -2396,6 +2422,7 @@ public class AccessManagementService : IAccessManagementService
             .ToListAsync(cancellationToken);
         if (adminIds.Count == 0) return Array.Empty<User>();
 
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
             .Where(x => x.TenantId == tenantId && adminIds.Contains(x.Id))
             .OrderBy(x => x.Id)
@@ -2406,6 +2433,7 @@ public class AccessManagementService : IAccessManagementService
             .OrderBy(x => x.UserId).ThenBy(x => x.RoleId)
             .Select(x => new { x.UserId, x.RoleId })
             .ToListAsync(cancellationToken);
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         await _db.EmployeeUserAccounts.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
             .Where(x => x.TenantId == tenantId && x.UserId.HasValue && adminIds.Contains(x.UserId.Value))
             .OrderBy(x => x.UserId).ThenBy(x => x.Id)
@@ -2471,6 +2499,7 @@ public class AccessManagementService : IAccessManagementService
             .OrderBy(x => x.RoleId)
             .Select(x => x.RoleId)
             .ToListAsync(cancellationToken);
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         await _db.UserPermissionOverrides.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
             .Where(x => x.TenantId == tenantId && x.UserId == userId)
             .OrderBy(x => x.Id)
@@ -2486,6 +2515,7 @@ public class AccessManagementService : IAccessManagementService
     {
         var ids = userIds.Distinct().OrderBy(x => x).ToList();
         if (ids.Count == 0) return Array.Empty<User>();
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         return await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
             .Where(x => x.TenantId == tenantId && ids.Contains(x.Id))
             .OrderBy(x => x.Id)
@@ -2626,6 +2656,7 @@ public class AccessManagementService : IAccessManagementService
         var strategy = _db.Database.CreateExecutionStrategy();
         await strategy.ExecuteInTransactionAsync(
             MutateOnceAsync,
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId && x.Action == auditAction, ct),
             IsolationLevel.ReadCommitted,

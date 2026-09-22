@@ -183,12 +183,12 @@ public class AuthService : IAuthService
         // TokenHash is unique, so the split graph load is deterministic; it runs in a snapshot.
         var route = await AuthGraphSnapshot.ReadAsync(_db, async ct =>
         {
-            var routed = await RefreshTokensWithUserGraph()
+            // Routing does not gate on graph integrity: a replayed (consumed) token must still
+            // reach the locked replay branch below and kill its lineage even when the user's graph
+            // is corrupt. Integrity is enforced under locks before any issuance.
+            return await RefreshTokensWithUserGraph()
                 .AsNoTracking()
                 .FirstOrDefaultAsync(x => x.TokenHash == tokenHash, ct);
-            return routed?.User is not null && await AuthTenantGraphIntegrity.IsValidAsync(routed.User, _db, ct)
-                ? routed
-                : null;
         }, cancellationToken);
 
         // Routing only. All issuance authority is re-established under locks below.
@@ -237,12 +237,12 @@ public class AuthService : IAuthService
                 || token?.User?.Tenant is null
                 || token.UserId != presentedUserId
                 || token.User.TenantId != presentedTenantId
-                || !string.Equals(token.TokenHash, tokenHash, StringComparison.Ordinal)
-                || !await AuthTenantGraphIntegrity.IsValidAsync(token.User, _db, ct))
+                || !string.Equals(token.TokenHash, tokenHash, StringComparison.Ordinal))
                 throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
 
-            // A consumed credential is a replay even after the account becomes ineligible. Kill
-            // its live lineage and persist one stable audit marker in the same transaction.
+            // A consumed credential is a replay even after the account becomes ineligible, or its
+            // tenant graph becomes corrupt. Kill its live lineage and persist one stable audit
+            // marker in the same transaction; nothing is issued on this branch.
             if (token.RevokedAtUtc is not null
                 && !string.IsNullOrWhiteSpace(token.ReplacedByTokenHash))
             {
@@ -284,6 +284,9 @@ public class AuthService : IAuthService
                 reuseDetected = true;
                 return true;
             }
+
+            if (!await AuthTenantGraphIntegrity.IsValidAsync(token.User, _db, ct))
+                throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
 
             if (token.RevokedAtUtc is not null || token.ExpiresAtUtc <= decidedAtUtc)
                 throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
@@ -363,6 +366,7 @@ public class AuthService : IAuthService
                             && x.UserId == presentedUserId
                             && x.TokenHash == replacementHash
                             && x.FamilyId == presentedFamilyId, ct)
+                    // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
                     || await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
                             x.Id == reuseAuditId
                             && x.Action == "auth.refresh_reuse_detected"
@@ -386,6 +390,7 @@ public class AuthService : IAuthService
 
         // A lost COMMIT acknowledgement is recovered only from this call's exact durable edge.
         _db.ChangeTracker.Clear();
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
         if (await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
                 x.Id == reuseAuditId
                 && x.Action == "auth.refresh_reuse_detected"
@@ -734,6 +739,7 @@ public class AuthService : IAuthService
             // Resolve the already token-bound employee outside that ambient filter, while keeping
             // the tenant and employee identifiers explicit and re-validating lifecycle state below.
             var employee = await _db.Employees
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
                 .IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == reference.EmployeeId && x.TenantId == reference.TenantId, ct);
@@ -744,6 +750,7 @@ public class AuthService : IAuthService
             // duplicate employee link or a second employee attached to the same user must not
             // race credential establishment and become authoritative after this check.
             var liveIdentityLinks = await _db.EmployeeUserAccounts
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
                 .IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => !x.IsDeleted
@@ -885,6 +892,7 @@ public class AuthService : IAuthService
                 await AcceptOnceAsync(ct);
                 return true;
             },
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId, ct),
             IsolationLevel.ReadCommitted,
@@ -1126,6 +1134,7 @@ public class AuthService : IAuthService
             var strategy = _db.Database.CreateExecutionStrategy();
             succeeded = await strategy.ExecuteInTransactionAsync(
                 CompleteOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
                 async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                         .AnyAsync(x => x.Id == auditId
                             && x.Action == "auth.login"
@@ -1152,6 +1161,7 @@ public class AuthService : IAuthService
         if (!succeeded && _db.Database.IsRelational())
         {
             _db.ChangeTracker.Clear();
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             succeeded = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                     .AnyAsync(x => x.Id == auditId
                         && x.Action == "auth.login"
@@ -1175,6 +1185,7 @@ public class AuthService : IAuthService
         // The durable pair proves only that this attempt committed; it does not authorize revival.
         // Recovery returns tokens only while that exact session is still active and the user's
         // security stamp remains the one authorized under the transaction lock.
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
         var committedAudit = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
             .AnyAsync(x => x.Id == auditId
                 && x.Action == "auth.login"
@@ -1349,6 +1360,7 @@ public class AuthService : IAuthService
                 async ct => issuedTenantId is not null
                     && issuedSessionStamp is not null
                     && loginAuditMetadata is not null
+                    // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
                     && await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                         .AnyAsync(x => x.Id == auditId
                             && x.Action == "auth.login"
@@ -1378,6 +1390,7 @@ public class AuthService : IAuthService
                 && x.UserId == userId
                 && x.FamilyId == refreshFamilyId
                 && x.TokenHash == refreshHash, cancellationToken);
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
         var committedAudit = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
             .AnyAsync(x => x.Id == auditId
                 && x.Action == "auth.login"

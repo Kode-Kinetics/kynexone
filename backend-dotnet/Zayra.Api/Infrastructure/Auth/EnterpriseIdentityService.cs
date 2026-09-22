@@ -95,6 +95,7 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
             var strategy = _db.Database.CreateExecutionStrategy();
             await strategy.ExecuteInTransactionAsync(
                 UpdateOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
                 async cancellationToken => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                     .AnyAsync(x => x.Id == auditId && x.Action == EnterpriseIdentityEventActions.SsoConfigUpdated, cancellationToken),
                 IsolationLevel.ReadCommitted,
@@ -210,6 +211,7 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
             EnsureScimReady(setting);
             ValidateDomain(setting, email);
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var matches = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId
                     && !x.IsDeleted
@@ -291,6 +293,7 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken)
                 ?? throw new UnauthorizedAccessException("SCIM is not enabled for this tenant.");
             EnsureScimReady(setting);
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var user = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken);
             if (user is null) return true;
@@ -343,6 +346,7 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken)
                 ?? throw new UnauthorizedAccessException("SCIM is not enabled for this tenant.");
             EnsureScimReady(setting);
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var user = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken);
             if (user is null) return true;
@@ -411,6 +415,7 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
             {
                 var expectedAction = action();
                 return await _db.EnterpriseIdentityProvisioningEvents
+                    // IgnoreQueryFilters is intentional: pinned to a unique key or an id set resolved from the tenant-scoped/locked graph above (register §6).
                     .IgnoreQueryFilters()
                     .AsNoTracking()
                     .AnyAsync(x => x.Id == eventId && x.Action == expectedAction, cancellationToken);

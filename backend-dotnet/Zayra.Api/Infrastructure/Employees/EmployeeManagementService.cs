@@ -252,6 +252,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // eligibility state while this employee transition commits on the new one.
         var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag)
             .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         var employee = await _db.Employees.IgnoreQueryFilters()
             .TagWith(RowLockingInterceptor.ForUpdateTag)
             .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
@@ -273,6 +274,7 @@ public class EmployeeManagementService : IEmployeeManagementService
             .ToList();
         var linkedUsers = linkedUserIds.Count == 0
             ? []
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             : await _db.Users.IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && linkedUserIds.Contains(x.Id) && !x.IsDeleted)
@@ -709,6 +711,7 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         async Task<bool> ExactCommitExistsAsync(CancellationToken ct)
         {
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             var markerExists = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == statusAuditId
                     && x.TenantId == tenantId
@@ -719,6 +722,7 @@ public class EmployeeManagementService : IEmployeeManagementService
 
             // The stable marker and both stable history rows are written by one transaction. Requiring
             // all three prevents a similarly named audit from being mistaken for this invocation.
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             return await _db.EmployeeStatusHistories.IgnoreQueryFilters().AsNoTracking()
                     .AnyAsync(x => x.Id == statusHistoryId
                         && x.TenantId == tenantId

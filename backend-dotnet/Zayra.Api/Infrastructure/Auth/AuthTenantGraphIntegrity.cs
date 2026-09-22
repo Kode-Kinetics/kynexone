@@ -35,6 +35,7 @@ public static class AuthTenantGraphIntegrity
             .Distinct()
             .ToArray();
         if (employeeIds.Length > 0 && await db.Employees
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .CountAsync(x => employeeIds.Contains(x.Id)
@@ -50,6 +51,7 @@ public static class AuthTenantGraphIntegrity
             .Distinct()
             .ToArray();
         if (companyIds.Length > 0 && await db.Companies
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .CountAsync(x => companyIds.Contains(x.Id)
