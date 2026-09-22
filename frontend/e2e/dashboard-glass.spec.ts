@@ -126,8 +126,8 @@ test.describe('HR Command Center: data trust', () => {
   test('payroll hero: one run is stated, not drawn as a trend; stepper follows status', async ({ page }) => {
     await open(page);
     const hero = page.locator('section[aria-labelledby="hero-heading"]');
-    await expect(hero.getByText('SAR 194.6K')).toBeVisible();
-    await expect(hero.getByText(/first payroll run on record/)).toBeVisible();
+    await expect(hero.getByText('SAR 194.6K').first()).toBeVisible();
+    await expect(hero.getByText(/first payroll run on record/i)).toBeVisible();
     // A locked run is finished: every step done, none left current.
     await expect(hero.getByRole('listitem').filter({ hasText: 'current step' })).toHaveCount(0);
     await expect(hero.getByRole('listitem').filter({ hasText: 'Locked' })).toContainText('done');
@@ -197,6 +197,23 @@ test.describe('HR Command Center: layout and interaction', () => {
     await expect(page.getByRole('tab', { name: /Insights/ })).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);
+  });
+
+  test('sidebar entries explain themselves on hover and keyboard focus', async ({ page }, info) => {
+    test.skip(info.project.name !== 'desktop', 'desktop rail only');
+    await open(page);
+    const nav = page.getByRole('navigation', { name: 'Primary navigation' });
+    await nav.getByRole('button', { name: 'Payroll', exact: true }).hover();
+    const tip = page.getByRole('tooltip');
+    await expect(tip).toContainText('Run, review, approve and lock monthly payroll.');
+    await page.mouse.move(900, 500);
+    await expect(tip).toHaveCount(0);
+    await nav.getByRole('button', { name: 'Approvals', exact: true }).focus();
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('tooltip')).toContainText('waiting for your decision');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
   });
 
   test('phone: KPI tiles are a swipe rail and critical items stay in the plain list', async ({ page }, info) => {

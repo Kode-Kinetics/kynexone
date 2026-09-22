@@ -33,6 +33,8 @@ import { AttendanceHeatmap } from '../components/dashboard/AttendanceHeatmap';
 import { ApprovalsTable } from '../components/dashboard/ApprovalsTable';
 import { ExpiryTimeline } from '../components/dashboard/ExpiryTimeline';
 import { Composition } from '../components/dashboard/Composition';
+import { ActivityPanel } from '../components/dashboard/ActivityPanel';
+import { PayrollByDepartment } from '../components/dashboard/PayrollByDepartment';
 import { DashboardViews } from '../components/dashboard/DashboardViews';
 import { buildAttention, tenantHour } from '../components/dashboard/dashboardModel';
 
@@ -129,8 +131,8 @@ export function DashboardPage() {
   const header = (
     <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
       <div className="min-w-0">
-        <h1 className="text-[26px] font-semibold leading-tight tracking-[-0.02em] text-slate-900 dark:text-white">{t('HR Command Center')}</h1>
-        <p className="mt-0.5 text-[13px] text-slate-700 dark:text-slate-300">
+        <h1 className="text-[32px] font-bold leading-[1.1] tracking-[-0.025em] text-slate-950 dark:text-white">{t('HR Command Center')}</h1>
+        <p className="mt-1 text-[13px] text-slate-600 dark:text-slate-400">
           {companyName && <span className="font-medium text-slate-900 dark:text-white">{companyName}. </span>}
           {clock.primary}{clock.secondary ? ` (${clock.secondary})` : ''}, <span className="tabular-nums">{clock.time}</span>
         </p>
@@ -162,12 +164,15 @@ export function DashboardPage() {
   );
 
   const attentionEl = data ? <AttentionStrip items={attention} findingsUnavailable={findings.enabled && findings.failed} /> : null;
-  const heroEl = data ? <PayrollHero data={data} payrollEnabled={payrollEnabled} /> : null;
-  const kpiEl = tileData ? <KpiRow data={tileData} hour={hour} asOf={asOf} /> : null;
+  const wide = useMediaQuery('(min-width: 1280px)');
+  const heroEl = data ? <PayrollHero data={data} payrollEnabled={payrollEnabled} dense={wide} /> : null;
+  const kpiEl = tileData ? <KpiRow data={tileData} hour={hour} asOf={asOf} dense={wide} /> : null;
   const heatEl = data ? <AttendanceHeatmap data={data} /> : null;
-  const approvalsEl = <ApprovalsTable queue={data?.overview.approvalQueue ?? []} pending={pending} loading={!data && loading} compact={phone} />;
+  const approvalsEl = <ApprovalsTable queue={data?.overview.approvalQueue ?? []} pending={pending} loading={!data && loading} compact={phone} dense={wide} />;
   const expiryEl = data ? <ExpiryTimeline data={data} /> : null;
   const compEl = data ? <Composition data={data} /> : null;
+  const payDeptEl = data ? <PayrollByDepartment data={data} /> : null;
+  const activityEl = data ? <ActivityPanel feed={data.activityFeed ?? []} /> : null;
 
   if (compact) {
     return (
@@ -177,8 +182,8 @@ export function DashboardPage() {
         {!data ? skeleton : (
           <DashboardViews
             today={<div className="flex flex-col gap-4">{attentionEl}{heroEl}{kpiEl}</div>}
-            actions={<div className="flex flex-col gap-4">{approvalsEl}{expiryEl}</div>}
-            insights={<div className="flex flex-col gap-4">{heatEl}{compEl}</div>}
+            actions={<div className="flex flex-col gap-4">{approvalsEl}{expiryEl}{activityEl}</div>}
+            insights={<div className="flex flex-col gap-4">{payDeptEl}{heatEl}{compEl}</div>}
             badges={{ actions: pending }}
           />
         )}
@@ -187,17 +192,30 @@ export function DashboardPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full min-w-0 max-w-[1600px] flex-col gap-5" aria-label="HR Command Center">
+    <div className="mx-auto flex w-full min-w-0 max-w-[1680px] flex-col gap-3.5" aria-label="HR Command Center">
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
       {header}
       {!data ? skeleton : (
         <>
           {attentionEl}
-          {heroEl}
-          {kpiEl}
-          {/* Side by side only when both exist and there is room; approvals take the row otherwise. */}
-          <div className={`grid min-w-0 grid-cols-1 gap-5 ${data.analytics?.attendanceHeatmap ? 'min-[1380px]:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]' : ''}`}>{heatEl}{approvalsEl}</div>
-          <div className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">{expiryEl}{compEl}</div>
+          {/* At a glance: two independent columns that each stack upward, so no box waits
+              for its neighbour's height and nothing leaves a gap. Below 1280 px the same pieces
+              stack in one column. */}
+          {/* The last card in each column stretches, so both columns end level with no gaps. */}
+          <div className="grid min-w-0 grid-cols-1 gap-3.5 xl:grid-cols-12">
+            <div className="flex min-w-0 flex-col gap-3.5 xl:col-span-7">
+              {heroEl}
+              {payDeptEl}
+              {heatEl}
+              <div className="flex min-w-0 flex-1 flex-col [&>section]:flex-1">{expiryEl}</div>
+            </div>
+            <div className="flex min-w-0 flex-col gap-3.5 xl:col-span-5">
+              {kpiEl}
+              {approvalsEl}
+              <div className="flex min-w-0 flex-1 flex-col [&>section]:flex-1">{compEl}</div>
+            </div>
+          </div>
+          {activityEl}
         </>
       )}
     </div>

@@ -12,15 +12,15 @@ import { todayAttendance } from './dashboardModel';
 import { Gauge } from './charts/Visuals';
 import { useT } from '../../hooks/useT';
 
-const TILE = 'wg-card wg-press flex w-[84%] shrink-0 min-w-0 flex-col sm:w-auto gap-2.5 p-5 outline-none hover:border-[color:var(--wg-line-strong)] focus-visible:ring-2 focus-visible:ring-sapphire';
+const TILE = 'wg-card wg-press flex w-[84%] shrink-0 min-w-0 flex-col sm:w-auto gap-2 p-5 [.kx-dense_&]:gap-1.5 [.kx-dense_&]:p-4 outline-none hover:border-[color:var(--wg-line-strong)] focus-visible:ring-2 focus-visible:ring-sapphire';
 
 function Legend({ items }: { items: Array<{ label: string; value: string; color: string }> }) {
   return (
-    <ul className="flex flex-col gap-1.5 text-[13px]">
+    <ul className="flex min-w-0 flex-1 flex-col gap-1.5 text-[13px] [.kx-dense_&]:gap-0.5 [.kx-dense_&]:text-xs">
       {items.map((i) => (
-        <li key={i.label} className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+        <li key={i.label} className="flex min-w-0 items-center gap-2 text-slate-700 dark:text-slate-300">
           <span aria-hidden className="h-2 w-2 shrink-0 rounded-sm" ref={(n) => { if (n) n.style.background = i.color; }} />
-          {i.label}
+          <span className="min-w-0 truncate">{i.label}</span>
           <b className="ms-auto ps-3 font-semibold tabular-nums text-slate-900 dark:text-white">{i.value}</b>
         </li>
       ))}
@@ -28,7 +28,7 @@ function Legend({ items }: { items: Array<{ label: string; value: string; color:
   );
 }
 
-export function KpiRow({ data, hour, asOf }: { data: DashboardFull; hour: number; asOf: string | null }) {
+export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFull; hour: number; asOf: string | null; dense?: boolean }) {
   const t = useT();
   const s = data.summary;
   const a = data.analytics;
@@ -60,7 +60,7 @@ export function KpiRow({ data, hour, asOf }: { data: DashboardFull; hour: number
           </span>
         )}
       </span>
-      <span className="text-xs text-slate-600 dark:text-slate-400">
+      <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1">
         {today.kind === 'counted' ? `${t('Of')} ${today.expected} ${t('expected today.')}`
           : today.kind === 'pre-shift' ? t('The working day has not started. Nothing is late yet.')
           : today.kind === 'not-captured' ? t('No punches recorded today. Check the attendance devices.')
@@ -78,10 +78,10 @@ export function KpiRow({ data, hour, asOf }: { data: DashboardFull; hour: number
   const denom = lu?.entitlementDays && lu.entitlementDays > 0 ? lu.entitlementDays : lu?.takenDays || 1;
   const leave = (
     <Link href="/leave" className={TILE}>
-      <span className="text-sm font-semibold text-slate-900 dark:text-white">{lu ? t('Leave used this year') : t('Leave requests')}</span>
+      <span className="flex items-baseline justify-between gap-2"><span className="text-sm font-semibold text-slate-900 dark:text-white">{lu ? t('Leave used this year') : t('Leave requests')}</span>{lu && <span className="hidden text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:inline">{lu.year}</span>}</span>
       {lu ? (
         <>
-          <span className="text-[28px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">
+          <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">
             {Math.round(lu.takenDays).toLocaleString()}
             <span className="ms-1.5 text-[13px] font-medium text-slate-600 dark:text-slate-400">
               {lu.entitlementDays ? `${t('of')} ${Math.round(lu.entitlementDays).toLocaleString()} ${t('days')}` : t('days taken')}
@@ -93,7 +93,7 @@ export function KpiRow({ data, hour, asOf }: { data: DashboardFull; hour: number
             ))}
             {lu.entitlementDays ? <span className="h-full flex-1 bg-[color:var(--viz-track)]" /> : null}
           </span>
-          <ul className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-700 dark:text-slate-300">
+          <ul className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-700 dark:text-slate-300 [.kx-dense_&]:flex [.kx-dense_&]:flex-wrap [.kx-dense_&]:gap-x-3">
             {parts.map((p, i) => (
               <li key={p.label} className="flex items-center gap-1.5 truncate">
                 <span aria-hidden className="h-2 w-2 shrink-0 rounded-sm" ref={(n) => { if (n) n.style.background = leaveColors[i]; }} />
@@ -101,11 +101,11 @@ export function KpiRow({ data, hour, asOf }: { data: DashboardFull; hour: number
               </li>
             ))}
           </ul>
-          <span className="text-xs text-slate-600 dark:text-slate-400">{t('Approved leave,')} {lu.year}.</span>
+          <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:hidden">{t('Approved leave,')} {lu.year}.</span>
         </>
       ) : (
         <span className="text-[13px] text-slate-700 dark:text-slate-300">
-          <b className="block text-[28px] font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{data.overview.openLeaveRequests}</b> {t('leave requests waiting for a decision.')}
+          <b className="block text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{data.overview.openLeaveRequests}</b> {t('leave requests waiting for a decision.')}
         </span>
       )}
     </Link>
@@ -121,20 +121,20 @@ export function KpiRow({ data, hour, asOf }: { data: DashboardFull; hour: number
       <span className="flex items-baseline justify-between gap-2">
         <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('Overtime hours')}</span>
       </span>
-      <span className="text-[28px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">{Math.round(s.overtimeHours)} h <span className="text-[13px] font-medium text-slate-600 dark:text-slate-400">{t('this month to date')}</span></span>
+      <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">{Math.round(s.overtimeHours)} h <span className="text-[13px] font-medium text-slate-600 dark:text-slate-400">{t('this month to date')}</span></span>
       <span className="flex items-end gap-1.5" role="img" aria-label={ot.map((p) => `${p.m} ${p.v == null ? 'no attendance captured' : `${Math.round(p.v)} hours`}`).join(', ')}>
         {ot.map((p) => (
           <span key={p.m} className="flex flex-1 flex-col items-center gap-1">
-            <span className="flex h-[64px] items-end">
+            <span className="flex h-[64px] items-end [.kx-dense_&]:h-[36px]">
               {p.v == null
-                ? <span className="block h-[64px] w-[16px] rounded-[5px] border border-dashed border-slate-300 dark:border-white/15" />
-                : <span className="wg-bar block w-[16px] rounded-t-[5px] rounded-b-[2px]" ref={(n) => { if (n) { n.style.height = `${Math.max(3, ((p.v as number) / otMax) * 64)}px`; n.style.background = p.m === current ? 'var(--viz-1)' : 'var(--viz-recede)'; } }} />}
+                ? <span className="block h-[64px] w-[16px] [.kx-dense_&]:h-[36px] rounded-[5px] border border-dashed border-slate-300 dark:border-white/15" />
+                : <span className="wg-bar wg-col3d block w-[16px] rounded-t-[4px] rounded-b-[2px]" ref={(n) => { if (n) { n.style.height = `${Math.max(3, ((p.v as number) / otMax) * (n.closest('.kx-dense') ? 36 : 64))}px`; n.style.background = p.m === current ? 'var(--viz-1)' : 'var(--viz-recede)'; } }} />}
             </span>
             <span className={`text-[11px] ${p.m === current ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400'}`}>{p.m}</span>
           </span>
         ))}
       </span>
-      <span className="text-xs text-slate-600 dark:text-slate-400">{t('Recorded on attendance. Dashed months had nothing captured.')}</span>
+      <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:hidden">{t('Recorded on attendance. Dashed months had nothing captured.')}</span>
     </Link>
   );
 
@@ -146,7 +146,7 @@ export function KpiRow({ data, hour, asOf }: { data: DashboardFull; hour: number
         <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('Saudization')}</span>
         {n.nitaqatBand && <span title={t('Latest Nitaqat snapshot')} className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">{n.nitaqatBand.replace(/([a-z])([A-Z])/g, '$1 $2')}</span>}
       </span>
-      <span className="text-[28px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">
+      <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">
         {n.saudizationPct != null ? `${n.saudizationPct.toFixed(1)}%` : t('Not set')}
         <span className="ms-1.5 text-[13px] font-medium text-slate-600 dark:text-slate-400">{n.saudi} {t('of')} {n.saudi + n.nonSaudi} {t('Saudi')}</span>
       </span>
@@ -155,20 +155,20 @@ export function KpiRow({ data, hour, asOf }: { data: DashboardFull; hour: number
           <span key={i} className="wg-hbar h-full" ref={(el) => { if (el) { el.style.flexGrow = String(x.v); el.style.background = x.c; } }} />
         ))}
       </span>
-      <span className="text-xs text-slate-600 dark:text-slate-400">
+      <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1">
         {n.unknown > 0 ? `${n.unknown} ${n.unknown === 1 ? t('employee has') : t('employees have')} ${t('no nationality recorded.')}` : t('Share of active employees who are Saudi nationals.')}
       </span>
     </Link>
   ) : (
     <Link href="/people" className={TILE}>
       <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('On leave today')}</span>
-      <span className="text-[28px] font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{s.onLeave}</span>
-      <span className="text-xs text-slate-600 dark:text-slate-400">{data.overview.openLeaveRequests} {t('open leave requests')}</span>
+      <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{s.onLeave}</span>
+      <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1">{data.overview.openLeaveRequests} {t('open leave requests')}</span>
     </Link>
   );
 
   return (
-    <section aria-label={t('Key metrics')} className="wg-snap-x -mx-4 min-w-0 gap-3 px-4 pb-1 sm:mx-0 sm:grid sm:grid-cols-2 sm:gap-4 sm:overflow-visible sm:px-0 min-[1380px]:grid-cols-4">
+    <section aria-label={t('Key metrics')} className={`wg-snap-x -mx-4 min-w-0 gap-3 px-4 pb-1 sm:mx-0 sm:grid sm:grid-cols-2 sm:gap-4 sm:overflow-visible sm:px-0 ${dense ? 'sm:auto-rows-fr' : 'min-[1380px]:grid-cols-4'} ${dense ? 'kx-dense' : ''}`}>
       {att}{leave}{overtime}{saudi}
     </section>
   );

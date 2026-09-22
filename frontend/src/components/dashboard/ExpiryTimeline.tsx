@@ -14,6 +14,7 @@ import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { Avatar } from '../Avatar';
 import type { DashboardFull } from '../../api/dashboard';
 import { complianceDeadlines } from './dashboardModel';
+import { Ring3D } from './charts/Visuals';
 import { useT } from '../../hooks/useT';
 
 const MIN_D = -45;
@@ -53,7 +54,7 @@ export function ExpiryTimeline({ data }: { data: DashboardFull }) {
   const soon = items.filter((i) => (i.daysRemaining as number) >= 0 && (i.daysRemaining as number) <= 30).length;
 
   return (
-    <section aria-labelledby="expiry-heading" className="wg-card flex min-w-0 flex-col gap-4 p-5">
+    <section aria-labelledby="expiry-heading" className="wg-card flex min-w-0 flex-col gap-3 p-5">
       <header className="flex items-start justify-between gap-3">
         <div>
           <h2 id="expiry-heading" className="text-[15px] font-semibold text-slate-900 dark:text-white">{t('Document expiries, next 90 days')}</h2>
@@ -67,7 +68,7 @@ export function ExpiryTimeline({ data }: { data: DashboardFull }) {
       </header>
 
       {items.length > 0 && (
-        <div style={{ height: `${24 + laneCount * 46}px` }} ref={axisRef} className="relative min-w-0" aria-hidden >
+        <div style={{ height: `${22 + laneCount * 40}px` }} ref={axisRef} className="relative min-w-0" aria-hidden >
           <span className="absolute inset-y-0 start-0 rounded-s-xl bg-rose-50 dark:bg-rose-500/[0.08]" ref={(n) => { if (n) n.style.width = `${pos(0)}%`; }} />
           <span className="absolute inset-y-0 bg-amber-50 dark:bg-amber-500/[0.07]" ref={(n) => { if (n) { n.style.insetInlineStart = `${pos(0)}%`; n.style.width = `${pos(30) - pos(0)}%`; } }} />
           {[-30, 0, 30, 60, 90].map((d) => (
@@ -83,7 +84,7 @@ export function ExpiryTimeline({ data }: { data: DashboardFull }) {
             return (
               <span key={it.key} className={`absolute flex items-center gap-2 ${x > 62 ? 'flex-row-reverse' : ''}`} ref={(n) => {
                 if (!n) return;
-                n.style.top = `${12 + lane * 48}px`;
+                n.style.top = `${4 + lane * 40}px`;
                 // Pins past ~60% anchor from their end so the label grows back into the axis.
                 if (x > 62) { n.style.insetInlineEnd = `calc(${100 - x}% - 14px)`; n.style.insetInlineStart = 'auto'; }
                 else { n.style.insetInlineStart = `calc(${x}% - 14px)`; n.style.insetInlineEnd = 'auto'; }
@@ -111,17 +112,28 @@ export function ExpiryTimeline({ data }: { data: DashboardFull }) {
         <p className="flex items-center gap-2 text-[13px] text-slate-700 dark:text-slate-300"><CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden />{t('No iqama, passport, visa or permit expires in the next 90 days.')}</p>
       )}
 
-      <div className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[color:var(--wg-line)] px-4 py-3 ${items.length > 0 ? 'mt-4' : ''}`}>
-        <span className="text-[13px] text-slate-800 dark:text-slate-200">
-          <b className={`me-1 tabular-nums ${k.missingDocuments > 0 ? 'text-rose-700 dark:text-rose-300' : 'text-slate-900 dark:text-white'}`}>{k.missingDocuments}</b>
-          {k.missingDocuments === 1 ? t('employee is missing a required document') : t('employees are missing a required document')}
-          {k.expiredDocuments + k.expiringDocuments > 0 && <span className="text-slate-600 dark:text-slate-400">. {k.expiredDocuments} {t('uploaded documents expired')}, {k.expiringDocuments} {t('expiring')}</span>}
-        </span>
-        {k.missingDocuments + k.expiredDocuments + k.expiringDocuments > 0 && (
-          <Link href="/compliance?tab=employee-documents" className="inline-flex items-center gap-1 text-[13px] font-semibold text-sapphire hover:underline dark:text-blue-300">
-            {t('Review missing documents')} <ArrowRight className="h-3.5 w-3.5" aria-hidden />
-          </Link>
-        )}
+      {/* Document coverage: employees with every required document on file. */}
+      <div className="mt-auto flex flex-wrap items-center gap-5 rounded-xl border border-[color:var(--wg-line)] bg-[color:var(--wg-surface-2)] p-4">
+        <Ring3D
+          a={Math.max(0, data.summary.activeEmployees - k.missingDocuments)}
+          b={Math.min(k.missingDocuments, data.summary.activeEmployees)}
+          center={`${Math.max(0, data.summary.activeEmployees - k.missingDocuments)}/${data.summary.activeEmployees}`}
+          sub={t('complete')}
+          label={`${t('Document coverage')}: ${Math.max(0, data.summary.activeEmployees - k.missingDocuments)} ${t('of')} ${data.summary.activeEmployees} ${t('employees have every required document')}`}
+        />
+        <div className="flex min-w-[180px] flex-1 flex-col gap-1.5">
+          <span className="text-[14px] font-semibold text-slate-900 dark:text-white">{t('Document coverage')}</span>
+          <span className="text-[13px] leading-snug text-slate-700 dark:text-slate-300">
+            <b className={`tabular-nums ${k.missingDocuments > 0 ? 'text-rose-700 dark:text-rose-300' : 'text-emerald-700 dark:text-emerald-300'}`}>{k.missingDocuments}</b>{' '}
+            {k.missingDocuments === 1 ? t('employee is missing a required document') : t('employees are missing a required document')}
+            {k.expiredDocuments + k.expiringDocuments > 0 ? `. ${k.expiredDocuments} ${t('uploaded documents expired')}, ${k.expiringDocuments} ${t('expiring')}.` : '.'}
+          </span>
+          {k.missingDocuments + k.expiredDocuments + k.expiringDocuments > 0 && (
+            <Link href="/compliance?tab=employee-documents" className="inline-flex w-fit items-center gap-1 text-[13px] font-semibold text-sapphire hover:underline dark:text-blue-300">
+              {t('Review missing documents')} <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+            </Link>
+          )}
+        </div>
       </div>
     </section>
   );

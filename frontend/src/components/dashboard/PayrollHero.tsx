@@ -15,7 +15,7 @@ import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import type { DashboardFull } from '../../api/dashboard';
 import { fmtMoney } from './dashboardModel';
-import { HeroSpark, HeroTrend, Stepper } from './charts/Visuals';
+import { GrossSplit, HeroSpark, HeroTrend, Stepper } from './charts/Visuals';
 import { useT } from '../../hooks/useT';
 
 /** PayrollRun.Status in run order, as the backend defines it (Draft -> Processed ->
@@ -39,7 +39,7 @@ const MONTH_LONG: Record<string, string> = {
   Jul: 'July', Aug: 'August', Sep: 'September', Oct: 'October', Nov: 'November', Dec: 'December',
 };
 
-export function PayrollHero({ data, payrollEnabled }: { data: DashboardFull; payrollEnabled: boolean }) {
+export function PayrollHero({ data, payrollEnabled, dense = false }: { data: DashboardFull; payrollEnabled: boolean; dense?: boolean }) {
   const t = useT();
   const s = data.summary;
   const o = data.overview;
@@ -98,9 +98,9 @@ export function PayrollHero({ data, payrollEnabled }: { data: DashboardFull; pay
 
   const periodMonth = run.periodLabel.split(' ')[0];
   return (
-    <section aria-labelledby="hero-heading" className="wg-hero relative overflow-hidden rounded-[22px] p-6 text-white sm:p-7">
-      <div className="grid gap-7 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-        <div className="flex min-w-0 flex-col gap-3">
+    <section aria-labelledby="hero-heading" className={`wg-hero relative overflow-hidden rounded-[22px] text-white ${dense ? 'p-5' : 'p-6 sm:p-7'}`}>
+      <div className={`grid lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)] ${dense ? 'gap-5' : 'gap-7'}`}>
+        <div className={`flex min-w-0 flex-col ${dense ? 'gap-2' : 'gap-3'}`}>
           <div className="flex flex-wrap items-center gap-2.5">
             <h2 id="hero-heading" className="text-[13px] font-semibold text-white">{t('Payroll')}, {MONTH_LONG[periodMonth] ?? periodMonth} {run.periodLabel.split(' ')[1]}</h2>
             <span className={`rounded-full px-2.5 py-0.5 text-[12px] font-semibold ${done ? 'bg-emerald-300/20 text-emerald-100' : 'bg-amber-200/20 text-amber-100'}`}>
@@ -109,7 +109,7 @@ export function PayrollHero({ data, payrollEnabled }: { data: DashboardFull; pay
           </div>
           <div className="flex flex-wrap items-end gap-x-7 gap-y-3">
             <div className="flex flex-col gap-0.5">
-              <span className="text-[44px] font-semibold leading-none tracking-[-0.03em] tabular-nums">{money(run.totalNet)}</span>
+              <span className={`${dense ? 'text-[36px]' : 'text-[44px]'} font-semibold leading-none tracking-[-0.03em] tabular-nums`}>{money(run.totalNet)}</span>
               <span className="text-[13px] text-white/90">
                 {t('Net pay for')} {run.employeeCount.toLocaleString()} {run.employeeCount === 1 ? t('employee') : t('employees')}
                 {delta != null && prev && (
@@ -133,14 +133,15 @@ export function PayrollHero({ data, payrollEnabled }: { data: DashboardFull; pay
             </dl>
           </div>
           {ran.length >= 2 ? (
-            <HeroTrend points={series} format={(v) => fmtMoney(v).replace('SAR ', '')} label={t('Net payroll by month, SAR')} />
+            <HeroTrend points={series} format={(v) => fmtMoney(v).replace('SAR ', '')} label={t('Net payroll by month, SAR')} height={dense ? 172 : 190} />
           ) : (
-            <p className="rounded-xl bg-white/10 px-4 py-3 text-[13px] text-white/90">
-              {t('This is the first payroll run on record, so there is no trend yet. It will draw from the second run.')}
-            </p>
+            <div className="flex flex-col gap-2 pt-1">
+              <GrossSplit net={run.totalNet} deductions={run.totalDeductions} employer={run.employerContributions ?? null} format={money} />
+              <p className="text-[12px] text-white/80">{t('First payroll run on record. The monthly trend appears here from the second run.')}</p>
+            </div>
           )}
         </div>
-        <div className="flex flex-col gap-5 border-white/15 lg:border-s lg:ps-7">
+        <div className={`flex flex-col border-white/15 lg:border-s ${dense ? 'gap-4 lg:ps-5' : 'gap-5 lg:ps-7'}`}>
           <div className="flex flex-col gap-3">
             <span className="text-[13px] font-medium text-white/85">{t('Run progress')}</span>
             {step >= 0 ? <Stepper steps={RUN_STEPS} current={done ? RUN_STEPS.length : step} /> : <span className="text-[13px] text-white/85">{t('Status')}: {statusLabel(run.status)}</span>}
@@ -149,7 +150,12 @@ export function PayrollHero({ data, payrollEnabled }: { data: DashboardFull; pay
             </Link>
           </div>
           <div className="h-px bg-white/15" />
-          {side}
+          {dense ? (
+            <p className="text-[13px] text-white/90">
+              <span className="text-[22px] font-semibold tabular-nums text-white">{s.activeEmployees.toLocaleString()}</span> {t('active')}
+              {o.newJoinersThisMonth > 0 ? `, +${o.newJoinersThisMonth} ${t('joined this month')}` : ''}. {s.totalEmployees.toLocaleString()} {t('on record')}.
+            </p>
+          ) : side}
         </div>
       </div>
     </section>

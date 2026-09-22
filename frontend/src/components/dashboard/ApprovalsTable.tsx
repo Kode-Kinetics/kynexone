@@ -80,14 +80,14 @@ function Wait({ r }: { r: Row }) {
   );
 }
 
-export function ApprovalsTable({ queue, pending, loading, compact }: { queue: ApprovalQueueItem[]; pending: number; loading: boolean; compact: boolean }) {
+export function ApprovalsTable({ queue, pending, loading, compact, dense = false }: { queue: ApprovalQueueItem[]; pending: number; loading: boolean; compact: boolean; dense?: boolean }) {
   const t = useT();
   const rows = rowsFrom(queue, Date.now());
   const overCount = rows.filter((r) => r.over).length;
   const anyDue = rows.some((r) => r.hasDue);
 
   return (
-    <section aria-labelledby="approvals-heading" className="wg-card flex min-w-0 flex-col gap-3 p-5">
+    <section aria-labelledby="approvals-heading" className="wg-card flex min-w-0 flex-col gap-2 p-5">
       <header className="flex items-start justify-between gap-3">
         <div>
           <h2 id="approvals-heading" className="text-[15px] font-semibold text-slate-900 dark:text-white">
@@ -131,7 +131,7 @@ export function ApprovalsTable({ queue, pending, loading, compact }: { queue: Ap
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full table-fixed border-collapse text-start">
-            <colgroup><col className="w-[36%]" /><col className="w-[26%] 2xl:w-[18%]" /><col className="hidden 2xl:table-column 2xl:w-[18%]" /><col className="w-[24%] 2xl:w-[18%]" /><col className="w-[14%] 2xl:w-[10%]" /></colgroup>
+            <colgroup><col className="w-[33%]" /><col className="w-[24%] 2xl:w-[18%]" /><col className="hidden 2xl:table-column 2xl:w-[18%]" /><col className="w-[25%] 2xl:w-[18%]" /><col className="w-[18%] 2xl:w-[12%]" /></colgroup>
             <thead>
               <tr className="text-[11px] text-slate-600 dark:text-slate-400">
                 <th scope="col" className="pb-2 text-start font-medium">{t('Employee')}</th>
@@ -142,11 +142,11 @@ export function ApprovalsTable({ queue, pending, loading, compact }: { queue: Ap
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {rows.slice(0, dense ? 4 : 6).map((r) => (
                 <tr key={r.id} className="border-t border-[color:var(--wg-line)]">
-                  <td className="py-2.5 pe-3">
+                  <td className={`${dense ? 'py-1.5' : 'py-2'} pe-3`}>
                     <span className="flex items-center gap-2.5">
-                      <Avatar name={r.name} size="md" />
+                      <Avatar name={r.name} size={dense ? 'sm' : 'md'} />
                       <span className="flex min-w-0 flex-col">
                         <span className="truncate text-[13px] font-semibold text-slate-900 dark:text-white">{r.name}</span>
                         <span className="truncate text-xs text-slate-600 dark:text-slate-400">{r.dept ?? r.code ?? ''}</span>
@@ -155,14 +155,14 @@ export function ApprovalsTable({ queue, pending, loading, compact }: { queue: Ap
                   </td>
                   <td className="pe-3">
                     <span className="flex flex-col items-start gap-1">
-                      <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ${CHIP[r.chip]}`}>{r.kind}</span>
+                      <span title={r.kind} className={`max-w-full truncate rounded-full px-2 py-0.5 text-xs font-semibold ${CHIP[r.chip]}`}>{r.kind}</span>
                       {r.detail && <span className="text-xs text-slate-700 dark:text-slate-300 2xl:hidden">{r.detail}</span>}
                     </span>
                   </td>
                   <td className="hidden pe-3 text-[13px] text-slate-700 dark:text-slate-300 2xl:table-cell">{r.detail ?? ''}</td>
                   <td className="pe-3"><Wait r={r} /></td>
                   <td className="text-end">
-                    <Link href="/approvals" className="wg-press inline-flex h-8 items-center rounded-lg border border-indigo-200 px-3 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 dark:border-indigo-400/30 dark:text-indigo-200 dark:hover:bg-indigo-500/10">
+                    <Link href="/approvals" className="wg-press inline-flex h-8 items-center rounded-lg border border-indigo-200 px-2.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 dark:border-indigo-400/30 dark:text-indigo-200 dark:hover:bg-indigo-500/10">
                       {t('Review')}<span className="sr-only"> {r.kind} {t('for')} {r.name}</span>
                     </Link>
                   </td>
@@ -170,7 +170,7 @@ export function ApprovalsTable({ queue, pending, loading, compact }: { queue: Ap
               ))}
             </tbody>
           </table>
-          {pending > rows.length && (
+          {pending > Math.min(rows.length, dense ? 4 : 6) && (
             <Link href="/approvals" className="mt-2 inline-flex items-center gap-1 text-[13px] font-semibold text-sapphire hover:underline dark:text-blue-300">
               {t('View all')} {pending} <ArrowRight className="h-3.5 w-3.5" aria-hidden />
             </Link>

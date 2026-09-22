@@ -20,41 +20,38 @@ export function AttentionStrip({ items, findingsUnavailable }: { items: Attentio
       </p>
     );
   }
-  const shown = items.slice(0, 4);
+  const critical = items.filter((i) => i.severity === 'critical').length;
+  // One compact row: each issue is a pill with its action. The longer explanation is in the
+  // tooltip and in the accessible name, so the row costs one line of height, not a card grid.
   return (
-    <section aria-labelledby="attention-heading" className="flex flex-col gap-2.5">
-      <h2 id="attention-heading" className="flex items-baseline gap-2 text-[15px] font-semibold text-slate-900 dark:text-white">
+    <section aria-labelledby="attention-heading" className="flex min-w-0 items-center gap-2 max-sm:flex-wrap">
+      <h2 id="attention-heading" className="me-1 shrink-0 whitespace-nowrap text-[13px] font-semibold text-slate-900 dark:text-white">
         {t('Needs attention')}
-        <span className="text-xs font-medium text-slate-600 dark:text-slate-400">
-          {items.filter((i) => i.severity === 'critical').length} {t('critical')}, {items.filter((i) => i.severity !== 'critical').length} {t('to review')}
-          {findingsUnavailable ? `. ${t('The rules check could not be loaded.')}` : ''}
-        </span>
+        <span className="ms-1.5 font-medium text-slate-600 dark:text-slate-400">{critical} {t('critical')}, {items.length - critical} {t('to review')}</span>
+        {findingsUnavailable && <span className="ms-1.5 font-normal text-slate-600 dark:text-slate-400">({t('rules check unavailable')})</span>}
       </h2>
-      <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {shown.map((it) => {
+      <ul className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden max-sm:basis-full max-sm:flex-col max-sm:items-stretch">
+        {items.slice(0, 3).map((it) => {
           const crit = it.severity === 'critical';
           return (
-            <li key={it.id}>
-              <Link href={it.to}
-                className={`wg-card wg-press group flex h-full flex-col gap-1.5 border-s-0 p-4 outline-none hover:border-[color:var(--wg-line-strong)] focus-visible:ring-2 focus-visible:ring-sapphire`}>
-                <span className="flex items-start gap-2.5">
-                  <span aria-hidden className={`mt-1 h-2.5 w-2.5 shrink-0 ${crit ? 'rounded-[2px] bg-rose-600' : 'rounded-full bg-amber-500'}`} />
-                  <span className="sr-only">{crit ? t('Critical') : t('Warning')}: </span>
-                  <span className="text-[14px] font-semibold leading-snug text-slate-900 dark:text-white">{it.title}</span>
+            <li key={it.id} className="min-w-0 shrink">
+              <Link href={it.to} title={`${it.detail} (${it.source})`}
+                className={`wg-press group inline-flex h-8 max-w-full items-center gap-2 rounded-full border px-3 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-sapphire ${
+                  crit ? 'border-rose-200 bg-rose-50 text-rose-950 hover:border-rose-300 dark:border-rose-400/25 dark:bg-rose-500/10 dark:text-rose-100'
+                       : 'border-amber-200 bg-amber-50 text-amber-950 hover:border-amber-300 dark:border-amber-400/25 dark:bg-amber-500/10 dark:text-amber-100'}`}>
+                <span aria-hidden className={`h-2 w-2 shrink-0 ${crit ? 'rounded-[2px] bg-rose-600' : 'rounded-full bg-amber-500'}`} />
+                <span className="sr-only">{crit ? t('Critical') : t('Warning')}: </span>
+                <span className="min-w-0 truncate font-medium">{it.title}</span>
+                <span className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap font-semibold text-sapphire group-hover:underline dark:text-blue-300">
+                  {t(it.cta)} <ArrowRight className="h-3 w-3" aria-hidden />
                 </span>
-                <span className="line-clamp-2 ps-5 text-[13px] leading-snug text-slate-700 dark:text-slate-300">{it.detail}</span>
-                <span className="mt-auto flex flex-wrap items-center justify-between gap-x-2 gap-y-1 ps-5 pt-1 text-xs">
-                  <span className="text-slate-600 dark:text-slate-400">{it.source}</span>
-                  <span className="inline-flex shrink-0 items-center gap-1 font-semibold text-sapphire group-hover:underline dark:text-blue-300">{t(it.cta)} <ArrowRight className="h-3 w-3" aria-hidden /></span>
-                </span>
+                <span className="sr-only">. {it.detail}</span>
               </Link>
             </li>
           );
         })}
       </ul>
-      {items.length > shown.length && (
-        <p className="text-xs text-slate-600 dark:text-slate-400">{items.length - shown.length} {t('more in the modules above:')} {items.slice(4).map((i) => i.title).join('; ')}.</p>
-      )}
+      {items.length > 3 && <span className="shrink-0 whitespace-nowrap text-xs text-slate-600 dark:text-slate-400" title={items.slice(3).map((i) => i.title).join('; ')}>+{items.length - 3} {t('more')}</span>}
     </section>
   );
 }

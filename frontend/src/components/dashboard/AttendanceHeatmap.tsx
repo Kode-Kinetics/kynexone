@@ -35,7 +35,7 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
 
   if (!hm) return null;
   return (
-    <section aria-labelledby="heat-heading" className="wg-card flex min-w-0 flex-col gap-4 p-5">
+    <section aria-labelledby="heat-heading" className="wg-card flex min-w-0 flex-col gap-3 p-5">
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 id="heat-heading" className="text-[15px] font-semibold text-slate-900 dark:text-white">{t('Attendance by department')}</h2>
@@ -86,7 +86,7 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
                     <span key={c.date} role="img"
                       aria-label={`${d.name}, ${l.full}${c.date === today ? ` (${t('so far today')})` : ''}: ${c.rate == null ? t('nobody rostered') : `${Math.round(c.rate)}%, ${c.attended} ${t('of')} ${c.rostered}`}`}
                       title={`${d.name}, ${l.full}: ${c.rate == null ? t('nobody rostered') : `${Math.round(c.rate)}% (${c.attended} of ${c.rostered})`}`}
-                      className={`grid h-[32px] place-items-center rounded-[6px] text-[11px] font-semibold tabular-nums ${c.date === today ? 'wg-heat-today bg-transparent text-slate-800 outline-dashed outline-1 outline-slate-400 dark:text-slate-200' : h ? '' : 'bg-slate-100 dark:bg-white/[0.05]'}`}
+                      className={`grid h-[25px] place-items-center rounded-[5px] text-[11px] font-semibold tabular-nums ${c.date === today ? 'wg-heat-today bg-transparent text-slate-800 outline-dashed outline-1 outline-slate-400 dark:text-slate-200' : h ? '' : 'bg-slate-100 dark:bg-white/[0.05]'}`}
                       ref={(n) => { if (n && h && c.date !== today) { n.style.background = h.bg; n.style.color = h.fg; } }}>
                       {c.rate == null ? '' : Math.round(c.rate)}
                     </span>
@@ -98,9 +98,11 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
         </div>
       )}
       {anyData && !asTable && (
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <HeatLegend />
-          <p className="text-[11px] text-slate-600 dark:text-slate-400">{t('Today’s column is outlined: it fills in as people punch in, so it is not comparable with full days yet.')}</p>
+          <span className="flex items-center gap-1.5 text-[11px] text-slate-700 dark:text-slate-300" title={t('Today fills in as people punch in, so it is not comparable with full days yet.')}>
+            <span aria-hidden className="h-3.5 w-3.5 rounded outline-dashed outline-1 outline-slate-400" />{t('today, so far')}
+          </span>
         </div>
       )}
     </section>

@@ -197,6 +197,8 @@ textarea:focus-visible {
   --wg-hero-shadow: rgba(28, 63, 207, 0.55);
   --viz-track: #E8EEFF;
   --viz-bar-top: #8CB0F0;
+  --viz-ring-a: #2F6BFF; --viz-ring-a-side: #1E49C9; --viz-ring-b: #D6E2FB; --viz-ring-b-side: #A9BDE8; --viz-shadow: rgba(30,58,138,0.12);
+  --viz-ring-bad: #E11D48; --viz-ring-bad-side: #9F1239;
   --viz-bar-side: #1D5BB0;
   --viz-1: #2a78d6; --viz-2: #eb6834; --viz-3: #1baf7a; --viz-4: #eda100;
   --viz-recede: #c9dcf5; --viz-grid: #e8ebf0; --viz-axis: #94a3b8;
@@ -238,6 +240,8 @@ textarea:focus-visible {
   --wg-hero-shadow: rgba(0, 0, 0, 0.6);
   --viz-track: #1E293B;
   --viz-bar-top: #6FA3F0;
+  --viz-ring-a: #3B82F6; --viz-ring-a-side: #1E40AF; --viz-ring-b: #334155; --viz-ring-b-side: #1E293B; --viz-shadow: rgba(0,0,0,0.35);
+  --viz-ring-bad: #FB7185; --viz-ring-bad-side: #BE123C;
   --viz-bar-side: #1E4F9C;
   --viz-1: #3987e5; --viz-2: #d95926; --viz-3: #199e70; --viz-4: #c98500;
   --viz-recede: #2b3a55; --viz-grid: #1f2937; --viz-axis: #475569;
@@ -393,6 +397,25 @@ textarea:focus-visible {
 .wg-arc { stroke-dashoffset: 0; animation: wg-draw 900ms cubic-bezier(0.2, 0, 0, 1) both; }
 .wg-arc[stroke-dasharray="3 5"] { animation: none; }
 @keyframes wg-bar-rise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+/* 3D ring: the front arc sweeps in; the whole ring rises into place. Played once. */
+@keyframes wg-ring-sweep { from { stroke-dasharray: 0 var(--ring-c); } }
+.wg-ring-sweep { animation: wg-ring-sweep 900ms cubic-bezier(0.2, 0, 0, 1) 150ms both; }
+@keyframes wg-rise { from { opacity: 0; transform: translateY(8px) scale(0.97); } to { opacity: 1; transform: none; } }
+.wg-rise { animation: wg-rise 520ms cubic-bezier(0.2, 0, 0, 1) both; }
+/* Extruded columns: a lit top face and a shaded side, drawn with shadows (no extra DOM). */
+.wg-tile3d { box-shadow: 0 1px 0 var(--wg-line), 0 3px 0 -1px var(--wg-line-strong), 0 8px 16px -12px rgba(30, 58, 138, 0.35); transition: transform 160ms cubic-bezier(0.2, 0, 0, 1), box-shadow 160ms; }
+.wg-tile3d:hover { transform: translateY(-2px); box-shadow: 0 1px 0 var(--wg-line), 0 5px 0 -1px var(--wg-line-strong), 0 14px 22px -14px rgba(30, 58, 138, 0.45); }
+.wg-col3d { box-shadow: inset 0 3px 0 rgba(255, 255, 255, 0.35), 4px -3px 0 -1px var(--viz-bar-side); }
+
+/* Hero chart motion: played once, never looped. */
+@keyframes wg-dot-in { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: none; } }
+.wg-dot { transform-box: fill-box; transform-origin: center; animation: wg-dot-in 360ms cubic-bezier(0.2, 0, 0, 1) both; transition: r 150ms ease-out; }
+@keyframes wg-ping { 0% { transform: scale(1); opacity: 0.9; } 100% { transform: scale(2.8); opacity: 0; } }
+.wg-ping-twice { transform-box: fill-box; transform-origin: center; animation: wg-ping 1100ms cubic-bezier(0.2, 0, 0, 1) 900ms 2 both; }
+@keyframes wg-grow-x { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.wg-grow-x { transform-origin: left center; animation: wg-grow-x 700ms cubic-bezier(0.2, 0, 0, 1) both; }
+[dir='rtl'] .wg-grow-x { transform-origin: right center; }
+.wg-cross { transition: x1 120ms ease-out, x2 120ms ease-out; }
 @keyframes wg-hbar-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 .wg-hbar { transform-origin: left center; animation: wg-hbar-grow 520ms cubic-bezier(0.2, 0, 0, 1) both; }
 [dir='rtl'] .wg-hbar { transform-origin: right center; }
@@ -400,7 +423,8 @@ textarea:focus-visible {
 
 
 @media (prefers-reduced-motion: reduce) {
-  .wg-arc, .wg-bar, .wg-hbar { animation: none; }
+  .wg-arc, .wg-bar, .wg-hbar, .wg-dot, .wg-grow-x, .wg-ring-sweep, .wg-rise { animation: none; }
+  .wg-ping-twice { animation: none; opacity: 0; }
 }
 
 @keyframes wg-pulse-once { from { transform: scale(1); opacity: 0.55; } to { transform: scale(2.6); opacity: 0; } }
@@ -597,3 +621,10 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
 [dir='rtl'] .rtl-no-mirror {
   scale: 1 1;
 }
+@media (prefers-reduced-motion: reduce) { .wg-tile3d, .wg-tile3d:hover { transition: none; transform: none; } }
+
+/* Sidebar info tag: fades in beside the menu entry. */
+@keyframes wg-tip-in { from { opacity: 0; margin-inline-start: -4px; } to { opacity: 1; margin-inline-start: 0; } }
+.wg-tip { animation: wg-tip-in 140ms cubic-bezier(0.2, 0, 0, 1) both; }
+@media (prefers-reduced-motion: reduce) { .wg-tip { animation: none; } }
+@media (forced-colors: active) { .wg-tip { border: 1px solid CanvasText; } }

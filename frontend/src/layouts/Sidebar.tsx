@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, ChevronDown, LogOut, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
 import { Logo } from '../components/Logo';
-import { navigationGroups } from '../routes/navigation';
+import { navigationGroups, navigationHints } from '../routes/navigation';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useCompany } from '../contexts/CompanyContext';
@@ -24,6 +24,22 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
   const { user, logout, hasPermission } = useAuth();
   const { isFeatureEnabled, verdictForPath } = useFeatureFlags();
   const { t } = useLocale();
+
+  // Hover / focus info tag for a menu entry. Rendered fixed beside the rail, because the nav
+  // scrolls (overflow hidden) and would clip an absolutely positioned tag.
+  const [tip, setTip] = useState<{ path: string; label: string; hint: string; top: number; left: number } | null>(null);
+  const tipTimer = useRef<number | null>(null);
+  const showTip = (el: HTMLElement, path: string | undefined, label: string, delay: number) => {
+    const hint = path ? navigationHints[path] : undefined;
+    if (!path || !hint) return;
+    if (tipTimer.current) window.clearTimeout(tipTimer.current);
+    tipTimer.current = window.setTimeout(() => {
+      const r = el.getBoundingClientRect();
+      const rtl = document.documentElement.dir === 'rtl';
+      setTip({ path, label, hint, top: r.top + r.height / 2, left: rtl ? window.innerWidth - r.left + 10 : r.right + 10 });
+    }, delay);
+  };
+  const hideTip = () => { if (tipTimer.current) window.clearTimeout(tipTimer.current); setTip(null); };
 
   // All groups expanded by default
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
@@ -127,7 +143,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
         </div>
 
         {/* Navigation */}
-        <nav aria-label="Primary navigation" className="flex-1 overflow-y-auto overflow-x-hidden py-3">
+        <nav aria-label="Primary navigation" onScroll={hideTip} onKeyDown={(e) => { if (e.key === 'Escape') hideTip(); }} className="flex-1 overflow-y-auto overflow-x-hidden py-3">
           {navigationGroups.map((group, gi) => {
             // Module visibility is resolved from the item's PATH against the backend catalog,
             // not only from the hand-tagged `requiredFeatureKey`. Only 8 of ~35 items ever carried
@@ -199,8 +215,12 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                           <button
                             key={item.label}
                             type="button"
-                            title={isCollapsed ? t(item.label) : undefined}
-                            onClick={() => handleNav(item.path)}
+                            aria-describedby={tip?.path === item.path ? 'nav-tip' : undefined}
+                            onMouseEnter={(e) => showTip(e.currentTarget, item.path, t(item.label), 350)}
+                            onMouseLeave={hideTip}
+                            onFocus={(e) => { if (e.currentTarget.matches(':focus-visible')) showTip(e.currentTarget, item.path, t(item.label), 0); }}
+                            onBlur={hideTip}
+                            onClick={() => { hideTip(); handleNav(item.path); }}
                             className={`nav-item group ${active ? 'nav-item-active' : 'nav-item-idle'} ${
                               isCollapsed ? 'justify-center' : ''
                             }`}
@@ -295,6 +315,16 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
           )}
         </div>
       </aside>
+
+      {tip && (
+        <div id="nav-tip" role="tooltip"
+          className="wg-tip pointer-events-none fixed z-[60] hidden w-[260px] -translate-y-1/2 rounded-xl border border-slate-200/80 bg-white px-3.5 py-2.5 shadow-[0_12px_32px_-12px_rgba(15,23,42,0.35)] lg:block dark:border-white/10 dark:bg-slate-900"
+          style={{ top: tip.top, insetInlineStart: tip.left }}>
+          <span aria-hidden className="absolute -start-[5px] top-1/2 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-b border-s border-slate-200/80 bg-white dark:border-white/10 dark:bg-slate-900" />
+          <span className="block text-[13px] font-semibold text-slate-900 dark:text-white">{tip.label}</span>
+          <span className="mt-0.5 block text-xs leading-snug text-slate-600 dark:text-slate-300">{tip.hint}</span>
+        </div>
+      )}
     </>
   );
 }
