@@ -261,7 +261,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
   }, [notifOpen]);
 
   return (
-    <header className="sticky top-0 z-20 flex h-[60px] items-center gap-3 border-b border-slate-200/70 bg-white/[0.88] px-4 backdrop-blur-xl dark:border-white/[0.06] dark:bg-[#0c1120]/[0.88] sm:px-5">
+    <header className="wg-glass sticky top-0 z-20 flex h-[60px] items-center gap-3 border-b px-4 sm:px-5">
       <button
         type="button"
         aria-label="Open navigation"
@@ -275,13 +275,13 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
         type="button"
         aria-label="Open command search"
         onClick={onOpenSearch}
-        className="flex h-8 max-w-md flex-1 items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50/80 px-3 text-start text-sm transition hover:border-slate-300 hover:bg-white dark:border-white/[0.08] dark:bg-white/[0.04] dark:hover:bg-white/[0.07]"
+        className="flex h-8 w-8 shrink-0 items-center justify-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50/80 text-start text-sm transition hover:border-slate-300 hover:bg-white sm:w-auto sm:max-w-md sm:flex-1 sm:shrink sm:justify-start sm:px-3 dark:border-white/[0.08] dark:bg-white/[0.04] dark:hover:bg-white/[0.07]"
       >
         <svg className="h-3.5 w-3.5 shrink-0 text-slate-400" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
           <path d="M10.5 10.5L13.5 13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
         </svg>
-        <span className="flex-1 truncate text-slate-400 dark:text-slate-500">{t('Search employees, payroll, approvals…')}</span>
+        <span className="hidden flex-1 truncate text-slate-400 dark:text-slate-500 sm:inline">{t('Search employees, payroll, approvals…')}</span>
         <kbd className="hidden rounded-md border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-400 sm:inline dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-500">⌘K</kbd>
       </button>
 
@@ -293,10 +293,10 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
           type="button"
           aria-label="Open assistant"
           onClick={onAskKynexOne}
-          className="hidden h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 sm:flex dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.07]"
+          className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 sm:px-3 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.07]"
         >
           <MessageSquareText className="h-3.5 w-3.5" />
-          {t('Assistant')}
+          <span className="hidden sm:inline">{t('Assistant')}</span>
         </button>
 
         <button

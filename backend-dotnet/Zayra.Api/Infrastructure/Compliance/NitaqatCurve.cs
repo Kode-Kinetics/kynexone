@@ -111,6 +111,18 @@ public static class NitaqatCurve
     public static string InterceptKey(string activityCode, string band) =>
         $"nitaqat.curve.{Normalise(activityCode)}.{Normalise(band)}.c";
 
+    /// <summary>
+    /// Whether THIS activity's constants have been checked against a Ministry-published worked
+    /// example. 1 = yes, 0 = transcribed from the annex but unreproduced.
+    ///
+    /// <para>The constants live in StatutoryRule, which has no IsVerified column, so the flag is
+    /// carried as its own effective-dated rule beside them. It is deliberately a separate key
+    /// rather than a prefix parsed out of Description: a band's provisional status is shown to
+    /// the user and must not depend on scraping prose.</para>
+    /// </summary>
+    public static string VerifiedKey(string activityCode) =>
+        $"nitaqat.curve.{Normalise(activityCode)}.verified";
+
     private static string Normalise(string s) =>
         (s ?? string.Empty).Trim().ToUpperInvariant().Replace(' ', '_');
 
@@ -179,16 +191,29 @@ public static class NitaqatCurve
             floors[i] = MinimumSaudization(m.Value, c.Value, totalWorkforce);
         }
 
+        // Is THIS activity's curve reproduced against a Ministry worked example? Absent key means
+        // no — the conservative default, so a curve loaded by any path that does not set the flag
+        // is reported provisional rather than silently trusted.
+        var verifiedFlag = await rules.GetDecimalAsync(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            VerifiedKey(activityCode), asOf, tenantId, ct);
+        var isVerified = verifiedFlag is not null && verifiedFlag.Value != 0m;
+
         return new NitaqatCurveFloors(
             LowGreen: floors[0], MediumGreen: floors[1], HighGreen: floors[2], Platinum: floors[3],
             SourceNote:
                 $"Computed from the MHRSD Nitaqat Mutawar curve y = m·ln(x) + c for activity "
                 + $"'{activityCode}' at x = {totalWorkforce:0.##} total workers, effective "
                 + $"{asOf:yyyy-MM-dd}. Fixed establishment size bands were abolished by Ministerial "
-                + $"Decision 182495 with effect from 1 December 2021. Method source: {SourceTitle}.",
-            // The METHOD is verified; whether the loaded m/c are current is a property of the
-            // loaded rows, and the caller reports the rule store's own verification state.
-            IsVerified: true);
+                + $"Decision 182495 with effect from 1 December 2021. Method source: {SourceTitle}."
+                + (isVerified
+                    ? " These constants are reproduced against the Ministry's own worked example."
+                    : " PROVISIONAL: these constants are transcribed from the published annex but "
+                      + "no Ministry worked example exists for this activity to reproduce them "
+                      + "against, and they have not been confirmed by a KSA practitioner."),
+            // The METHOD is always verified. Whether THIS activity's m/c have been reproduced
+            // against a Ministry worked example is a property of the loaded rows, so it is read
+            // from the rule store rather than asserted here.
+            IsVerified: isVerified);
     }
 
     /// <summary>

@@ -291,7 +291,10 @@ public static class NitaqatReferenceSeeder
 
     // ── Activity catalogue ────────────────────────────────────────────────────
 
-    private sealed record ActivityDef(string Code, string NameEn, string NameAr, string Group);
+    private sealed record ActivityDef(string Code, string NameEn, string NameAr, string Group,
+        // Null = the default "no thresholds, refuse" note. Set for the MHRSD Nitaqat Mutawar
+        // activities, which DO carry a curve (in StatutoryRule) even though they carry no grid.
+        string? Note = null);
 
     private static readonly ActivityDef[] Activities =
     {
@@ -310,7 +313,106 @@ public static class NitaqatReferenceSeeder
         new("TRANSPORT",      "Transport & Storage",               "النقل والتخزين",           "Transport"),
         new("PROF_SERVICES",  "Professional & Technical Services", "الخدمات المهنية والتقنية", "Professional Services"),
         new("ADMIN_SUPPORT",  "Administrative & Support Services",  "الخدمات الإدارية والمساندة", "Support Services"),
+
+        // ── THE 41 MHRSD NITAQAT MUTAWAR ACTIVITIES (Annex (1), 2026 guideline) ──────────
+        // These are the activities MHRSD actually publishes curve constants for, under the
+        // Ministry's own names. Codes and English names are ours; the Arabic names and every
+        // number are the Ministry's. Each one carries a curve in StatutoryRule (see
+        // StatutoryRuleSeeder) and, deliberately, still NO band-threshold grid.
+        //
+        // Three annex rows land on the coarse codes above instead of getting a code here,
+        // because the mapping is exactly one-to-one: Manufacturing -> MANUFACTURING,
+        // Construction and Building Contracting -> CONSTRUCTION, Finance -> FINANCE. The
+        // remaining coarse codes (RETAIL, ICT, HEALTHCARE, EDUCATION, HOSPITALITY, TRANSPORT,
+        // PROF_SERVICES, ADMIN_SUPPORT) map to SEVERAL annex rows with materially different
+        // floors, so they keep refusing rather than answer with one row picked out of a hat.
+        new("AGRI_ANIMAL_EQUESTRIAN", "Agriculture & Animal Production, their Services and Equestrian Clubs",
+            "الإنتاج الزراعي والحيواني وخدماتها واندية الفروسية", "Agriculture"),
+        new("HYDROCARBONS", "Hydrocarbons and their Processing",
+            "أنشطة الهيدروكربونات وعملياتها", "Energy & Mining"),
+        new("MINING_METALLIC", "Mining of Metallic Minerals and Precious Stones",
+            "تعدين المعادن الفلزية والأحجار الكريمة", "Energy & Mining"),
+        new("MINING_NONMETALLIC", "Mining of Non-metallic and Industrial Minerals",
+            "تعدين المعادن غير الفلزية والصناعية", "Energy & Mining"),
+        new("MINING_BUILDING_MATERIALS", "Building Materials Mining",
+            "تعدين مواد البناء", "Energy & Mining"),
+        new("ENERGY_WATER", "Energy, Water and their Services",
+            "الطاقة والمياه وخدماتها", "Energy & Mining"),
+        new("OPS_MAINTENANCE", "Operations & Maintenance",
+            "التشغيل والصيانة", "Construction"),
+        new("CLEANING_LAUNDRY", "Cleaning Contracting and Laundries",
+            "مقاولات النظافة والمغاسل", "Support Services"),
+        new("RETAIL_GENERAL", "General Wholesale and Retail",
+            "البيع بالجملة والتجزئة العامة", "Wholesale & Retail"),
+        new("RETAIL_PERFUME_WATCHES", "Retail of Perfumes and Watches",
+            "البيع بالتجزئة للعطور والساعات", "Wholesale & Retail"),
+        new("RETAIL_FASHION_MISC", "Retail of Fashion, Accessories and Miscellaneous Goods",
+            "البيع بالتجزئة للأزياء والكماليات والسلع المتنوعة", "Wholesale & Retail"),
+        new("RETAIL_LADIES_MOBILE", "Ladies Goods, Sales and Repair of Mobiles",
+            "السلع النسائية، بيع الهواتف المحمولة وصيانتها", "Wholesale & Retail"),
+        new("TELECOM_SOLUTIONS", "Communication Solutions",
+            "حلول الاتصالات", "ICT"),
+        new("POST", "Post Sector",
+            "أنشطة البريد", "Transport & Post"),
+        new("IT_INFRASTRUCTURE", "IT Infrastructure",
+            "البنية التحتية لتقنية المعلومات", "ICT"),
+        new("TELECOM_INFRASTRUCTURE", "Communication Infrastructure",
+            "البنية التحتية للاتصالات", "ICT"),
+        new("TELECOM_OPS_MAINTENANCE", "Operations & Maintenance in Communications",
+            "التشغيل والصيانة للاتصالات", "ICT"),
+        new("IT_OPS_MAINTENANCE", "Operations & Maintenance in IT",
+            "التشغيل والصيانة لتقنية المعلومات", "ICT"),
+        new("IT_SOLUTIONS", "IT Solutions",
+            "حلول تقنية المعلومات", "ICT"),
+        new("TRANSPORT_LAND_STORAGE", "Land Transportation and Storage",
+            "النقل البري والتخزين", "Transport & Post"),
+        new("TRANSPORT_AIR_SEA", "Air and Sea Transportation",
+            "النقل البحري والجوي", "Transport & Post"),
+        new("RESTAURANTS_SERVICE", "Restaurants with Service (excluding Fast Food)",
+            "مطاعم مع الخدمة لا تشمل مطاعم الوجبات السريعة", "Food Service"),
+        new("FAST_FOOD_ICECREAM", "Fast Food and Ice Cream",
+            "مطاعم خدمة سريعة ومحلات الآيسكريم", "Food Service"),
+        new("COFFEE_DRINKS", "Coffee and Drinks",
+            "المقاهي ومحلات تقديم المشروبات", "Food Service"),
+        new("CATERING", "Catering",
+            "التموين والاعاشة", "Food Service"),
+        new("SECURITY_RECRUITMENT", "Employment, Recruitment and Security Services",
+            "حراسات أمينة ومكاتب التوظيف الأهلية", "Support Services"),
+        new("BUSINESS_SERVICES", "Business Services",
+            "خدمات الاعمال", "Professional Services"),
+        new("SOCIAL_SERVICES", "Social Services",
+            "الخدمات الاجتماعية", "Health & Social"),
+        new("PERSONAL_SERVICES", "Personal Services",
+            "الخدمات الشخصية", "Support Services"),
+        new("HIGHER_EDUCATION", "Higher Education Providers",
+            "التعليم العالي", "Education"),
+        new("HIGHER_EDUCATION_HEALTH", "Higher Education for Health Specialisations",
+            "التعليم العالي للتخصصات الصحية", "Education"),
+        new("SCHOOLS_GIRLS_KG", "Girls Schools, Kindergartens, Babysitting",
+            "مدارس البنات ورياض الأطفال والحضانات", "Education"),
+        new("SCHOOLS_INTERNATIONAL", "International Schools",
+            "المدارس الأجنبية", "Education"),
+        new("MEDICAL_LABS_HEALTH", "Medical Labs and Health Services",
+            "المختبرات والخدمات الصحية", "Health & Social"),
+        new("ACCOMMODATION_LEISURE_TOURISM", "Accommodation, Leisure, Tourism",
+            "الايواء والترفيه والسياحة", "Hospitality"),
+        new("BASIC_COMMODITIES_FUEL", "Basic Commodities and Fuel",
+            "السلع الأساسية والمحروقات", "Wholesale & Retail"),
+        new("SCHOOLS_BOYS_COMPLEX", "Boys Schools, Boys and Girls School Complexes",
+            "مدارس البنين ومجمعات البنين والبنات", "Education"),
+        new("COMBINED_ENTITIES", "Combined Entities",
+            "الكيانات المجمعة", "Multi-activity"),
     };
+
+    /// <summary>
+    /// For an activity that HAS a published Nitaqat Mutawar curve. It still has no grid, so the
+    /// phrase the honesty test looks for is still true and still said on the row itself.
+    /// </summary>
+    private const string CurveActivitySource =
+        "MHRSD Nitaqat Mutawar activity. NO BAND THRESHOLDS are seeded: since 1 December 2021 the " +
+        "band floor is a per-activity curve y = m*ln(x) + c, not a size-tier grid cell. The curve " +
+        "constants are in StatutoryRule under nitaqat.curve.*, sourced from Annex (1) of the MHRSD " +
+        "2026 procedural guideline and loaded UNVERIFIED pending sign-off by a KSA practitioner.";
 
     private const string ActivitySource =
         "MHRSD economic activity grouping. NO BAND THRESHOLDS ARE SEEDED for this activity: the " +
@@ -335,7 +437,7 @@ public static class NitaqatReferenceSeeder
                 Code = a.Code, NameEn = a.NameEn, NameAr = a.NameAr,
                 ActivityGroup = a.Group,
                 IsActive = true,
-                SourceNote = a.Code == "GENERAL_UNVERIFIED" ? GridSource : ActivitySource,
+                SourceNote = a.Code == "GENERAL_UNVERIFIED" ? GridSource : (a.Note ?? ActivitySource),
                 IsVerified = false,
                 CreatedAtUtc = Ts,
             });

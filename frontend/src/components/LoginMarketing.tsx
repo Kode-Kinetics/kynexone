@@ -137,6 +137,15 @@ interface Row {
   itemsAr: string[];
   /** Present on 'pack' rows only. Absent is not zero — it is "not a country". */
   heads?: number;
+  /** Further detail shown ONLY on the drum, where a capability face would
+      otherwise hold one line over an empty middle. The flat register keeps
+      its one phrase so it still fits a short screen. Evidenced like `items`. */
+  more?: string[];
+  moreAr?: string[];
+  /** A face that exists only on the turning drum. The flat register below
+      1280px stays the six rows it was designed as, so it still fits a short
+      laptop screen without scrolling. */
+  extra?: true;
 }
 
 const ROWS: Row[] = [
@@ -177,6 +186,10 @@ const ROWS: Row[] = [
        it and every line here, including this one, changes direction. */
     items: ['Mirrored layout, not strings'],
     itemsAr: ['تخطيط معكوس، لا مجرد ترجمة'],
+    /* HrLettersController.cs: Arabic and bilingual templates (BodyAr).
+       mobile/src/config/i18n.ts: the app ships Arabic. */
+    more: ['Bilingual letters', 'Arabic on web and mobile'],
+    moreAr: ['خطابات ثنائية اللغة', 'عربي على الويب والجوال'],
   },
   {
     code: 'HIJ',
@@ -187,6 +200,10 @@ const ROWS: Row[] = [
        in both calendars by usePeriod(). */
     items: ['Alongside Gregorian'],
     itemsAr: ['إلى جانب الميلادي'],
+    /* HijriDateService.cs wraps UmAlQuraCalendar; HolidayCalendarController.cs
+       stores HijriDate on each holiday. */
+    more: ['Umm al-Qura', 'Hijri-dated holidays'],
+    moreAr: ['تقويم أم القرى', 'عطلات بالتاريخ الهجري'],
   },
   {
     code: 'CUR',
@@ -197,6 +214,133 @@ const ROWS: Row[] = [
        Never "converted": there is no FX table in this product. */
     items: ['Per company, one group'],
     itemsAr: ['لكل شركة، ضمن مجموعة'],
+    /* GroupDashboardController.cs; CostCentersController.cs. Still never a
+       consolidated money figure: there is no FX table. */
+    more: ['Group dashboard', 'Cost centres'],
+    moreAr: ['لوحة المجموعة', 'مراكز التكلفة'],
+  },
+  /* ── THE DRUM'S BACK HALF. Six more capabilities that ride the turn in from
+     behind. Same kind as the three above ('wide': typeset as the claim's
+     serif, never a headcount), and the same evidence rule — each is in this
+     repository:
+       WPS   Infrastructure/CountryPack/{Ksa,Uae,Qatar} wage-protection exporters
+             (Mudad XML, the UAE SIF, Qatar's WPS file)
+       EOS   Controllers/OffboardingController.cs, PayrollController.cs
+       APR   Controllers/ApprovalWorkflowsController.cs; maker-checker on the
+             payroll run in PayrollController.cs
+       GEO   Models/AttendanceModule.cs (AttendanceGeofence)
+       ESS   Controllers/EmployeeSelfServiceController.cs and the app in mobile/
+       VISA  Controllers/Compliance/VisaTrackingController.cs — visa and iqama
+             expiry tracking ─────────────────────────────────────────────── */
+  {
+    code: 'WPS',
+    kind: 'wide',
+    extra: true,
+    name: 'WPS files',
+    nameAr: 'ملفات حماية الأجور',
+    /* KsaWageProtectionExporter (Mudad), UaeWageProtectionExporter (SIF),
+       QatarWageProtectionExporter */
+    items: ['Mudad file', 'UAE SIF', 'Qatar WPS'],
+    itemsAr: ['ملف مدد', 'ملف SIF الإماراتي', 'حماية الأجور القطري'],
+  },
+  {
+    code: 'EOS',
+    kind: 'wide',
+    extra: true,
+    name: 'End-of-service',
+    nameAr: 'نهاية الخدمة',
+    /* FinalSettlement in EmployeesController.cs / PayrollController.cs;
+       Controllers/Leave/EncashmentController.cs */
+    items: ['Calculated at exit', 'Final settlement', 'Leave encashment'],
+    itemsAr: ['تُحتسب عند المغادرة', 'التسوية النهائية', 'صرف رصيد الإجازات'],
+  },
+  {
+    code: 'APR',
+    kind: 'wide',
+    extra: true,
+    name: 'Approvals',
+    nameAr: 'الموافقات',
+    /* HRRequestCenterController.cs, ApprovalRequestsController.cs;
+       Controllers/Leave/LeaveDelegationController.cs */
+    items: ['Maker-checker on payroll', 'Leave and HR requests', 'Delegation'],
+    itemsAr: ['إعداد ومراجعة للرواتب', 'طلبات الإجازات والموارد البشرية', 'التفويض'],
+  },
+  {
+    code: 'GEO',
+    kind: 'wide',
+    extra: true,
+    name: 'Geofenced attendance',
+    nameAr: 'الحضور الجغرافي',
+    /* ShiftsController.cs, OvertimeController.cs, Controllers/Timesheets/ */
+    items: ['Clock-in on site', 'Shifts and overtime', 'Timesheets'],
+    itemsAr: ['تسجيل الحضور في الموقع', 'الورديات والعمل الإضافي', 'سجلات الدوام'],
+  },
+  {
+    code: 'ESS',
+    kind: 'wide',
+    extra: true,
+    name: 'Self-service',
+    nameAr: 'الخدمة الذاتية',
+    /* EmployeeSelfServiceController.cs: payslips, leave balance, letters */
+    items: ['Web and mobile app', 'Payslips and leave', 'HR letters'],
+    itemsAr: ['الويب وتطبيق الجوال', 'قسائم الرواتب والإجازات', 'الخطابات'],
+  },
+  {
+    code: 'VISA',
+    kind: 'wide',
+    extra: true,
+    name: 'Visa & Iqama',
+    nameAr: 'التأشيرات والإقامات',
+    /* Controllers/Compliance/{VisaTracking,Contracts,ComplianceReports}Controller.cs */
+    items: ['Expiry tracking', 'Contracts', 'Compliance reports'],
+    itemsAr: ['متابعة تواريخ الانتهاء', 'العقود', 'تقارير الامتثال'],
+  },
+  /* ── THE OTHER THREE GCC STATES. Placed LAST so that, on the turning ring,
+     they arrive immediately before Saudi Arabia wraps back round and all six
+     Gulf jurisdictions pass as one group.
+
+     READ THIS BEFORE QUOTING THEM. As of 2026-09-22 these three have NO
+     statutory pack: Infrastructure/CountryPack/ holds Ksa/, Uae/ and Qatar/
+     only, and Kuwait, Bahrain and Oman resolve to DefaultPack (zero
+     social-insurance deductions, an empty wage-protection file, and an
+     end-of-service calculation that refuses to run). The only country-specific
+     code for them is the ID-number validation in IdentityDocumentFormats.cs.
+     They are on this page because the product owner decided to show them
+     ahead of the packs, which are planned to follow. So:
+       · they carry NO headcount — there is no payroll run to count, and a
+         figure here would also break 612 + 431 + 205 = 1,248;
+       · they are drum-only (`extra`), so the flat register and the still
+         frame still show exactly the three jurisdictions that have packs;
+       · the institutions named are the real ones, current as of 2026: Oman's
+         PASI was merged into the Social Protection Fund in 2023.
+     When a pack lands, give the row a headcount only if TOTAL is updated to
+     match on every surface that shows it. ─────────────────────────────── */
+  {
+    code: 'KWT',
+    kind: 'pack',
+    extra: true,
+    name: 'Kuwait',
+    nameAr: 'الكويت',
+    items: ['PIFSS', 'PAM', 'Kuwaitisation'],
+    itemsAr: ['التأمينات الاجتماعية', 'القوى العاملة', 'التكويت'],
+  },
+  {
+    code: 'BHR',
+    kind: 'pack',
+    extra: true,
+    name: 'Bahrain',
+    nameAr: 'البحرين',
+    items: ['SIO', 'LMRA', 'Bahrainisation'],
+    itemsAr: ['التأمين الاجتماعي', 'هيئة سوق العمل', 'البحرنة'],
+  },
+  {
+    code: 'OMN',
+    kind: 'pack',
+    extra: true,
+    name: 'Oman',
+    nameAr: 'عُمان',
+    items: ['Social Protection Fund', 'Ministry of Labour', 'Omanisation'],
+    itemsAr: ['صندوق الحماية الاجتماعية', 'وزارة العمل', 'التعمين'],
   },
 ];
 
@@ -248,7 +392,16 @@ const EN: Copy = {
     + 'jurisdictions and carry no headcount: they are capabilities that hold in '
     + 'every Gulf market — an Arabic interface whose layout mirrors rather than '
     + 'only its strings being translated, the Hijri calendar alongside the '
-    + 'Gregorian one, and a currency per company inside one group.',
+    + 'Gregorian one, and a currency per company inside one group. Six more '
+    + 'capabilities turn past on the drum: wage-protection files (the Mudad '
+    + 'file, the UAE SIF and Qatar WPS); end-of-service calculated at exit, with '
+    + 'final settlement and leave encashment; maker-checker approvals on payroll, '
+    + 'leave and HR requests, and delegation; geofenced attendance with shifts, '
+    + 'overtime and timesheets; employee self-service on web and mobile for '
+    + 'payslips, leave and HR letters; and visa and iqama expiry tracking with '
+    + 'contracts and compliance reports. Kuwait, Bahrain and Oman also turn '
+    + 'past, with their social-insurance and labour authorities named and no '
+    + 'headcount.',
   /* Shown while the panel is in English, so it is written in Arabic: it is the
      destination, not a description. */
   switchTo: 'العربية',
@@ -268,7 +421,7 @@ const AR: Copy = {
   colHeads: 'الموظفون',
   totalKey: 'الإجمالي',
   approved: 'معتمد',
-  tableCaption: 'بيانات تجريبية. مسير رواتب توضيحي عبر الدول الثلاث التي لها أنظمة مطبقة: السعودية ٦١٢ موظفاً، الإمارات ٤٣١، قطر ٢٠٥، وإجمالي المجموعة ١٢٤٨ معتمد. الأعداد افتراضية وليست بيانات عملاء. الصفوف الثلاثة الأخيرة ليست دولاً ولا تحمل أعداداً: وهي إمكانات متاحة في كل أسواق الخليج — واجهة عربية بتخطيط معكوس لا مجرد ترجمة، والتقويم الهجري إلى جانب الميلادي، وعملة لكل شركة ضمن مجموعة واحدة.',
+  tableCaption: 'بيانات تجريبية. مسير رواتب توضيحي عبر الدول الثلاث التي لها أنظمة مطبقة: السعودية ٦١٢ موظفاً، الإمارات ٤٣١، قطر ٢٠٥، وإجمالي المجموعة ١٢٤٨ معتمد. الأعداد افتراضية وليست بيانات عملاء. الصفوف الثلاثة الأخيرة ليست دولاً ولا تحمل أعداداً: وهي إمكانات متاحة في كل أسواق الخليج — واجهة عربية بتخطيط معكوس لا مجرد ترجمة، والتقويم الهجري إلى جانب الميلادي، وعملة لكل شركة ضمن مجموعة واحدة. وتدور على الأسطوانة ست إمكانات أخرى: ملفات حماية الأجور للدول الثلاث، واحتساب نهاية الخدمة عند المغادرة، والإعداد والمراجعة لمسير الرواتب، والحضور الجغرافي، والخدمة الذاتية عبر الويب والجوال، ومتابعة انتهاء التأشيرات والإقامات. وتمر كذلك الكويت والبحرين وعُمان مع جهات التأمينات والعمل فيها، دون أعداد موظفين.',
   switchTo: 'English',
   switchLabel: 'Show this panel in English',
   pause: 'إيقاف',
@@ -408,36 +561,33 @@ const num = (n: number, ar: boolean) =>
    and 0.7 keeps the leading face 13px inside the spine at the worst
    combination of drift and cursor.
 
-   ── THE DRIFT, AND WHY IT IS A SWAY AND NOT A REVOLUTION ──────────────────
-   One full cycle takes 104 seconds. It is NOT a unidirectional revolution,
-   and on these six faces it cannot be, for a reason that comes straight out
-   of the one requirement this page will not trade: 612 + 431 + 205 = 1,248
-   has to be checkable at a glance, which means all three addends must be on
-   screen AT ONCE. Six faces all on screen at once is a 100°-wide ARC, not a
-   closed ring. Turn an arc through 360° and four fifths of every cycle shows
-   an empty band, with the faces crossing ±90° — edge-on — on the way out. The
-   alternative that does revolve is a true hexagonal ring at 60° pitch, which
-   shows two or three faces at a time and therefore never shows the sum. So
-   the ring is not closed, and what turns is the whole arc, continuously:
-   ±6° of sway — 0.6 of one face pitch — at a peak of 0.36°/s. Measured on the
-   page, that is about half a pixel per second at its fastest and 8px of
-   travel from the middle of the sway to its end: slow enough that you only
-   see it if you watch for it, continuous, so there is always something to
-   see, and nowhere near the speed at which motion in the periphery pulls a
-   reader's eye off a password field.
+   ── THE TURN — A CONVEYOR ROUND THE ARC, NOT A SWAY ──────────────────────
+   This was a ±6° sway over 104 seconds: half a pixel per second, which in
+   practice meant nobody ever saw the drum move, and a drum that does not turn
+   reads as a curved table. It now REVOLVES, continuously and in one
+   direction, without giving up the geometry above.
 
-   ONE CONSEQUENCE, ASKED AND ANSWERED: on a revolving drum a face with no
-   figure would periodically take the front position, and the register would
-   spend part of every cycle led by a face that carries no number. On a
-   swaying arc no face ever changes place — each keeps its position, the three
-   that carry figures keep the reading-order lead, and the sway moves all six
-   together. That is not a workaround; it is the same property that keeps the
-   sum on screen. What the sway does not change is that a CONCAVE drum puts
-   its nearest, largest faces at the ENDS of the arc, so Multi-currency holds
-   one of the two most prominent positions permanently. That is answered with
-   type rather than geometry: a capability face is set in the claim's serif
-   italic, so being the largest face makes it read as the second half of the
-   argument rather than as a jurisdiction with a missing number.
+   A closed ring cannot do it at this pitch — six faces at 20° are a 100° arc,
+   and turning an arc through 360° shows an empty band four fifths of the time.
+   So the faces travel ALONG the arc instead: every face advances at TURN_DPS,
+   and one that reaches the end of the arc fades out over its last half pitch
+   and re-enters at the other end over its first. The ring behaves as if it
+   were closed, with its back half hidden in the wrap, and the eye reads the
+   whole band turning. That back half is what lets the drum carry MORE faces
+   than it shows: VISIBLE (six) are on the arc at any instant and the rest of
+   ROWS wait behind it, so adding a capability costs no width. One full
+   revolution is N·PITCH / TURN_DPS = 300 / 5 = 60s for fifteen faces:
+   clearly moving, still slower than a reader's eye crosses a face.
+
+   THE SUM. 1,248 sits flat under the band where no rotation reaches it, and
+   the still frame — server render, reduced motion, a touch screen — is the
+   three packs and the three regional capabilities, exactly as designed. On
+   the turning drum the three addends are on screen together for half of
+   every revolution rather than all of it; that is the price of fifteen faces,
+   paid knowingly. Whenever the turn is suspended (hover, focus, Pause) it
+   coasts to the next WHOLE SLOT before it stops, so a paused drum never
+   leaves a face half-faded. The faces keep their DOM order throughout, so
+   the table a screen reader reads never changes.
 
    WCAG 2.2.2: motion that runs for more than five seconds owes the reader a
    pause mechanism, and pause-on-hover is a mitigation rather than conformance.
@@ -462,15 +612,11 @@ const PARK_K = 0.8;         // 0 = centre face on the screen plane, 1 = near edg
 const DEPTH = 57.5;         // perspective distance, in --lx-f1 units — see below
 const FACE_W = 8.0;         // face width, in --lx-f1 units
 const FACE_S = 9.3;         // face width + gap, in --lx-f1 units
-const DRIFT_MS = 104_000;   // one full there-and-back drift cycle
-const DRIFT_AMP = 6;        // degrees of sway, each way
+const TURN_DPS = 5;         // degrees per second each face travels along the arc
+const VISIBLE = 6;          // faces on the arc at once; the rest of ROWS wait behind it
 
 const rad = (d: number) => (d * Math.PI) / 180;
 
-/** phi for face i of n. Mirrored in RTL so row and face still correspond. */
-export function facePhi(i: number, n: number, rtl: boolean): number {
-  return (i - (n - 1) / 2) * PITCH * (rtl ? -1 : 1);
-}
 
 /** How far this face is swung off the drum's axis, 0..1 — which on a CONCAVE
     drum means how far it has come TOWARD the viewer. Rendered, not just
@@ -481,9 +627,26 @@ export function faceTurn(phi: number, rot = 0): number {
   return Math.abs(Math.sin(rad(rot + phi)));
 }
 
+/** Where face i of n sits after every face has travelled `off` degrees
+    round the ring. Faces 0…VISIBLE−1 start on the visible arc, −SPAN…+SPAN,
+    and the rest wait on the hidden far side; the wrap from +L/2 to −L/2 is
+    the middle of that hidden side, so no face ever jumps where it can be
+    seen. Mirrored in RTL so row and face still correspond. */
+export function conveyorPhi(i: number, n: number, off: number, rtl: boolean): number {
+  const L = Math.max(n, VISIBLE) * PITCH;
+  let phi = ((((i * PITCH + off) % L) + L) % L) - SPAN;
+  if (phi >= L / 2) phi -= L;
+  return rtl ? -phi : phi;
+}
+
+/** 1 across the visible arc, falling to 0 over the half pitch past each end. */
+export function conveyorFade(phi: number): number {
+  return Math.max(0, Math.min(1, (SPAN + PITCH / 2 - Math.abs(phi)) / (PITCH / 2)));
+}
+
 /** The radius, and the parking distance, as multiples of s. One derivation,
     used by the stylesheet (via the custom properties below) and by the pan. */
-const SPAN = ((ROWS.length - 1) / 2) * PITCH;
+const SPAN = ((VISIBLE - 1) / 2) * PITCH;
 const R_OVER_S = 1 / (2 * Math.max(Math.tan(rad(PITCH / 2)), 0.02)); // the N≤2 guard
 const PARK_OVER_S = R_OVER_S * (1 - PARK_K * (1 - Math.cos(rad(SPAN))));
 
@@ -532,7 +695,8 @@ function useDrum(playing: boolean) {
     let last = 0;
     let cur = ENTRANCE;   // the eased component: entrance, then cursor travel
     let aim = 0;
-    let phase = 0;        // ms into the drift cycle; frozen, never reset
+    let off = 0;          // degrees every face has travelled along the arc; never reset
+    let vel = 0;          // 0..1 of TURN_DPS, eased so the turn coasts in
     let radius = 0;
     let bound = false;
     let hover = false;
@@ -548,16 +712,24 @@ function useDrum(playing: boolean) {
     };
 
     const running = () => play.current && !hover && !document.hidden && !focusHeld();
-    const settled = () => Math.abs(aim - cur) <= 0.01;
-    const drift = () => DRIFT_AMP * Math.sin((2 * Math.PI * phase) / DRIFT_MS);
+    /* The whole slot the turn parks on when it is suspended — the next one
+       AHEAD in the direction of travel, so it coasts on and never backs up. */
+    const snap = () => Math.floor(off / PITCH) * PITCH;
+    const settled = () => Math.abs(aim - cur) <= 0.01 && vel === 0 && Math.abs(snap() - off) <= 0.01;
+    const rtl = () => !!drum.closest('[dir="rtl"]');
 
     const write = () => {
-      const rot = cur + drift();
+      const rot = cur;
       drum.style.setProperty('--cyl-rot', `${rot.toFixed(3)}deg`);
       drum.style.setProperty('--cyl-pan', `${(-PAN_K * radius * Math.sin(rad(rot))).toFixed(2)}px`);
-      for (const f of faces()) {
-        f.style.setProperty('--cyl-turn', faceTurn(Number(f.dataset.phi || 0), rot).toFixed(4));
-      }
+      const fs = faces();
+      const flip = rtl();
+      fs.forEach((f, i) => {
+        const phi = conveyorPhi(i, fs.length, off, flip);
+        f.style.setProperty('--cyl-phi', `${phi.toFixed(3)}deg`);
+        f.style.setProperty('--cyl-turn', faceTurn(phi, rot).toFixed(4));
+        f.style.setProperty('--cyl-fade', conveyorFade(phi).toFixed(3));
+      });
     };
 
     /* Back to the rest state, not to nothing: these are the same values React
@@ -565,8 +737,13 @@ function useDrum(playing: boolean) {
     const clear = () => {
       drum.style.removeProperty('--cyl-rot');
       drum.style.removeProperty('--cyl-pan');
+      /* Restored, never removed: React owns these inline values, and a
+         removed --cyl-phi would stack every face at the axis. */
       for (const f of faces()) {
-        f.style.setProperty('--cyl-turn', faceTurn(Number(f.dataset.phi || 0)).toFixed(4));
+        const phi = Number(f.dataset.phi || 0);
+        f.style.setProperty('--cyl-phi', `${phi}deg`);
+        f.style.setProperty('--cyl-fade', conveyorFade(phi).toFixed(3));
+        f.style.setProperty('--cyl-turn', faceTurn(phi).toFixed(4));
       }
     };
 
@@ -587,10 +764,23 @@ function useDrum(playing: boolean) {
          (it stretched a 2s settle into ten). */
       const dt = last ? Math.min(now - last, 120) : 16.67;
       last = now;
-      if (running()) phase = (phase + dt) % DRIFT_MS;
       const k = 1 - Math.pow(1 - EASE, dt / 16.67);
+      if (running()) {
+        vel += (1 - vel) * k;
+        /* Negative: the faces travel toward the spine, so new ones enter
+           from the side of the card — a ticker read in its own direction. */
+        off -= (TURN_DPS * vel * dt) / 1000;
+      } else {
+        /* Coast on to a whole slot, never freeze a face mid-wrap. */
+        vel = 0;
+        const s = snap();
+        off += (s - off) * k;
+        if (Math.abs(s - off) <= 0.01) off = s;
+      }
+      const L = Math.max(ROWS.length, VISIBLE) * PITCH;
+      if (off <= -L || off >= L) off %= L;
       cur += (aim - cur) * k;
-      if (settled()) cur = aim;
+      if (Math.abs(aim - cur) <= 0.01) cur = aim;
       write();
       /* park the loop when the drift is suspended AND the cursor has arrived */
       if (running() || !settled()) raf = requestAnimationFrame(tick);
@@ -792,15 +982,19 @@ export function Brief() {
             cylinder is a CSS re-layout gated on width, and its rest state is
             the composed still frame, so there is nothing to freeze into. */}
         <tbody ref={drum} className="lx-reg-drum" style={DRUM_VARS}>
-          {ROWS.map((r, n) => (
+          {ROWS.map((r, n) => {
+            const phi = conveyorPhi(n, ROWS.length, 0, ar);
+            return (
             <tr
-              className={`lx-reg-row lx-rise lx-rise-${3 + n}`}
+              className={`lx-reg-row lx-rise lx-rise-${Math.min(3 + n, 8)}`}
               key={r.code}
               data-kind={r.kind}
-              data-phi={facePhi(n, ROWS.length, ar)}
+              data-extra={r.extra ? '' : undefined}
+              data-phi={phi}
               style={{
-                '--cyl-phi': `${facePhi(n, ROWS.length, ar)}deg`,
-                '--cyl-turn': faceTurn(facePhi(n, ROWS.length, ar)).toFixed(4),
+                '--cyl-phi': `${phi}deg`,
+                '--cyl-turn': faceTurn(phi).toFixed(4),
+                '--cyl-fade': conveyorFade(phi).toFixed(3),
               } as React.CSSProperties}
             >
               {/* The jurisdiction is now the row header itself — which is what
@@ -815,13 +1009,17 @@ export function Brief() {
                        together once the middot is a ::before. */
                     <span className="lx-reg-i" key={it}>{i ? ' ' : ''}{it}</span>
                   ))}
+                  {((ar ? r.moreAr : r.more) ?? []).map(it => (
+                    <span className="lx-reg-i is-more" key={it}>{' '}{it}</span>
+                  ))}
                 </span>
               </th>
               {/* Empty on a 'wide' row, and empty is the honest cell: those
                   rows are not jurisdictions and have no headcount to give. */}
               <td className="lx-reg-n">{r.heads === undefined ? '' : num(r.heads, ar)}</td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
         <tfoot>
           <tr className="lx-reg-total lx-rise lx-rise-9">

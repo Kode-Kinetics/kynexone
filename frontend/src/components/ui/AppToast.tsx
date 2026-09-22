@@ -136,7 +136,7 @@ export function AppToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <Ctx.Provider value={ctx}>
       {children}
-      <div className="fixed bottom-5 end-5 z-[9999] flex flex-col gap-2 items-end pointer-events-none">
+      <div className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] end-5 z-[9999] flex flex-col gap-2 items-end pointer-events-none lg:bottom-5">
         {toasts.map(t => (
           <div key={t.id} className="pointer-events-auto">
             <ToastItem t={t} onClose={dismiss} />

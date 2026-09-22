@@ -397,6 +397,7 @@ public class AuthServiceTests
         Assert.True(await db.AuditLogs.AnyAsync(x => x.Action == "auth.refresh_reuse_detected"));
     }
 
+
     [Fact]
     public async Task Login_UsesTenantRefreshTokenExpiryPolicy()
     {
