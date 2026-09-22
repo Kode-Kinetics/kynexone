@@ -15,13 +15,16 @@ public class AccessManagementService : IAccessManagementService
     private readonly IPasswordHasher _passwordHasher;
     private readonly IAuditService _auditService;
     private readonly ITokenService _tokenService;
+    private readonly string _appUrl;
 
-    public AccessManagementService(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService auditService, ITokenService tokenService)
+    public AccessManagementService(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService auditService, ITokenService tokenService, IConfiguration? configuration = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
         _auditService = auditService;
         _tokenService = tokenService;
+        _appUrl = AuthLinkBuilder.ResolvePublicAppUrl(
+            configuration?["APP_URL"] ?? Environment.GetEnvironmentVariable("APP_URL"));
     }
 
     public async Task<IReadOnlyCollection<RoleDto>> GetRolesAsync(Guid tenantId, CancellationToken cancellationToken)
@@ -77,6 +80,11 @@ public class AccessManagementService : IAccessManagementService
 
     public async Task<EmployeeLoginInvitationDto> InviteEmployeeLoginAsync(Guid tenantId, InviteEmployeeLoginRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        var tenantSlug = await _db.Tenants
+            .Where(x => x.Id == tenantId && x.IsActive)
+            .Select(x => x.Slug)
+            .SingleOrDefaultAsync(cancellationToken)
+            ?? throw new InvalidOperationException("Tenant not found.");
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.EmployeeId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("Employee not found.");
         var accessMode = NormalizeAccessMode(request.AccessMode);
@@ -160,7 +168,18 @@ public class AccessManagementService : IAccessManagementService
         employee.UserAccountId = accessMode == AccessModes.NoLogin ? null : user.Id;
         await _db.SaveChangesAsync(cancellationToken);
         await _auditService.WriteAsync("access.employee_invited", "EmployeeUserAccount", link.Id.ToString(), context, $"{{\"employeeId\":{employee.Id},\"accessMode\":\"{accessMode}\"}}", cancellationToken);
-        return new EmployeeLoginInvitationDto(user.Id, employee.Id, user.Email, accessMode, link.Status, invitationToken, link.InvitationExpiresAtUtc);
+        var invitationUrl = string.IsNullOrEmpty(invitationToken)
+            ? string.Empty
+            : AuthLinkBuilder.AcceptInvitation(_appUrl, tenantSlug, invitationToken);
+        return new EmployeeLoginInvitationDto(
+            user.Id,
+            employee.Id,
+            user.Email,
+            accessMode,
+            link.Status,
+            invitationToken,
+            link.InvitationExpiresAtUtc,
+            invitationUrl);
     }
 
     public async Task<AuthUserDto> AssignRolesAsync(Guid tenantId, Guid userId, AssignRolesRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)

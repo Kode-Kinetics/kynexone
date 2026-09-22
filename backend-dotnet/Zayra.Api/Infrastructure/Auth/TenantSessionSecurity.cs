@@ -29,6 +29,9 @@ public static class TenantSessionSecurity
     public static async Task<bool> IsCurrentAsync(ClaimsPrincipal principal, ZayraDbContext db, CancellationToken ct)
     {
         if (principal.HasClaim("is_platform_admin", "true")) return true;
+        // Privileged tenant impersonation/support issuance is contained until its revocation
+        // ledger is authoritative. Reject both legacy and newly crafted variants server-side.
+        if (principal.HasClaim(c => c.Type == "impersonated_by")) return false;
         var subject = principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? principal.FindFirstValue(JwtRegisteredClaimNames.Sub);
         var tenantClaim = principal.FindFirstValue("tenant_id");
         var stamp = principal.FindFirstValue(SessionStampClaim);
@@ -42,7 +45,10 @@ public static class TenantSessionSecurity
             .Include(x => x.EmployeeUserAccounts)
             .Include(x => x.EntityAccesses)
             .FirstOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted, ct);
-        if (user is null || !user.IsActive || user.Tenant?.IsActive != true || !string.Equals(stamp, StampValue(user), StringComparison.Ordinal))
+        if (!await AuthTenantGraphIntegrity.IsValidAsync(user, db, ct)
+            || !user!.IsActive
+            || user.Tenant?.IsActive != true
+            || !string.Equals(stamp, StampValue(user), StringComparison.Ordinal))
             return false;
         var primary = user.EmployeeUserAccounts.Where(x => !x.IsDeleted)
             .OrderByDescending(x => x.IsPrimary).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefault();

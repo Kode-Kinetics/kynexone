@@ -10,6 +10,7 @@ import axios, {
 } from 'axios';
 import { APP_CONFIG, API_TIMEOUT_MS } from '@/config';
 import { tokenStorage, clearAllAuthData } from '@/storage';
+import { createIsolatedPublicAuthClient } from './publicAuthClient';
 
 // We lazily import authStore to avoid circular deps
 let _onSessionExpired: (() => void) | null = null;
@@ -19,6 +20,38 @@ export function setSessionExpiredHandler(handler: () => void) {
 }
 
 let refreshPromise: Promise<string> | null = null;
+
+/**
+ * Anonymous auth traffic must never inherit an old mobile session. This client
+ * deliberately has no token-storage import path, refresh interceptor, auth
+ * clearing, session-expired callback, or request replay.
+ */
+export function createPublicAuthClient(): AxiosInstance {
+  const client = createIsolatedPublicAuthClient({
+    baseURL: APP_CONFIG.API_BASE_URL,
+    timeout: API_TIMEOUT_MS,
+    tenantHeader: APP_CONFIG.TENANT_HEADER,
+  });
+
+  client.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      applyServerMessage(error);
+      return Promise.reject(error);
+    },
+  );
+  return client;
+}
+
+function applyServerMessage(error: any): void {
+  const body = error.response?.data;
+  if (!body || typeof body !== 'object') return;
+  const validation = body.errors && typeof body.errors === 'object'
+    ? (Object.values(body.errors).flat()[0] as string | undefined)
+    : undefined;
+  const serverMessage = (typeof body.message === 'string' && body.message) || validation;
+  if (serverMessage) error.message = serverMessage;
+}
 
 /**
  * All requests that encounter the same expired access token await one shared
@@ -38,14 +71,14 @@ async function refreshAccessToken(): Promise<string> {
   const refreshToken = await tokenStorage.getRefreshToken();
   if (!refreshToken) throw new Error('No refresh token');
 
-  const response = await axios.post<{
+  const response = await createPublicAuthClient().post<{
     accessToken: string;
     refreshToken: string;
     expiresAtUtc: string;
   }>(
-    `${APP_CONFIG.API_BASE_URL}/auth/refresh`,
+    '/auth/refresh',
     { refreshToken },
-    { timeout: 10_000 }
+    { timeout: 10_000 },
   );
 
   const { accessToken, refreshToken: newRefreshToken, expiresAtUtc } = response.data;
@@ -117,14 +150,7 @@ export function createApiClient(tenantId: string): AxiosInstance {
       // Surface the server's own message (or the first ASP.NET validation error)
       // so screens that show error.message say something a user can act on,
       // instead of "Request failed with status code 400".
-      const body = error.response?.data;
-      if (body && typeof body === 'object') {
-        const validation = body.errors && typeof body.errors === 'object'
-          ? (Object.values(body.errors).flat()[0] as string | undefined)
-          : undefined;
-        const serverMessage = (typeof body.message === 'string' && body.message) || validation;
-        if (serverMessage) error.message = serverMessage;
-      }
+      applyServerMessage(error);
 
       // 403: permission denied
       if (error.response?.status === 403) {

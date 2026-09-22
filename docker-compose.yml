@@ -30,6 +30,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://0.0.0.0:5117
+      APP_URL: ${APP_URL:-http://localhost:5173}
       ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DATABASE:-zayra};Username=${POSTGRES_USER:-zayra};Password=${POSTGRES_PASSWORD:-zayra_password}
       # Compose owns an isolated Development database, so migrate it before AuthSeeder runs.
       # Without this, EnsureCreated produces a schema with no migration history and readiness

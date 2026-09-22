@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -100,6 +101,150 @@ public class AuthServiceTests
 
         Assert.True(hasher.Verify("CorrectHorse123!", hash));
         Assert.False(hasher.Verify("wrong-password", hash));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void RequiredWorkspace_RejectsMissingOrBlankValues(string? workspace)
+    {
+        var request = new ForgotPasswordRequest("user@example.test", workspace!);
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            request,
+            new ValidationContext(request),
+            results,
+            validateAllProperties: true);
+
+        Assert.False(valid);
+        Assert.Contains(results, result => result.ErrorMessage == "Workspace is required.");
+        Assert.Throws<InvalidOperationException>(() => AuthService.RequireWorkspace(workspace));
+    }
+
+    [Fact]
+    public void RequireWorkspace_TrimsAndLowercases()
+    {
+        Assert.Equal("acme-workspace", AuthService.RequireWorkspace("  ACME-Workspace  "));
+    }
+
+    [Fact]
+    public void AuthLinkBuilder_EmitsCanonicalFragmentOnlyLinks()
+    {
+        const string token = "A+B/C=&secret#tail";
+        Assert.Equal(
+            "https://app.example.test/reset-password?workspace=acme%2Fhq#token=A%2BB%2FC%3D%26secret%23tail",
+            AuthLinkBuilder.ResetPassword("https://app.example.test///", " ACME/HQ ", token));
+        Assert.Equal(
+            "http://localhost:3000/accept-invitation?workspace=acme%2Fhq#token=A%2BB%2FC%3D%26secret%23tail",
+            AuthLinkBuilder.AcceptInvitation(null, " ACME/HQ ", token));
+        Assert.Throws<InvalidOperationException>(() =>
+            AuthLinkBuilder.RequireHttpsPublicAppUrl("http://app.example.test"));
+        Assert.Throws<InvalidOperationException>(() =>
+            AuthLinkBuilder.RequireHttpsPublicAppUrl("https://localhost:3000"));
+        Assert.Throws<InvalidOperationException>(() =>
+            AuthLinkBuilder.ResolvePublicAppUrl("https://app.example.test/base"));
+        Assert.Equal(
+            "https://app.example.test",
+            AuthLinkBuilder.RequireHttpsPublicAppUrl(" https://app.example.test/ "));
+    }
+
+    [Fact]
+    public async Task ForgotPassword_DuplicateEmailAcrossTenants_MutatesOnlyNamedWorkspace()
+    {
+        await using var db = CreateDb();
+        var hasher = new Pbkdf2PasswordHasher();
+        var tenantA = new Tenant { Id = Guid.NewGuid(), Name = "Tenant A", Slug = "tenant-a" };
+        var tenantB = new Tenant { Id = Guid.NewGuid(), Name = "Tenant B", Slug = "tenant-b" };
+        var userA = new User
+        {
+            Id = Guid.NewGuid(), TenantId = tenantA.Id, Tenant = tenantA,
+            Email = "same@example.test", NormalizedEmail = "SAME@EXAMPLE.TEST",
+            FullName = "Tenant A User", PasswordHash = hasher.Hash("Password A1!")
+        };
+        var userB = new User
+        {
+            Id = Guid.NewGuid(), TenantId = tenantB.Id, Tenant = tenantB,
+            Email = "same@example.test", NormalizedEmail = "SAME@EXAMPLE.TEST",
+            FullName = "Tenant B User", PasswordHash = hasher.Hash("Password B1!")
+        };
+        db.AddRange(tenantA, tenantB, userA, userB);
+        await db.SaveChangesAsync();
+
+        await BuildService(db).ForgotPasswordAsync(
+            new ForgotPasswordRequest("  SAME@example.test ", "  TENANT-A "),
+            TestCtx,
+            CancellationToken.None);
+
+        var token = Assert.Single(await db.PasswordResetTokens.AsNoTracking().ToListAsync());
+        Assert.Equal(userA.Id, token.UserId);
+        Assert.DoesNotContain(await db.PasswordResetTokens.AsNoTracking().ToListAsync(), x => x.UserId == userB.Id);
+    }
+
+    [Fact]
+    public async Task ResetPassword_WrongWorkspace_PerformsNoMutation()
+    {
+        var (db, user, _) = await SeedUserAsync();
+        const string rawToken = "workspace-bound-reset-token";
+        var originalHash = user.PasswordHash;
+        var token = new PasswordResetToken
+        {
+            UserId = user.Id,
+            TokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawToken))),
+            ExpiresAtUtc = DateTime.UtcNow.AddHours(1)
+        };
+        db.PasswordResetTokens.Add(token);
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => BuildService(db).ResetPasswordAsync(
+            new ResetPasswordRequest(rawToken, "DifferentPassword1!", "other-tenant"),
+            TestCtx,
+            CancellationToken.None));
+
+        Assert.Equal(originalHash, user.PasswordHash);
+        Assert.Null(token.UsedAtUtc);
+        Assert.Empty(await db.LoginActivities.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task AcceptInvitation_WrongWorkspace_PerformsNoMutation()
+    {
+        var (db, user, _) = await SeedUserAsync();
+        const string rawToken = "workspace-bound-invitation-token";
+        var originalHash = user.PasswordHash;
+        db.Employees.Add(new Employee
+        {
+            Id = 8001,
+            TenantId = user.TenantId,
+            EmployeeCode = "AUTH-8001",
+            FullName = "Invitation User",
+            Status = "Active",
+            JoiningDate = DateTime.UtcNow.AddYears(-1)
+        });
+        var link = new EmployeeUserAccount
+        {
+            TenantId = user.TenantId,
+            EmployeeId = 8001,
+            UserId = user.Id,
+            AccessMode = AccessModes.EssOnly,
+            Status = "Invited",
+            RequiresPasswordSetup = true,
+            InvitationTokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawToken))),
+            InvitationExpiresAtUtc = DateTime.UtcNow.AddHours(1)
+        };
+        db.EmployeeUserAccounts.Add(link);
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => BuildService(db).AcceptInvitationAsync(
+            new AcceptInvitationRequest(rawToken, "DifferentPassword1!", "other-tenant"),
+            TestCtx,
+            CancellationToken.None));
+
+        Assert.Equal(originalHash, user.PasswordHash);
+        Assert.Equal("Invited", link.Status);
+        Assert.Null(link.InvitationAcceptedAtUtc);
+        Assert.Empty(await db.RefreshTokens.AsNoTracking().ToListAsync());
     }
 
     // ── Successful login / token rotation ────────────────────────────────────
@@ -327,6 +472,15 @@ public class AuthServiceTests
         await db.Database.EnsureCreatedAsync();
         var (_, user, _) = await SeedUserAsync(db);
         const string invitationToken = "one-time-invitation-token";
+        db.Employees.Add(new Employee
+        {
+            Id = 42,
+            TenantId = user.TenantId,
+            EmployeeCode = "AUTH-42",
+            FullName = "Invitation User",
+            Status = "Active",
+            JoiningDate = DateTime.UtcNow.AddYears(-1)
+        });
         db.EmployeeUserAccounts.Add(new EmployeeUserAccount
         {
             TenantId = user.TenantId,
@@ -341,7 +495,7 @@ public class AuthServiceTests
         await db.SaveChangesAsync();
 
         var auth = BuildService(db);
-        var request = new AcceptInvitationRequest(user.Email, invitationToken, "NewPassword1!", "zayra");
+        var request = new AcceptInvitationRequest(invitationToken, "NewPassword1!", "zayra");
         var accepted = await auth.AcceptInvitationAsync(request, TestCtx, CancellationToken.None);
 
         Assert.False(string.IsNullOrWhiteSpace(accepted.AccessToken));
@@ -963,10 +1117,20 @@ public sealed class AuthRetryingExecutionStrategyTests
 
         await using (var seedDb = _fixture.CreateDb())
         {
+            var employee = new Employee
+            {
+                TenantId = seeded.TenantId,
+                EmployeeCode = $"AUTH-{Guid.NewGuid():N}",
+                FullName = "Invitation User",
+                Status = "Active",
+                JoiningDate = DateTime.UtcNow.AddYears(-1)
+            };
+            seedDb.Employees.Add(employee);
+            await seedDb.SaveChangesAsync();
             seedDb.EmployeeUserAccounts.Add(new EmployeeUserAccount
             {
                 TenantId = seeded.TenantId,
-                EmployeeId = 4242,
+                EmployeeId = employee.Id,
                 UserId = seeded.UserId,
                 AccessMode = AccessModes.EssOnly,
                 Status = "Invited",
@@ -981,7 +1145,7 @@ public sealed class AuthRetryingExecutionStrategyTests
         await using (var acceptDb = CreateRetryingDb())
         {
             accepted = await NoStrategyConflict(() => BuildService(acceptDb).AcceptInvitationAsync(
-                new AcceptInvitationRequest(seeded.Email, invitationToken, "NewPassword1!", seeded.TenantSlug),
+                new AcceptInvitationRequest(invitationToken, "NewPassword1!", seeded.TenantSlug),
                 Context,
                 CancellationToken.None));
         }

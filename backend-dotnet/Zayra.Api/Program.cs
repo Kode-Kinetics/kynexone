@@ -60,6 +60,12 @@ if (MigrateOnlyEntryPoint.ShouldHandle(args))
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Recovery and invitation credentials are delivered as browser links. A
+// non-development deployment must never emit a relative or insecure link into
+// email/admin responses; fail the release before any credential can be issued.
+if (!builder.Environment.IsDevelopment())
+    _ = AuthLinkBuilder.RequireHttpsPublicAppUrl(builder.Configuration["APP_URL"]);
+
 // Reverse-proxy headers are trusted only when deployment configuration opts in. Cloud load
 // balancers terminate TLS before the app; without this, generated links and secure redirects use
 // http and audit/rate-limit records see the proxy address. Never trust these headers by default on

@@ -325,15 +325,6 @@ export interface SupportSession {
   isActive: boolean;
 }
 
-export interface StartSupportAccessResult {
-  sessionId: string;
-  token: string;
-  expiresAt: string;
-  targetUserEmail: string;
-  tenantSlug: string;
-  reason: string;
-}
-
 // ── Platform API ──────────────────────────────────────────────────────────────
 
 export interface PlatformAnnouncement {
@@ -542,9 +533,6 @@ export const platformApi = {
   setFeature: (tenantId: string, featureKey: string, isEnabled: boolean) =>
     platform.put(`/api/platform/tenants/${tenantId}/features/${featureKey}`, { isEnabled }).then(r => r.data),
 
-  impersonate: (tenantId: string, userId: string) =>
-    platform.post<{ token: string }>(`/api/platform/tenants/${tenantId}/impersonate`, { userId }).then(r => r.data),
-
   createTenant: (body: CreateTenantBody) =>
     platform.post<CreateTenantResult>('/api/platform/tenants', body).then(r => r.data),
 
@@ -654,9 +642,6 @@ export const platformApi = {
 
   sendInvoiceEmail: (tenantId: string, invoiceId: string) =>
     platform.post<{ sent: boolean; billingEmail: string; invoiceNumber: string; pdfAttached?: boolean; smtpRequired?: boolean; message?: string }>(`/api/platform/tenants/${tenantId}/invoices/${invoiceId}/send`).then(r => r.data),
-
-  startSupportAccess: (tenantId: string, userId: string, reason: string) =>
-    platform.post<StartSupportAccessResult>('/api/platform/support-access/start', { tenantId, userId, reason }).then(r => r.data),
 
   endSupportAccess: (sessionId: string) =>
     platform.post('/api/platform/support-access/end', { sessionId }).then(r => r.data),

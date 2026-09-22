@@ -42,6 +42,7 @@ public class PlatformController : ControllerBase
     private readonly IMfaService _mfa;
     private readonly ILogger<PlatformController> _log;
     private readonly IMemoryCache _cache;
+    private readonly string _appUrl;
 
     /// <summary>
     /// Key read (never written) by the <c>/platform/health</c> distributed-cache probe. Carries the
@@ -72,6 +73,8 @@ public class PlatformController : ControllerBase
         _mfa = mfa;
         _log = log;
         _cache = cache;
+        _appUrl = AuthLinkBuilder.ResolvePublicAppUrl(
+            _config["APP_URL"] ?? Environment.GetEnvironmentVariable("APP_URL"));
     }
 
     private string PlatformAdminEmail =>
@@ -1159,71 +1162,15 @@ public class PlatformController : ControllerBase
 
     [HttpPost("tenants/{tenantId:guid}/impersonate")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
-    public async Task<IActionResult> Impersonate(Guid tenantId, [FromBody] ImpersonateRequest req, CancellationToken ct)
+    public IActionResult Impersonate(Guid tenantId, [FromBody] ImpersonateRequest req, CancellationToken ct)
     {
-        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
-        if (tenant is null) return NotFound(new { message = "Tenant not found." });
-
-        var user = await _db.Users
-            .AsNoTracking()
-            .Include(u => u.UserRoles)
-                .ThenInclude(ur => ur.Role)
-                    .ThenInclude(r => r!.RolePermissions)
-                        .ThenInclude(rp => rp.Permission)
-            .Include(u => u.PermissionOverrides)
-            .Include(u => u.EntityAccesses)
-            .Include(u => u.EmployeeUserAccounts)
-            .FirstOrDefaultAsync(u => u.Id == req.UserId && u.TenantId == tenantId && !u.IsDeleted, ct);
-
-        if (user is null) return NotFound(new { message = "User not found in specified tenant." });
-
-        var roles = user.UserRoles.Where(ur => ur.Role is not null).Select(ur => ur.Role!.Name).ToList();
-        var expiresAt = DateTime.UtcNow.AddHours(1);
-
-        var claims = new List<Claim>
+        _ = tenantId;
+        _ = req;
+        _ = ct;
+        return StatusCode(StatusCodes.Status403Forbidden, new
         {
-            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-            new(JwtRegisteredClaimNames.Email, user.Email),
-            new(JwtRegisteredClaimNames.Name, user.FullName),
-            new("tenant_id", tenant.Id.ToString()),
-            new("tenant", tenant.Slug),
-            new("impersonated_by", "platform_admin")
-        };
-        claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
-        // Mirror a real login token exactly (permissions + the same claim-v2 scope
-        // decision the user's own login would produce) so an impersonated session can
-        // never be broader OR narrower than the user it represents.
-        claims.AddRange(AuthService.GetPermissions(user).Select(p => new Claim("permission", p)));
-        claims.AddRange(await BuildEntityScopeClaimsAsync(user, tenantId, ct));
-        // Fail closed on claim absence/malformation regardless of the global StrictMode:
-        // a minted session must carry an EXPLICIT scope decision or see nothing.
-        claims.Add(new Claim(EntityScopeContext.StrictScopeClaim, "true"));
-
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        // Impersonation tokens grant access to tenant-scoped endpoints, so they use TenantAudience.
-        var jti = Guid.NewGuid().ToString();
-        claims.Add(new Claim(JwtRegisteredClaimNames.Jti, jti));
-        // Bind the acting platform admin into the token so tenant-side audit can attribute actions to
-        // the impersonator, not just the impersonated user.
-        claims.Add(new Claim("act_sub", GetPlatformUserId()?.ToString() ?? "platform-admin"));
-        claims.Add(new Claim("act_email", PlatformActorEmail()));
-        var token = new JwtSecurityToken(_jwt.Issuer, _jwt.TenantAudience, claims, expires: expiresAt, signingCredentials: credentials);
-        var tokenString = new JwtSecurityTokenHandler().WriteToken(token);
-
-        // SOC2: privileged impersonation MUST be audited and attributable (who, whom, when, jti).
-        AuditPlatformAction(tenant.Id, "Impersonate", "User", user.Id.ToString(),
-            new { targetUserId = user.Id, targetEmail = user.Email, jti, expiresAt });
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(new
-        {
-            token = tokenString,
-            expiresAt,
-            userId = user.Id,
-            userEmail = user.Email,
-            tenantId = tenant.Id,
-            tenantSlug = tenant.Slug
+            error = "privileged_tenant_access_disabled",
+            message = "Tenant impersonation is temporarily disabled pending server-side revocation controls."
         });
     }
 
@@ -1941,8 +1888,12 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
     public async Task<IActionResult> SendPasswordReset(Guid userId, CancellationToken ct)
     {
-        var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
+        var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(
+            u => u.Id == userId && !u.IsDeleted && u.IsActive,
+            ct);
         if (user is null) return NotFound(new { message = "User not found." });
+        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == user.TenantId && t.IsActive, ct);
+        if (tenant is null) return Conflict(new { message = "The user's workspace is unavailable." });
 
         // Safety: block reset attempts targeting the platform admin credential (env-var based, not in DB)
         if (user.Email.Equals(PlatformAdminEmail, StringComparison.OrdinalIgnoreCase))
@@ -1973,12 +1924,8 @@ public class PlatformController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         // Build reset link and send email (falls back gracefully if SMTP not configured)
-        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == user.TenantId, ct);
-        var appUrl = (Environment.GetEnvironmentVariable("APP_URL") ?? string.Empty).TrimEnd('/');
-        var encodedToken = Uri.EscapeDataString(resetToken);
-        var encodedEmail = Uri.EscapeDataString(user.Email);
-        var tenantPart = tenant is not null ? $"&tenant={Uri.EscapeDataString(tenant.Slug)}" : string.Empty;
-        var resetUrl = $"{appUrl}/reset-password?token={encodedToken}&email={encodedEmail}{tenantPart}";
+        var resetUrl = AuthLinkBuilder.ResetPassword(
+            _appUrl, tenant.Slug, resetToken);
 
         var html = $"""
             <p>Hi {System.Web.HttpUtility.HtmlEncode(user.FullName)},</p>
@@ -2416,105 +2363,14 @@ public class PlatformController : ControllerBase
 
     [HttpPost("support-access/start")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
-    public async Task<IActionResult> StartSupportAccess([FromBody] StartSupportAccessRequest req, CancellationToken ct)
+    public IActionResult StartSupportAccess([FromBody] StartSupportAccessRequest req, CancellationToken ct)
     {
-        if (!Guid.TryParse(req.TenantId, out var tenantId))
-            return BadRequest(new { message = "Invalid tenantId." });
-        if (!Guid.TryParse(req.UserId, out var userId))
-            return BadRequest(new { message = "Invalid userId." });
-        if (string.IsNullOrWhiteSpace(req.Reason))
-            return BadRequest(new { message = "Reason is required for support access." });
-
-        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
-        if (tenant is null) return NotFound(new { message = "Tenant not found." });
-
-        var user = await _db.Users
-            .AsNoTracking()
-            .Include(u => u.UserRoles)
-                .ThenInclude(ur => ur.Role)
-                    .ThenInclude(r => r!.RolePermissions)
-                        .ThenInclude(rp => rp.Permission)
-            .Include(u => u.PermissionOverrides)
-            .Include(u => u.EntityAccesses)
-            .Include(u => u.EmployeeUserAccounts)
-            .FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == tenantId && !u.IsDeleted, ct);
-        if (user is null) return NotFound(new { message = "User not found in specified tenant." });
-
-        var roles = user.UserRoles.Where(ur => ur.Role is not null).Select(ur => ur.Role!.Name).ToList();
-        var expiresAt = DateTime.UtcNow.AddHours(1);
-
-        var claims = new List<Claim>
+        _ = req;
+        _ = ct;
+        return StatusCode(StatusCodes.Status403Forbidden, new
         {
-            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-            new(JwtRegisteredClaimNames.Email, user.Email),
-            new(JwtRegisteredClaimNames.Name, user.FullName),
-            new("tenant_id", tenant.Id.ToString()),
-            new("tenant", tenant.Slug),
-            new("impersonated_by", "platform_admin"),
-            new("support_reason", req.Reason.Trim()),
-            new("act_sub", GetPlatformUserId()?.ToString() ?? "platform-admin"),
-            new("act_email", PlatformActorEmail()),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-        };
-        claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
-        // Same rules as Impersonate: mirror a real login token (permissions + the same
-        // claim-v2 scope decision), and fail closed on claim absence — a break-glass
-        // session must never widen to tenant-wide company access via missing claims.
-        claims.AddRange(AuthService.GetPermissions(user).Select(p => new Claim("permission", p)));
-        claims.AddRange(await BuildEntityScopeClaimsAsync(user, tenantId, ct));
-        claims.Add(new Claim(EntityScopeContext.StrictScopeClaim, "true"));
-
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        // Support session tokens grant access to tenant-scoped endpoints, so they use TenantAudience.
-        var jwtToken = new JwtSecurityToken(_jwt.Issuer, _jwt.TenantAudience, claims, expires: expiresAt, signingCredentials: credentials);
-        var tokenString = new JwtSecurityTokenHandler().WriteToken(jwtToken);
-
-        // Hash the token so we can identify this session when ending it
-        var tokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(tokenString)));
-
-        var session = new PlatformSupportSession
-        {
-            TenantId = tenantId,
-            TargetUserId = userId,
-            TargetUserEmail = user.Email,
-            Reason = req.Reason.Trim(),
-            StartedByEmail = PlatformActorEmail(),
-            StartedByIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
-            ExpiresAtUtc = expiresAt,
-            TokenHash = tokenHash
-        };
-        _db.PlatformSupportSessions.Add(session);
-
-        _db.AdminAuditLogs.Add(new AdminAuditLog
-        {
-            TenantId = tenantId,
-            EntityType = "SupportSession",
-            EntityId = session.Id.ToString(),
-            Action = "SupportAccessStarted",
-            OldValuesJson = "{}",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                targetUserEmail = user.Email,
-                tenantSlug = tenant.Slug,
-                reason = req.Reason.Trim(),
-                actingAdminId = GetPlatformUserId(),
-                expiresAt
-            }),
-            PerformedByName = PlatformActorEmail(),
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
-        });
-
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(new
-        {
-            sessionId = session.Id,
-            token = tokenString,
-            expiresAt,
-            targetUserEmail = user.Email,
-            tenantSlug = tenant.Slug,
-            reason = session.Reason
+            error = "privileged_tenant_access_disabled",
+            message = "Support-session issuance is temporarily disabled pending server-side revocation controls."
         });
     }
 
@@ -2525,33 +2381,81 @@ public class PlatformController : ControllerBase
         if (!Guid.TryParse(req.SessionId, out var sessionId))
             return BadRequest(new { message = "Invalid sessionId." });
 
-        var session = await _db.PlatformSupportSessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct);
-        if (session is null) return NotFound(new { message = "Support session not found." });
-        if (session.EndedAtUtc is not null)
-            return BadRequest(new { message = "Session already ended." });
-
-        session.EndedAtUtc = DateTime.UtcNow;
-
-        _db.AdminAuditLogs.Add(new AdminAuditLog
+        // Production uses a conditional UPDATE inside one transaction. Under PostgreSQL, a
+        // concurrent replay waits on the row lock and then re-checks EndedAtUtc, so exactly one
+        // caller changes the row and writes the audit. The other caller returns the committed
+        // result without a second side effect. The non-relational branch exists only for focused
+        // in-memory unit tests; the real HTTP harness exercises the relational branch.
+        if (_db.Database.IsRelational())
         {
-            TenantId = session.TenantId,
-            EntityType = "SupportSession",
-            EntityId = session.Id.ToString(),
-            Action = "SupportAccessEnded",
-            OldValuesJson = "{}",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
+            var strategy = _db.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
             {
-                targetUserEmail = session.TargetUserEmail,
-                reason = session.Reason,
-                durationMinutes = (int)(DateTime.UtcNow - session.StartedAtUtc).TotalMinutes
-            }),
-            PerformedByName = "platform_admin",
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
-        });
+                await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+                var session = await _db.PlatformSupportSessions
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+                if (session is null)
+                {
+                    await transaction.RollbackAsync(ct);
+                    return (IActionResult)NotFound(new { message = "Support session not found." });
+                }
 
+                if (session.EndedAtUtc is not null)
+                {
+                    await transaction.CommitAsync(ct);
+                    return (IActionResult)Ok(new { sessionId, endedAt = session.EndedAtUtc });
+                }
+
+                var endedAt = DateTime.UtcNow;
+                var changed = await _db.PlatformSupportSessions
+                    .Where(s => s.Id == sessionId && s.EndedAtUtc == null)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(s => s.EndedAtUtc, endedAt), ct);
+
+                if (changed == 0)
+                {
+                    var replayed = await _db.PlatformSupportSessions
+                        .AsNoTracking()
+                        .SingleAsync(s => s.Id == sessionId, ct);
+                    await transaction.CommitAsync(ct);
+                    return (IActionResult)Ok(new { sessionId, endedAt = replayed.EndedAtUtc });
+                }
+
+                _db.AdminAuditLogs.Add(BuildSupportAccessEndedAudit(session, endedAt));
+                await _db.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+                return (IActionResult)Ok(new { sessionId, endedAt });
+            });
+        }
+
+        var tracked = await _db.PlatformSupportSessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+        if (tracked is null) return NotFound(new { message = "Support session not found." });
+        if (tracked.EndedAtUtc is not null)
+            return Ok(new { sessionId, endedAt = tracked.EndedAtUtc });
+
+        tracked.EndedAtUtc = DateTime.UtcNow;
+        _db.AdminAuditLogs.Add(BuildSupportAccessEndedAudit(tracked, tracked.EndedAtUtc.Value));
         await _db.SaveChangesAsync(ct);
-        return Ok(new { sessionId, endedAt = session.EndedAtUtc });
+        return Ok(new { sessionId, endedAt = tracked.EndedAtUtc });
     }
+
+    private AdminAuditLog BuildSupportAccessEndedAudit(PlatformSupportSession session, DateTime endedAt) => new()
+    {
+        TenantId = session.TenantId,
+        EntityType = "SupportSession",
+        EntityId = session.Id.ToString(),
+        Action = "SupportAccessEnded",
+        OldValuesJson = "{}",
+        NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            targetUserEmail = session.TargetUserEmail,
+            reason = session.Reason,
+            durationMinutes = (int)(endedAt - session.StartedAtUtc).TotalMinutes
+        }),
+        PerformedByName = "platform_admin",
+        IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+    };
 
     [HttpGet("support-access")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support, PlatformRoles.Auditor)]

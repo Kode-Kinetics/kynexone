@@ -2,28 +2,41 @@ using System.ComponentModel.DataAnnotations;
 
 namespace Zayra.Api.Application.Auth;
 
+[AttributeUsage(AttributeTargets.Parameter | AttributeTargets.Property)]
+public sealed class RequiredWorkspaceAttribute : ValidationAttribute
+{
+    public RequiredWorkspaceAttribute() : base("Workspace is required.") { }
+
+    public override bool IsValid(object? value) =>
+        value is string workspace && !string.IsNullOrWhiteSpace(workspace);
+}
+
 public record LoginRequest(
     [Required, EmailAddress] string Email,
     [Required] string Password,
-    string? TenantSlug);
+    [param: RequiredWorkspace]
+    [property: RequiredWorkspace] string TenantSlug);
 
 public record RefreshTokenRequest([Required] string RefreshToken);
 
 public record LogoutRequest([Required] string RefreshToken);
 
-public record ForgotPasswordRequest([Required, EmailAddress] string Email, string? TenantSlug);
+public record ForgotPasswordRequest(
+    [Required, EmailAddress] string Email,
+    [param: RequiredWorkspace]
+    [property: RequiredWorkspace] string TenantSlug);
 
 public record ResetPasswordRequest(
-    [Required, EmailAddress] string Email,
     [Required] string ResetToken,
     [Required, MinLength(10)] string NewPassword,
-    string? TenantSlug);
+    [param: RequiredWorkspace]
+    [property: RequiredWorkspace] string TenantSlug);
 
 public record AcceptInvitationRequest(
-    [Required, EmailAddress] string Email,
     [Required] string InvitationToken,
     [Required, MinLength(10)] string NewPassword,
-    string? TenantSlug);
+    [param: RequiredWorkspace]
+    [property: RequiredWorkspace] string TenantSlug);
 
 public record CreateUserRequest(
     [Required, EmailAddress] string Email,
@@ -47,7 +60,8 @@ public record EmployeeLoginInvitationDto(
     string AccessMode,
     string Status,
     string InvitationToken,
-    DateTime? InvitationExpiresAtUtc);
+    DateTime? InvitationExpiresAtUtc,
+    string InvitationUrl);
 
 public record AccessModeRequest([Required] string AccessMode, string? Reason);
 

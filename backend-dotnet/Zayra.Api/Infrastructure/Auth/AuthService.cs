@@ -20,8 +20,9 @@ public class AuthService : IAuthService
     private readonly JwtOptions _jwtOptions;
     private readonly IMfaService _mfaService;
     private readonly ILogger<AuthService> _log;
+    private readonly string _appUrl;
 
-    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, ILogger<AuthService> log)
+    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, ILogger<AuthService> log, IConfiguration? configuration = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -31,11 +32,14 @@ public class AuthService : IAuthService
         _jwtOptions = jwtOptions.Value;
         _mfaService = mfaService;
         _log = log;
+        _appUrl = AuthLinkBuilder.ResolvePublicAppUrl(
+            configuration?["APP_URL"] ?? Environment.GetEnvironmentVariable("APP_URL"));
     }
 
     public async Task<AuthLoginResult> LoginAsync(LoginRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await LoadUserGraph(request.Email, request.TenantSlug, cancellationToken);
+        var tenantSlug = RequireWorkspace(request.TenantSlug);
+        var user = await LoadUserGraph(request.Email, tenantSlug, cancellationToken);
 
         // Phase 1 — structural checks that do NOT count toward lockout (user genuinely not usable)
         string? failReason = null;
@@ -191,6 +195,12 @@ public class AuthService : IAuthService
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
         }
 
+        if (storedToken?.User is null
+            || !await AuthTenantGraphIntegrity.IsValidAsync(storedToken.User, _db, cancellationToken))
+        {
+            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+        }
+
         if (storedToken?.User is null || storedToken.User.Tenant is null || !storedToken.IsActive || !storedToken.User.IsActive || !storedToken.User.Tenant.IsActive || IsNoLogin(storedToken.User))
         {
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
@@ -318,7 +328,9 @@ public class AuthService : IAuthService
                     _db.ChangeTracker.Clear();
                     token = await RefreshTokensWithUserGraph()
                         .FirstOrDefaultAsync(x => x.Id == storedTokenId, cancellationToken);
-                    if (token?.User is null || token.User.Tenant is null)
+                    if (token?.User is null
+                        || token.User.Tenant is null
+                        || !await AuthTenantGraphIntegrity.IsValidAsync(token.User, _db, cancellationToken))
                         throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
                 }
                 reuseDetected = false;
@@ -355,6 +367,8 @@ public class AuthService : IAuthService
         _db.RefreshTokens
             .Include(x => x.User).ThenInclude(x => x!.Tenant)
             .Include(x => x.User).ThenInclude(x => x!.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+            .Include(x => x.User).ThenInclude(x => x!.EmployeeUserAccounts)
+            .Include(x => x.User).ThenInclude(x => x!.PermissionOverrides)
             .Include(x => x.User).ThenInclude(x => x!.EntityAccesses);
 
     public async Task LogoutAsync(LogoutRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -372,11 +386,13 @@ public class AuthService : IAuthService
 
     public async Task<ForgotPasswordResponse> ForgotPasswordAsync(ForgotPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        var tenantSlug = RequireWorkspace(request.TenantSlug);
+
         // Always respond with the same message to prevent user enumeration
         const string safeMessage = "If an account with that email exists, a password reset link has been sent.";
 
-        var user = await LoadUserGraph(request.Email, request.TenantSlug, cancellationToken);
-        if (user is null || !user.IsActive)
+        var user = await LoadUserGraph(request.Email, tenantSlug, cancellationToken);
+        if (user?.Tenant is null || !user.IsActive || !user.Tenant.IsActive)
             return new ForgotPasswordResponse(safeMessage, null, null);
 
         var resetToken = _tokenService.CreateSecureToken();
@@ -401,11 +417,7 @@ public class AuthService : IAuthService
         await _auditService.WriteAsync("auth.password_reset_requested", "User", user.Id.ToString(), context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
 
         // Build reset URL — falls back to a relative path fragment if APP_URL is not set.
-        var appUrl = Environment.GetEnvironmentVariable("APP_URL")?.TrimEnd('/') ?? string.Empty;
-        var encodedToken = Uri.EscapeDataString(resetToken);
-        var encodedEmail = Uri.EscapeDataString(user.Email);
-        var tenantPart = string.IsNullOrWhiteSpace(request.TenantSlug) ? string.Empty : $"&tenant={Uri.EscapeDataString(request.TenantSlug)}";
-        var resetUrl = $"{appUrl}/reset-password?token={encodedToken}&email={encodedEmail}{tenantPart}";
+        var resetUrl = AuthLinkBuilder.ResetPassword(_appUrl, user.Tenant.Slug, resetToken);
 
         var html = $"""
             <p>Hi {System.Web.HttpUtility.HtmlEncode(user.FullName)},</p>
@@ -413,7 +425,7 @@ public class AuthService : IAuthService
             <p><a href="{resetUrl}" style="background:#2563EB;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;display:inline-block">Reset Password</a></p>
             <p>If you did not request this, you can safely ignore this email.</p>
             <hr/>
-            <p style="font-size:12px;color:#666">KynexOne Workforce · {(string.IsNullOrWhiteSpace(appUrl) ? "your workspace" : appUrl)}</p>
+            <p style="font-size:12px;color:#666">KynexOne Workforce · {_appUrl}</p>
             """;
 
         if (await _emailService.IsConfiguredAsync(cancellationToken))
@@ -431,9 +443,35 @@ public class AuthService : IAuthService
 
     public async Task ResetPasswordAsync(ResetPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await LoadUserGraph(request.Email, request.TenantSlug, cancellationToken) ?? throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+        var tenantSlug = RequireWorkspace(request.TenantSlug);
         var tokenHash = _tokenService.HashToken(request.ResetToken);
-        var resetToken = await _db.PasswordResetTokens.FirstOrDefaultAsync(x => x.UserId == user.Id && x.TokenHash == tokenHash, cancellationToken);
+        var tokenReferences = await _db.PasswordResetTokens
+            .AsNoTracking()
+            .Where(x => x.TokenHash == tokenHash
+                && x.User != null
+                && !x.User.IsDeleted
+                && x.User.IsActive
+                && x.User.Tenant != null
+                && x.User.Tenant.IsActive)
+            .Select(x => new { x.Id, x.UserId, TenantSlug = x.User!.Tenant!.Slug })
+            .Where(x => x.TenantSlug == tenantSlug)
+            .Take(2)
+            .ToListAsync(cancellationToken);
+        if (tokenReferences.Count != 1)
+            throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+        var tokenReference = tokenReferences[0];
+
+        var user = await LoadUserGraph(tokenReference.UserId, cancellationToken);
+        if (user?.Tenant is null
+            || !user.IsActive
+            || user.IsDeleted
+            || !user.Tenant.IsActive
+            || !string.Equals(user.Tenant.Slug, tenantSlug, StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+
+        var resetToken = await _db.PasswordResetTokens.FirstOrDefaultAsync(
+            x => x.Id == tokenReference.Id && x.UserId == user.Id && x.TokenHash == tokenHash,
+            cancellationToken);
         if (resetToken is null || !resetToken.IsActive) throw new UnauthorizedAccessException("Reset token is invalid or expired.");
 
         user.PasswordHash = _passwordHasher.Hash(request.NewPassword);
@@ -455,6 +493,7 @@ public class AuthService : IAuthService
 
     public async Task<AuthResponse> AcceptInvitationAsync(AcceptInvitationRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        var tenantSlug = RequireWorkspace(request.TenantSlug);
         var tokenHash = _tokenService.HashToken(request.InvitationToken);
         var acceptedAtUtc = DateTime.UtcNow;
 
@@ -462,9 +501,47 @@ public class AuthService : IAuthService
         // persisted state rather than reuse a failed attempt's entities.
         async Task<(User User, EmployeeUserAccount Link)> LoadAndValidateAsync()
         {
-            var loaded = await LoadUserGraph(request.Email, request.TenantSlug, cancellationToken) ?? throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
-            var invitation = loaded.EmployeeUserAccounts.FirstOrDefault(x => x.InvitationTokenHash == tokenHash && !x.IsDeleted);
+            var tokenReferences = await _db.EmployeeUserAccounts
+                .AsNoTracking()
+                .Where(x => x.InvitationTokenHash == tokenHash
+                    && !x.IsDeleted
+                    && x.User != null
+                    && !x.User.IsDeleted
+                    && x.User.IsActive
+                    && x.User.Tenant != null
+                    && x.User.Tenant.IsActive
+                    && x.TenantId == x.User.TenantId)
+                .Select(x => new
+                {
+                    x.Id,
+                    x.UserId,
+                    LinkTenantId = x.TenantId,
+                    UserTenantId = x.User!.TenantId,
+                    TenantSlug = x.User.Tenant!.Slug
+                })
+                .Where(x => x.TenantSlug == tenantSlug)
+                .Take(2)
+                .ToListAsync(cancellationToken);
+            if (tokenReferences.Count != 1 || tokenReferences[0].UserId is null)
+                throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
+            var tokenReference = tokenReferences[0];
+
+            var loaded = await LoadUserGraph(tokenReference.UserId.GetValueOrDefault(), cancellationToken)
+                ?? throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
+            if (loaded.Tenant is null
+                || loaded.IsDeleted
+                || !loaded.IsActive
+                || !loaded.Tenant.IsActive
+                || tokenReference.LinkTenantId != loaded.TenantId
+                || tokenReference.UserTenantId != loaded.TenantId
+                || !string.Equals(loaded.Tenant.Slug, tenantSlug, StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
+
+            var invitation = loaded.EmployeeUserAccounts.FirstOrDefault(x => x.Id == tokenReference.Id && !x.IsDeleted);
             if (invitation is null
+                || invitation.TenantId != loaded.TenantId
+                || invitation.UserId != loaded.Id
+                || !string.Equals(invitation.InvitationTokenHash, tokenHash, StringComparison.Ordinal)
                 || invitation.InvitationExpiresAtUtc is null
                 || invitation.InvitationExpiresAtUtc < acceptedAtUtc
                 || invitation.AccessMode == AccessModes.NoLogin
@@ -488,10 +565,13 @@ public class AuthService : IAuthService
             {
                 var consumed = await _db.EmployeeUserAccounts
                     .Where(x => x.Id == invitation.Id
+                        && x.UserId == acceptingUser.Id
+                        && x.TenantId == acceptingUser.TenantId
                         && x.InvitationTokenHash == tokenHash
                         && x.RequiresPasswordSetup
                         && x.InvitationAcceptedAtUtc == null
                         && x.Status == "Invited"
+                        && x.AccessMode != AccessModes.NoLogin
                         && !x.IsDeleted
                         && x.InvitationExpiresAtUtc != null
                         && x.InvitationExpiresAtUtc >= acceptedAtUtc)
@@ -603,29 +683,33 @@ public class AuthService : IAuthService
         await _auditService.WriteAsync("auth.password_changed", "User", user.Id.ToString(), context, null, cancellationToken);
     }
 
-    private async Task<User?> LoadUserGraph(string email, string? tenantSlug, CancellationToken cancellationToken)
+    private async Task<User?> LoadUserGraph(string email, string tenantSlug, CancellationToken cancellationToken)
     {
         var normalizedEmail = Normalize(email);
-        var query = _db.Users
+        var user = await _db.Users
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
             .Include(x => x.EmployeeUserAccounts)
             .Include(x => x.PermissionOverrides)
             .Include(x => x.EntityAccesses)
-            .Where(x => x.NormalizedEmail == normalizedEmail && !x.IsDeleted);
-        if (!string.IsNullOrWhiteSpace(tenantSlug)) query = query.Where(x => x.Tenant!.Slug == tenantSlug.Trim().ToLowerInvariant());
-        return await query.FirstOrDefaultAsync(cancellationToken);
+            .FirstOrDefaultAsync(
+                x => x.NormalizedEmail == normalizedEmail
+                    && !x.IsDeleted
+                    && x.Tenant!.Slug == tenantSlug,
+                cancellationToken);
+        return await AuthTenantGraphIntegrity.IsValidAsync(user, _db, cancellationToken) ? user : null;
     }
 
     private async Task<User?> LoadUserGraph(Guid userId, CancellationToken cancellationToken)
     {
-        return await _db.Users
+        var user = await _db.Users
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
             .Include(x => x.EmployeeUserAccounts)
             .Include(x => x.PermissionOverrides)
             .Include(x => x.EntityAccesses)
-            .FirstOrDefaultAsync(x => x.Id == userId, cancellationToken);
+            .FirstOrDefaultAsync(x => x.Id == userId && !x.IsDeleted, cancellationToken);
+        return await AuthTenantGraphIntegrity.IsValidAsync(user, _db, cancellationToken) ? user : null;
     }
 
     private async Task<string> AddRefreshTokenAsync(User user, RequestContext context, SecuritySetting? policy, CancellationToken cancellationToken)
@@ -883,4 +967,11 @@ public class AuthService : IAuthService
     };
 
     public static string Normalize(string value) => value.Trim().ToUpperInvariant();
+
+    public static string RequireWorkspace(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException("Workspace is required.");
+        return value.Trim().ToLowerInvariant();
+    }
 }
