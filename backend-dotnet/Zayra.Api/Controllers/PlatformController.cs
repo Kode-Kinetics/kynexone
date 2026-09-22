@@ -1397,11 +1397,14 @@ public class PlatformController : ControllerBase
                 message = "companyIds may only be supplied with entityScope 'companies'.",
             }));
 
-        // The companies this tenant actually has. Read with IgnoreQueryFilters because a platform
-        // operator carries no tenant claim — the tenantId is re-applied explicitly right here, and
-        // no other tenant's rows can be reached.
-        var activeCompanyIds = await _db.Companies.IgnoreQueryFilters().AsNoTracking()
-            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+        // The companies this tenant actually has. A platform operator carries no tenant claim and no
+        // entity scope of its own, so the company filter has to come off — through the sanctioned
+        // ScopedBypass.TenantWide, which re-applies the tenant predicate itself.
+        var activeCompanyIds = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide<Company>(_db.Companies, tenantId,
+                "Platform operator provisioning a tenant user: it holds no entity scope of its own, so the "
+                + "legal entities available to grant must be read across the tenant. Tenant is re-applied by the helper.")
+            .AsNoTracking()
+            .Where(c => c.IsActive && !c.IsDeleted)
             .Select(c => c.Id)
             .ToListAsync(ct);
 
