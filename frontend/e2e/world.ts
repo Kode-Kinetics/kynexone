@@ -74,6 +74,13 @@ export interface FixtureTenant {
   users: FixtureUser[];
   /** Employees created per company, with `<COMPANY-CODE>-E<n>` codes. */
   employeesPerCompany: number;
+  /**
+   * The floor of ACTIVE employees the bootstrap must reach for this tenant, after the product's own
+   * activation guard has had its say. Below it the bootstrap fails: a tenant whose employees are all
+   * still Draft renders as an empty product, and every row-count assertion downstream would blame
+   * the UI for it.
+   */
+  minActiveEmployees: number;
   /** Provision salary structures + one locked payroll run for the first company. */
   payroll: boolean;
 }
@@ -189,6 +196,8 @@ export const TENANTS: FixtureTenant[] = [
     ],
     // pilot-critical.spec.ts asserts E2E_MIN_EMPLOYEES (12 in CI) rendered rows.
     employeesPerCompany: 14,
+    // pilot-critical.spec.ts is run in CI with E2E_MIN_EMPLOYEES=12.
+    minActiveEmployees: 12,
     payroll: true,
   },
   {
@@ -204,6 +213,7 @@ export const TENANTS: FixtureTenant[] = [
     users: [],
     // Cross-tenant isolation specs compare real employee rows against IntelliFlow's.
     employeesPerCompany: 4,
+    minActiveEmployees: 2,
     payroll: false,
   },
   {
@@ -218,6 +228,9 @@ export const TENANTS: FixtureTenant[] = [
     companies: ALMARAI_COMPANY_CODES.map(saCompany),
     users: ALMARAI_USERS,
     employeesPerCompany: 3,
+    // 15 created, every third deliberately left without an Iqama so the compliance profile's
+    // "Missing" column is a real number — those five are correctly refused activation.
+    minActiveEmployees: 10,
     payroll: true,
   },
   {
@@ -232,6 +245,9 @@ export const TENANTS: FixtureTenant[] = [
     companies: TATA_COMPANY_CODES.map((code) => ({ code, countryCode: 'IN', currency: 'INR' })),
     users: [groupUser('compliance', 'HR Manager', 'Tata Group Compliance Officer', TATA_SLUG)],
     employeesPerCompany: 2,
+    // India pack; the group-company compliance spec only reads this tenant's PROFILE, not its
+    // headcount, so no activation floor is claimed for it.
+    minActiveEmployees: 0,
     payroll: false,
   },
 ];

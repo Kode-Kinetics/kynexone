@@ -324,18 +324,24 @@ async function ensureEmployees(
     for (let n = 1; n <= fixture.employeesPerCompany; n++) {
       const code = `${company.code}-E${n}`;
       if (have.has(code)) continue;
-      const name = NAMED_EMPLOYEES[n - 1] ?? FILLER_NAMES[(n - 1) % FILLER_NAMES.length];
-      const isSaudi = company.code.endsWith('-KSA') || company.code.startsWith('INTELLIFLOW');
+      // The first names are literal, not suffixed: benefits-admin.spec.ts searches for the exact
+      // strings "Liu Wei" and "Carlos Mendez".
+      const name = NAMED_EMPLOYEES[n - 1] ?? `${FILLER_NAMES[(n - 1) % FILLER_NAMES.length]} ${n}`;
+      const isSaudi = company.countryCode === 'SA';
+      // An expatriate with no Iqama on file. Deliberate, and only outside IntelliFlow: it is what
+      // gives group-company/compliance.spec.ts a non-zero "Missing" count for the Iqama requirement.
+      // Their activation is correctly blocked by the statutory guard, so they stay in Draft.
+      const expatWithGap = isSaudi && fixture.slug !== 'intelliflow' && n % 3 === 0;
       const res = await call('POST', '/api/employees', {
         token: adminToken,
         companyId: company.id,
         body: {
           employeeCode: code,
           manualEmployeeCode: true,
-          englishName: `${name} ${n}`,
+          englishName: name,
           gender: n % 2 === 0 ? 'Female' : 'Male',
           dateOfBirth: '1990-01-15',
-          nationality: isSaudi ? 'Saudi' : 'Indian',
+          nationality: expatWithGap ? 'Indian' : isSaudi ? 'Saudi' : 'Indian',
           personalEmail: `${code.toLowerCase()}@${fixture.slug}.local`,
           companyId: company.id,
           // Only the first employee holds the grade — the benefits eligibility rule needs a
@@ -359,16 +365,21 @@ async function ensureEmployees(
             effectiveDate: '2024-01-01',
             currency: company.code.endsWith('-IN') ? 'INR' : 'SAR',
           },
-          // Deliberate gaps: every third employee has no Iqama record, so the compliance
-          // profile's "Missing" count is a real number rather than a hopeful zero.
-          complianceRecords: !isSaudi || n % 3 === 0 ? [] : [{
-            countryCode: 'SA',
-            fieldKey: 'IqamaNumber',
-            fieldLabel: 'Iqama Number',
-            fieldValue: `2${String(100000000 + n).slice(0, 9)}`,
-            isSensitive: true,
-            isRequired: true,
-          }],
+          // The statutory identity set the activation guard blocks on. The keys are the SNAKE_CASE
+          // vocabulary EmployeeManagementService.ApplyComplianceRecord understands — `IqamaNumber`
+          // and friends fall through its switch untouched, so the employee would be created and
+          // then refuse to activate, with nothing in the response saying why.
+          // The set is the union of what EmployeeReadinessEvaluator's statutory floor asks for
+          // across the Gulf packs a tenant is provisioned with, not just the company's own country.
+          complianceRecords: expatWithGap || !isSaudi ? [] : [
+            idRecord('civil_id', 'Civil ID', `1${String(200000000 + seq).slice(0, 9)}`),
+            idRecord('id_number', 'Government ID number', `1${String(300000000 + seq).slice(0, 9)}`),
+            idRecord('gosi_reference', 'GOSI reference', `GOSI-${code}`),
+            idRecord('iqama_number', 'Iqama Number', `2${String(400000000 + seq).slice(0, 9)}`),
+            idRecord('emirates_id', 'Emirates ID', `784-1990-${String(1000000 + seq).slice(0, 7)}-1`),
+            idRecord('work_permit', 'Work permit number', `WP-${code}`),
+            idRecord('passport_number', 'Passport number', `P${String(10000000 + seq).slice(0, 8)}`),
+          ],
           acknowledgeDuplicate: true,
         },
       });
@@ -377,6 +388,59 @@ async function ensureEmployees(
     }
   }
   return created;
+}
+
+let seq = 0;
+const idRecord = (fieldKey: string, fieldLabel: string, fieldValue: string) => {
+  seq++;
+  return { countryCode: 'SA', fieldKey, fieldLabel, fieldValue, isSensitive: true, isRequired: true };
+};
+
+/**
+ * Move employees out of Draft, because Draft employees are invisible to the dashboard's
+ * `activeEmployees`, to payroll population and to most module lists — so a tenant full of Drafts
+ * looks exactly like an unprovisioned one to every spec that counts rows.
+ *
+ * Activation is the product's own statutory guard (`EmployeeActivationGuard`), not a flag flip. An
+ * employee it refuses is reported, never forced, and the caller asserts a floor afterwards: silently
+ * ending up with zero Active employees is the failure this whole bootstrap exists to prevent.
+ */
+async function activateEmployees(adminToken: string, slug: string, floor: number): Promise<number> {
+  const list = expectOk(
+    await call('GET', '/api/employees?page=1&pageSize=200', { token: adminToken }), 'list employees',
+  );
+  const rows = items(list.body);
+  const blocked: string[] = [];
+  let active = 0;
+
+  for (const row of rows) {
+    const status = String(row.status ?? row.Status ?? '');
+    if (status === 'Active') { active++; continue; }
+    const res = await call('POST', `/api/employees/${row.id ?? row.Id}/activate`, {
+      token: adminToken, body: { status: 'Active', reason: 'e2e fixture world bootstrap' },
+    });
+    if (res.status === 200) { active++; continue; }
+    // Name the missing keys, not just the count. "2 required detail(s) missing" is unactionable;
+    // "EmiratesId, WorkPermitNumber" tells the next person exactly what to add here.
+    const keys = (res.body?.blocking ?? []).map((b: any) => b.key).join(', ');
+    blocked.push(
+      `${row.employeeCode ?? row.Id}: HTTP ${res.status} ${(res.body?.message ?? res.text).slice(0, 100)}`
+      + (keys ? ` [${keys}]` : ''),
+    );
+  }
+
+  if (active < floor) {
+    throw new Error(
+      `[bootstrap] '${slug}' has ${active} ACTIVE employees; at least ${floor} are required.\n`
+      + 'Draft employees are excluded from the dashboard counts, payroll population and the module\n'
+      + 'lists, so the specs would see an empty product and report it as a rendering bug.\n'
+      + `Refused activations:\n  ${blocked.slice(0, 8).join('\n  ')}`,
+    );
+  }
+  if (blocked.length) {
+    console.log(`[bootstrap] ${slug}: ${active} active, ${blocked.length} left in Draft by the activation guard (expected).`);
+  }
+  return active;
 }
 
 // ── Orchestration ─────────────────────────────────────────────────────────────────────────────
@@ -404,10 +468,11 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     await ensureEntityGrants(adminToken, fixture, userIds, companies);
     const gradeId = fixture.slug === 'intelliflow' ? await ensureGrade(adminToken) : null;
     manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId);
+    const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
     manifest.tenants.push({ slug: fixture.slug, tenantId, companies });
     console.log(
       `[bootstrap] ${fixture.slug}: ${companies.length} compan${companies.length === 1 ? 'y' : 'ies'}, `
-      + `${fixture.users.length + 1} users, ${fixture.employeesPerCompany * companies.length} employees.`,
+      + `${fixture.users.length + 1} users, ${active} active employees.`,
     );
   }
 
