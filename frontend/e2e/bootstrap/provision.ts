@@ -237,6 +237,36 @@ function companyBody(company: FixtureCompany, fixture: FixtureTenant) {
   };
 }
 
+/**
+ * The tenant's own locale and currency.
+ *
+ * Not cosmetic. Payroll renders a run's gross/net in the TENANT's currency while a payment batch is
+ * denominated in the company/assignment currency, so a Saudi tenant left on the USD default produces
+ * a run displayed in USD and a WPS batch in SAR — and payroll-run-to-wps.spec.ts fails on the
+ * mismatch, correctly. The two have to agree, and the way to make them agree is to tell the tenant
+ * which country it operates in.
+ */
+async function ensureLocalization(
+  platformToken: string, tenantId: string, fixture: FixtureTenant,
+): Promise<void> {
+  const home = fixture.companies[0];
+  expectOk(await call('PUT', `/api/platform/tenants/${tenantId}/localization`, {
+    token: platformToken,
+    body: { currencyCode: home.currency, countryCode: home.countryCode, defaultLanguage: 'en' },
+  }), `set localization for '${fixture.slug}'`);
+}
+
+/** Feature flags the fixture tenant must have switched ON. */
+async function ensureFeatures(
+  platformToken: string, tenantId: string, fixture: FixtureTenant,
+): Promise<void> {
+  for (const key of fixture.features ?? []) {
+    expectOk(await call('PUT', `/api/platform/tenants/${tenantId}/features/${key}`, {
+      token: platformToken, body: { isEnabled: true },
+    }), `enable feature '${key}' on '${fixture.slug}'`);
+  }
+}
+
 // ── Users and their company scope ─────────────────────────────────────────────────────────────
 
 async function ensureUsers(
@@ -371,6 +401,11 @@ async function ensureEmployees(
       // The first names are literal, not suffixed: benefits-admin.spec.ts searches for the exact
       // strings "Liu Wei" and "Carlos Mendez".
       const name = NAMED_EMPLOYEES[n - 1] ?? `${FILLER_NAMES[(n - 1) % FILLER_NAMES.length]} ${n}`;
+      // Attach the declared portal logins to real people, starting at the first company's SECOND
+      // employee (the first is everyone's manager). See FixtureTenant.employeePortalLogins.
+      const portalLogin = company.code === companies[0].code
+        ? fixture.employeePortalLogins?.[n - 2]
+        : undefined;
       const isSaudi = company.countryCode === 'SA';
       // Every third employee outside IntelliFlow is a SAUDI NATIONAL with no Iqama on file — which
       // is not a data defect, it is what a Saudi national's record looks like. That is precisely what
@@ -393,6 +428,7 @@ async function ensureEmployees(
           dateOfBirth: '1990-01-15',
           nationality: isSaudi || iqamaGap ? 'Saudi' : 'Indian',
           personalEmail: `${code.toLowerCase()}@${fixture.slug}.local`,
+          workEmail: portalLogin,
           companyId: company.id,
           // Only the first employee holds the grade — the benefits eligibility rule needs a
           // population it INCLUDES and a population it EXCLUDES to prove anything.
@@ -511,6 +547,36 @@ async function activateEmployees(adminToken: string, slug: string, floor: number
     console.log(`[bootstrap] ${slug}: ${active} active, ${blocked.length} left in Draft by the activation guard (expected).`);
   }
   return active;
+}
+
+// ── Tenant defaults the product installs on request ───────────────────────────────────────────
+
+/**
+ * The two "re-install defaults" actions docs/DATA_ENTRY_PATHS.md §3 lists as admin operations.
+ *
+ * They matter here because `TenantDefaultsBackfill` only installs HR letter templates for tenants
+ * that ALREADY EXIST when the API boots — and every fixture tenant is created afterwards, by this
+ * bootstrap. So a freshly provisioned tenant has an empty letter catalogue and
+ * demo-surfaces.spec.ts's salary-certificate journey has nothing to issue. Calling the product's own
+ * seed-defaults endpoint is exactly what an administrator would do, and it is idempotent.
+ */
+async function ensureTenantDefaults(adminToken: string, slug: string): Promise<string> {
+  const notes: string[] = [];
+  for (const [what, path] of [
+    ['HR letter templates', '/api/hr-letters/templates/seed-defaults'],
+    ['GL defaults', '/api/finance/gl/seed-defaults'],
+  ] as const) {
+    const res = await call('POST', path, { token: adminToken, body: {} });
+    if (res.status < 200 || res.status >= 300) {
+      // Not fatal — the lanes that need these say so loudly themselves — but never silent.
+      notes.push(`${what}: HTTP ${res.status}`);
+      console.log(
+        `[bootstrap] ${slug}: ${path} returned ${res.status} `
+        + `(${(res.body?.message ?? res.text).slice(0, 140)}).`,
+      );
+    }
+  }
+  return notes.length ? `defaults incomplete (${notes.join('; ')})` : 'defaults installed';
 }
 
 // ── Compliance profiles ───────────────────────────────────────────────────────────────────────
@@ -871,6 +937,8 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
   for (const fixture of TENANTS) {
     const tenantId = await ensureTenant(platformToken, fixture);
     const adminToken = await requireTenantLogin(fixture.admin, fixture.slug);
+    await ensureLocalization(platformToken, tenantId, fixture);
+    await ensureFeatures(platformToken, tenantId, fixture);
     const companies = await ensureCompanies(platformToken, tenantId, adminToken, fixture);
     const userIds = await ensureUsers(platformToken, tenantId, fixture);
     await ensureEntityGrants(adminToken, fixture, userIds, companies);
@@ -879,13 +947,15 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
     const salaries = await ensureSalaries(adminToken, companies);
     const hrData = await ensureLeaveAndAttendance(adminToken, fixture, companies);
+    const defaults = await ensureTenantDefaults(adminToken, fixture.slug);
     const profiles = await ensureComplianceProfiles(adminToken, companies);
     const payroll = fixture.payroll ? await ensurePayrollRuns(fixture, adminToken, companies) : 'no payroll';
     manifest.tenants.push({ slug: fixture.slug, tenantId, companies });
     console.log(
       `[bootstrap] ${fixture.slug}: ${companies.length} compan${companies.length === 1 ? 'y' : 'ies'}, `
       + `${fixture.users.length + 1} users, ${active} active employees, `
-      + `${salaries} salary assignment(s), ${profiles} compliance profile(s), ${hrData}, ${payroll}.`,
+      + `${salaries} salary assignment(s), ${defaults}, ${profiles} compliance profile(s), `
+      + `${hrData}, ${payroll}.`,
     );
   }
 

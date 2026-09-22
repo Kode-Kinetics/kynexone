@@ -83,6 +83,24 @@ export interface FixtureTenant {
   minActiveEmployees: number;
   /** Provision salary structures + one locked payroll run for the first company. */
   payroll: boolean;
+  /**
+   * Tenant-user emails to attach to real EMPLOYEE records, in order, starting at the first
+   * company's second employee.
+   *
+   * `DataScopeService.ResolveCallerEmployeeIdAsync` links a signed-in user to an employee by
+   * matching the token's email against the employee's work or personal email. Without that link the
+   * account is a login with no person behind it: every employee-self-service surface resolves to
+   * "Own" scope over an EMPTY employee set, so My Benefits, ESS document requests and the employee
+   * letter journey render nothing at all while the API returns 200.
+   */
+  employeePortalLogins?: string[];
+  /**
+   * Feature flags to switch ON. A tenant is born with none enabled, so the platform tenant-detail
+   * screen shows a feature list where every switch is off — and `platform-tenants.spec.ts` requires
+   * at least one `aria-checked="true"`, which is the honest assertion: a feature panel that can only
+   * ever render "off" proves nothing about the toggle.
+   */
+  features?: string[];
 }
 
 // ── Platform operator ─────────────────────────────────────────────────────────────────────────
@@ -203,6 +221,10 @@ export const TENANTS: FixtureTenant[] = [
     // pilot-critical.spec.ts is run in CI with E2E_MIN_EMPLOYEES=12.
     minActiveEmployees: 12,
     payroll: true,
+    employeePortalLogins: [INTELLIFLOW_EMP1.email, INTELLIFLOW_EMP2.email],
+    // The Enterprise tenant that tenant-feature-flags.spec.ts contrasts against the limited Evostel
+    // fixture: these must be ON here and OFF there for either half to mean anything.
+    features: ['ai_assistant', 'recruitment', 'performance', 'shifts', 'overtime', 'qiwa_integration'],
   },
   {
     slug: RASALMANAR_SLUG,
