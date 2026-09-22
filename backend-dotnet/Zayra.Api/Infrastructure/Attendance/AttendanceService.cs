@@ -55,9 +55,8 @@ public class AttendanceService : IAttendanceService
             .Where(l => l.TenantId == tenantId)
             .Select(l => l.DefaultTimezone)
             .FirstOrDefaultAsync(ct);
-        TimeZoneInfo tz;
-        try { tz = string.IsNullOrWhiteSpace(tzId) ? TimeZoneInfo.Utc : TimeZoneInfo.FindSystemTimeZoneById(tzId); }
-        catch { tz = TimeZoneInfo.Utc; }
+        // Shared with DashboardController so both agree on which calendar day "today" is.
+        var tz = TenantTimeZone.FromId(tzId);
         _tzCache[tenantId] = tz;
         return tz;
     }

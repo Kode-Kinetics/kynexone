@@ -97,3 +97,43 @@ export const navigationGroups: NavGroup[] = [
 ];
 
 export const navigationItems = navigationGroups.flatMap((g) => g.items);
+
+/**
+ * One-line explanations shown when a menu entry is hovered or focused: what the screen is for,
+ * in the words an HR admin would use. Keyed by path so the menu definition above stays compact.
+ */
+export const navigationHints: Record<string, string> = {
+  '/dashboard': 'Today at a glance: payroll, attendance, approvals and document expiries.',
+  '/group': 'Headcount, payroll and compliance across every company in the group.',
+  '/ess': 'Your own payslips, leave balance, requests and documents.',
+  '/ess/benefits': 'The benefits you are enrolled in and what they cover.',
+  '/people': 'Employee records: profiles, contracts, documents and job history.',
+  '/org-chart': 'Who reports to whom, by department and manager.',
+  '/hr-letters': 'Generate salary certificates, experience letters and other HR letters.',
+  '/attendance': 'Daily punches, absences and late arrivals, with corrections.',
+  '/leave': 'Leave requests, balances and the team leave calendar.',
+  '/shifts': 'Plan shifts and rosters, and assign people to them.',
+  '/overtime': 'Overtime requests and approved hours that flow into payroll.',
+  '/timesheets': 'Hours worked per project or task, submitted for approval.',
+  '/payroll': 'Run, review, approve and lock monthly payroll.',
+  '/payroll/templates': 'Design the layout of the payslips employees receive.',
+  '/loans': 'Salary advances and loans, with their repayment schedules.',
+  '/benefits': 'Benefit plans offered to employees, and who is enrolled.',
+  '/recruitment': 'Open positions, candidates and the hiring pipeline.',
+  '/offboarding': 'Resignations and exits: clearance, final settlement and end of service.',
+  '/performance': 'Goals, review cycles and ratings.',
+  '/compliance': 'Expiring iqamas, passports and permits, and missing documents.',
+  '/ai-assistant': 'Ask questions about your workforce data in plain language.',
+  '/reports': 'Standard and custom reports, with scheduled delivery.',
+  '/compliance-profiles': 'Country and company rules that compliance checks run against.',
+  '/tax-policies': 'Tax and contribution rules applied during payroll.',
+  '/hr-requests': 'Requests raised by employees to HR, and their status.',
+  '/approvals': 'Everything waiting for your decision, oldest first.',
+  '/user-management': 'Users, roles and what each role is allowed to do.',
+  '/saudi-compliance': 'Saudization (Nitaqat), Qiwa and Mudad status for the company.',
+  '/gosi-filing': 'Prepare and check the monthly GOSI contribution filing.',
+  '/tenant-admin': 'Company-wide settings: security, localisation and modules.',
+  '/setup': 'Companies, branches, departments and job titles.',
+  '/opening-balances': 'Load leave, loan and end-of-service balances when going live.',
+  '/payroll/variance': 'Compare a payroll run with the previous system’s register for the same month.',
+};
