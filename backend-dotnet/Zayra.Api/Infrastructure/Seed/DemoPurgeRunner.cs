@@ -15,9 +15,14 @@ namespace Zayra.Api.Infrastructure.Seed;
 /// </summary>
 public static class DemoPurgeRunner
 {
-    // Every tenant slug the demo seeders have ever created.
+    // Every tenant slug the demo seeders have ever created. "evostel" was on this list, but it is
+    // now a live client pilot tenant: purging it would switch a client off. It is removed here AND
+    // hard-guarded below, so re-adding it to this list still cannot reach it.
     private static readonly string[] DemoSlugs =
-        ["intelliflow", "evostel", "alnakheel", "rasalmanar"];
+        ["intelliflow", "alnakheel", "rasalmanar"];
+
+    // Real tenants that share a name with a former demo tenant. Never purge these.
+    internal static readonly string[] ProtectedClientSlugs = ["zayra", "evostel"];
 
     public static async Task RunAsync(
         ZayraDbContext db,
@@ -26,7 +31,7 @@ public static class DemoPurgeRunner
         CancellationToken ct = default)
     {
         // Hard guard: these are never deactivated even if they appear in DemoSlugs.
-        var guarded = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "zayra" };
+        var guarded = new HashSet<string>(ProtectedClientSlugs, StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(protectedSlug)) guarded.Add(protectedSlug.Trim());
 
         var targets = DemoSlugs
