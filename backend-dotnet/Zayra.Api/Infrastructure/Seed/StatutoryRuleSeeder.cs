@@ -21,20 +21,30 @@ public static class StatutoryRuleSeeder
         var rules = BuildRules();
         var added = 0;
 
+        // ONE round trip, not one per rule. This used to issue an AnyAsync per candidate; with the
+        // 2026 Nitaqat annex loaded that is ~700 sequential queries on every single boot, against a
+        // table whose platform-default slice is small enough to read whole. Same idempotency key as
+        // before — (RuleKey, EffectiveFrom) within the platform scope — just resolved in memory.
+        //
+        // IgnoreQueryFilters is intentional: platform-default rows live under TenantId == null and
+        // the per-tenant global query filter excludes them entirely, so the existence check would
+        // always miss and the seeder would duplicate every row on every boot. Read-only.
+        var existingRows = await db.StatutoryRules
+            .IgnoreQueryFilters()
+            .Where(r => r.TenantId == null)
+            .Select(r => new { r.CountryCode, r.Jurisdiction, r.RuleKey, r.EffectiveFrom })
+            .ToListAsync();
+
+        var existing = existingRows
+            .Select(r => (r.CountryCode, r.Jurisdiction, r.RuleKey, r.EffectiveFrom))
+            .ToHashSet();
+
         foreach (var rule in rules)
         {
-            // IgnoreQueryFilters is intentional: seeder checks platform-default rows (TenantId == null)
-            // which are excluded by the per-tenant global query filter; this read is read-only idempotency check.
-            bool exists = await db.StatutoryRules
-                .IgnoreQueryFilters()
-                .AnyAsync(r =>
-                    r.TenantId == null
-                    && r.CountryCode  == rule.CountryCode
-                    && r.Jurisdiction == rule.Jurisdiction
-                    && r.RuleKey      == rule.RuleKey
-                    && r.EffectiveFrom == rule.EffectiveFrom);
-
-            if (!exists)
+            // Add() also records the key, so a duplicate WITHIN the candidate list is skipped too.
+            // The unique index does not catch that: on PostgreSQL a NULL tenant_id makes rows
+            // distinct for uniqueness, so two identical platform rules would both persist.
+            if (existing.Add((rule.CountryCode, rule.Jurisdiction, rule.RuleKey, rule.EffectiveFrom)))
             {
                 db.StatutoryRules.Add(rule);
                 added++;
@@ -147,6 +157,105 @@ public static class StatutoryRuleSeeder
             + "reproduced against the Ministry's own published results. SUPERSEDED from 2026-01-01 "
             + "by the January 2026 annex (hrsd.gov.sa/sites/default/files/2026-03/ntaqat-almtwr.pdf), "
             + "which has NOT been verified here — load it before relying on a 2026+ band.";
+
+        // ── THE 2026 ANNEX, NOW READ ──────────────────────────────────────────
+        // The rows above were end-dated 2026-01-01 as a deliberate refusal: the annex that
+        // supersedes them existed but had not been read. It has now been read, so the refusal
+        // is discharged rather than extended. MHRSD, "الدليل الإجرائي – برنامج نطاقات المطور
+        // 2026", Annex (1), pages 9-15, at
+        // hrsd.gov.sa/sites/default/files/2026-03/ntaqat-almtwr.pdf
+        // (sha256 8ecb78d8…27d32e11), retrieved and text-extracted 2026-09-21.
+        //
+        // The annex publishes m and c DIRECTLY — one gradient per activity+band and one
+        // intercept per activity+band+year for 2026, 2027 and 2028. Nothing here is fitted,
+        // interpolated or derived; every number is a cell of that table, transcribed once and
+        // then checked by re-parsing the PDF mechanically (164/164 band rows identical).
+        //
+        // THE INDEPENDENT CHECK THAT MAKES THIS SAFE. The 2021/2023 English guideline carries
+        // its own Annex No.(1) for the same programme. For 39 of the 41 activities the gradient
+        // vector m is IDENTICAL across the two documents — two languages, two layouts, five
+        // years apart. A misread column or a mis-paired activity row could not survive that.
+        // (The two exceptions: Energy & Water, whose 2021 row was a visible duplicate of the
+        // metallic-mining row and was corrected in 2026; and Higher Education for Health
+        // Specialisations, which is new in 2026.)
+        //
+        // EVERY ROW IS UNVERIFIED. "Verified" here means one thing only: the Ministry published
+        // a worked example for that activity and this code reproduces its stated answer. That is
+        // true of Manufacturing and of nothing else, so Manufacturing alone carries
+        // nitaqat.curve.MANUFACTURING.verified = 1 and the other 41 carry 0. A band computed
+        // from an unverified curve is labelled provisional all the way to the screen.
+        //
+        // WHAT IS DELIBERATELY NOT HERE. Eight of the product's own coarse activity codes
+        // (RETAIL, ICT, HEALTHCARE, EDUCATION, HOSPITALITY, TRANSPORT, PROF_SERVICES,
+        // ADMIN_SUPPORT) each span SEVERAL annex rows whose floors differ by up to 58
+        // percentage points — "Ladies Goods and Mobiles" is 82.00% where general retail is
+        // 23.25%. Picking one row for them would hand a customer a confident wrong band, so
+        // they keep refusing and the specific MHRSD activities are offered alongside them.
+        var effAnnex26 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var effAnnex27 = new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var effAnnex28 = new DateTime(2028, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        const string annex26Source =
+            "MHRSD Nitaqat Mutawar procedural guideline 2026, Annex (1), page {PAGE}, row "
+            + "\"{ACTIVITY}\". Read from hrsd.gov.sa/sites/default/files/2026-03/ntaqat-almtwr.pdf "
+            + "on 2026-09-21. Published coefficient, not derived. Gradient cross-checked against "
+            + "Annex No.(1) of the 2021/2023 English guideline "
+            + "(hrsd.gov.sa/sites/default/files/2023-06/E20210523.pdf).";
+
+        foreach (var a in Annex2026)
+        {
+            // UNVERIFIED unless the Ministry published a worked example for THIS activity.
+            var verified = a.Code == "MANUFACTURING";
+            list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                $"nitaqat.curve.{a.Code}.verified", verified ? "1" : "0", "decimal",
+                effAnnex26, null,
+                (verified
+                    ? "VERIFIED — the Ministry's own worked example for this activity (400 workers, "
+                    + "35.00% Saudi) is reproduced exactly by these constants. "
+                    : "UNVERIFIED — transcribed from the published annex but no Ministry worked "
+                    + "example exists for this activity to reproduce. Bands are provisional. ")
+                + annex26Source.Replace("{PAGE}", a.Page.ToString()).Replace("{ACTIVITY}", a.AnnexName)));
+
+            foreach (var b in a.Bands)
+            {
+                var src = annex26Source.Replace("{PAGE}", a.Page.ToString()).Replace("{ACTIVITY}", a.AnnexName);
+                var flag = verified ? "VERIFIED. " : "UNVERIFIED — provisional. ";
+
+                // m is published once per activity+band and does not move by year. The annex
+                // gives no end date, so neither does this row.
+                list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                    $"nitaqat.curve.{a.Code}.{b.Band}.m", Dec(b.M), "decimal",
+                    effAnnex26, null,
+                    $"{flag}Curve gradient m for {a.AnnexName} / {b.Band}. {src}"));
+
+                // c is published per year. The 2028 column is open-ended because the guideline
+                // says the third-year value "will be used in the third year and beyond" — that
+                // is the document's own rule, not an assumption made here.
+                list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                    $"nitaqat.curve.{a.Code}.{b.Band}.c", Dec(b.C2026), "decimal",
+                    effAnnex26, effAnnex27,
+                    $"{flag}Curve intercept c for {a.AnnexName} / {b.Band}, C-2026. {src}"));
+                list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                    $"nitaqat.curve.{a.Code}.{b.Band}.c", Dec(b.C2027), "decimal",
+                    effAnnex27, effAnnex28,
+                    $"{flag}Curve intercept c for {a.AnnexName} / {b.Band}, C-2027. {src}"));
+                list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                    $"nitaqat.curve.{a.Code}.{b.Band}.c", Dec(b.C2028), "decimal",
+                    effAnnex28, null,
+                    $"{flag}Curve intercept c for {a.AnnexName} / {b.Band}, C-2028 and beyond "
+                    + $"(the guideline applies the third-year value in the third year and beyond). {src}"));
+            }
+        }
+
+        // The 2023/2024 Manufacturing constants ARE reproduced against the Ministry's worked
+        // example, so they carry the flag over their own window too. Without it, a band computed
+        // for a closed 2023 period would be reported provisional today although it was checked —
+        // NitaqatCurve treats an absent flag as unverified, by design.
+        list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "nitaqat.curve.MANUFACTURING.verified", "1", "decimal", effCurve23, curveExpiry,
+            "VERIFIED. The Ministry's worked example for Manufacturing (400 workers, 35.00% Saudi "
+            + "-> 22.15 / 30.07 / 34.93 / 40.83, High Green) is reproduced exactly by these "
+            + $"constants. {curveSource}"));
 
         // m (gradient) — published per activity, not per year, so one row each.
         foreach (var (band, m) in new[]
@@ -416,7 +525,7 @@ public static class StatutoryRuleSeeder
     /// </summary>
     private static StatutoryRule RuleUntil(
         string country, string jurisdiction, string key, string value,
-        string dataType, DateTime effectiveFrom, DateTime effectiveTo, string description)
+        string dataType, DateTime effectiveFrom, DateTime? effectiveTo, string description)
     {
         var r = Rule(country, jurisdiction, key, value, dataType, effectiveFrom, description);
         r.EffectiveTo = effectiveTo;
@@ -441,4 +550,249 @@ public static class StatutoryRuleSeeder
             CreatedAtUtc = Ts,
             CreatedBy    = null,
         };
+
+    private static string Dec(decimal d) =>
+        d.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>One band's published curve coefficients from Annex (1) of the 2026 guideline.</summary>
+    internal sealed record AnnexBand(string Band, decimal M, decimal C2026, decimal C2027, decimal C2028);
+
+    /// <summary>One activity's row block in Annex (1), with the page it was read from.</summary>
+    internal sealed record AnnexActivity(string Code, string AnnexName, int Page, IReadOnlyList<AnnexBand> Bands)
+    {
+        public AnnexActivity(string code, string annexName, int page,
+            (string, decimal, decimal, decimal, decimal) low,
+            (string, decimal, decimal, decimal, decimal) medium,
+            (string, decimal, decimal, decimal, decimal) high,
+            (string, decimal, decimal, decimal, decimal) platinum)
+            : this(code, annexName, page, new[] { low, medium, high, platinum }
+                .Select(t => new AnnexBand(t.Item1, t.Item2, t.Item3, t.Item4, t.Item5)).ToList())
+        { }
+    }
+
+    /// <summary>
+    /// Annex (1) of the MHRSD 2026 Nitaqat Mutawar procedural guideline, pages 9-15, verbatim.
+    /// Bands in the order the annex prints them: Low Green, Medium Green, High Green, Platinum.
+    /// Columns: m (curve gradient), then c for 2026, 2027 and 2028.
+    ///
+    /// <para>Exposed to tests (InternalsVisibleTo) so the published table itself can be asserted —
+    /// notably that the ladder never crosses and that no activity is half-loaded.</para>
+    ///
+    /// <para>WHOLESALE appears alongside RETAIL_GENERAL with identical constants on purpose: they
+    /// are two catalogue names for the SAME annex row, "البيع بالجملة والتجزئة العامة" (General
+    /// Wholesale and Retail). The annex publishes no wholesale-only curve.</para>
+    /// </summary>
+    internal static readonly AnnexActivity[] Annex2026 =
+    {
+        new("AGRI_ANIMAL_EQUESTRIAN", "Agriculture & Animal Production, their Services and Equestrian Clubs", 9,
+            ("LOWGREEN", 0.19m, 4.38m, 4.38m, 4.38m),
+            ("MEDIUMGREEN", 0.58m, 5.13m, 5.13m, 5.13m),
+            ("HIGHGREEN", 0.58m, 9.38m, 9.38m, 9.38m),
+            ("PLATINUM", 0.58m, 14.38m, 14.38m, 14.38m)),
+        new("HYDROCARBONS", "Hydrocarbons and their Processing", 9,
+            ("LOWGREEN", 4.98m, 5.62m, 7.62m, 9.62m),
+            ("MEDIUMGREEN", 6.00m, 20.00m, 22.00m, 24.00m),
+            ("HIGHGREEN", 6.00m, 22.00m, 24.00m, 26.00m),
+            ("PLATINUM", 6.00m, 24.00m, 26.00m, 28.00m)),
+        new("MINING_METALLIC", "Mining of Metallic Minerals and Precious Stones", 9,
+            ("LOWGREEN", 1.68m, 16.00m, 16.00m, 16.00m),
+            ("MEDIUMGREEN", 1.87m, 19.00m, 19.00m, 19.00m),
+            ("HIGHGREEN", 2.08m, 28.00m, 28.00m, 28.00m),
+            ("PLATINUM", 6.00m, 23.00m, 23.00m, 23.00m)),
+        new("MINING_NONMETALLIC", "Mining of Non-metallic and Industrial Minerals", 9,
+            ("LOWGREEN", 1.68m, 18.00m, 20.00m, 22.00m),
+            ("MEDIUMGREEN", 1.87m, 19.00m, 21.00m, 23.00m),
+            ("HIGHGREEN", 2.08m, 21.00m, 23.00m, 25.00m),
+            ("PLATINUM", 6.00m, 25.00m, 27.00m, 29.00m)),
+        new("MINING_BUILDING_MATERIALS", "Building Materials Mining", 9,
+            ("LOWGREEN", 0.00m, 7.00m, 7.00m, 7.00m),
+            ("MEDIUMGREEN", 0.00m, 10.00m, 10.00m, 10.00m),
+            ("HIGHGREEN", 0.00m, 13.00m, 13.00m, 13.00m),
+            ("PLATINUM", 6.00m, 23.00m, 23.00m, 23.00m)),
+        new("ENERGY_WATER", "Energy, Water and their Services", 10,
+            ("LOWGREEN", 1.35m, 8.36m, 10.36m, 12.36m),
+            ("MEDIUMGREEN", 2.60m, 9.32m, 11.32m, 13.32m),
+            ("HIGHGREEN", 3.00m, 17.18m, 19.18m, 21.18m),
+            ("PLATINUM", 3.00m, 32.93m, 34.93m, 36.93m)),
+        new("MANUFACTURING", "Manufacturing", 10,
+            ("LOWGREEN", 1.68m, 15.08m, 18.08m, 21.08m),
+            ("MEDIUMGREEN", 1.87m, 21.87m, 24.87m, 27.87m),
+            ("HIGHGREEN", 2.08m, 23.97m, 26.97m, 29.97m),
+            ("PLATINUM", 2.08m, 29.87m, 32.87m, 35.87m)),
+        new("CONSTRUCTION", "Construction and Building Contracting", 10,
+            ("LOWGREEN", -0.37m, 14.17m, 16.17m, 18.17m),
+            ("MEDIUMGREEN", -0.37m, 16.17m, 18.17m, 20.17m),
+            ("HIGHGREEN", 0.00m, 17.50m, 19.50m, 21.50m),
+            ("PLATINUM", 0.00m, 22.50m, 24.50m, 26.50m)),
+        new("OPS_MAINTENANCE", "Operations & Maintenance", 10,
+            ("LOWGREEN", 0.14m, 17.12m, 18.12m, 19.12m),
+            ("MEDIUMGREEN", 0.14m, 21.12m, 22.12m, 23.12m),
+            ("HIGHGREEN", 0.48m, 24.96m, 25.96m, 26.96m),
+            ("PLATINUM", 0.76m, 29.09m, 30.09m, 31.09m)),
+        new("CLEANING_LAUNDRY", "Cleaning Contracting and Laundries", 10,
+            ("LOWGREEN", -0.37m, 12.17m, 12.17m, 12.17m),
+            ("MEDIUMGREEN", -0.37m, 14.17m, 14.17m, 14.17m),
+            ("HIGHGREEN", 0.00m, 17.00m, 17.00m, 17.00m),
+            ("PLATINUM", 0.00m, 22.00m, 22.00m, 22.00m)),
+        new("RETAIL_GENERAL", "General Wholesale and Retail", 10,
+            ("LOWGREEN", 2.47m, 23.25m, 26.25m, 29.25m),
+            ("MEDIUMGREEN", 2.47m, 27.72m, 30.72m, 33.72m),
+            ("HIGHGREEN", 2.67m, 30.41m, 33.41m, 36.41m),
+            ("PLATINUM", 2.84m, 38.91m, 41.91m, 44.91m)),
+        new("WHOLESALE", "General Wholesale and Retail", 10,
+            ("LOWGREEN", 2.47m, 23.25m, 26.25m, 29.25m),
+            ("MEDIUMGREEN", 2.47m, 27.72m, 30.72m, 33.72m),
+            ("HIGHGREEN", 2.67m, 30.41m, 33.41m, 36.41m),
+            ("PLATINUM", 2.84m, 38.91m, 41.91m, 44.91m)),
+        new("RETAIL_PERFUME_WATCHES", "Retail of Perfumes and Watches", 11,
+            ("LOWGREEN", 2.47m, 25.25m, 30.25m, 35.25m),
+            ("MEDIUMGREEN", 2.47m, 29.72m, 34.72m, 39.72m),
+            ("HIGHGREEN", 2.67m, 33.91m, 38.91m, 43.91m),
+            ("PLATINUM", 2.84m, 41.91m, 46.91m, 51.91m)),
+        new("RETAIL_FASHION_MISC", "Retail of Fashion, Accessories and Miscellaneous Goods", 11,
+            ("LOWGREEN", 2.47m, 24.25m, 28.25m, 32.25m),
+            ("MEDIUMGREEN", 2.47m, 28.72m, 32.72m, 36.72m),
+            ("HIGHGREEN", 2.67m, 32.91m, 36.91m, 40.91m),
+            ("PLATINUM", 2.84m, 40.91m, 44.91m, 48.91m)),
+        new("RETAIL_LADIES_MOBILE", "Ladies Goods, Sales and Repair of Mobiles", 11,
+            ("LOWGREEN", 0.00m, 82.00m, 82.00m, 82.00m),
+            ("MEDIUMGREEN", 0.00m, 85.00m, 85.00m, 85.00m),
+            ("HIGHGREEN", 0.00m, 89.00m, 89.00m, 89.00m),
+            ("PLATINUM", 0.27m, 93.42m, 93.42m, 93.42m)),
+        new("TELECOM_SOLUTIONS", "Communication Solutions", 11,
+            ("LOWGREEN", 2.19m, 27.76m, 29.76m, 31.76m),
+            ("MEDIUMGREEN", 2.52m, 36.76m, 38.76m, 40.76m),
+            ("HIGHGREEN", 2.91m, 42.02m, 44.02m, 46.02m),
+            ("PLATINUM", 3.22m, 48.15m, 50.15m, 52.15m)),
+        new("POST", "Post Sector", 11,
+            ("LOWGREEN", 0.81m, 17.10m, 17.10m, 17.10m),
+            ("MEDIUMGREEN", 0.81m, 22.10m, 22.10m, 22.10m),
+            ("HIGHGREEN", 1.01m, 32.50m, 32.50m, 32.50m),
+            ("PLATINUM", 1.01m, 42.50m, 42.50m, 42.50m)),
+        new("IT_INFRASTRUCTURE", "IT Infrastructure", 11,
+            ("LOWGREEN", 3.61m, 17.77m, 19.77m, 21.77m),
+            ("MEDIUMGREEN", 3.61m, 24.64m, 26.64m, 28.64m),
+            ("HIGHGREEN", 3.61m, 40.00m, 42.00m, 44.00m),
+            ("PLATINUM", 3.61m, 50.00m, 52.00m, 54.00m)),
+        new("TELECOM_INFRASTRUCTURE", "Communication Infrastructure", 12,
+            ("LOWGREEN", 0.00m, 17.00m, 19.00m, 21.00m),
+            ("MEDIUMGREEN", 0.00m, 21.00m, 23.00m, 25.00m),
+            ("HIGHGREEN", 0.00m, 23.50m, 25.50m, 27.50m),
+            ("PLATINUM", 0.00m, 28.50m, 30.50m, 32.50m)),
+        new("TELECOM_OPS_MAINTENANCE", "Operations & Maintenance in Communications", 12,
+            ("LOWGREEN", 0.00m, 17.00m, 19.00m, 21.00m),
+            ("MEDIUMGREEN", 0.39m, 20.98m, 22.98m, 24.98m),
+            ("HIGHGREEN", 0.39m, 23.83m, 25.83m, 27.83m),
+            ("PLATINUM", 0.39m, 29.00m, 31.00m, 33.00m)),
+        new("IT_OPS_MAINTENANCE", "Operations & Maintenance in IT", 12,
+            ("LOWGREEN", 4.85m, 15.96m, 17.96m, 19.96m),
+            ("MEDIUMGREEN", 4.85m, 24.42m, 26.42m, 28.42m),
+            ("HIGHGREEN", 4.85m, 27.42m, 29.42m, 31.42m),
+            ("PLATINUM", 4.85m, 33.36m, 35.36m, 37.36m)),
+        new("IT_SOLUTIONS", "IT Solutions", 12,
+            ("LOWGREEN", 2.19m, 26.76m, 28.76m, 30.76m),
+            ("MEDIUMGREEN", 2.34m, 32.54m, 34.54m, 36.54m),
+            ("HIGHGREEN", 2.91m, 40.02m, 42.02m, 44.02m),
+            ("PLATINUM", 3.22m, 48.15m, 50.15m, 52.15m)),
+        new("TRANSPORT_LAND_STORAGE", "Land Transportation and Storage", 12,
+            ("LOWGREEN", 1.15m, 12.09m, 13.09m, 14.09m),
+            ("MEDIUMGREEN", 1.15m, 16.20m, 17.20m, 18.20m),
+            ("HIGHGREEN", 1.50m, 17.82m, 18.82m, 19.82m),
+            ("PLATINUM", 1.71m, 27.74m, 28.74m, 29.74m)),
+        new("TRANSPORT_AIR_SEA", "Air and Sea Transportation", 12,
+            ("LOWGREEN", 1.45m, 26.57m, 28.57m, 30.57m),
+            ("MEDIUMGREEN", 1.45m, 39.98m, 41.98m, 43.98m),
+            ("HIGHGREEN", 1.86m, 48.38m, 50.38m, 52.38m),
+            ("PLATINUM", 2.67m, 56.29m, 58.29m, 60.29m)),
+        new("RESTAURANTS_SERVICE", "Restaurants with Service (excluding Fast Food)", 13,
+            ("LOWGREEN", 1.58m, 13.47m, 14.47m, 15.47m),
+            ("MEDIUMGREEN", 1.67m, 16.98m, 17.98m, 18.98m),
+            ("HIGHGREEN", 1.67m, 20.26m, 21.26m, 22.26m),
+            ("PLATINUM", 1.67m, 26.71m, 27.71m, 28.71m)),
+        new("FAST_FOOD_ICECREAM", "Fast Food and Ice Cream", 13,
+            ("LOWGREEN", 1.58m, 15.08m, 16.08m, 17.08m),
+            ("MEDIUMGREEN", 1.67m, 20.04m, 21.04m, 22.04m),
+            ("HIGHGREEN", 1.67m, 23.27m, 24.27m, 25.27m),
+            ("PLATINUM", 1.67m, 29.26m, 30.26m, 31.26m)),
+        new("COFFEE_DRINKS", "Coffee and Drinks", 13,
+            ("LOWGREEN", 1.58m, 16.98m, 17.98m, 18.98m),
+            ("MEDIUMGREEN", 1.67m, 20.49m, 21.49m, 22.49m),
+            ("HIGHGREEN", 1.67m, 31.42m, 32.42m, 33.42m),
+            ("PLATINUM", 1.67m, 35.52m, 36.52m, 37.52m)),
+        new("CATERING", "Catering", 13,
+            ("LOWGREEN", 1.58m, 14.46m, 15.46m, 16.46m),
+            ("MEDIUMGREEN", 1.67m, 17.97m, 18.97m, 19.97m),
+            ("HIGHGREEN", 1.67m, 21.25m, 22.25m, 23.25m),
+            ("PLATINUM", 1.67m, 27.93m, 28.93m, 29.93m)),
+        new("SECURITY_RECRUITMENT", "Employment, Recruitment and Security Services", 13,
+            ("LOWGREEN", 0.34m, 74.50m, 74.50m, 74.50m),
+            ("MEDIUMGREEN", 0.34m, 77.50m, 77.50m, 77.50m),
+            ("HIGHGREEN", 0.34m, 80.50m, 80.50m, 80.50m),
+            ("PLATINUM", 0.34m, 84.50m, 84.50m, 84.50m)),
+        new("FINANCE", "Finance", 13,
+            ("LOWGREEN", 2.60m, 50.00m, 50.00m, 50.00m),
+            ("MEDIUMGREEN", 2.60m, 57.00m, 57.00m, 57.00m),
+            ("HIGHGREEN", 2.60m, 62.00m, 62.00m, 62.00m),
+            ("PLATINUM", 2.60m, 65.00m, 65.00m, 65.00m)),
+        new("BUSINESS_SERVICES", "Business Services", 14,
+            ("LOWGREEN", 1.03m, 33.78m, 36.78m, 39.78m),
+            ("MEDIUMGREEN", 1.03m, 42.62m, 45.62m, 48.62m),
+            ("HIGHGREEN", 2.19m, 43.62m, 46.62m, 49.62m),
+            ("PLATINUM", 2.19m, 54.82m, 57.82m, 60.82m)),
+        new("SOCIAL_SERVICES", "Social Services", 14,
+            ("LOWGREEN", 1.83m, 14.82m, 16.82m, 18.82m),
+            ("MEDIUMGREEN", 2.38m, 26.90m, 28.90m, 30.90m),
+            ("HIGHGREEN", 3.50m, 32.74m, 34.74m, 36.74m),
+            ("PLATINUM", 3.50m, 56.52m, 58.52m, 60.52m)),
+        new("PERSONAL_SERVICES", "Personal Services", 14,
+            ("LOWGREEN", 1.46m, 14.07m, 14.07m, 14.07m),
+            ("MEDIUMGREEN", 1.92m, 20.36m, 20.36m, 20.36m),
+            ("HIGHGREEN", 4.40m, 24.63m, 24.63m, 24.63m),
+            ("PLATINUM", 5.00m, 26.13m, 26.13m, 26.13m)),
+        new("HIGHER_EDUCATION", "Higher Education Providers", 14,
+            ("LOWGREEN", 0.00m, 34.00m, 34.00m, 34.00m),
+            ("MEDIUMGREEN", 0.00m, 48.00m, 48.00m, 48.00m),
+            ("HIGHGREEN", 0.43m, 75.37m, 75.37m, 75.37m),
+            ("PLATINUM", 0.43m, 82.00m, 82.00m, 82.00m)),
+        new("HIGHER_EDUCATION_HEALTH", "Higher Education for Health Specialisations", 14,
+            ("LOWGREEN", 0.00m, 25.00m, 25.00m, 25.00m),
+            ("MEDIUMGREEN", 0.00m, 30.00m, 30.00m, 30.00m),
+            ("HIGHGREEN", 0.00m, 35.00m, 35.00m, 35.00m),
+            ("PLATINUM", 0.00m, 37.00m, 37.00m, 37.00m)),
+        new("SCHOOLS_GIRLS_KG", "Girls Schools, Kindergartens, Babysitting", 14,
+            ("LOWGREEN", 0.00m, 51.00m, 51.00m, 51.00m),
+            ("MEDIUMGREEN", 0.00m, 66.00m, 66.00m, 66.00m),
+            ("HIGHGREEN", 0.00m, 89.56m, 89.56m, 89.56m),
+            ("PLATINUM", 0.00m, 95.00m, 95.00m, 95.00m)),
+        new("SCHOOLS_INTERNATIONAL", "International Schools", 15,
+            ("LOWGREEN", 2.30m, 4.95m, 4.95m, 4.95m),
+            ("MEDIUMGREEN", 2.30m, 14.19m, 14.19m, 14.19m),
+            ("HIGHGREEN", 2.30m, 19.99m, 19.99m, 19.99m),
+            ("PLATINUM", 2.30m, 28.77m, 28.77m, 28.77m)),
+        new("MEDICAL_LABS_HEALTH", "Medical Labs and Health Services", 15,
+            ("LOWGREEN", 0.35m, 25.74m, 27.74m, 29.74m),
+            ("MEDIUMGREEN", 0.35m, 30.74m, 32.74m, 34.74m),
+            ("HIGHGREEN", 0.35m, 34.24m, 36.24m, 38.24m),
+            ("PLATINUM", 0.35m, 34.74m, 36.74m, 38.74m)),
+        new("ACCOMMODATION_LEISURE_TOURISM", "Accommodation, Leisure, Tourism", 15,
+            ("LOWGREEN", 2.42m, 24.60m, 26.60m, 28.60m),
+            ("MEDIUMGREEN", 2.42m, 31.02m, 33.02m, 35.02m),
+            ("HIGHGREEN", 2.59m, 36.40m, 38.40m, 40.40m),
+            ("PLATINUM", 2.59m, 42.52m, 44.52m, 46.52m)),
+        new("BASIC_COMMODITIES_FUEL", "Basic Commodities and Fuel", 15,
+            ("LOWGREEN", 0.17m, 9.86m, 10.86m, 11.86m),
+            ("MEDIUMGREEN", 0.56m, 12.22m, 13.22m, 14.22m),
+            ("HIGHGREEN", 0.56m, 22.59m, 23.59m, 24.59m),
+            ("PLATINUM", 1.19m, 26.09m, 27.09m, 28.09m)),
+        new("SCHOOLS_BOYS_COMPLEX", "Boys Schools, Boys and Girls School Complexes", 15,
+            ("LOWGREEN", 1.31m, 29.30m, 29.30m, 29.30m),
+            ("MEDIUMGREEN", 1.31m, 39.15m, 39.15m, 39.15m),
+            ("HIGHGREEN", 1.31m, 50.27m, 50.27m, 50.27m),
+            ("PLATINUM", 1.31m, 61.00m, 61.00m, 61.00m)),
+        new("COMBINED_ENTITIES", "Combined Entities", 15,
+            ("LOWGREEN", 2.23m, 10.99m, 10.99m, 10.99m),
+            ("MEDIUMGREEN", 2.23m, 22.40m, 22.40m, 22.40m),
+            ("HIGHGREEN", 2.23m, 33.81m, 33.81m, 33.81m),
+            ("PLATINUM", 2.23m, 44.00m, 44.00m, 44.00m)),
+    };
 }

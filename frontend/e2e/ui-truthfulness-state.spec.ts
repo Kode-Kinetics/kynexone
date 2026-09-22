@@ -82,6 +82,24 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(privacy).toContain('must be confirmed in the applicable customer agreement');
     expect(privacy).toContain('does not claim ISO 27001 or SOC 2 Type II certification');
 
+    /* 2026-09-21 rewrite (scratchpad/privacy-policy.md). Each of these was a published promise the
+       product did not keep: the retention sweep that would anonymise is switched off and the delete
+       path stamps seven years, not 90 days; no legal-hold mechanism exists; no "Privacy & Cookies"
+       screen exists and the app sets no cookies; bank details are permission-gated, not masked;
+       access tokens last 30 minutes, not 24 hours. They stay out until the code makes them true. */
+    expect(privacy).not.toContain('Anonymised within 90 days');
+    expect(privacy.toLowerCase()).not.toContain('legal hold');
+    expect(privacy).not.toContain('Privacy &amp; Cookies');
+    expect(privacy).not.toContain('masked in user-facing responses');
+    expect(privacy).not.toContain('Session tokens expire within 24 hours');
+    expect(privacy).not.toContain('explicit consent is collected');
+    // The disclosures a Saudi customer's counsel will look for, pinned so they cannot be softened away.
+    expect(privacy).toContain('does not automatically delete or anonymise personal data');
+    expect(privacy).toContain('None of the platform&apos;s data is stored in the Kingdom of Saudi Arabia');
+    expect(privacy).toContain('Backblaze B2 in a United States region');
+    expect(privacy).toContain('gpt-oss:120b');
+    expect(privacy).toContain('does not remove or disguise personal data before sending it to the model');
+
     expect(security).not.toContain('Every table that holds tenant-owned data');
     expect(security).not.toContain('TLS 1.2 minimum enforced');
     expect(security).not.toContain('Every push to main triggers a Docker build and deploy');
