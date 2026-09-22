@@ -41,6 +41,21 @@ const FILLER_NAMES = [
   'Hassan Al-Dosari', 'Mariam Youssef', 'Victor Almeida', 'Sara Ahmadi', 'Bilal Rahman',
   'Layla Al-Mutairi', 'Kenji Tanaka', 'Grace Mwangi', 'Tomas Novak',
 ];
+/**
+ * A structurally valid Saudi IBAN (SA + 2 check digits + 22 BBAN digits), check digits computed by
+ * ISO 13616 mod-97. The payroll validation engine runs the real mod-97 check and raises a BLOCKING
+ * `INVALID_IBAN` error, so a made-up 24-character string stops every run at approval — and a
+ * missing one raises `MISSING_IBAN`, which is what held the fixture run in Processed.
+ */
+function saudiIban(seed: number): string {
+  // A Saudi IBAN is exactly 24 characters: 'SA' + 2 check digits + a 20-digit BBAN.
+  const bban = `80${String(seed).padStart(18, '0')}`.slice(-20);
+  // Rearrange to BBAN + country code + '00', mapping S→28 and A→10, then take the remainder mod 97.
+  let remainder = 0;
+  for (const ch of `${bban}281000`) remainder = (remainder * 10 + Number(ch)) % 97;
+  return `SA${String(98 - remainder).padStart(2, '0')}${bban}`;
+}
+
 /** The grade benefits-admin.spec.ts requires, and which only some employees hold. */
 const GRADE = { code: 'IFL-STD', name: 'IFL Standard', level: 5, min: 3000, mid: 9000, max: 60000 };
 
@@ -247,26 +262,49 @@ async function ensureUsers(
 }
 
 /**
- * Confine the company-scoped identities. Without this every user created above is group-scope (the
- * platform endpoint has no scope parameter), and the entire Chrome security gate — which exists to
- * prove company confinement — would pass vacuously because nobody is confined.
+ * Give every provisioned user its entity scope. Two failure modes make this mandatory, not optional:
+ *
+ *  • WITHOUT A GRANT, A NON-ADMIN USER SEES NOTHING. `POST /api/platform/tenants/{id}/users` sets
+ *    `IsGroupScope` only for the Admin role, and it has no scope parameter at all, so an HR Manager
+ *    or Finance Approver it creates resolves to ZERO accessible companies. Every company-owned row
+ *    is then filtered out of their queries — the payroll maker/checker got a flat 404 from
+ *    `/api/payroll/runs/{id}/approve` for a run that plainly existed. A 404 reads as "no such run",
+ *    not as "this account has no company access", which is what cost the diagnosis.
+ *  • WITHOUT A *CONFINED* GRANT, THE SECURITY GATE PROVES NOTHING. If the company-scoped identities
+ *    were group-scope instead, every "bakery data is not visible to the dairy user" assertion would
+ *    pass because there is nothing to confine.
+ *
+ * So group identities get `AllCurrentAndFutureCompanies` and company identities get one
+ * `SelectedCompanies` grant per company they are entitled to — both real product grant modes,
+ * created through the product's own endpoint.
  */
 async function ensureEntityGrants(
   adminToken: string, fixture: FixtureTenant, userIds: Map<string, string>,
   companies: Array<{ code: string; id: string; countryCode: string }>,
 ): Promise<void> {
-  const scoped = fixture.users.filter((u) => u.companyCode || u.companyCodes);
-  if (scoped.length === 0) return;
+  if (fixture.users.length === 0) return;
 
   const current = items(expectOk(
     await call('GET', '/api/access/entity-grants', { token: adminToken }), 'list entity grants',
   ).body);
-  const held = new Set(current.map((g: any) => `${g.userId ?? g.UserId}|${g.companyId ?? g.CompanyId}`));
+  const held = new Set(current.map((g: any) => `${g.userId ?? g.UserId}|${g.companyId ?? g.CompanyId ?? 'all'}`));
 
-  for (const user of scoped) {
+  for (const user of fixture.users) {
     const userId = userIds.get(user.email.toLowerCase());
     if (!userId) throw new Error(`[bootstrap] No user id for '${user.email}' — cannot scope it.`);
-    const codes = user.companyCodes ?? [user.companyCode!];
+    const codes = user.companyCodes ?? (user.companyCode ? [user.companyCode] : null);
+
+    if (codes === null) {
+      if (held.has(`${userId}|all`)) continue;
+      const res = await call('POST', '/api/access/entity-grants', {
+        token: adminToken,
+        body: { userId, role: user.role, grantMode: 'AllCurrentAndFutureCompanies' },
+      });
+      // 409 is "this grant already exists" — idempotent, not an error.
+      expectOk(res, `grant ${user.email} → all companies`, [200, 201, 409]);
+      continue;
+    }
+
     for (const code of codes) {
       const company = companies.find((c) => c.code === code);
       if (!company) throw new Error(`[bootstrap] '${user.email}' is scoped to unknown company '${code}'.`);
@@ -275,7 +313,6 @@ async function ensureEntityGrants(
         token: adminToken,
         body: { userId, companyId: company.id, role: user.role, grantMode: 'SelectedCompanies' },
       });
-      // 409 is "this grant already exists" — idempotent, not an error.
       expectOk(res, `grant ${user.email} → ${code}`, [200, 201, 409]);
     }
   }
@@ -353,11 +390,17 @@ async function ensureEmployees(
           contractType: 'Unlimited',
           joiningDate: '2024-01-01T00:00:00Z',
           payrollProfile: {
+            bankName: 'Al Rajhi Bank',
+            // Required, and really validated: see saudiIban() above.
+            iban: saudiIban(6080101675 + seq),
+            accountNumber: String(6080101675 + seq),
             paymentMethod: 'BankTransfer',
             salaryCurrency: company.code.endsWith('-IN') ? 'INR' : 'SAR',
             wpsEligible: true,
             eosbEligible: true,
             socialInsuranceReference: isSaudi ? `GOSI-${code}` : null,
+            // KSA regulatory reporting blocks approval without it.
+            molId: `MOL-${code}`,
           },
           salaryBreakdown: {
             basicSalary: 6000 + n * 250,
@@ -371,7 +414,11 @@ async function ensureEmployees(
           // and friends fall through its switch untouched, so the employee would be created and
           // then refuse to activate, with nothing in the response saying why.
           // The set is the union of what EmployeeReadinessEvaluator's statutory floor asks for
-          // across the Gulf packs a tenant is provisioned with, not just the company's own country.
+          // across EVERY Gulf pack a tenant is provisioned with, not just the company's own country:
+          // a Saudi national in a Saudi company is currently refused activation until it also carries
+          // an Emirates ID and a Qatar ID. That looks like a product bug rather than a fixture
+          // concern, but the bootstrap's job is to build the world the product will accept, so it
+          // supplies the whole set and the oddity is recorded here rather than hidden.
           complianceRecords: expatWithGap || !isSaudi ? [] : [
             idRecord('civil_id', 'Civil ID', `1${String(200000000 + seq).slice(0, 9)}`),
             idRecord('id_number', 'Government ID number', `1${String(300000000 + seq).slice(0, 9)}`),
@@ -380,6 +427,11 @@ async function ensureEmployees(
             idRecord('emirates_id', 'Emirates ID', `784-1990-${String(1000000 + seq).slice(0, 7)}-1`),
             idRecord('work_permit', 'Work permit number', `WP-${code}`),
             idRecord('passport_number', 'Passport number', `P${String(10000000 + seq).slice(0, 8)}`),
+            idRecord('qid', 'Qatar ID', `2${String(8000000 + seq).slice(0, 10)}`),
+            idRecord('residency_number', 'Residency number', `RES-${code}`),
+            idRecord('labor_card_number', 'Labour card number', `LC-${code}`),
+            idRecord('muqeem_reference', 'Muqeem reference', `MQ-${code}`),
+            idRecord('qiwa_contract_reference', 'Qiwa contract reference', `QC-${code}`),
           ],
           acknowledgeDuplicate: true,
         },
@@ -444,6 +496,165 @@ async function activateEmployees(adminToken: string, slug: string, floor: number
   return active;
 }
 
+// ── Salaries ──────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A salary structure per company, assigned to every one of its employees.
+ *
+ * `EmployeeCreateRequest.salaryBreakdown` alone is NOT enough, and the way it fails is silent: the
+ * service only materialises an assignment when the employee resolves to a structure (via a grade or
+ * an explicit code), so a 14-employee tenant produced a payroll run with `employeeCount: 14` and a
+ * gross total of one person's package. Every downstream money assertion would then be comparing
+ * numbers that are internally consistent and completely wrong.
+ */
+async function ensureSalaries(
+  adminToken: string, companies: Array<{ code: string; id: string; countryCode: string }>,
+): Promise<number> {
+  const structures = items(expectOk(
+    await call('GET', '/api/payroll/salary-structures', { token: adminToken }), 'list salary structures',
+  ).body);
+  const assigned = new Set(items((await call(
+    'GET', '/api/payroll/employee-salary-structures?page=1&pageSize=500', { token: adminToken },
+  )).body).map((a: any) => String(a.employeeId ?? a.EmployeeId)));
+
+  let count = 0;
+  for (const company of companies) {
+    const currency = company.countryCode === 'IN' ? 'INR' : 'SAR';
+    const structureCode = `E2E-STD-${company.code}`;
+    let structureId = structures.find((s: any) => (s.code ?? s.Code) === structureCode)?.id;
+    if (!structureId) {
+      const created = await call('POST', '/api/payroll/salary-structures', {
+        token: adminToken, companyId: company.id,
+        body: {
+          code: structureCode, name: `${company.code} standard structure`, currency,
+          effectiveDate: '2024-01-01', companyId: company.id, components: [], isActive: true,
+        },
+      });
+      expectOk(created, `create salary structure '${structureCode}'`, [200, 201]);
+      structureId = created.body.id ?? created.body.Id;
+    }
+
+    const employees = items((await call(
+      'GET', '/api/employees?page=1&pageSize=200', { token: adminToken, companyId: company.id },
+    )).body);
+    for (const employee of employees) {
+      const id = employee.id ?? employee.Id;
+      if (assigned.has(String(id))) continue;
+      const n = Number(/-E(\d+)$/.exec(String(employee.employeeCode ?? ''))?.[1] ?? 1);
+      const res = await call('POST', '/api/payroll/employee-salary-structures', {
+        token: adminToken, companyId: company.id,
+        body: {
+          employeeId: id, salaryStructureId: structureId,
+          basicSalary: 6000 + n * 250, housingAllowance: 1500, transportAllowance: 500,
+          foodAllowance: 0, mobileAllowance: 0, otherAllowance: 0, fixedDeduction: 0,
+          effectiveDate: '2024-01-01', currency,
+        },
+      });
+      expectOk(res, `assign salary to '${employee.employeeCode}'`, [200, 201]);
+      count++;
+    }
+  }
+  return count;
+}
+
+// ── Payroll ───────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One payroll run per company, and — where the maker/checker personas exist — one of them carried
+ * all the way to `Locked`.
+ *
+ * TWO specs need this and neither could get it from the old seeders either:
+ *   • group-company/security.spec.ts proves a scoped user cannot reach a SIBLING company's payroll
+ *     run. It used to `test.skip(!runId, 'seed has no runs for that company; skipping gracefully')`,
+ *     so the cross-company payroll boundary was never once exercised. A run per company fixes that.
+ *   • gosi-filing.spec.ts reconciles deducted vs recomputed vs ledger over the latest period, which
+ *     requires a run that reached Lock (that is when the GL is posted).
+ *
+ * Maker/checker is respected, not bypassed: PayrollController.Approve refuses the user who processed
+ * the run, and Lock needs `payroll.lock`, which the HR Manager deliberately does not hold. So three
+ * real identities drive it, exactly as the product requires of a human.
+ */
+async function ensurePayrollRuns(
+  fixture: FixtureTenant, adminToken: string,
+  companies: Array<{ code: string; id: string; countryCode: string }>,
+): Promise<string> {
+  const now = new Date();
+  const period = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const year = period.getUTCFullYear();
+  const month = period.getUTCMonth() + 1;
+
+  const existing = items(expectOk(
+    await call('GET', '/api/payroll/runs?page=1&pageSize=50', { token: adminToken }), 'list payroll runs',
+  ).body);
+  const runByCompany = new Map<string, any>();
+  for (const run of existing) {
+    if (run.year === year && run.month === month) runByCompany.set(String(run.companyId ?? run.CompanyId), run);
+  }
+
+  const created: string[] = [];
+  for (const company of companies) {
+    if (runByCompany.has(company.id)) continue;
+    const res = await call('POST', '/api/payroll/runs', {
+      token: adminToken, companyId: company.id,
+      body: { year, month, companyId: company.id, runType: 'Regular' },
+    });
+    // A duplicate period for the company is a 409 — idempotent, not a failure.
+    if (res.status === 409) continue;
+    expectOk(res, `create ${year}-${month} payroll run for '${company.code}'`, [200, 201]);
+    created.push(company.code);
+  }
+
+  // Re-read rather than trusting the create response's shape. Taking the id from the POST body was
+  // how the whole approval chain silently became `/api/payroll/runs/undefined/approve` — a clean
+  // 404 from the route constraint, which looks exactly like "the run does not exist".
+  runByCompany.clear();
+  for (const run of items(expectOk(
+    await call('GET', '/api/payroll/runs?page=1&pageSize=50', { token: adminToken }), 'list payroll runs',
+  ).body)) {
+    if (run.year === year && run.month === month) runByCompany.set(String(run.companyId ?? run.CompanyId), run);
+  }
+
+  // Carry the FIRST company's run through the whole approval chain, when the fixture declares the
+  // three personas it takes. A half-approved run is worse than none, so every step is asserted.
+  const lead = runByCompany.get(companies[0].id);
+  const leadId = lead?.id ?? lead?.Id;
+  const leadStatus = String(lead?.status ?? lead?.Status ?? 'Draft');
+  if (!leadId || leadStatus === 'Locked' || leadStatus === 'Paid') {
+    return `${created.length} run(s) created; lead run already ${leadStatus}`;
+  }
+
+  const maker = fixture.users.find((u) => u.role === 'HR Manager' && !u.companyCode);
+  const checker = fixture.users.find((u) => u.role === 'Finance Approver');
+  if (!maker || !checker) return `${created.length} run(s) created; no maker/checker personas to approve them`;
+
+  expectOk(await call('POST', `/api/payroll/runs/${leadId}/process`, { token: adminToken }),
+    `process the ${year}-${month} run`, [200, 201]);
+
+  const makerToken = await requireTenantLogin(maker, fixture.slug);
+  const checkerToken = await requireTenantLogin(checker, fixture.slug);
+  const decision = { comments: 'e2e fixture world bootstrap', expectedExcludedCount: 0 };
+
+  const makerApproval = await call('POST', `/api/payroll/runs/${leadId}/approve`, { token: makerToken, body: decision });
+  const checkerApproval = makerApproval.status === 200
+    ? await call('POST', `/api/payroll/runs/${leadId}/approve`, { token: checkerToken, body: decision })
+    : makerApproval;
+  const locked = checkerApproval.status === 200
+    ? await call('POST', `/api/payroll/runs/${leadId}/lock`, { token: checkerToken })
+    : checkerApproval;
+
+  if (locked.status !== 200) {
+    // Not fatal for the lanes that only need a run to EXIST, but never silent: a spec that reads
+    // locked-period GOSI totals must be able to see, in this log, that no run reached Lock.
+    console.log(
+      `[bootstrap] ${fixture.slug}: the ${year}-${month} run did NOT reach Locked `
+      + `(HTTP ${locked.status}: ${(locked.body?.message ?? locked.text).slice(0, 200)}). `
+      + 'Specs that reconcile a locked period will fail against this world.',
+    );
+    return `${created.length} run(s) created; lead run stopped before Lock`;
+  }
+  return `${created.length} run(s) created; ${year}-${String(month).padStart(2, '0')} locked`;
+}
+
 // ── Orchestration ─────────────────────────────────────────────────────────────────────────────
 
 export interface ProvisionResult extends WorldManifest { employeesCreated: number }
@@ -470,10 +681,13 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     const gradeId = fixture.slug === 'intelliflow' ? await ensureGrade(adminToken) : null;
     manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId);
     const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
+    const salaries = await ensureSalaries(adminToken, companies);
+    const payroll = fixture.payroll ? await ensurePayrollRuns(fixture, adminToken, companies) : 'no payroll';
     manifest.tenants.push({ slug: fixture.slug, tenantId, companies });
     console.log(
       `[bootstrap] ${fixture.slug}: ${companies.length} compan${companies.length === 1 ? 'y' : 'ies'}, `
-      + `${fixture.users.length + 1} users, ${active} active employees.`,
+      + `${fixture.users.length + 1} users, ${active} active employees, `
+      + `${salaries} salary assignment(s), ${payroll}.`,
     );
   }
 
