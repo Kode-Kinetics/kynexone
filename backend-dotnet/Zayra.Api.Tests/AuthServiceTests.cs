@@ -248,6 +248,84 @@ public class AuthServiceTests
         Assert.True(await db.AuditLogs.AnyAsync(x => x.Action == "auth.refresh_reuse_detected"));
     }
 
+    // Regression for the 2026-09-21 OOM kills. The per-request session check loaded roles, role
+    // permissions and overrides in ONE query, returning their product. On a production-sized admin
+    // that burst killed the 512 MB instance after every login. This pins two things on a relational
+    // provider (InMemory ignores query splitting): the check stays correct on a large graph, and it
+    // runs as split queries so no single result set is the cartesian product.
+    [Fact]
+    public async Task SessionCheck_ProductionSizedAdmin_IsCorrectAndUsesSplitQueries()
+    {
+        const int roleCount = 3, permissionsPerRole = 150, overrideCount = 4;
+        var commands = new SelectCommandCounter();
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseSqlite(connection).AddInterceptors(commands).Options);
+        await db.Database.EnsureCreatedAsync();
+
+        var tenant = new Tenant { Id = Guid.NewGuid(), Name = "Big Co", Slug = "bigco" };
+        var user = new User
+        {
+            Id = Guid.NewGuid(), TenantId = tenant.Id, Tenant = tenant, IsGroupScope = true,
+            Email = "admin@bigco.local", NormalizedEmail = "ADMIN@BIGCO.LOCAL", FullName = "Big Admin",
+            PasswordHash = new Pbkdf2PasswordHasher().Hash("CorrectPassword1!")
+        };
+        db.Tenants.Add(tenant);
+        db.Users.Add(user);
+        var permissions = Enumerable.Range(0, permissionsPerRole)
+            .Select(i => new Permission { Id = Guid.NewGuid(), Key = $"module{i / 10}.action{i}", Module = "M", Description = "d" })
+            .ToList();
+        db.Permissions.AddRange(permissions);
+        var roleNames = new List<string>();
+        for (var r = 0; r < roleCount; r++)
+        {
+            var role = new Role { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = $"Role{r}", NormalizedName = $"ROLE{r}", Description = "d" };
+            roleNames.Add(role.Name);
+            db.Roles.Add(role);
+            db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
+            db.RolePermissions.AddRange(permissions.Select(p => new RolePermission { RoleId = role.Id, PermissionId = p.Id }));
+        }
+        db.UserPermissionOverrides.AddRange(Enumerable.Range(0, overrideCount).Select(i =>
+            new UserPermissionOverride { TenantId = tenant.Id, UserId = user.Id, PermissionKey = permissions[i].Key, Effect = "Allow" }));
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        // Stamp from the STORED row: SQLite returns DateTime with Kind=Unspecified, so a stamp taken
+        // from the in-memory entity would not match what the check reads back.
+        var stored = await db.Users.AsNoTracking().SingleAsync(x => x.Id == user.Id);
+
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new("tenant_id", tenant.Id.ToString()),
+            new(TenantSessionSecurity.SessionStampClaim, TenantSessionSecurity.StampValue(stored)),
+        };
+        claims.AddRange(roleNames.Select(r => new Claim(ClaimTypes.Role, r)));
+        claims.AddRange(permissions.Select(p => new Claim("permission", p.Key)));
+        claims.AddRange(EntityScopeClaims.Build(EntityScopeDescriptor.Group, Array.Empty<EntityAccessGrant>()));
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
+
+        commands.Reset();
+        Assert.True(await TenantSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None));
+
+        // Single-query form = 1 user query (+1 companies). Split form issues one query per collection.
+        Assert.True(commands.Count >= 5, $"Expected split queries for the session check, saw {commands.Count} SELECT command(s).");
+    }
+
+    private sealed class SelectCommandCounter : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
+    {
+        private int _count;
+        public int Count => _count;
+        public void Reset() => _count = 0;
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
+            System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _count);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
+
     [Fact]
     public async Task Login_UsesTenantRefreshTokenExpiryPolicy()
     {

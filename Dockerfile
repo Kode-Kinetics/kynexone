@@ -62,10 +62,17 @@ COPY --from=build /app/publish ./
 # Memory/GC tuning for 512 MB containers (Render free/starter tier).
 # GCConserveMemory=9: most aggressive heap trimming after each GC cycle.
 # EnableDiagnostics=0: skip diagnostic pipes/sockets (-3 MB baseline).
-# GCHeapHardLimit: cap managed heap at 380 MB, leaving headroom for native/stack.
+# gcServer=0: workstation GC. The build stage's setting does NOT carry into this stage, so without
+#   this line ASP.NET's default Server GC ran in production and held far more memory.
+# GCHeapHardLimit: cap managed heap at 320 MiB, leaving ~190 MiB for native/stack.
+#   DOTNET_GC* values are parsed as HEX. The previous value 398458880 was meant as 380 MB decimal
+#   and was read as 0x398458880 ≈ 14.4 GiB, so the cap never engaged and the kernel OOM-killed the
+#   container instead (12 kills 2026-09-20/21). Always write these with the 0x prefix.
+# Render env vars with the same names override these; production sets them explicitly.
+ENV DOTNET_gcServer=0
 ENV DOTNET_GCConserveMemory=9
 ENV DOTNET_EnableDiagnostics=0
-ENV DOTNET_GCHeapHardLimit=398458880
+ENV DOTNET_GCHeapHardLimit=0x14000000
 
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "Zayra.Api.dll"]
