@@ -362,6 +362,49 @@ async function ensureEntityGrants(
 
 // ── Employees ─────────────────────────────────────────────────────────────────────────────────
 
+/**
+ * A department and a designation per company, and every employee placed in them.
+ *
+ * Not organisational decoration: `POST /api/hr-letters/issue` refuses with 409
+ * `unresolved_merge_fields` — "the employee record is missing data the template needs: designation,
+ * department" — so a salary certificate cannot be issued for an employee who has neither. The
+ * default letter templates merge both fields, which makes them part of the minimum viable employee.
+ */
+async function ensureOrgUnits(
+  adminToken: string, company: { code: string; id: string },
+): Promise<{ departmentId: string | null; designationId: string | null }> {
+  const code = company.code.slice(0, 30);
+  const departments = items((await call(
+    'GET', '/api/departments?page=1&pageSize=100', { token: adminToken, companyId: company.id },
+  )).body);
+  let departmentId = departments.find((d: any) => (d.code ?? d.Code) === `${code}-OPS`)?.id ?? null;
+  if (!departmentId) {
+    const created = await call('POST', '/api/departments', {
+      token: adminToken, companyId: company.id,
+      body: { code: `${code}-OPS`, nameEn: 'Operations', nameAr: 'العمليات', isActive: true },
+    });
+    expectOk(created, `create the Operations department in '${company.code}'`, [200, 201]);
+    departmentId = created.body.id ?? created.body.Id;
+  }
+
+  const designations = items((await call(
+    'GET', '/api/designations?page=1&pageSize=100', { token: adminToken, companyId: company.id },
+  )).body);
+  let designationId = designations.find((d: any) => (d.code ?? d.Code) === `${code}-SPEC`)?.id ?? null;
+  if (!designationId) {
+    const created = await call('POST', '/api/designations', {
+      token: adminToken, companyId: company.id,
+      body: {
+        departmentId, code: `${code}-SPEC`, titleEn: 'Operations Specialist',
+        titleAr: 'أخصائي العمليات', isActive: true,
+      },
+    });
+    expectOk(created, `create the Operations Specialist designation in '${company.code}'`, [200, 201]);
+    designationId = created.body.id ?? created.body.Id;
+  }
+  return { departmentId, designationId };
+}
+
 async function ensureGrade(adminToken: string): Promise<string | null> {
   const list = await call('GET', '/api/grades?page=1&pageSize=100', { token: adminToken });
   if (list.status === 200) {
@@ -395,6 +438,7 @@ async function ensureEmployees(
 ): Promise<number> {
   let created = 0;
   for (const company of companies) {
+    const { departmentId, designationId } = await ensureOrgUnits(adminToken, company);
     const existing = await call(
       `GET`, `/api/employees?page=1&pageSize=200&search=${encodeURIComponent(`${company.code}-E`)}`,
       { token: adminToken, companyId: company.id },
@@ -445,6 +489,8 @@ async function ensureEmployees(
           // Only the first employee holds the grade — the benefits eligibility rule needs a
           // population it INCLUDES and a population it EXCLUDES to prove anything.
           gradeId: n === 1 ? gradeId : null,
+          departmentId,
+          designationId,
           reportingManagerEmployeeId: n === 1 ? null : managerId,
           jobTitle: n === 1 ? 'Head of Department' : 'Specialist',
           employmentType: 'FullTime',
