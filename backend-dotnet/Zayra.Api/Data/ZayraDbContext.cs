@@ -196,6 +196,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                         .Where(property => property.IsModified)
                         .All(property => property.Metadata.Name is
                             nameof(User.FailedLoginCount) or
+                            nameof(User.MfaFailedCount) or
                             nameof(User.LastLoginAtUtc));
                 if (!platformLoginTelemetryOnly && !tenantLoginTelemetryOnly)
                     TryStamp(entry, "UpdatedAtUtc", now);

@@ -1,7 +1,9 @@
+using System.Data;
 using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -20,9 +22,12 @@ public static class TenantSessionSecurity
         (Normalize(user.UpdatedAtUtc ?? user.CreatedAtUtc).Ticks / 10).ToString(CultureInfo.InvariantCulture);
 
     public static void RotateStamp(User user)
+        => RotateStamp(user, DateTime.UtcNow);
+
+    public static void RotateStamp(User user, DateTime candidateUtc)
     {
         var current = Normalize(user.UpdatedAtUtc ?? user.CreatedAtUtc);
-        var now = Normalize(DateTime.UtcNow);
+        var now = Normalize(candidateUtc);
         user.UpdatedAtUtc = now <= current ? current.AddTicks(10) : now;
     }
 
@@ -38,6 +43,57 @@ public static class TenantSessionSecurity
         if (!Guid.TryParse(subject, out var userId) || !Guid.TryParse(tenantClaim, out var tenantId) || string.IsNullOrWhiteSpace(stamp))
             return false;
 
+        // This authorization decision is assembled from several tables. Under PostgreSQL's
+        // default READ COMMITTED isolation, every statement can observe a different committed
+        // state. A concurrent access change could therefore make the user/stamp read come from
+        // the old state and the policy/company reads come from the new state, authorizing a token
+        // that was valid in neither state. Take a non-locking repeatable-read snapshot instead.
+        // Production enables a retrying execution strategy, so the transaction must live inside
+        // its delegate. If a caller already owns a weaker transaction, fail closed rather than
+        // silently rebuilding the same mixed-state defect inside that ambient transaction.
+        var validationTimeUtc = DateTime.UtcNow;
+        if (!db.Database.IsRelational())
+            return await IsCurrentSnapshotAsync(
+                principal, db, userId, tenantId, stamp, validationTimeUtc, ct);
+
+        if (db.Database.CurrentTransaction is not null)
+        {
+            var ambientIsolation = db.Database.CurrentTransaction.GetDbTransaction().IsolationLevel;
+            if (ambientIsolation is not (IsolationLevel.RepeatableRead
+                or IsolationLevel.Snapshot
+                or IsolationLevel.Serializable))
+            {
+                return false;
+            }
+
+            return await IsCurrentSnapshotAsync(
+                principal, db, userId, tenantId, stamp, validationTimeUtc, ct);
+        }
+
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            var isolation = db.Database.IsNpgsql()
+                ? IsolationLevel.RepeatableRead
+                : IsolationLevel.Serializable;
+            await using var transaction = await db.Database.BeginTransactionAsync(isolation, ct);
+            var current = await IsCurrentSnapshotAsync(
+                principal, db, userId, tenantId, stamp, validationTimeUtc, ct);
+            await transaction.CommitAsync(ct);
+            return current;
+        });
+    }
+
+    private static async Task<bool> IsCurrentSnapshotAsync(
+        ClaimsPrincipal principal,
+        ZayraDbContext db,
+        Guid userId,
+        Guid tenantId,
+        string stamp,
+        DateTime validationTimeUtc,
+        CancellationToken ct)
+    {
+
         var user = await db.Users.AsNoTracking()
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
@@ -46,15 +102,24 @@ public static class TenantSessionSecurity
             .Include(x => x.EntityAccesses)
             .FirstOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted, ct);
         if (!await AuthTenantGraphIntegrity.IsValidAsync(user, db, ct)
-            || !user!.IsActive
-            || user.Tenant?.IsActive != true
-            || !string.Equals(stamp, StampValue(user), StringComparison.Ordinal))
+            || !string.Equals(stamp, StampValue(user!), StringComparison.Ordinal))
             return false;
-        var primary = user.EmployeeUserAccounts.Where(x => !x.IsDeleted)
-            .OrderByDescending(x => x.IsPrimary).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefault();
-        if (primary?.AccessMode == AccessModes.NoLogin) return false;
 
-        var currentRoles = user.UserRoles.Select(x => x.Role?.Name).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!)
+        var policy = await db.SecuritySettings.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
+        var identity = await db.TenantIdentityProviderSettings.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
+        var eligibility = AuthCurrentEligibility.ForSession(
+            user,
+            AuthCurrentEligibility.IsSsoOnly(user!, identity),
+            policy,
+            validationTimeUtc);
+        if (!eligibility.Allowed) return false;
+
+        var currentRoles = user!.UserRoles
+            .Where(x => x.Role is { IsActive: true, IsDeleted: false })
+            .Select(x => x.Role!.Name)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var claimedRoles = principal.FindAll(ClaimTypes.Role).Select(x => x.Value).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (!currentRoles.SetEquals(claimedRoles)) return false;

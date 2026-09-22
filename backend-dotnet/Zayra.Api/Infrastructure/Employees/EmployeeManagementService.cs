@@ -1,13 +1,17 @@
+using System.Data;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Documents;
+using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
 
@@ -230,8 +234,64 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeDetailDto?> ChangeStatusAsync(Guid tenantId, int id, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
-        if (employee is null) return null;
+        var changedAtUtc = DateTime.UtcNow;
+        var statusAuditId = Guid.NewGuid();
+        var payrollAuditId = Guid.NewGuid();
+        var statusHistoryId = Guid.NewGuid();
+        var lifecycleHistoryId = Guid.NewGuid();
+        var separationId = Guid.NewGuid();
+        var employeeFound = false;
+
+        async Task ChangeStatusOnceAsync(CancellationToken ct)
+        {
+        _db.ChangeTracker.Clear();
+        employeeFound = false;
+
+        // Authentication and lifecycle writers share this lock order. Holding the user anchor before
+        // touching a challenge/refresh row means an MFA completion or refresh cannot commit on the old
+        // eligibility state while this employee transition commits on the new one.
+        var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag)
+            .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
+        var employee = await _db.Employees.IgnoreQueryFilters()
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+        // A real relational write requires the tenant serialization anchor. The legacy InMemory
+        // lifecycle fixtures intentionally seed only Employee rows; there are no row locks there,
+        // so retaining that provider-compatible test contract is safe.
+        if (employee is null || (_db.Database.IsRelational() && tenant is null)) return;
+
+        var links = await _db.EmployeeUserAccounts.IgnoreQueryFilters()
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted)
+            .OrderBy(x => x.Id)
+            .ToListAsync(ct);
+        var linkedUserIds = links.Where(x => x.UserId.HasValue).Select(x => x.UserId!.Value)
+            .Append(employee.UserAccountId ?? Guid.Empty)
+            .Where(x => x != Guid.Empty)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+        var linkedUsers = linkedUserIds.Count == 0
+            ? []
+            : await _db.Users.IgnoreQueryFilters()
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && linkedUserIds.Contains(x.Id) && !x.IsDeleted)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+
+        if (linkedUserIds.Count > 0)
+        {
+            await _db.PasswordResetTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => linkedUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await _db.MfaChallengeTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId.HasValue && linkedUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => linkedUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+        }
+
         var oldStatus = employee.Status;
         // READINESS GATE (§5.2/§5.3): fire ONLY when becoming Active from a NON-occupying status —
         // first-time activations and rehires (Draft/Invited/Terminated/…→Active). Runs BEFORE any
@@ -240,24 +300,119 @@ public class EmployeeManagementService : IEmployeeManagementService
         // occupying→occupying and are deliberately NOT gated (mandated reinstatement is never refused).
         if (_activationGuard.ShouldGate(oldStatus, request.Status))
         {
-            var gateSnapshot = await _activationGuard.BuildSnapshotAsync(tenantId, id, cancellationToken);
+            var gateSnapshot = await _activationGuard.BuildSnapshotAsync(tenantId, id, ct);
             if (gateSnapshot is not null)
-                await _activationGuard.EnsureActivatableAsync(tenantId, employee.CompanyId, gateSnapshot, context, cancellationToken);
+                await _activationGuard.EnsureActivatableAsync(tenantId, employee.CompanyId, gateSnapshot, context, ct);
         }
         employee.Status = request.Status;
-        employee.UpdatedAtUtc = DateTime.UtcNow;
+        employee.UpdatedAtUtc = changedAtUtc;
         employee.UpdatedBy = context.UserId;
         _db.EmployeeStatusHistories.Add(new EmployeeStatusHistory
         {
+            Id = statusHistoryId,
             TenantId = tenantId,
             EmployeeId = id,
             OldStatus = oldStatus,
             NewStatus = request.Status,
             EffectiveDate = request.EffectiveDate,
             Reason = request.Reason,
-            ChangedByUserId = context.UserId
+            ChangedByUserId = context.UserId,
+            CreatedAtUtc = changedAtUtc
         });
-        await AddHistory(employee, "StatusChange", "Status", oldStatus, request.Status, request.EffectiveDate, request.Reason, context, cancellationToken);
+        _db.EmployeeHistories.Add(new EmployeeHistory
+        {
+            Id = lifecycleHistoryId,
+            TenantId = tenantId,
+            EmployeeId = id,
+            EventType = "StatusChange",
+            FieldName = "Status",
+            OldValue = EmployeeSafeSnapshot.SanitizeFieldValue("Status", oldStatus),
+            NewValue = EmployeeSafeSnapshot.SanitizeFieldValue("Status", request.Status),
+            EffectiveDate = request.EffectiveDate,
+            Reason = request.Reason,
+            CreatedByUserId = context.UserId,
+            SnapshotJson = EmployeeSafeSnapshot.Serialize(employee),
+            CreatedAtUtc = changedAtUtc
+        });
+
+        // A lifecycle transition that removes working access must close every credential edge in
+        // the SAME transaction as the employee state. Offboarded is deliberately excluded: that
+        // status means serving notice, and access remains until the explicit offboarding revoke.
+        // Reactivation never grants login here; identity re-enablement is a separate, privileged
+        // access-management decision.
+        var invalidatesCredentials = request.Status is EmployeeStatuses.Suspended
+            or EmployeeStatuses.Inactive
+            or EmployeeStatuses.Terminated
+            or EmployeeStatuses.Archived
+            or EmployeeStatuses.Exited;
+        var invalidatedLinks = 0;
+        var invalidatedUsers = 0;
+        var invalidatedPasswordResets = 0;
+        var invalidatedMfaChallenges = 0;
+        var invalidatedRefreshTokens = 0;
+        if (invalidatesCredentials)
+        {
+            foreach (var link in links)
+            {
+                link.AccessMode = AccessModes.NoLogin;
+                link.Status = "NoLogin";
+                link.RequiresPasswordSetup = false;
+                link.InvitationTokenHash = string.Empty;
+                link.InvitationExpiresAtUtc = null;
+                link.LoginDisabledReason = $"Employee lifecycle status: {request.Status}";
+                link.UpdatedAtUtc = changedAtUtc;
+                link.UpdatedBy = context.UserId;
+                invalidatedLinks++;
+            }
+
+            foreach (var linkedUser in linkedUsers)
+            {
+                linkedUser.IsActive = false;
+                linkedUser.Status = "Deactivated";
+                linkedUser.AccessMode = AccessModes.NoLogin;
+                TenantSessionSecurity.RotateStamp(linkedUser, changedAtUtc);
+                invalidatedUsers++;
+            }
+
+            if (_db.Database.IsRelational())
+            {
+                invalidatedPasswordResets = await _db.PasswordResetTokens
+                    .Where(x => linkedUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), ct);
+                invalidatedMfaChallenges = await _db.MfaChallengeTokens
+                    .Where(x => x.UserId.HasValue && linkedUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), ct);
+                invalidatedRefreshTokens = await _db.RefreshTokens
+                    .Where(x => linkedUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(x => x.RevokedAtUtc, changedAtUtc)
+                        .SetProperty(x => x.RevokedByIp, context.IpAddress), ct);
+            }
+            else
+            {
+                var resets = await _db.PasswordResetTokens
+                    .Where(x => linkedUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
+                    .ToListAsync(ct);
+                foreach (var reset in resets) reset.UsedAtUtc = changedAtUtc;
+                invalidatedPasswordResets = resets.Count;
+
+                var challenges = await _db.MfaChallengeTokens
+                    .Where(x => x.UserId.HasValue && linkedUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                    .ToListAsync(ct);
+                foreach (var challenge in challenges) challenge.UsedAtUtc = changedAtUtc;
+                invalidatedMfaChallenges = challenges.Count;
+
+                var refreshTokens = await _db.RefreshTokens
+                    .Where(x => linkedUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                    .ToListAsync(ct);
+                foreach (var refresh in refreshTokens)
+                {
+                    refresh.RevokedAtUtc = changedAtUtc;
+                    refresh.RevokedByIp = context.IpAddress;
+                }
+                invalidatedRefreshTokens = refreshTokens.Count;
+            }
+        }
 
         // ── D1: A TERMINATION MUST PRODUCE AUTHORITATIVE SEPARATION DATA ─────────────────────────────
         // Before this, POST /employees/{id}/terminate set Status = "Terminated" and created NOTHING
@@ -296,7 +451,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .Where(o => o.TenantId == tenantId && o.EmployeeId == id
                          && o.Status != "Cancelled" && o.Status != "Completed")
                 .OrderByDescending(o => o.CreatedAtUtc)
-                .FirstOrDefaultAsync(cancellationToken);
+                .FirstOrDefaultAsync(ct);
 
             // ── A CLOSED SERVICE PERIOD IS NOT REOPENED BY REPEATING THE COMMAND ───────────────────
             // Dropping the oldStatus condition (R2) let the archive be remediated, but it also made the
@@ -328,7 +483,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                     .Where(o => o.TenantId == tenantId && o.EmployeeId == id && o.Status == "Completed")
                     .OrderByDescending(o => o.LastWorkingDay)
                     .Select(o => (DateOnly?)o.LastWorkingDay)
-                    .FirstOrDefaultAsync(cancellationToken);
+                    .FirstOrDefaultAsync(ct);
                 if (lastClosed is { } closedOn)
                 {
                     var returnedToWork = await _db.EmployeeStatusHistories
@@ -337,7 +492,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                                     && (h.NewStatus == EmployeeStatuses.Active
                                      || h.NewStatus == "Offboarded"
                                      || h.NewStatus == "Suspended"),
-                                  cancellationToken);
+                                  ct);
                     periodAlreadyClosed = !returnedToWork;
                 }
             }
@@ -357,6 +512,7 @@ public class EmployeeManagementService : IEmployeeManagementService
 
                 _db.EmployeeOffboardings.Add(new EmployeeOffboarding
                 {
+                    Id = separationId,
                     TenantId = tenantId,
                     EmployeeId = id,
                     EmployeeName = employee.FullName,
@@ -374,7 +530,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                     Status = "InProgress",
                     // L9: a record that drives a payable must name its author.
                     CreatedByUserId = context.UserId,
-                    CreatedAtUtc = DateTime.UtcNow,
+                    CreatedAtUtc = changedAtUtc,
                 });
                 separationCreated = true;
             }
@@ -422,11 +578,11 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .Where(f => f.TenantId == tenantId && f.EmployeeId == id
                          && f.Status != FinalSettlementStatuses.Cancelled)
                 .Select(f => f.OffboardingId)
-                .ToListAsync(cancellationToken);
+                .ToListAsync(ct);
             var open = await _db.EmployeeOffboardings
                 .Where(o => o.TenantId == tenantId && o.EmployeeId == id
                          && o.Status != "Cancelled" && o.Status != "Completed")
-                .ToListAsync(cancellationToken);
+                .ToListAsync(ct);
 
             // An accrued settlement has a journal behind it, so this code may not quietly cancel the
             // record it was raised against. Nor may it leave it live, because the next termination would
@@ -451,14 +607,14 @@ public class EmployeeManagementService : IEmployeeManagementService
                     ? $"Superseded: employee reactivated on {request.EffectiveDate:yyyy-MM-dd}."
                     : $"{stale.Reason} | Superseded: employee reactivated on {request.EffectiveDate:yyyy-MM-dd}. "
                       + "A new service period starts here and will get its own separation.";
-                stale.UpdatedAtUtc = DateTime.UtcNow;
+                stale.UpdatedAtUtc = changedAtUtc;
                 cancelledSeparationIds.Add(stale.Id);
             }
         }
 
         // Stamp ActivatedAtUtc on the first successful activation (the gate above already passed).
         if (string.Equals(request.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase) && employee.ActivatedAtUtc is null)
-            employee.ActivatedAtUtc = DateTime.UtcNow;
+            employee.ActivatedAtUtc = changedAtUtc;
         // ── EXIT CASCADE — STAGED INTO THIS TRANSACTION, NOT A LATER ONE ────────────────────────────
         // Deactivate the WPS footprint so an ex-employee cannot be swept into a SIF export. This used to
         // run AFTER the status transition had already committed, in a transaction of its own: a client
@@ -474,7 +630,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var footprintStaged = (Profiles: 0, SalaryStructures: 0);
         if (ExitEmployeeStatuses.PayrollDeactivation.Contains(request.Status, StringComparer.OrdinalIgnoreCase))
             footprintStaged = await StagePayrollFootprintDeactivationAsync(
-                _db, tenantId, id, deactivateSalaryStructure: false, context, cancellationToken);
+                _db, tenantId, id, deactivateSalaryStructure: false, context, ct);
 
         // ESTABLISHMENT GUARD (path "reactivate"): only a transition INTO an occupying status
         // (Draft/Invited/Terminated/… → Active, activation, rehire) consumes a seat and is
@@ -485,39 +641,115 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
                 excludeEmployeeId: employee.Id, path: "reactivate", context, async () =>
                 {
-                    await _db.SaveChangesAsync(cancellationToken);
+                    await _db.SaveChangesAsync(ct);
                     return true;
-                }, cancellationToken);
+                }, ct);
         }
         else
         {
-            await _db.SaveChangesAsync(cancellationToken);
+            await _db.SaveChangesAsync(ct);
         }
-        await RefreshReadinessSnapshotAsync(employee, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.status_changed", "Employee", id.ToString(), context,
-            JsonSerializer.Serialize(new
-            {
-                oldStatus, request.Status, request.Reason,
-                // D1: the separation is part of the evidence for this transition, not a side effect.
-                separationCreated,
-                separationType = separationCreated ? separationType : null,
-                lastWorkingDay = separationCreated ? request.EffectiveDate : (DateOnly?)null,
-                // Cancelling a separation decides which record /final-settlement picks, so it is
-                // evidence in its own right — it used to happen silently.
-                cancelledSeparationIds = cancelledSeparationIds.Count == 0 ? null : cancelledSeparationIds,
-            }), cancellationToken);
+        await RefreshReadinessSnapshotAsync(employee, ct);
 
-        // The cascade itself already committed with the status change above; this is only its evidence.
+        var auditContext = context with { TenantId = tenantId };
+        var statusMetadata = JsonSerializer.Serialize(new
+        {
+            oldStatus,
+            request.Status,
+            request.Reason,
+            // D1: the separation is part of the evidence for this transition, not a side effect.
+            separationCreated,
+            separationType = separationCreated ? separationType : null,
+            lastWorkingDay = separationCreated ? request.EffectiveDate : (DateOnly?)null,
+            // Cancelling a separation decides which record /final-settlement picks, so it is
+            // evidence in its own right — it used to happen silently.
+            cancelledSeparationIds = cancelledSeparationIds.Count == 0 ? null : cancelledSeparationIds,
+            credentials = invalidatesCredentials
+                ? new
+                {
+                    links = invalidatedLinks,
+                    users = invalidatedUsers,
+                    passwordResets = invalidatedPasswordResets,
+                    mfaChallenges = invalidatedMfaChallenges,
+                    refreshTokens = invalidatedRefreshTokens
+                }
+                : null
+        });
+        _db.AuditLogs.Add(AuthAuditEntry.Create(
+            statusAuditId,
+            changedAtUtc,
+            "employee.status_changed",
+            "Employee",
+            id.ToString(),
+            auditContext,
+            statusMetadata));
+
+        // The cascade itself is committed with the status transition; its marker is staged in that
+        // same unit so a caller can never see the effect without its evidence (or vice versa).
         if (footprintStaged.Profiles > 0 || footprintStaged.SalaryStructures > 0)
-            await _audit.WriteAsync("employee.payroll_footprint_deactivated", "Employee", id.ToString(), context,
+        {
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                payrollAuditId,
+                changedAtUtc,
+                "employee.payroll_footprint_deactivated",
+                "Employee",
+                id.ToString(),
+                auditContext,
                 JsonSerializer.Serialize(new
                 {
                     reason = $"status:{oldStatus}->{request.Status}",
                     salaryDeactivated = footprintStaged.SalaryStructures,
                     profileDeactivated = footprintStaged.Profiles,
-                }), cancellationToken);
+                })));
+        }
 
+        await _db.SaveChangesAsync(ct);
+        employeeFound = true;
+        }
+
+        async Task<bool> ExactCommitExistsAsync(CancellationToken ct)
+        {
+            var markerExists = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(x => x.Id == statusAuditId
+                    && x.TenantId == tenantId
+                    && x.Action == "employee.status_changed"
+                    && x.EntityName == "Employee"
+                    && x.EntityId == id.ToString(), ct);
+            if (!markerExists) return false;
+
+            // The stable marker and both stable history rows are written by one transaction. Requiring
+            // all three prevents a similarly named audit from being mistaken for this invocation.
+            return await _db.EmployeeStatusHistories.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.Id == statusHistoryId
+                        && x.TenantId == tenantId
+                        && x.EmployeeId == id
+                        && x.NewStatus == request.Status, ct)
+                && await _db.EmployeeHistories.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.Id == lifecycleHistoryId
+                        && x.TenantId == tenantId
+                        && x.EmployeeId == id
+                        && x.EventType == "StatusChange"
+                        && x.NewValue == EmployeeSafeSnapshot.SanitizeFieldValue("Status", request.Status), ct);
+        }
+
+        if (_db.Database.IsRelational())
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteInTransactionAsync(
+                ChangeStatusOnceAsync,
+                async ct => await ExactCommitExistsAsync(ct),
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+        }
+        else
+        {
+            await ChangeStatusOnceAsync(cancellationToken);
+        }
+
+        // A lost COMMIT acknowledgement can complete with the local result unavailable. Reconcile
+        // only this call's exact stable marker/history tuple before returning the authoritative DTO.
+        if (!employeeFound && !await ExactCommitExistsAsync(cancellationToken)) return null;
+        _db.ChangeTracker.Clear();
         return await GetAsync(tenantId, id, true, context, cancellationToken);
     }
 

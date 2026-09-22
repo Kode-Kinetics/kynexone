@@ -1,11 +1,16 @@
+using System.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Employees;
+using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -260,40 +265,89 @@ public class OffboardingController : ControllerBase
     [HasPermission("employees.write")]
     public async Task<IActionResult> Checklist(Guid id, [FromBody] OffboardingChecklistRequest req, CancellationToken ct)
     {
-        var off = await Find(id, ct);
-        if (off is null) return NotFound();
-        off.AssetsReturned = req.AssetsReturned ?? off.AssetsReturned;
-        off.KnowledgeHandover = req.KnowledgeHandover ?? off.KnowledgeHandover;
-        off.FinalSettlementDone = req.FinalSettlementDone ?? off.FinalSettlementDone;
+        var tenantId = this.GetTenantId()!.Value;
+        var employeeId = await ResolveOffboardingEmployeeIdAsync(tenantId, id, ct);
+        if (employeeId is null) return NotFound();
 
-        // ── S2-B2 — "Access revoked" IS the revocation ───────────────────────────────────────────────
-        // This line used to read `off.AccessRevoked = req.AccessRevoked ?? off.AccessRevoked;` and nothing
-        // else. The only code that actually revoked anything lived inside Complete — which cannot run
-        // until the settlement is discharged, typically one to two weeks after the last working day. So
-        // HR killed access on the last working day by ticking this box, and the ex-employee's login,
-        // sessions and refresh tokens kept working for the whole settlement window. That is a live
-        // security hole, not a UX gap.
-        if (req.AccessRevoked == true && !off.AccessRevoked)
+        var changedAtUtc = DateTime.UtcNow;
+        var checklistAuditId = Guid.NewGuid();
+        var revocationAuditId = Guid.NewGuid();
+        IActionResult? refusal = null;
+
+        async Task<bool> MutateOnceAsync(CancellationToken token)
         {
-            var revoked = await RevokeForOffboardingAsync(off, ct);
-            if (revoked is not null) return revoked;
-        }
-        else if (req.AccessRevoked == false && off.AccessRevoked)
-        {
-            // Un-ticking cannot un-revoke: the tokens are already dead and the account is deactivated.
-            // Restoring a leaver's access is an access GRANT and only the rescind path makes it, audibly.
-            return Conflict(new
+            _db.ChangeTracker.Clear();
+            var graph = await LockOffboardingGraphAsync(tenantId, id, employeeId.Value, token);
+            if (graph is null)
             {
-                error   = "access_revocation_is_irreversible",
-                message = "Access has already been revoked — the user account is deactivated and every session was "
-                        + "ended. Un-ticking the box would not give it back. Rescind the offboarding if the "
-                        + "separation is being withdrawn; that restores the login and records who authorised it.",
-            });
+                refusal = NotFound();
+                return false;
+            }
+            if (graph.Offboarding.Status != "InProgress")
+            {
+                refusal = Conflict(new
+                {
+                    error = "offboarding_not_active",
+                    message = "Only an in-progress offboarding checklist can be changed."
+                });
+                return false;
+            }
+            if (req.AccessRevoked == false && graph.Offboarding.AccessRevoked)
+            {
+                refusal = Conflict(new
+                {
+                    error = "access_revocation_is_irreversible",
+                    message = "Access revocation cannot be undone from the checklist. If the separation is "
+                            + "withdrawn, cancel the offboarding and issue a new controlled login invitation."
+                });
+                return false;
+            }
+
+            graph.Offboarding.AssetsReturned = req.AssetsReturned ?? graph.Offboarding.AssetsReturned;
+            graph.Offboarding.KnowledgeHandover = req.KnowledgeHandover ?? graph.Offboarding.KnowledgeHandover;
+            graph.Offboarding.FinalSettlementDone = req.FinalSettlementDone ?? graph.Offboarding.FinalSettlementDone;
+
+            var accessRevokedNow = req.AccessRevoked == true && !graph.Offboarding.AccessRevoked;
+            if (accessRevokedNow)
+            {
+                EnsureAnotherAdministratorSurvives(graph, changedAtUtc);
+                StageAccessRevocation(graph, this.GetUserId(), unlinkAccount: false, changedAtUtc,
+                    HttpContext.Connection.RemoteIpAddress?.ToString());
+                _db.AuditLogs.Add(CreateOffboardingAudit(
+                    revocationAuditId, changedAtUtc, "offboarding.access_revoked", graph,
+                    new { source = "checklist", userIds = graph.TargetUsers.Select(x => x.Id).ToArray() }));
+            }
+
+            graph.Offboarding.UpdatedAtUtc = changedAtUtc;
+            _db.AuditLogs.Add(CreateOffboardingAudit(
+                checklistAuditId, changedAtUtc, "offboarding.checklist_updated", graph,
+                new
+                {
+                    graph.Offboarding.AssetsReturned,
+                    graph.Offboarding.KnowledgeHandover,
+                    graph.Offboarding.FinalSettlementDone,
+                    graph.Offboarding.AccessRevoked,
+                    accessRevokedNow
+                }));
+            await _db.SaveChangesAsync(token);
+            return true;
         }
 
-        off.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-        return Ok(off);
+        try
+        {
+            await ExecuteAtomicMutationAsync(MutateOnceAsync, checklistAuditId,
+                "offboarding.checklist_updated", tenantId, ct);
+        }
+        catch (OffboardingSafetyException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return Conflict(new { error = ex.Error, message = ex.Message });
+        }
+
+        if (refusal is not null) return refusal;
+        var committed = await _db.EmployeeOffboardings.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
+        return committed is null ? NotFound() : Ok(committed);
     }
 
     /// <summary>
@@ -305,50 +359,193 @@ public class OffboardingController : ControllerBase
     [HasPermission("employees.approve")]
     public async Task<IActionResult> RevokeAccess(Guid id, CancellationToken ct)
     {
-        var off = await Find(id, ct);
-        if (off is null) return NotFound();
-        if (off.AccessRevoked)
-            return Ok(new { off.Id, off.AccessRevoked, off.AccessRevokedAtUtc, alreadyRevoked = true });
+        var tenantId = this.GetTenantId()!.Value;
+        var employeeId = await ResolveOffboardingEmployeeIdAsync(tenantId, id, ct);
+        if (employeeId is null) return NotFound();
 
-        var refused = await RevokeForOffboardingAsync(off, ct);
-        if (refused is not null) return refused;
-        off.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { off.Id, off.AccessRevoked, off.AccessRevokedAtUtc, alreadyRevoked = false });
-    }
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        IActionResult? refusal = null;
+        var alreadyRevoked = false;
 
-    /// <summary>Stages the revocation + its audit trail. Returns a non-null result only on refusal.</summary>
-    private async Task<IActionResult?> RevokeForOffboardingAsync(EmployeeOffboarding off, CancellationToken ct)
-    {
-        if (off.Status != "InProgress" && off.Status != "Completed")
-            return Conflict(new { error = "offboarding_not_active", message = "Only a live offboarding can revoke access." });
-
-        var emp = await _db.Employees.FirstOrDefaultAsync(e => e.Id == off.EmployeeId && e.TenantId == off.TenantId, ct);
-        if (emp is null) return NotFound(new { message = "Employee not found." });
-
-        var actor = this.GetUserId();
-        // unlinkAccount: false — the employment has NOT ended yet (they are serving notice), so the
-        // employee↔user pointer is kept and the rescind path can restore the login it revoked. Complete
-        // still unlinks, which is the retention decision the archive step already made.
-        await RevokeEmployeeAccessAsync(emp, actor, unlinkAccount: false, ct);
-        off.AccessRevoked = true;
-        off.AccessRevokedAtUtc = DateTime.UtcNow;
-        off.AccessRevokedByUserId = actor;
-
-        var ctx = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
-            Request.Headers.UserAgent.ToString(), actor, off.TenantId);
-        await _audit.WriteAsync("offboarding.access_revoked", "Employee", emp.Id.ToString(), ctx,
-            System.Text.Json.JsonSerializer.Serialize(new
+        async Task<bool> MutateOnceAsync(CancellationToken token)
+        {
+            _db.ChangeTracker.Clear();
+            var graph = await LockOffboardingGraphAsync(tenantId, id, employeeId.Value, token);
+            if (graph is null)
             {
-                offboardingId = off.Id, emp.EmployeeCode, userAccountId = emp.UserAccountId,
-            }), ct);
-        return null;
+                refusal = NotFound();
+                return false;
+            }
+            if (graph.Offboarding.AccessRevoked)
+            {
+                alreadyRevoked = true;
+                return false;
+            }
+            if (graph.Offboarding.Status is not ("InProgress" or "Completed"))
+            {
+                refusal = Conflict(new
+                {
+                    error = "offboarding_not_active",
+                    message = "Only a live offboarding can revoke access."
+                });
+                return false;
+            }
+
+            EnsureAnotherAdministratorSurvives(graph, changedAtUtc);
+            StageAccessRevocation(graph, this.GetUserId(), unlinkAccount: false, changedAtUtc,
+                HttpContext.Connection.RemoteIpAddress?.ToString());
+            graph.Offboarding.UpdatedAtUtc = changedAtUtc;
+            _db.AuditLogs.Add(CreateOffboardingAudit(
+                auditId, changedAtUtc, "offboarding.access_revoked", graph,
+                new { source = "explicit", userIds = graph.TargetUsers.Select(x => x.Id).ToArray() }));
+            await _db.SaveChangesAsync(token);
+            return true;
+        }
+
+        try
+        {
+            await ExecuteAtomicMutationAsync(MutateOnceAsync, auditId,
+                "offboarding.access_revoked", tenantId, ct);
+        }
+        catch (OffboardingSafetyException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return Conflict(new { error = ex.Error, message = ex.Message });
+        }
+
+        if (refusal is not null) return refusal;
+        var committed = await _db.EmployeeOffboardings.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
+        if (committed is null) return NotFound();
+        return Ok(new
+        {
+            committed.Id,
+            committed.AccessRevoked,
+            committed.AccessRevokedAtUtc,
+            alreadyRevoked
+        });
     }
 
     /// <summary>Finalise: archive the employee (removes them from live headcount).</summary>
     [HttpPost("{id:guid}/complete")]
     [HasPermission("employees.approve")]
-    public async Task<IActionResult> Complete(Guid id, CancellationToken ct)
+    public Task<IActionResult> Complete(Guid id, CancellationToken ct) => CompleteAtomicAsync(id, ct);
+
+    private async Task<IActionResult> CompleteAtomicAsync(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId()!.Value;
+        var employeeId = await ResolveOffboardingEmployeeIdAsync(tenantId, id, ct);
+        if (employeeId is null) return NotFound();
+
+        var completedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        IActionResult? refusal = null;
+
+        async Task<bool> MutateOnceAsync(CancellationToken token)
+        {
+            _db.ChangeTracker.Clear();
+            var graph = await LockOffboardingGraphAsync(tenantId, id, employeeId.Value, token);
+            if (graph is null)
+            {
+                refusal = NotFound();
+                return false;
+            }
+            var off = graph.Offboarding;
+            if (off.Status != "InProgress")
+            {
+                refusal = BadRequest(new { message = "Offboarding is not in progress." });
+                return false;
+            }
+
+            var today = DateOnly.FromDateTime(completedAtUtc);
+            if (off.LastWorkingDay == default || off.LastWorkingDay > today)
+            {
+                refusal = Conflict(new
+                {
+                    error = "last_working_day_not_reached",
+                    message = off.LastWorkingDay == default
+                        ? "A valid last working day is required before offboarding can be completed."
+                        : $"Offboarding cannot be completed before the last working day ({off.LastWorkingDay:yyyy-MM-dd})."
+                });
+                return false;
+            }
+            if (!off.AssetsReturned || !off.KnowledgeHandover
+                || off.ExitInterviewStatus is not ("Completed" or "Waived"))
+            {
+                refusal = Conflict(new
+                {
+                    error = "offboarding_checklist_incomplete",
+                    message = "Complete asset return and knowledge handover, and complete or waive the exit interview before archiving the employee.",
+                    off.AssetsReturned,
+                    off.KnowledgeHandover,
+                    off.ExitInterviewStatus,
+                });
+                return false;
+            }
+
+            var settlements = await _db.EmployeeFinalSettlements
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(s => s.TenantId == tenantId && s.OffboardingId == id && s.EmployeeId == employeeId.Value)
+                .OrderBy(s => s.Id)
+                .ToListAsync(token);
+            if (!settlements.Any(s => s.Status == FinalSettlementStatuses.Paid))
+            {
+                refusal = Conflict(new
+                {
+                    error = "final_settlement_not_paid",
+                    message = "The authoritative final settlement must be paid before offboarding can be completed. "
+                            + "Disburse it through a payroll run, or record an approved external payment first "
+                            + $"(POST /api/offboarding/{off.Id}/settlement/external-payment)."
+                });
+                return false;
+            }
+
+            EnsureAnotherAdministratorSurvives(graph, completedAtUtc);
+            off.FinalSettlementDone = true;
+            off.Status = "Completed";
+            off.CompletedAtUtc = completedAtUtc;
+            off.UpdatedAtUtc = completedAtUtc;
+            graph.Employee.Status = "Archived";
+            graph.Employee.UpdatedAtUtc = completedAtUtc;
+            StageAccessRevocation(graph, this.GetUserId(), unlinkAccount: true, completedAtUtc,
+                HttpContext.Connection.RemoteIpAddress?.ToString());
+
+            var context = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
+                Request.Headers.UserAgent.ToString(), this.GetUserId(), tenantId);
+            var footprint = await EmployeeManagementService.StagePayrollFootprintDeactivationAsync(
+                _db, tenantId, employeeId.Value, deactivateSalaryStructure: true, context, token);
+            _db.AuditLogs.Add(CreateOffboardingAudit(
+                auditId, completedAtUtc, "offboarding.completed", graph,
+                new
+                {
+                    userIds = graph.TargetUsers.Select(x => x.Id).ToArray(),
+                    payrollProfilesDeactivated = footprint.Profiles,
+                    salaryStructuresDeactivated = footprint.SalaryStructures
+                }));
+            await _db.SaveChangesAsync(token);
+            return true;
+        }
+
+        try
+        {
+            await ExecuteAtomicMutationAsync(MutateOnceAsync, auditId,
+                "offboarding.completed", tenantId, ct);
+        }
+        catch (OffboardingSafetyException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return Conflict(new { error = ex.Error, message = ex.Message });
+        }
+
+        if (refusal is not null) return refusal;
+        var committed = await _db.EmployeeOffboardings.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
+        return committed is null ? NotFound() : Ok(committed);
+    }
+
+    [NonAction]
+    private async Task<IActionResult> CompleteLegacyAsync(Guid id, CancellationToken ct)
     {
         var off = await Find(id, ct);
         if (off is null) return NotFound();
@@ -541,9 +738,148 @@ public class OffboardingController : ControllerBase
     /// <summary>Rescind a resignation while serving notice — reinstates the employee.</summary>
     [HttpPost("{id:guid}/cancel")]
     [HasPermission("employees.approve")]
-    public async Task<IActionResult> Cancel(
+    public Task<IActionResult> Cancel(
         Guid id,
         [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)]
+        CancelOffboardingRequest? req,
+        CancellationToken ct) => CancelAtomicAsync(id, req, ct);
+
+    private async Task<IActionResult> CancelAtomicAsync(
+        Guid id, CancelOffboardingRequest? req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId()!.Value;
+        var employeeId = await ResolveOffboardingEmployeeIdAsync(tenantId, id, ct);
+        if (employeeId is null) return NotFound();
+
+        var cancelledAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        IActionResult? refusal = null;
+        var backfillWithdrawn = false;
+        var accessReprovisioningRequired = false;
+
+        async Task<bool> MutateOnceAsync(CancellationToken token)
+        {
+            _db.ChangeTracker.Clear();
+            var graph = await LockOffboardingGraphAsync(tenantId, id, employeeId.Value, token);
+            if (graph is null)
+            {
+                refusal = NotFound();
+                return false;
+            }
+            var off = graph.Offboarding;
+            if (off.Status != "InProgress")
+            {
+                refusal = BadRequest(new { message = "Only an in-progress offboarding can be cancelled." });
+                return false;
+            }
+            if (graph.Employee.Status != "Offboarded")
+                throw new OffboardingSafetyException(
+                    "employee_lifecycle_conflict",
+                    $"The employee is '{graph.Employee.Status}', not 'Offboarded'. Resolve the lifecycle conflict before rescinding.");
+
+            var liveSettlement = await _db.EmployeeFinalSettlements
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(s => s.TenantId == tenantId && s.OffboardingId == id
+                         && s.Status != FinalSettlementStatuses.Cancelled)
+                .OrderBy(s => s.Id)
+                .Select(s => new { s.Id, s.Status, s.NetPayable })
+                .FirstOrDefaultAsync(token);
+            if (liveSettlement is not null)
+            {
+                refusal = Conflict(new
+                {
+                    error = "final_settlement_live",
+                    message = $"A final settlement for this separation exists in '{liveSettlement.Status}' status "
+                            + $"({liveSettlement.NetPayable:N2}). Cancel that settlement before rescinding the offboarding.",
+                    settlementId = liveSettlement.Id,
+                    settlementStatus = liveSettlement.Status,
+                });
+                return false;
+            }
+
+            var context = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
+                Request.Headers.UserAgent.ToString(), this.GetUserId(), tenantId);
+            if (_activationGuard.ShouldGate(graph.Employee.Status, "Active"))
+            {
+                var snapshot = await _activationGuard.BuildSnapshotAsync(tenantId, graph.Employee.Id, token);
+                if (snapshot is not null)
+                    await _activationGuard.EnsureActivatableAsync(
+                        tenantId, graph.Employee.CompanyId, snapshot, context, token);
+            }
+
+            graph.Employee.Status = "Active";
+            graph.Employee.UpdatedAtUtc = cancelledAtUtc;
+            off.Status = "Cancelled";
+            off.UpdatedAtUtc = cancelledAtUtc;
+            off.CancelledAtUtc = cancelledAtUtc;
+            off.CancelledByUserId = this.GetUserId();
+            off.CancelReason = req?.Reason?.Trim();
+
+            // A rescind restores employment only. Revoked credentials remain fail-closed; access is
+            // re-issued through the invitation workflow so roles, scope and MFA are freshly approved.
+            accessReprovisioningRequired = off.AccessRevoked;
+
+            backfillWithdrawn = false;
+            if (off.BackfillRequisitionId is Guid requisitionId)
+            {
+                var requisition = await _db.ManpowerRequisitions
+                    .TagWith(RowLockingInterceptor.ForUpdateTag)
+                    .SingleOrDefaultAsync(x => x.Id == requisitionId && x.TenantId == tenantId, token);
+                if (requisition is not null && requisition.Status is "Draft" or "Pending" or "Submitted")
+                {
+                    requisition.Status = "Cancelled";
+                    backfillWithdrawn = true;
+                }
+            }
+
+            _db.AuditLogs.Add(CreateOffboardingAudit(
+                auditId, cancelledAtUtc, "offboarding.rescinded", graph,
+                new
+                {
+                    reason = off.CancelReason,
+                    accessRestored = false,
+                    accessReprovisioningRequired,
+                    backfillWithdrawn
+                }));
+            await _db.SaveChangesAsync(token);
+            return true;
+        }
+
+        try
+        {
+            await ExecuteAtomicMutationAsync(MutateOnceAsync, auditId,
+                "offboarding.rescinded", tenantId, ct);
+        }
+        catch (EmployeeActivationBlockedException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return this.NotActivatable(ex);
+        }
+        catch (OffboardingSafetyException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return Conflict(new { error = ex.Error, message = ex.Message });
+        }
+
+        if (refusal is not null) return refusal;
+        var committed = await _db.EmployeeOffboardings.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
+        if (committed is null) return NotFound();
+        return Ok(new
+        {
+            offboarding = committed,
+            accessRestored = false,
+            accessReprovisioningRequired,
+            backfillWithdrawn,
+            nextStep = accessReprovisioningRequired
+                ? "Issue a new employee login invitation after approving roles and entity scope."
+                : null
+        });
+    }
+
+    [NonAction]
+    private async Task<IActionResult> CancelLegacyAsync(
+        Guid id,
         CancelOffboardingRequest? req,
         CancellationToken ct)
     {
@@ -646,6 +982,285 @@ public class OffboardingController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { offboarding = off, accessRestored, backfillWithdrawn });
+    }
+
+    private async Task<int?> ResolveOffboardingEmployeeIdAsync(
+        Guid tenantId, Guid offboardingId, CancellationToken ct) =>
+        await _db.EmployeeOffboardings.AsNoTracking()
+            .Where(x => x.Id == offboardingId && x.TenantId == tenantId)
+            .Select(x => (int?)x.EmployeeId)
+            .SingleOrDefaultAsync(ct);
+
+    /// <summary>
+    /// Locks the complete authentication graph in the common lifecycle order: tenant, employee,
+    /// employee links, sorted users, then credential artifacts. Every offboarding exit/rescind writer
+    /// uses this primitive, so a refresh/MFA completion cannot commit against a half-transitioned user.
+    /// </summary>
+    private async Task<LockedOffboardingGraph?> LockOffboardingGraphAsync(
+        Guid tenantId, Guid offboardingId, int employeeId, CancellationToken ct)
+    {
+        var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+            .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
+        if (tenant is null) return null;
+
+        var employee = await _db.Employees.IgnoreQueryFilters()
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, ct);
+        if (employee is null) return null;
+
+        var offboarding = await _db.EmployeeOffboardings
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == offboardingId, ct);
+        if (offboarding is null) return null;
+        if (offboarding.EmployeeId != employeeId)
+            throw new OffboardingSafetyException(
+                "offboarding_employee_mismatch",
+                "The offboarding record changed employee identity during the operation.");
+
+        var targetLinks = await _db.EmployeeUserAccounts.IgnoreQueryFilters()
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted)
+            .OrderBy(x => x.Id)
+            .ToListAsync(ct);
+        var targetUserIds = targetLinks.Where(x => x.UserId.HasValue).Select(x => x.UserId!.Value)
+            .Append(employee.UserAccountId ?? Guid.Empty)
+            .Where(x => x != Guid.Empty)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+
+        // Tenant writers take the tenant anchor before role changes, so this cohort cannot shrink while
+        // the exit is deciding whether it would remove the final operational administrator.
+        var administratorIds = await _db.UserRoles.AsNoTracking()
+            .Where(x => x.User != null && x.User.TenantId == tenantId && !x.User.IsDeleted
+                     && x.Role != null && x.Role.NormalizedName == "ADMIN"
+                     && x.Role.IsActive && !x.Role.IsDeleted
+                     && (x.Role.TenantId == tenantId || x.Role.TenantId == null))
+            .Select(x => x.UserId)
+            .Distinct()
+            .ToListAsync(ct);
+        var allUserIds = targetUserIds.Concat(administratorIds).Distinct().OrderBy(x => x).ToList();
+
+        if (allUserIds.Count > 0)
+        {
+            await _db.EmployeeUserAccounts.IgnoreQueryFilters()
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && x.UserId.HasValue && allUserIds.Contains(x.UserId.Value))
+                .OrderBy(x => x.UserId).ThenBy(x => x.Id)
+                .Select(x => x.Id)
+                .ToListAsync(ct);
+            await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && allUserIds.Contains(x.Id))
+                .OrderBy(x => x.Id)
+                .Select(x => x.Id)
+                .ToListAsync(ct);
+            await _db.UserRoles.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => allUserIds.Contains(x.UserId))
+                .OrderBy(x => x.UserId).ThenBy(x => x.RoleId)
+                .Select(x => new { x.UserId, x.RoleId })
+                .ToListAsync(ct);
+        }
+
+        List<User> cohort = allUserIds.Count == 0
+            ? []
+            : await _db.Users.IgnoreQueryFilters()
+                .Include(x => x.UserRoles).ThenInclude(x => x.Role)
+                .Include(x => x.EmployeeUserAccounts)
+                .Where(x => x.TenantId == tenantId && allUserIds.Contains(x.Id))
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+        var targetUsers = cohort.Where(x => targetUserIds.Contains(x.Id)).OrderBy(x => x.Id).ToList();
+        if (targetUsers.Count != targetUserIds.Count)
+            throw new OffboardingSafetyException(
+                "identity_graph_inconsistent",
+                "An employee login link points to a missing or cross-tenant identity. Access was not changed.");
+        if (targetUsers.Any(user => user.EmployeeUserAccounts.Any(link =>
+                !link.IsDeleted && link.TenantId == tenantId && link.EmployeeId != employeeId)))
+            throw new OffboardingSafetyException(
+                "shared_identity_requires_review",
+                "A login identity is linked to another employee. Resolve the identity graph before offboarding.");
+
+        List<PasswordResetToken> passwordResets = targetUserIds.Count == 0
+            ? []
+            : await _db.PasswordResetTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => targetUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+        List<MfaChallengeToken> mfaChallenges = targetUserIds.Count == 0
+            ? []
+            : await _db.MfaChallengeTokens.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && x.UserId.HasValue
+                         && targetUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+        List<RefreshToken> refreshTokens = targetUserIds.Count == 0
+            ? []
+            : await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => targetUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+
+        return new LockedOffboardingGraph(
+            offboarding, employee, targetLinks, targetUsers, cohort,
+            passwordResets, mfaChallenges, refreshTokens);
+    }
+
+    private void StageAccessRevocation(
+        LockedOffboardingGraph graph,
+        Guid? actorUserId,
+        bool unlinkAccount,
+        DateTime changedAtUtc,
+        string? actorIp)
+    {
+        foreach (var user in graph.TargetUsers)
+        {
+            user.IsActive = false;
+            user.IsEmailConfirmed = false;
+            // PendingPasswordSetup remains non-operational but is the only state accepted by the
+            // controlled invitation workflow after a rescind. The employee lifecycle still blocks an
+            // invitation while they are Offboarded/Archived.
+            user.Status = "PendingPasswordSetup";
+            user.AccessMode = AccessModes.NoLogin;
+            user.PasswordHash = $"OFFBOARDED${user.Id:N}";
+            user.MustChangePassword = false;
+            user.IsLocked = false;
+            user.LockoutEnd = null;
+            user.FailedLoginCount = 0;
+            user.MFAEnabled = false;
+            user.MfaSecretEncrypted = null;
+            user.MfaConfiguredAtUtc = null;
+            user.MfaLastVerifiedAtUtc = null;
+            user.MfaFailedCount = 0;
+            TenantSessionSecurity.RotateStamp(user, changedAtUtc);
+        }
+
+        foreach (var link in graph.TargetLinks)
+        {
+            link.AccessMode = AccessModes.NoLogin;
+            link.Status = "NoLogin";
+            link.RequiresPasswordSetup = false;
+            link.InvitationTokenHash = string.Empty;
+            link.InvitationExpiresAtUtc = null;
+            link.InvitationAcceptedAtUtc = null;
+            link.LoginDisabledReason = unlinkAccount
+                ? "Offboarding completed"
+                : "Offboarding — access revoked";
+            link.UpdatedAtUtc = changedAtUtc;
+            link.UpdatedBy = actorUserId;
+        }
+        foreach (var reset in graph.PasswordResetTokens)
+            reset.UsedAtUtc = changedAtUtc;
+        foreach (var challenge in graph.MfaChallenges)
+            challenge.UsedAtUtc = changedAtUtc;
+        foreach (var refresh in graph.RefreshTokens)
+        {
+            refresh.RevokedAtUtc = changedAtUtc;
+            refresh.RevokedByIp = actorIp;
+        }
+
+        if (unlinkAccount) graph.Employee.UserAccountId = null;
+        graph.Offboarding.AccessRevoked = true;
+        graph.Offboarding.AccessRevokedAtUtc ??= changedAtUtc;
+        graph.Offboarding.AccessRevokedByUserId ??= actorUserId;
+    }
+
+    private static void EnsureAnotherAdministratorSurvives(
+        LockedOffboardingGraph graph, DateTime atUtc)
+    {
+        var targetIds = graph.TargetUsers.Select(x => x.Id).ToHashSet();
+        var removesAdministrator = graph.TargetUsers.Any(IsAdministrator);
+        if (!removesAdministrator) return;
+        if (graph.AdministratorCohort.Any(x => !targetIds.Contains(x.Id) && IsOperationalAdministrator(x, atUtc)))
+            return;
+        throw new OffboardingSafetyException(
+            "last_administrator",
+            "This offboarding would disable the tenant's last operational administrator. Assign another administrator first.");
+    }
+
+    private static bool IsAdministrator(User user) =>
+        user.UserRoles.Any(x => x.Role is
+        {
+            NormalizedName: "ADMIN",
+            IsActive: true,
+            IsDeleted: false
+        });
+
+    private static bool IsOperationalAdministrator(User user, DateTime atUtc)
+    {
+        if (!IsAdministrator(user)
+            || user.IsDeleted
+            || !user.IsActive
+            || !user.IsEmailConfirmed
+            || user.Status != "Active"
+            || user.MustChangePassword
+            || user.AccessMode == AccessModes.NoLogin
+            || (user.IsLocked && (!user.LockoutEnd.HasValue || user.LockoutEnd > atUtc))
+            || (user.LockoutEnd.HasValue && user.LockoutEnd > atUtc))
+            return false;
+        var primary = user.EmployeeUserAccounts.Where(x => !x.IsDeleted)
+            .OrderByDescending(x => x.IsPrimary).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefault();
+        return primary?.AccessMode != AccessModes.NoLogin && primary?.RequiresPasswordSetup != true;
+    }
+
+    private AuditLog CreateOffboardingAudit(
+        Guid auditId,
+        DateTime createdAtUtc,
+        string action,
+        LockedOffboardingGraph graph,
+        object details) =>
+        AuthAuditEntry.Create(
+            auditId,
+            createdAtUtc,
+            action,
+            "EmployeeOffboarding",
+            graph.Offboarding.Id.ToString(),
+            new RequestContext(
+                HttpContext.Connection.RemoteIpAddress?.ToString(),
+                Request.Headers.UserAgent.ToString(),
+                this.GetUserId(),
+                graph.Offboarding.TenantId),
+            System.Text.Json.JsonSerializer.Serialize(new
+            {
+                graph.Offboarding.EmployeeId,
+                graph.Offboarding.EmployeeCode,
+                details
+            }));
+
+    private async Task ExecuteAtomicMutationAsync(
+        Func<CancellationToken, Task<bool>> operation,
+        Guid auditId,
+        string auditAction,
+        Guid tenantId,
+        CancellationToken ct)
+    {
+        if (!_db.Database.IsRelational())
+        {
+            await operation(ct);
+            return;
+        }
+
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteInTransactionAsync(
+            operation,
+            async token => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(x => x.Id == auditId && x.TenantId == tenantId && x.Action == auditAction, token),
+            IsolationLevel.ReadCommitted,
+            ct);
+    }
+
+    private sealed record LockedOffboardingGraph(
+        EmployeeOffboarding Offboarding,
+        Employee Employee,
+        IReadOnlyList<EmployeeUserAccount> TargetLinks,
+        IReadOnlyList<User> TargetUsers,
+        IReadOnlyList<User> AdministratorCohort,
+        IReadOnlyList<PasswordResetToken> PasswordResetTokens,
+        IReadOnlyList<MfaChallengeToken> MfaChallenges,
+        IReadOnlyList<RefreshToken> RefreshTokens);
+
+    private sealed class OffboardingSafetyException(string error, string message) : Exception(message)
+    {
+        public string Error { get; } = error;
     }
 
     private async Task<EmployeeOffboarding?> Find(Guid id, CancellationToken ct)

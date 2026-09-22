@@ -1,8 +1,14 @@
+using System.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Audit;
+using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Organization;
@@ -55,17 +61,53 @@ public class OrganizationSetupService : IOrganizationSetupService
 
     public async Task<CompanyDto?> UpdateCompanyAsync(Guid tenantId, Guid id, CompanyRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var company = await _db.Companies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
-        if (company is null) return null;
         ValidateCountryCode(request.CountryCode);
         ValidateEmailDomain(request.EmailDomain);
-        await EnsureCompanyUnique(tenantId, request.RegistrationNumber, id, cancellationToken);
-        Apply(company, request);
-        company.UpdatedAtUtc = DateTime.UtcNow;
-        company.UpdatedBy = context.UserId;
-        await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("organization.company_updated", nameof(Company), company.Id.ToString(), context, null, cancellationToken);
-        return company.ToDto();
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        CompanyDto? result = null;
+        var found = false;
+
+        async Task<bool> UpdateOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
+            if (tenant is null) return true;
+            var company = await _db.Companies.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+            if (company is null) return true;
+            found = true;
+
+            if (request.IsActive != company.IsActive)
+                throw new InvalidOperationException(
+                    "Company activation cannot be changed through the general editor. Use the controlled company-status workflow.");
+
+            await EnsureCompanyUnique(tenantId, request.RegistrationNumber, id, ct);
+            Apply(company, request, applyLifecycle: false);
+            company.UpdatedAtUtc = changedAtUtc;
+            company.UpdatedBy = context.UserId;
+            result = company.ToDto();
+            await AddCompanyAuditAsync(
+                auditId,
+                changedAtUtc,
+                "organization.company_updated",
+                company.Id,
+                context with { TenantId = tenantId },
+                ct);
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }
+
+        await ExecuteCompanyMutationAsync(
+            auditId,
+            "organization.company_updated",
+            tenantId,
+            context.UserId,
+            id,
+            UpdateOnceAsync,
+            cancellationToken);
+        return found ? result : null;
     }
 
     /// <summary>
@@ -322,19 +364,75 @@ public class OrganizationSetupService : IOrganizationSetupService
 
     public async Task<bool> DeleteCompanyAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken)
     {
-        // IgnoreQueryFilters is intentional: counting all active employees in this company regardless of the
-        // calling user's company-scope JWT claims — this is a system-level integrity check, not a user query.
-        var activeCount = await _db.Employees
-            .IgnoreQueryFilters()
-            .CountAsync(e => e.TenantId == tenantId && e.CompanyId == id
-                             && !e.IsDeleted
-                             && e.Status != "Archived" && e.Status != "Terminated" && e.Status != "Exited",
-                cancellationToken);
-        if (activeCount > 0)
-            throw new InvalidOperationException(
-                $"Cannot delete company: {activeCount} active employee{(activeCount == 1 ? "" : "s")} still belong to it. " +
-                $"Reassign or deactivate all employees before deleting the company.");
-        return await SoftDelete(_db.Companies, tenantId, id, "organization.company_deleted", context, cancellationToken);
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        var deleted = false;
+
+        async Task<bool> DeleteOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
+            if (tenant is null) return true;
+
+            var companies = await _db.Companies.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && !x.IsDeleted)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+            var company = companies.SingleOrDefault(x => x.Id == id);
+            if (company is null) return true;
+
+            if (company.IsActive && companies.Count(x => x.IsActive) <= 1)
+                throw new InvalidOperationException(
+                    "Cannot delete the only active company. Activate another company first.");
+
+            // Lock the complete employee cohort before checking the delete guard, so a concurrent
+            // transfer/create cannot slip an active employee into the company after the check.
+            var activeEmployees = await _db.Employees.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(e => e.TenantId == tenantId && e.CompanyId == id
+                    && !e.IsDeleted
+                    && e.Status != "Archived" && e.Status != "Terminated" && e.Status != "Exited")
+                .OrderBy(e => e.Id)
+                .Select(e => e.Id)
+                .ToListAsync(ct);
+            if (activeEmployees.Count > 0)
+                throw new InvalidOperationException(
+                    $"Cannot delete company: {activeEmployees.Count} active employee{(activeEmployees.Count == 1 ? "" : "s")} still belong to it. " +
+                    "Reassign or deactivate all employees before deleting the company.");
+
+            var users = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+            await InvalidateCompanyAuthorizationAsync(users, changedAtUtc, context with { TenantId = tenantId }, ct);
+
+            company.IsActive = false;
+            company.IsDeleted = true;
+            company.DeletedAtUtc = changedAtUtc;
+            company.DeletedBy = context.UserId;
+            company.UpdatedAtUtc = changedAtUtc;
+            company.UpdatedBy = context.UserId;
+            deleted = true;
+            await AddCompanyAuditAsync(
+                auditId,
+                changedAtUtc,
+                "organization.company_deleted",
+                company.Id,
+                context with { TenantId = tenantId },
+                ct);
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }
+
+        await ExecuteCompanyMutationAsync(
+            auditId,
+            "organization.company_deleted",
+            tenantId,
+            context.UserId,
+            id,
+            DeleteOnceAsync,
+            cancellationToken);
+        return deleted;
     }
     public Task<bool> DeleteBranchAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Branches, tenantId, id, "organization.branch_deleted", context, cancellationToken);
     public Task<bool> DeleteDepartmentAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Departments, tenantId, id, "organization.department_deleted", context, cancellationToken);
@@ -342,7 +440,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     public Task<bool> DeleteGradeAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Grades, tenantId, id, "organization.grade_deleted", context, cancellationToken);
     public Task<bool> DeleteCostCenterAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.CostCenters, tenantId, id, "organization.cost_center_deleted", context, cancellationToken);
 
-    private static void Apply(Company company, CompanyRequest request)
+    private static void Apply(Company company, CompanyRequest request, bool applyLifecycle = true)
     {
         company.LegalNameEn = Clean(request.LegalNameEn);
         company.LegalNameAr = Clean(request.LegalNameAr);
@@ -360,7 +458,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         // lowercased so derivation/collision keys are canonical.
         company.EmailDomain = Clean(request.EmailDomain).ToLowerInvariant();
         company.WorkEmailPattern = WorkEmailPatterns.Normalize(request.WorkEmailPattern);
-        company.IsActive = request.IsActive;
+        if (applyLifecycle) company.IsActive = request.IsActive;
     }
 
     private static void Apply(Branch branch, BranchRequest request)
@@ -431,6 +529,115 @@ public class OrganizationSetupService : IOrganizationSetupService
         costCenter.Code = Clean(request.Code).ToUpperInvariant();
         costCenter.Name = Clean(request.Name);
         costCenter.IsActive = request.IsActive;
+    }
+
+    private async Task ExecuteCompanyMutationAsync(
+        Guid auditId,
+        string auditAction,
+        Guid tenantId,
+        Guid? userId,
+        Guid entityId,
+        Func<CancellationToken, Task<bool>> operation,
+        CancellationToken cancellationToken)
+    {
+        if (!_db.Database.IsRelational())
+        {
+            await operation(cancellationToken);
+            return;
+        }
+
+        var entityIdText = entityId.ToString();
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteInTransactionAsync(
+            operation,
+            async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(x => x.Id == auditId
+                    && x.Action == auditAction
+                    && x.EntityName == nameof(Company)
+                    && x.EntityId == entityIdText
+                    && x.TenantId == tenantId
+                    && x.UserId == userId, ct),
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+    }
+
+    private async Task AddCompanyAuditAsync(
+        Guid auditId,
+        DateTime createdAtUtc,
+        string action,
+        Guid companyId,
+        RequestContext context,
+        CancellationToken cancellationToken)
+    {
+        var previousHash = await _db.AuditLogs.IgnoreQueryFilters()
+            .Where(x => x.TenantId == context.TenantId)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Select(x => x.EntryHash)
+            .FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+        var audit = new AuditLog
+        {
+            Id = auditId,
+            TenantId = context.TenantId,
+            UserId = context.UserId,
+            Action = action,
+            EntityName = nameof(Company),
+            EntityId = companyId.ToString(),
+            IpAddress = context.IpAddress,
+            UserAgent = context.UserAgent,
+            Metadata = System.Text.Json.JsonSerializer.Serialize(new { source = "organization_setup" }),
+            PreviousHash = previousHash,
+            CreatedAtUtc = createdAtUtc
+        };
+        audit.EntryHash = AuditService.ComputeHash(audit);
+        _db.AuditLogs.Add(audit);
+    }
+
+    private async Task InvalidateCompanyAuthorizationAsync(
+        IReadOnlyCollection<Zayra.Api.Domain.Entities.User> users,
+        DateTime changedAtUtc,
+        RequestContext context,
+        CancellationToken cancellationToken)
+    {
+        var userIds = users.Select(x => x.Id).OrderBy(x => x).ToList();
+        foreach (var user in users)
+            TenantSessionSecurity.RotateStamp(user, changedAtUtc);
+
+        await _db.MfaChallengeTokens.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+            .OrderBy(x => x.Id)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+        await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+            .OrderBy(x => x.Id)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        if (_db.Database.IsRelational())
+        {
+            await _db.MfaChallengeTokens.IgnoreQueryFilters()
+                .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), cancellationToken);
+            await _db.RefreshTokens
+                .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(x => x.RevokedAtUtc, changedAtUtc)
+                    .SetProperty(x => x.RevokedByIp, context.IpAddress), cancellationToken);
+            return;
+        }
+
+        foreach (var challenge in await _db.MfaChallengeTokens.IgnoreQueryFilters()
+            .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+            .ToListAsync(cancellationToken))
+            challenge.UsedAtUtc = changedAtUtc;
+        foreach (var token in await _db.RefreshTokens
+            .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+            .ToListAsync(cancellationToken))
+        {
+            token.RevokedAtUtc = changedAtUtc;
+            token.RevokedByIp = context.IpAddress;
+        }
     }
 
     private async Task EnsureCompanyUnique(Guid tenantId, string registrationNumber, Guid? excludedId, CancellationToken cancellationToken)

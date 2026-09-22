@@ -668,6 +668,21 @@ builder.Services.AddRateLimiter(o =>
                 QueueLimit               = 0,
             }));
 
+    // Platform challenge verification has its own window. Sharing the five-request password
+    // window meant issuing a challenge consumed permit #1 and a deterministic five-client
+    // exactly-once verification race was forced to return one 429 before application security
+    // could account for the attempt. The credential itself still has an exact five-attempt cap.
+    o.AddPolicy("platform_mfa_verify", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("PlatformMfaVerifyPermitLimit", 10),
+                Window                   = TimeSpan.FromSeconds(rl.GetValue("PlatformMfaVerifyWindowSeconds", 60)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
+
     // Public (unauthenticated) marketing writes — quote/estimate submissions. Throttle per-IP to
     // prevent spam / storage-exhaustion since these insert rows without any auth.
     o.AddPolicy("public_write", ctx =>

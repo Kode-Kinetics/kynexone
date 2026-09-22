@@ -142,12 +142,11 @@ public sealed class AuthWorkspaceValidationHttpTests : IAsyncLifetime
         public Task<ForgotPasswordResponse> ForgotPasswordAsync(ForgotPasswordRequest request, RequestContext context, CancellationToken cancellationToken) =>
             Task.FromResult(Enter<ForgotPasswordResponse>());
         public Task ResetPasswordAsync(ResetPasswordRequest request, RequestContext context, CancellationToken cancellationToken) => Enter();
-        public Task<AuthResponse> AcceptInvitationAsync(AcceptInvitationRequest request, RequestContext context, CancellationToken cancellationToken) =>
-            Task.FromResult(Enter<AuthResponse>());
+        public Task AcceptInvitationAsync(AcceptInvitationRequest request, RequestContext context, CancellationToken cancellationToken) => Enter();
         public Task<AuthUserDto?> GetCurrentUserAsync(Guid userId, CancellationToken cancellationToken) =>
             Task.FromResult(Enter<AuthUserDto?>());
         public Task ChangePasswordAsync(Guid userId, ChangePasswordRequest request, RequestContext context, CancellationToken cancellationToken) => Enter();
-        public Task<AuthResponse> CompleteMfaLoginAsync(Guid userId, RequestContext context, CancellationToken cancellationToken) =>
+        public Task<AuthResponse> CompleteMfaLoginAsync(string challengeToken, string totpCode, RequestContext context, CancellationToken cancellationToken) =>
             Task.FromResult(Enter<AuthResponse>());
     }
 }

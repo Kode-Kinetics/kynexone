@@ -81,9 +81,13 @@ public class AuthController : ControllerBase
     [HttpPost("accept-invitation")]
     [AllowAnonymous]
     [EnableRateLimiting("auth_login")] // throttle invitation-token guessing
-    public async Task<ActionResult<AuthResponse>> AcceptInvitation(AcceptInvitationRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> AcceptInvitation(AcceptInvitationRequest request, CancellationToken cancellationToken)
     {
-        try { return Ok(await _authService.AcceptInvitationAsync(request, GetContext(), cancellationToken)); }
+        try
+        {
+            await _authService.AcceptInvitationAsync(request, GetContext(), cancellationToken);
+            return NoContent();
+        }
         catch (UnauthorizedAccessException ex) { return Unauthorized(new { message = ex.Message }); }
     }
 

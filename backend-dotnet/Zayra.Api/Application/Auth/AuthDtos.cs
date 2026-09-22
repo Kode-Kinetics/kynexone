@@ -14,8 +14,7 @@ public sealed class RequiredWorkspaceAttribute : ValidationAttribute
 public record LoginRequest(
     [Required, EmailAddress] string Email,
     [Required] string Password,
-    [param: RequiredWorkspace]
-    [property: RequiredWorkspace] string TenantSlug);
+    [param: RequiredWorkspace] string TenantSlug);
 
 public record RefreshTokenRequest([Required] string RefreshToken);
 
@@ -23,20 +22,17 @@ public record LogoutRequest([Required] string RefreshToken);
 
 public record ForgotPasswordRequest(
     [Required, EmailAddress] string Email,
-    [param: RequiredWorkspace]
-    [property: RequiredWorkspace] string TenantSlug);
+    [param: RequiredWorkspace] string TenantSlug);
 
 public record ResetPasswordRequest(
     [Required] string ResetToken,
     [Required, MinLength(10)] string NewPassword,
-    [param: RequiredWorkspace]
-    [property: RequiredWorkspace] string TenantSlug);
+    [param: RequiredWorkspace] string TenantSlug);
 
 public record AcceptInvitationRequest(
     [Required] string InvitationToken,
     [Required, MinLength(10)] string NewPassword,
-    [param: RequiredWorkspace]
-    [property: RequiredWorkspace] string TenantSlug);
+    [param: RequiredWorkspace] string TenantSlug);
 
 public record CreateUserRequest(
     [Required, EmailAddress] string Email,

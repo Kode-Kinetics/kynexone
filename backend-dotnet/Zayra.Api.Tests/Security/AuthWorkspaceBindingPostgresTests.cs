@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -711,6 +712,7 @@ public sealed class AuthWorkspaceBindingPostgresTests : PlatformTestBase
             email ?? new CapturingEmailService(configured: false),
             jwt,
             new NullPostgresMfaService(),
+            new TotpService(DataProtectionProvider.Create("ZayraTests")),
             NullLogger<AuthService>.Instance,
             configuration);
     }
@@ -804,10 +806,12 @@ public sealed class AuthWorkspaceBindingPostgresTests : PlatformTestBase
         public Task<string> CreateChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken ct) => throw new NotImplementedException();
         public Task<User?> VerifyChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
         public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();
+        public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
         public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken ct) => throw new NotImplementedException();
         public Task<bool> VerifyPlatformSetupAsync(Guid id, MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
         public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken ct) => throw new NotImplementedException();
         public Task<PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
+        public Task<PlatformUser?> CompletePlatformChallengeAsync(string token, string code, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
         public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken ct) => throw new NotImplementedException();
     }
 }

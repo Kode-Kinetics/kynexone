@@ -25,8 +25,11 @@ public static class PlatformSessionSecurity
         => new(value.ToUniversalTime().Ticks - value.ToUniversalTime().Ticks % 10, DateTimeKind.Utc);
 
     public static DateTime RotateStamp(PlatformUser user)
+        => RotateStamp(user, DateTime.UtcNow);
+
+    public static DateTime RotateStamp(PlatformUser user, DateTime candidateUtc)
     {
-        var now = TruncateToDatabasePrecision(DateTime.UtcNow);
+        var now = TruncateToDatabasePrecision(candidateUtc);
         var current = user.UpdatedAtUtc.HasValue
             ? TruncateToDatabasePrecision(user.UpdatedAtUtc.Value)
             : DateTime.UnixEpoch;
@@ -56,11 +59,13 @@ public static class PlatformSessionSecurity
 
         var current = await db.PlatformUsers.AsNoTracking()
             .Where(x => x.Id == platformUserId)
-            .Select(x => new { x.IsActive, x.Role, x.UpdatedAtUtc })
+            .Select(x => new { x.IsActive, x.Role, x.UpdatedAtUtc, x.LockoutEndUtc })
             .SingleOrDefaultAsync(cancellationToken);
 
         return current is not null
             && current.IsActive
+            && PlatformRoles.All.Contains(current.Role)
+            && (!current.LockoutEndUtc.HasValue || current.LockoutEndUtc <= DateTime.UtcNow)
             && string.Equals(current.Role, claimedRole, StringComparison.Ordinal)
             && current.UpdatedAtUtc.HasValue
             && string.Equals(StampValue(current.UpdatedAtUtc.Value), claimedStamp, StringComparison.Ordinal);

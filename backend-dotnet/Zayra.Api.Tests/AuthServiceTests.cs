@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -48,6 +49,7 @@ public class AuthServiceTests
             new FakeEmailService(),
             jwt,
             new NullMfaService(),
+            new TotpService(DataProtectionProvider.Create("ZayraTests")),
             NullLogger<AuthService>.Instance);
     }
 
@@ -109,17 +111,19 @@ public class AuthServiceTests
     [InlineData("   ")]
     public void RequiredWorkspace_RejectsMissingOrBlankValues(string? workspace)
     {
-        var request = new ForgotPasswordRequest("user@example.test", workspace!);
-        var results = new List<ValidationResult>();
+        var tenantSlug = typeof(ForgotPasswordRequest)
+            .GetConstructors()
+            .Single()
+            .GetParameters()
+            .Single(parameter => parameter.Name == nameof(ForgotPasswordRequest.TenantSlug));
+        var validator = Assert.Single(
+            tenantSlug.GetCustomAttributes(typeof(RequiredWorkspaceAttribute), inherit: false)
+                .Cast<RequiredWorkspaceAttribute>());
 
-        var valid = Validator.TryValidateObject(
-            request,
-            new ValidationContext(request),
-            results,
-            validateAllProperties: true);
-
-        Assert.False(valid);
-        Assert.Contains(results, result => result.ErrorMessage == "Workspace is required.");
+        Assert.False(validator.IsValid(workspace));
+        Assert.Equal(
+            "Workspace is required.",
+            validator.FormatErrorMessage(nameof(ForgotPasswordRequest.TenantSlug)));
         Assert.Throws<InvalidOperationException>(() => AuthService.RequireWorkspace(workspace));
     }
 
@@ -471,6 +475,10 @@ public class AuthServiceTests
         await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseSqlite(connection).Options);
         await db.Database.EnsureCreatedAsync();
         var (_, user, _) = await SeedUserAsync(db);
+        user.Status = "PendingPasswordSetup";
+        user.AccessMode = AccessModes.NoLogin;
+        user.IsActive = false;
+        user.IsEmailConfirmed = false;
         const string invitationToken = "one-time-invitation-token";
         db.Employees.Add(new Employee
         {
@@ -496,9 +504,8 @@ public class AuthServiceTests
 
         var auth = BuildService(db);
         var request = new AcceptInvitationRequest(invitationToken, "NewPassword1!", "zayra");
-        var accepted = await auth.AcceptInvitationAsync(request, TestCtx, CancellationToken.None);
+        await auth.AcceptInvitationAsync(request, TestCtx, CancellationToken.None);
 
-        Assert.False(string.IsNullOrWhiteSpace(accepted.AccessToken));
         var link = await db.EmployeeUserAccounts.SingleAsync();
         Assert.Equal(string.Empty, link.InvitationTokenHash);
         Assert.Null(link.InvitationExpiresAtUtc);
@@ -508,7 +515,7 @@ public class AuthServiceTests
 
         await Assert.ThrowsAsync<UnauthorizedAccessException>(
             () => auth.AcceptInvitationAsync(request, TestCtx, CancellationToken.None));
-        Assert.Single(await db.RefreshTokens.ToListAsync());
+        Assert.Empty(await db.RefreshTokens.ToListAsync());
     }
 
     // ── Tenant-mandated MFA enforcement ───────────────────────────────────────
@@ -938,6 +945,7 @@ public sealed class AuthRefreshTokenSecurityTests
             new FakeEmailService(),
             jwt,
             new NullMfaService(),
+            new TotpService(DataProtectionProvider.Create("ZayraTests")),
             NullLogger<AuthService>.Instance);
     }
 
@@ -1107,7 +1115,7 @@ public sealed class AuthRetryingExecutionStrategyTests
     }
 
     [Fact]
-    public async Task AcceptInvitationAsync_UnderRetryingStrategy_ConsumesInvitationAndIssuesSession()
+    public async Task AcceptInvitationAsync_UnderRetryingStrategy_ConsumesInvitationWithoutSession()
     {
         // The third bare-transaction site. Under the retrying strategy every
         // POST /api/auth/accept-invitation returned HTTP 400, so no invited employee could ever
@@ -1117,6 +1125,11 @@ public sealed class AuthRetryingExecutionStrategyTests
 
         await using (var seedDb = _fixture.CreateDb())
         {
+            var stagedUser = await seedDb.Users.SingleAsync(x => x.Id == seeded.UserId);
+            stagedUser.Status = "PendingPasswordSetup";
+            stagedUser.AccessMode = AccessModes.NoLogin;
+            stagedUser.IsActive = false;
+            stagedUser.IsEmailConfirmed = false;
             var employee = new Employee
             {
                 TenantId = seeded.TenantId,
@@ -1141,17 +1154,13 @@ public sealed class AuthRetryingExecutionStrategyTests
             await seedDb.SaveChangesAsync();
         }
 
-        AuthResponse accepted;
         await using (var acceptDb = CreateRetryingDb())
         {
-            accepted = await NoStrategyConflict(() => BuildService(acceptDb).AcceptInvitationAsync(
+            await NoStrategyConflict(() => BuildService(acceptDb).AcceptInvitationAsync(
                 new AcceptInvitationRequest(invitationToken, "NewPassword1!", seeded.TenantSlug),
                 Context,
                 CancellationToken.None));
         }
-
-        Assert.False(string.IsNullOrWhiteSpace(accepted.AccessToken));
-        Assert.False(string.IsNullOrWhiteSpace(accepted.RefreshToken));
 
         await using var verify = _fixture.CreateDb();
         var link = await verify.EmployeeUserAccounts.AsNoTracking()
@@ -1161,10 +1170,8 @@ public sealed class AuthRetryingExecutionStrategyTests
         Assert.NotNull(link.InvitationAcceptedAtUtc);
         Assert.False(link.RequiresPasswordSetup);
         Assert.Equal("Active", link.Status);
-        // The session created inside the same unit committed with it.
-        var issued = await verify.RefreshTokens.AsNoTracking()
-            .SingleAsync(x => x.UserId == seeded.UserId && x.TokenHash == HashToken(accepted.RefreshToken));
-        Assert.Null(issued.RevokedAtUtc);
+        Assert.Empty(await verify.RefreshTokens.AsNoTracking()
+            .Where(x => x.UserId == seeded.UserId && x.RevokedAtUtc == null).ToListAsync());
         Assert.True(await verify.AuditLogs.AnyAsync(x =>
             x.TenantId == seeded.TenantId && x.Action == "auth.invitation_accepted"));
     }
@@ -1188,6 +1195,20 @@ public sealed class AuthRetryingExecutionStrategyTests
                 "strategy. Every /api/auth/refresh call will return HTTP 400 and log users out. " +
                 $"Wrap the unit in Database.CreateExecutionStrategy().ExecuteAsync(...). Original: {ex.Message}");
             throw;
+        }
+    }
+
+    private static async Task NoStrategyConflict(Func<Task> operation)
+    {
+        try
+        {
+            await operation();
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains(ConflictFragment))
+        {
+            Assert.Fail(
+                "REGRESSION: a bare BeginTransactionAsync is back under the retrying execution " +
+                "strategy. Original: " + ex.Message);
         }
     }
 
@@ -1263,6 +1284,7 @@ public sealed class AuthRetryingExecutionStrategyTests
             new FakeEmailService(),
             jwt,
             new NullMfaService(),
+            new TotpService(DataProtectionProvider.Create("ZayraTests")),
             NullLogger<AuthService>.Instance);
     }
 
@@ -1299,10 +1321,12 @@ file sealed class NullMfaService : IMfaService
     public Task<string> CreateChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Domain.Entities.User?> VerifyChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();
+    public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
     public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> VerifyPlatformSetupAsync(Guid id, MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
     public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
+    public Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string token, string code, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken ct) => throw new NotImplementedException();
 }
 
