@@ -619,7 +619,9 @@ public class AuthService : IAuthService
 
     private async Task<User?> LoadUserGraph(Guid userId, CancellationToken cancellationToken)
     {
-        return await _db.Users
+        // Split: keyed on the primary key, so each split query selects the same user. See
+        // TenantSessionSecurity.IsCurrentAsync for why the single-query form is too expensive.
+        return await _db.Users.AsSplitQuery()
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
             .Include(x => x.EmployeeUserAccounts)
