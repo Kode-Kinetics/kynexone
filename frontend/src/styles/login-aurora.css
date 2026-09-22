@@ -679,6 +679,11 @@
   transition: border-color .2s ease;
 }
 .lx-reg-row:hover { border-bottom-color: rgba(150, 214, 255, 0.32); }
+/* Drum-only faces (see `extra` in LoginMarketing.tsx). The flat register stays
+   the six rows it was designed as; the drum's face rule below re-shows them. */
+.lx-reg-row[data-extra] { display: none; }
+/* Drum-only detail lines (`more`), for the same reason. */
+.lx-reg-i.is-more { display: none; }
 .lx-reg-row:hover .lx-reg-name { color: #FFFFFF; }
 .lx-reg-main { min-width: 0; }
 .lx-reg-name {
@@ -1292,6 +1297,12 @@
   /* A capability is not a jurisdiction, and its rule says so before you have
      read a word: the same light, half of it. */
   .lx-reg-drum .lx-reg-row[data-kind='wide'].lx-rise::after { opacity: 0.55; }
+  /* The wrap. A face crossing the hidden seventh slot fades by --cyl-fade.
+     It is set on the CHILDREN, because the face itself carries the entrance
+     animation, and an animation's filled opacity beats any declaration. */
+  .lx-reg-drum .lx-reg-row > * { opacity: var(--cyl-fade, 1); }
+  .lx-reg-drum .lx-reg-row.lx-rise::after { opacity: var(--cyl-fade, 1); }
+  .lx-reg-drum .lx-reg-row[data-kind='wide'].lx-rise::after { opacity: calc(0.55 * var(--cyl-fade, 1)); }
   /* the row hover was a border colour; the border is gone */
   .lx-reg-drum .lx-reg-row:hover { border-bottom-color: transparent; }
 
@@ -1314,7 +1325,8 @@
   /* ONE SYSTEM PER LINE, and no separator to strand at a break. Four lines
      under Saudi Arabia against two under the UAE and Qatar is the statutory
      depth stated as a shape, before a word of it is read. */
-  .lx-reg-drum .lx-reg-i { display: block; }
+  .lx-reg-drum .lx-reg-i,
+  .lx-reg-drum .lx-reg-i.is-more { display: block; }
   .lx-reg-drum .lx-reg-i + .lx-reg-i::before { content: none; }
 
   /* A 'wide' face has no figure, so without this its phrase would sit in the
