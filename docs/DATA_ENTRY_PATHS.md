@@ -15,7 +15,7 @@ references one, `SEED_DEMO_DATA`, `SEED_ENTERPRISE_TEST_DATA`, `--purge-demo` or
 
 ## 2. Platform-admin endpoints (`/api/platform`, policy `PlatformAdmin`)
 `Controllers/PlatformController.cs` is the only code that creates a `Tenant`:
-- `POST /api/platform/tenants` — tenant + its first admin user.
+- `POST /api/platform/tenants` — tenant + its first company + its first admin user.
 - `POST /api/platform/leads/{id}/convert` — tenant + first admin from a sales lead.
 - `POST /api/platform/tenants/{tenantId}/users` — further tenant users (incl. test accounts).
 - `POST /api/platform/team` — platform operators.
@@ -45,7 +45,8 @@ Applied when the platform admin creates a tenant, and idempotently afterwards:
 ## 5. Schema
 EF Core migrations only (`dotnet Zayra.Api.dll --migrate`).
 
-## Known exception (open)
-`Infrastructure/Boot/CompanyScopeBackfill.cs` runs at boot and creates a default `Company`
-(named after the tenant) for any active tenant that has none. Disable with
-`CompanyScope__Backfill=false` until it is narrowed to repairing null `CompanyId` rows only.
+## Repair passes (create nothing)
+`Infrastructure/Boot/CompanyScopeBackfill.cs` runs at boot and only assigns rows with a null
+`CompanyId` to the tenant's existing company. A tenant with no active company is logged and
+skipped — its first company comes from `POST /api/platform/tenants`. Kill switch
+`CompanyScope__Backfill=false`.
