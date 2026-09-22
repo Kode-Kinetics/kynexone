@@ -309,22 +309,187 @@ public class KsaComplianceTruthTests
     [Fact]
     public void SeededCurveConstants_ExpireWhenTheMinistryReissuedTheAnnex()
     {
+        var annexReissue = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        // The subject of this test is the PRE-REISSUE constants: the Manufacturing curve read out
+        // of the 2021/2023 English guideline's worked example. The 2026 annex has since been read
+        // and loaded (see SeededCurveConstants_FromThe2026Annex_*), which is why rows effective
+        // ON or after the reissue now exist — but that must not buy the OLD rows a single extra
+        // day. Every constant published before the reissue still has to stop at it.
+        var preReissue = Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.BuildRules()
+            .Where(r => r.RuleKey.StartsWith("nitaqat.curve.", StringComparison.Ordinal))
+            .Where(r => r.EffectiveFrom < annexReissue)
+            .ToList();
+
+        preReissue.Should().NotBeEmpty("the verified Manufacturing curve is seeded");
+        preReissue.Should().OnlyContain(r => r.EffectiveTo != null,
+            "an un-expiring constant would answer a 2026 question with a 2024 number");
+        preReissue.Should().OnlyContain(r => r.EffectiveTo <= annexReissue);
+        preReissue.Should().OnlyContain(r => r.Description.Contains("hrsd.gov.sa"),
+            "every statutory constant must carry the source it was read from");
+        preReissue.Should().OnlyContain(r => r.Description.Contains("2026-09-20"),
+            "and the date it was read");
+
+        // Nothing but Manufacturing was verified from that document, so nothing but Manufacturing
+        // was seeded from it.
+        preReissue.Select(r => r.RuleKey.Split('.')[2]).Distinct()
+            .Should().BeEquivalentTo(new[] { "MANUFACTURING" });
+    }
+
+    /// <summary>
+    /// Every curve constant, of any vintage, names the document it was read from and the day it
+    /// was read. This is the provenance half of the old single test, kept whole and applied to
+    /// the 2026 annex rows as well.
+    /// </summary>
+    [Fact]
+    public void EverySeededCurveConstant_CarriesItsSourceAndReadDate()
+    {
         var rules = Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.BuildRules()
             .Where(r => r.RuleKey.StartsWith("nitaqat.curve.", StringComparison.Ordinal))
             .ToList();
 
-        rules.Should().NotBeEmpty("the verified Manufacturing curve is seeded");
-        rules.Should().OnlyContain(r => r.EffectiveTo != null,
-            "an un-expiring constant would answer a 2026 question with a 2024 number");
-        rules.Should().OnlyContain(r => r.EffectiveTo <= new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        rules.Should().NotBeEmpty();
         rules.Should().OnlyContain(r => r.Description.Contains("hrsd.gov.sa"),
             "every statutory constant must carry the source it was read from");
-        rules.Should().OnlyContain(r => r.Description.Contains("2026-09-20"),
+        rules.Should().OnlyContain(
+            r => System.Text.RegularExpressions.Regex.IsMatch(r.Description, @"\b20\d\d-\d\d-\d\d\b"),
             "and the date it was read");
 
-        // Nothing but Manufacturing was verified, so nothing but Manufacturing is seeded.
-        rules.Select(r => r.RuleKey.Split('.')[2]).Distinct()
-            .Should().BeEquivalentTo(new[] { "MANUFACTURING" });
+        // A constant may say VERIFIED only where a Ministry worked example was reproduced for
+        // that activity. Everything else must say so on the row, because the words travel to the
+        // screen with the band.
+        rules.Where(r => !r.RuleKey.Contains(".MANUFACTURING."))
+            .Should().OnlyContain(r => r.Description.Contains("UNVERIFIED"),
+                "no activity but Manufacturing has a Ministry worked example to reproduce");
+    }
+
+    /// <summary>
+    /// The 2026 annex load is COMPLETE per activity and CONTINUOUS in time.
+    ///
+    /// <para>Two separate ways to hand a customer a wrong band. A half-loaded activity bands off
+    /// an incomplete ladder — <see cref="NitaqatCurve.ResolveAsync"/> refuses that, so it becomes
+    /// a silent refusal rather than an answer. A hole between two intercept windows is worse: the
+    /// curve simply stops resolving on 1 January of some year and a working customer starts
+    /// getting refused with no deploy having happened.</para>
+    /// </summary>
+    [Fact]
+    public void SeededCurveConstants_FromThe2026Annex_AreCompleteAndContinuous()
+    {
+        var annexStart = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var bands = new[] { "LOWGREEN", "MEDIUMGREEN", "HIGHGREEN", "PLATINUM" };
+
+        var rules = Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.BuildRules()
+            .Where(r => r.RuleKey.StartsWith("nitaqat.curve.", StringComparison.Ordinal))
+            .Where(r => r.EffectiveFrom >= annexStart)
+            .ToList();
+
+        var activities = rules.Select(r => r.RuleKey.Split('.')[2]).Distinct().ToList();
+        activities.Should().HaveCount(
+            Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.Annex2026.Length,
+            "every activity in the transcribed annex is loaded, and nothing else is");
+
+        foreach (var activity in activities)
+        {
+            rules.Should().Contain(r => r.RuleKey == $"nitaqat.curve.{activity}.verified",
+                $"{activity} must declare whether its constants were reproduced");
+
+            foreach (var band in bands)
+            {
+                rules.Where(r => r.RuleKey == $"nitaqat.curve.{activity}.{band}.m")
+                    .Should().ContainSingle($"{activity}/{band} needs exactly one gradient");
+
+                // The intercept windows must tile [2026-01-01, forever) with no gap and no
+                // overlap: each window starts exactly where the previous one ended, and the last
+                // runs open-ended because the guideline applies the third-year value "in the
+                // third year and beyond".
+                var cs = rules.Where(r => r.RuleKey == $"nitaqat.curve.{activity}.{band}.c")
+                    .OrderBy(r => r.EffectiveFrom).ToList();
+
+                cs.Should().NotBeEmpty($"{activity}/{band} needs an intercept");
+                cs[0].EffectiveFrom.Should().Be(annexStart);
+                for (var i = 0; i < cs.Count - 1; i++)
+                    cs[i].EffectiveTo.Should().Be(cs[i + 1].EffectiveFrom,
+                        $"{activity}/{band} intercept windows must not leave a hole");
+                cs[^1].EffectiveTo.Should().BeNull(
+                    $"{activity}/{band}'s last intercept must not expire — the guideline applies "
+                    + "the third-year value in the third year and beyond");
+            }
+        }
+    }
+
+    /// <summary>
+    /// THE ANTI-INVENTION GUARD FOR CURVES.
+    ///
+    /// <para><see cref="NitaqatGridImportService.ImportCurveAsync"/> refuses a customer-supplied
+    /// curve whose band ladder crosses or leaves 0..100, because MHRSD's published curves do not
+    /// and a crossing means a transcription error — usually m and c swapped or two rows
+    /// interchanged. Seeded constants go in through a different door and would bypass that gate
+    /// entirely, so the same check is applied to them here, at the same workforce sizes.</para>
+    ///
+    /// <para>This is what stands between a mis-transcribed annex row and a customer being told
+    /// they are Green when they are Red.</para>
+    /// </summary>
+    [Fact]
+    public void SeededCurveConstants_FromThe2026Annex_NeverCrossAndStayPercentages()
+    {
+        var bands = new[]
+        {
+            NitaqatBands.LowGreen, NitaqatBands.MediumGreen,
+            NitaqatBands.HighGreen, NitaqatBands.Platinum,
+        };
+
+        var problems = new List<string>();
+
+        foreach (var activity in Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.Annex2026)
+        foreach (var (year, pick) in new (int, Func<Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.AnnexBand, decimal>)[]
+                 {
+                     (2026, b => b.C2026), (2027, b => b.C2027), (2028, b => b.C2028),
+                 })
+        foreach (var x in new[] { 6m, 50m, 500m, 3_000m, 20_000m })
+        {
+            decimal? previous = null;
+            string? previousBand = null;
+
+            for (var i = 0; i < bands.Length; i++)
+            {
+                var band = activity.Bands[i];
+                var y = NitaqatCurve.MinimumSaudization(band.M, pick(band), x);
+
+                if (y < 0m || y > 100m)
+                    problems.Add($"{activity.Code} {bands[i]} C-{year} at {x:0} workers = {y:0.##}%, not a percentage");
+
+                if (previous is not null && y < previous.Value)
+                    problems.Add($"{activity.Code} C-{year} at {x:0} workers: {bands[i]} ({y:0.##}%) "
+                               + $"requires LESS than {previousBand} ({previous.Value:0.##}%)");
+
+                previous = y;
+                previousBand = bands[i];
+            }
+        }
+
+        problems.Should().BeEmpty(
+            "MHRSD's published curves do not cross; a crossing means the annex was transcribed "
+            + "wrongly. Fix the transcription — never relax this check.");
+    }
+
+    /// <summary>
+    /// One activity's constants may appear under two catalogue codes only where they are two
+    /// names for the same annex row, and then they must be IDENTICAL. Anything else means a row
+    /// was pasted onto the wrong activity.
+    /// </summary>
+    [Fact]
+    public void SeededCurveConstants_FromThe2026Annex_AgreeWhereverAnnexRowsAreShared()
+    {
+        foreach (var group in Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.Annex2026
+                     .GroupBy(a => a.AnnexName)
+                     .Where(g => g.Count() > 1))
+        {
+            var first = group.First();
+            foreach (var other in group.Skip(1))
+                other.Bands.Should().BeEquivalentTo(first.Bands,
+                    $"'{group.Key}' is one annex row, so {other.Code} and {first.Code} must carry "
+                    + "the same constants");
+        }
     }
 
     // ── The curve loader — the path the UI actually points a customer at ─────
@@ -351,14 +516,19 @@ public class KsaComplianceTruthTests
         var r = await Grid(db).ImportCurveAsync(TenantA, CurveRequest("CONSTRUCTION"), null);
 
         r.Ok.Should().BeTrue(r.Error + " " + string.Join("; ", r.Rejections));
-        r.RowsInserted.Should().Be(8, "four bands × (m, c)");
+        r.RowsInserted.Should().Be(9, "four bands × (m, c), plus the verification flag");
         // The result echoes the curve at a recognisable headcount, so a transcription error that
         // passed validation is still visible to the person who loaded it.
         r.Message.Should().Contain("At 100 total workers");
 
         // Written tenant-scoped, never as a platform default.
         var written = await db.StatutoryRules.Where(x => x.RuleKey.StartsWith("nitaqat.curve.")).ToListAsync();
-        written.Should().HaveCount(8);
+        // Eight coefficients (m and c for each of the four non-Red bands) plus the verification
+        // flag that travels with them — NitaqatCurve.ResolveAsync treats an absent flag as
+        // unverified, so the loader has to write it or every customer-loaded curve would be
+        // silently downgraded to provisional.
+        written.Should().HaveCount(9);
+        written.Should().ContainSingle(x => x.RuleKey == NitaqatCurve.VerifiedKey("CONSTRUCTION"));
         written.Should().OnlyContain(x => x.TenantId == TenantA);
         written.Should().OnlyContain(x => x.Description.Contains("VERIFIED."));
 
@@ -453,8 +623,8 @@ public class KsaComplianceTruthTests
             CurveRequest("CONSTRUCTION", from: new DateOnly(2026, 1, 1)), null);
 
         reissue.Ok.Should().BeTrue();
-        reissue.RowsInserted.Should().Be(8);
-        reissue.RowsSuperseded.Should().Be(8);
+        reissue.RowsInserted.Should().Be(9);
+        reissue.RowsSuperseded.Should().Be(9);
 
         var lowGreenM = await db.StatutoryRules
             .Where(x => x.RuleKey == NitaqatCurve.GradientKey("CONSTRUCTION", NitaqatBands.LowGreen))

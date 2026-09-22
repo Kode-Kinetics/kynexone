@@ -587,6 +587,13 @@ public sealed class NitaqatGridImportService
             keys.Add((NitaqatCurve.InterceptKey(activity.Code, band), b.Intercept, $"curve intercept c for {activity.Code} / {band}"));
         }
 
+        // The verification flag travels WITH the constants. NitaqatCurve.ResolveAsync reads it to
+        // decide whether a band computed from this curve is reported as provisional, and treats an
+        // absent flag as unverified — so omitting it here would silently downgrade every curve a
+        // customer loads and marks verified.
+        keys.Add((NitaqatCurve.VerifiedKey(activity.Code), request.IsVerified ? 1m : 0m,
+            $"curve verification flag for {activity.Code}"));
+
         // Existing TENANT rows for these keys. Platform rows are never touched.
         var keyNames = keys.Select(k => k.Key).ToList();
         var existing = await _db.StatutoryRules
