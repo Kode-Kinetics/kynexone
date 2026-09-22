@@ -1003,6 +1003,7 @@ public class OffboardingController : ControllerBase
             .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
         if (tenant is null) return null;
 
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         var employee = await _db.Employees.IgnoreQueryFilters()
             .TagWith(RowLockingInterceptor.ForUpdateTag)
             .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, ct);
@@ -1017,6 +1018,7 @@ public class OffboardingController : ControllerBase
                 "offboarding_employee_mismatch",
                 "The offboarding record changed employee identity during the operation.");
 
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         var targetLinks = await _db.EmployeeUserAccounts.IgnoreQueryFilters()
             .TagWith(RowLockingInterceptor.ForUpdateTag)
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted)
@@ -1043,6 +1045,7 @@ public class OffboardingController : ControllerBase
 
         if (allUserIds.Count > 0)
         {
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             await _db.EmployeeUserAccounts.IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && x.UserId.HasValue && allUserIds.Contains(x.UserId.Value))
@@ -1063,6 +1066,7 @@ public class OffboardingController : ControllerBase
 
         List<User> cohort = allUserIds.Count == 0
             ? []
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             : await _db.Users.IgnoreQueryFilters()
                 .Include(x => x.UserRoles).ThenInclude(x => x.Role)
                 .Include(x => x.EmployeeUserAccounts)
@@ -1088,6 +1092,7 @@ public class OffboardingController : ControllerBase
                 .ToListAsync(ct);
         List<MfaChallengeToken> mfaChallenges = targetUserIds.Count == 0
             ? []
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             : await _db.MfaChallengeTokens.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && x.UserId.HasValue
                          && targetUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
@@ -1242,6 +1247,7 @@ public class OffboardingController : ControllerBase
         var strategy = _db.Database.CreateExecutionStrategy();
         await strategy.ExecuteInTransactionAsync(
             operation,
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             async token => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId && x.TenantId == tenantId && x.Action == auditAction, token),
             IsolationLevel.ReadCommitted,

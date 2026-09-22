@@ -2258,6 +2258,8 @@ public class EmployeesController : ControllerBase
 
             // Tenant is the serialization anchor for employee-code allocation and normalized-email
             // identity creation. The draft lock makes competing approval requests exactly-once.
+            // IgnoreQueryFilters is intentional: Tenant is not company-scoped; the lock is pinned to
+            // the caller's own tenantId (x.Id == tenantId), so no cross-tenant row is reachable.
             var tenantAnchor = await _db.Tenants.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.Id == tenantId && x.IsActive)
                 .Select(x => x.Id)
@@ -2296,6 +2298,7 @@ public class EmployeesController : ControllerBase
             Guid? companyId = null;
             if (draftBranchId.HasValue)
             {
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
                 var resolvedCompanyId = await _db.Branches.IgnoreQueryFilters().AsNoTracking()
                     .Where(x => x.TenantId == tenantId && x.Id == draftBranchId.Value && !x.IsDeleted)
                     .Select(x => x.CompanyId)
@@ -2310,6 +2313,7 @@ public class EmployeesController : ControllerBase
                     .SingleAsync(ct);
                 if (departmentBranchId.HasValue)
                 {
+                    // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
                     var departmentCompanyId = await _db.Branches.IgnoreQueryFilters().AsNoTracking()
                         .Where(x => x.TenantId == tenantId && x.Id == departmentBranchId.Value && !x.IsDeleted)
                         .Select(x => x.CompanyId)
@@ -2393,6 +2397,7 @@ public class EmployeesController : ControllerBase
 
             if (employee.ManagerEmployeeId is null && employee.DepartmentId.HasValue)
             {
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
                 var deptHeadId = await _db.Departments.IgnoreQueryFilters().AsNoTracking()
                     .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.Id == employee.DepartmentId.Value)
                     .Select(d => d.ManagerEmployeeId).SingleOrDefaultAsync(ct);
@@ -2405,6 +2410,7 @@ public class EmployeesController : ControllerBase
                 }
             }
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var draftDocuments = await _db.EmployeeDocuments.IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && x.DraftId == draftId && !x.IsDeleted)
@@ -2471,6 +2477,7 @@ public class EmployeesController : ControllerBase
                 var strategy = _db.Database.CreateExecutionStrategy();
                 await strategy.ExecuteInTransactionAsync(
                     ApproveOnceAsync,
+                    // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
                     async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                         .AnyAsync(x => x.Id == auditId
                             && x.TenantId == tenantId
@@ -2523,6 +2530,7 @@ public class EmployeesController : ControllerBase
         // Read the durable marker even on the normal path. This is both the unknown-COMMIT
         // reconstruction path and a final assertion that no un-audited activation is returned.
         _db.ChangeTracker.Clear();
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
         var committedMarker = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == auditId
                 && x.TenantId == tenantId
@@ -2535,6 +2543,7 @@ public class EmployeesController : ControllerBase
         var documents = await _db.EmployeeDocuments.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted)
             .ToListAsync(cancellationToken);
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         var histories = await _db.EmployeeHistories.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId)
             .ToListAsync(cancellationToken);
@@ -3965,6 +3974,7 @@ public class EmployeesController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(employee.WorkEmail) || employee.TenantId is null) return null;
         var normalized = AuthService.Normalize(employee.WorkEmail);
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         var matchingIdentityIds = await _db.Users.IgnoreQueryFilters()
             .TagWith(RowLockingInterceptor.ForUpdateTag)
             .Where(x => x.TenantId == employee.TenantId && x.NormalizedEmail == normalized)
@@ -3976,6 +3986,7 @@ public class EmployeesController : ControllerBase
             throw new IdentityProvisioningConflictException(
                 "A login identity already uses this work email. Resolve the identity explicitly before approving the draft.");
 
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         var role = await _db.Roles.IgnoreQueryFilters().AsNoTracking()
             .TagWith(RowLockingInterceptor.ForShareTag)
             .Where(x => (x.TenantId == employee.TenantId || x.TenantId == null)

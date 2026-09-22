@@ -1361,6 +1361,7 @@ public class PlatformController : ControllerBase
         // There is a UNIQUE index on (TenantId, NormalizedEmail) that ignores IsDeleted,
         // so a previously soft-deleted user with this email still occupies the slot.
         // Match including soft-deleted rows: block live duplicates, but resurrect a removed one.
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         var existing = await _db.Users.IgnoreQueryFilters()
             .Include(u => u.UserRoles)
             .FirstOrDefaultAsync(u => u.TenantId == tenantId && u.NormalizedEmail == normalizedEmail, ct);
@@ -1618,6 +1619,7 @@ public class PlatformController : ControllerBase
                 return true;
             }
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var subscription = await _db.TenantSubscriptions.IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
@@ -1635,6 +1637,7 @@ public class PlatformController : ControllerBase
                 return true;
             }
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var users = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId)
                 .OrderBy(x => x.Id)
@@ -1658,6 +1661,7 @@ public class PlatformController : ControllerBase
             var revoked = 0;
             if (_db.Database.IsRelational())
             {
+                // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
                 await _db.MfaChallengeTokens.IgnoreQueryFilters()
                     .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
                     .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), cancellationToken);
@@ -1669,6 +1673,7 @@ public class PlatformController : ControllerBase
             }
             else
             {
+                // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
                 foreach (var challenge in await _db.MfaChallengeTokens.IgnoreQueryFilters()
                     .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
                     .ToListAsync(cancellationToken))
@@ -1716,6 +1721,7 @@ public class PlatformController : ControllerBase
             var strategy = _db.Database.CreateExecutionStrategy();
             await strategy.ExecuteInTransactionAsync(
                 ApplyOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
                 async cancellationToken => await _db.AdminAuditLogs.IgnoreQueryFilters().AsNoTracking()
                     .AnyAsync(x => x.Id == auditId && x.Action == action, cancellationToken),
                 IsolationLevel.ReadCommitted,
@@ -2160,6 +2166,7 @@ public class PlatformController : ControllerBase
         async Task<bool> RevokeOnceAsync(CancellationToken cancellationToken)
         {
             _db.ChangeTracker.Clear();
+            // IgnoreQueryFilters is intentional: pinned to a unique key or an id set resolved from the tenant-scoped/locked graph above (register §6).
             var identity = await _db.Users.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.Id == userId && !x.IsDeleted)
                 .Select(x => new { x.TenantId, x.Email })
@@ -2180,6 +2187,7 @@ public class PlatformController : ControllerBase
                 return true;
             }
 
+            // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
             await _db.MfaChallengeTokens.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.UserId == userId && x.UsedAtUtc == null)
                 .OrderBy(x => x.Id)
@@ -2194,6 +2202,7 @@ public class PlatformController : ControllerBase
             TenantSessionSecurity.RotateStamp(user, changedAtUtc);
             if (_db.Database.IsRelational())
             {
+                // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
                 await _db.MfaChallengeTokens.IgnoreQueryFilters()
                     .Where(x => x.UserId == userId && x.UsedAtUtc == null)
                     .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), cancellationToken);
@@ -2205,6 +2214,7 @@ public class PlatformController : ControllerBase
             }
             else
             {
+                // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
                 foreach (var challenge in await _db.MfaChallengeTokens.IgnoreQueryFilters()
                     .Where(x => x.UserId == userId && x.UsedAtUtc == null)
                     .ToListAsync(cancellationToken))
@@ -2259,6 +2269,7 @@ public class PlatformController : ControllerBase
             var strategy = _db.Database.CreateExecutionStrategy();
             await strategy.ExecuteInTransactionAsync(
                 RevokeOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
                 async cancellationToken => await _db.AdminAuditLogs.IgnoreQueryFilters().AsNoTracking()
                     .AnyAsync(x => x.Id == auditId && x.Action == "SessionsRevoked", cancellationToken),
                 IsolationLevel.ReadCommitted,

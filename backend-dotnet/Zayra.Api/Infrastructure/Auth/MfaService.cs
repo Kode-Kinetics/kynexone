@@ -66,6 +66,7 @@ public class MfaService : IMfaService
             var graph = await LoadCompleteTenantGraphAsync(user.Id, user.TenantId, cancellationToken);
             if (!await AuthTenantGraphIntegrity.IsValidAsync(graph, _db, cancellationToken))
                 return false;
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var identity = await _db.TenantIdentityProviderSettings.IgnoreQueryFilters().AsNoTracking()
                 .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, cancellationToken);
             if (!AuthCurrentEligibility.ForPasswordEntry(
@@ -95,6 +96,7 @@ public class MfaService : IMfaService
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             EnableOnceAsync,
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             async cancellationToken => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId && x.Action == "auth.mfa.enabled", cancellationToken),
             IsolationLevel.ReadCommitted,
@@ -176,6 +178,7 @@ public class MfaService : IMfaService
             var graph = await LoadCompleteTenantGraphAsync(user.Id, user.TenantId, cancellationToken);
             if (!await AuthTenantGraphIntegrity.IsValidAsync(graph, _db, cancellationToken))
                 return false;
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var identity = await _db.TenantIdentityProviderSettings.IgnoreQueryFilters().AsNoTracking()
                 .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, cancellationToken);
             var eligibility = AuthCurrentEligibility.ForPasswordEntry(
@@ -251,6 +254,7 @@ public class MfaService : IMfaService
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             VerifyOnceAsync,
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             async cancellationToken => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId, cancellationToken),
             IsolationLevel.ReadCommitted,
@@ -261,6 +265,7 @@ public class MfaService : IMfaService
         // after verifySucceeded. Reconcile the exact success marker instead of telling the
         // client that its now-consumed enrollment credential failed.
         _db.ChangeTracker.Clear();
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
         return await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId && x.Action == "auth.mfa.enabled", ct)
             && await _db.Users.IgnoreQueryFilters().AsNoTracking()
@@ -440,6 +445,7 @@ public class MfaService : IMfaService
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             DisableOnceAsync,
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             async cancellationToken => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId && x.Action == auditAction, cancellationToken),
             IsolationLevel.ReadCommitted,
@@ -502,6 +508,7 @@ public class MfaService : IMfaService
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             EnableOnceAsync,
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             async cancellationToken => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId && x.Action == "platform.auth.mfa_enabled", cancellationToken),
             IsolationLevel.ReadCommitted,
@@ -688,6 +695,7 @@ public class MfaService : IMfaService
             var strategy = _db.Database.CreateExecutionStrategy();
             succeeded = await strategy.ExecuteInTransactionAsync(
                 CompleteOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
                 async cancellationToken => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                     .AnyAsync(x => x.Id == auditId, cancellationToken),
                 IsolationLevel.ReadCommitted,
@@ -702,6 +710,7 @@ public class MfaService : IMfaService
         {
             // See tenant completion above: default(bool) is ambiguous after verified COMMIT.
             _db.ChangeTracker.Clear();
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             succeeded = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId && x.Action == "platform.auth.mfa_login", ct);
         }
@@ -776,6 +785,7 @@ public class MfaService : IMfaService
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             DisableOnceAsync,
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             async cancellationToken => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId && x.Action == "platform.auth.mfa_disabled", cancellationToken),
             IsolationLevel.ReadCommitted,
@@ -789,6 +799,7 @@ public class MfaService : IMfaService
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private Task<User?> LoadCompleteTenantGraphAsync(Guid userId, Guid tenantId, CancellationToken ct) =>
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         _db.Users.IgnoreQueryFilters()
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)

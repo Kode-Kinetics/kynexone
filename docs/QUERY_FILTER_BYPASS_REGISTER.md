@@ -137,3 +137,40 @@ each change. Priority order is by *actor risk*, not count — controller sites (
 > **Open risk (recorded, not closed):** `FinanceGlController` (20) and `EmployeesController` (8) are
 > user-reachable. Until migrated to `ForCompanies`, their company restriction rests on hand-written
 > predicates rather than an enforced abstraction. Scheduled as the first Wave 1 security task.
+
+---
+
+## 6. Auth-recovery candidate — provisional baseline raise (+120, 210 → 330)
+
+The auth-recovery candidate (`integration/auth-lean`) added 120 raw call sites to lock and
+re-validate identity graphs (pre-auth login/refresh/MFA/invitation, access administration, tenant
+lifecycle, offboarding and draft approval). The baseline was raised to keep the ratchet enforcing
+**no further growth**; it is **not** a claim that these sites meet §2.
+
+Each site was classified by scanning its full LINQ statement:
+
+| Scope evidence | Sites | Notes |
+|---|---|---|
+| Explicit `TenantId ==` (or tenant id-set) predicate | 102 | Tenant pinned; company filter dropped |
+| Server-generated unique key only | 32 | Commit-verification reads of an `AuditLog`/`AdminAuditLog` by a fresh `Guid` allocated in the same call; `MfaChallengeTokens` by user-id sets taken from a tenant-locked graph; platform-operator lookups (cross-tenant by design, `PlatformAdmin` policy) |
+| Tenant pinned through a helper (`Occupying(..., tenantId)`) | 1 | `EmployeesController` |
+
+| File | Before → after |
+|---|---|
+| `Infrastructure/Auth/AccessManagementService.cs` | new → 39 |
+| `Infrastructure/Auth/MfaService.cs` | new → 16 |
+| `Controllers/EmployeesController.cs` | 8 → 23 |
+| `Controllers/PlatformController.cs` | 3 → 15 |
+| `Infrastructure/Auth/AuthService.cs` | 2 → 12 |
+| `Infrastructure/Organization/OrganizationSetupService.cs` | 1 → 9 |
+| `Controllers/OffboardingController.cs` | new → 7 |
+| `Infrastructure/Employees/EmployeeManagementService.cs` | 1 → 7 |
+| `Infrastructure/Auth/EnterpriseIdentityService.cs` | new → 5 |
+| `Infrastructure/Auth/AuthTenantGraphIntegrity.cs` | new → 2 |
+
+> **Open risk:** the user-reachable sites (`EmployeesController`, `OffboardingController`,
+> `AccessManagementService`, `OrganizationSetupService`, `EmployeeManagementService`) rely on an
+> upstream company-scoped read or permission check followed by a tenant+id locked re-read. §2 says
+> TenantId alone is never enough on user-triggered paths. Migrate these to
+> `ScopedBypass.ForCompanies`/`TenantWide` and lower the counts. Pre-auth sites (no principal
+> yet) are the legitimate raw-bypass class.

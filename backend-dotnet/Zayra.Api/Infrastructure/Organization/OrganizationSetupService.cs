@@ -74,6 +74,7 @@ public class OrganizationSetupService : IOrganizationSetupService
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
             if (tenant is null) return true;
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var company = await _db.Companies.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
             if (company is null) return true;
@@ -375,6 +376,7 @@ public class OrganizationSetupService : IOrganizationSetupService
                 .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
             if (tenant is null) return true;
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var companies = await _db.Companies.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && !x.IsDeleted)
                 .OrderBy(x => x.Id)
@@ -388,6 +390,7 @@ public class OrganizationSetupService : IOrganizationSetupService
 
             // Lock the complete employee cohort before checking the delete guard, so a concurrent
             // transfer/create cannot slip an active employee into the company after the check.
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var activeEmployees = await _db.Employees.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(e => e.TenantId == tenantId && e.CompanyId == id
                     && !e.IsDeleted
@@ -400,6 +403,7 @@ public class OrganizationSetupService : IOrganizationSetupService
                     $"Cannot delete company: {activeEmployees.Count} active employee{(activeEmployees.Count == 1 ? "" : "s")} still belong to it. " +
                     "Reassign or deactivate all employees before deleting the company.");
 
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var users = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId)
                 .OrderBy(x => x.Id)
@@ -550,6 +554,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         var strategy = _db.Database.CreateExecutionStrategy();
         await strategy.ExecuteInTransactionAsync(
             operation,
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
                 .AnyAsync(x => x.Id == auditId
                     && x.Action == auditAction
@@ -569,6 +574,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         RequestContext context,
         CancellationToken cancellationToken)
     {
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
         var previousHash = await _db.AuditLogs.IgnoreQueryFilters()
             .Where(x => x.TenantId == context.TenantId)
             .OrderByDescending(x => x.CreatedAtUtc)
@@ -603,6 +609,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         foreach (var user in users)
             TenantSessionSecurity.RotateStamp(user, changedAtUtc);
 
+        // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
         await _db.MfaChallengeTokens.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
             .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
             .OrderBy(x => x.Id)
@@ -616,6 +623,7 @@ public class OrganizationSetupService : IOrganizationSetupService
 
         if (_db.Database.IsRelational())
         {
+            // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
             await _db.MfaChallengeTokens.IgnoreQueryFilters()
                 .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
                 .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), cancellationToken);
@@ -627,6 +635,7 @@ public class OrganizationSetupService : IOrganizationSetupService
             return;
         }
 
+        // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
         foreach (var challenge in await _db.MfaChallengeTokens.IgnoreQueryFilters()
             .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
             .ToListAsync(cancellationToken))
