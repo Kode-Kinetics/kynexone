@@ -4,9 +4,9 @@
 
 :root {
   color-scheme: light;
-  /* 'IBM Plex Sans Arabic' is a fallback, not a switch — Inter still draws every Latin
-     glyph; only Arabic codepoints, which Inter does not cover, fall through to it. */
-  font-family: Inter, 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* 'IBM Plex Sans Arabic' is a fallback, not a switch: Geist draws every Latin glyph;
+     only Arabic codepoints, which Geist does not cover, fall through to it. */
+  font-family: var(--font-geist), 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: #f0f4ff;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -174,6 +174,244 @@ textarea:focus-visible {
   }
 }
 
+/* ── Workforce Glass material system ──────────────────────────────────────
+ * Three levels, and the rule that makes them work is restraint:
+ *   1. canvas   — the calm page background. No decorative gradient.
+ *   2. .wg-card — SOLID operational surfaces: payroll, compliance, approvals,
+ *                 tables, charts, warnings. Text over data must never sit on glass.
+ *   3. .wg-glass — translucent material, ONLY for chrome that floats over content:
+ *                 command bar, nav shell, mobile bottom nav, drawers, sheets, menus.
+ * Glass falls back to an opaque surface when backdrop-filter is unsupported or the
+ * user asks for reduced transparency. Never wrap a non-portalled position:fixed
+ * child in .wg-glass — backdrop-filter makes it the containing block.
+ */
+:root {
+  --wg-wash-a: rgba(47, 107, 255, 0.10);
+  --wg-wash-b: rgba(14, 116, 144, 0.07);
+  --wg-wash-c: rgba(226, 234, 248, 0.55);
+  --wg-grain-opacity: 0.05;
+  --wg-hero-base: #1C3FCF;
+  --wg-hero-base2: #1734A8;
+  --wg-hero-light: #2A5CEB;
+  --wg-hero-deep: #0A2472;
+  --wg-hero-shadow: rgba(28, 63, 207, 0.55);
+  --viz-track: #E8EEFF;
+  --viz-bar-top: #8CB0F0;
+  --viz-bar-side: #1D5BB0;
+  --viz-1: #2a78d6; --viz-2: #eb6834; --viz-3: #1baf7a; --viz-4: #eda100;
+  --viz-recede: #c9dcf5; --viz-grid: #e8ebf0; --viz-axis: #94a3b8;
+  --viz-muted: #475569; --viz-ink: #0f172a; --viz-gap: rgba(100, 116, 139, 0.07); --viz-hover: rgba(15, 23, 42, 0.035);
+  --viz-ord-1: #86b6ef; --viz-ord-2: #5598e7; --viz-ord-3: #256abf; --viz-ord-4: #184f95;
+  --viz-critical: #d03b3b; --viz-warning: #eda100;
+  --wg-canvas: #f4f6fa;
+  --wg-surface: #ffffff;
+  --wg-surface-2: #f8fafc;
+  --wg-line: rgba(15, 23, 42, 0.08);
+  --wg-line-strong: rgba(15, 23, 42, 0.14);
+  --wg-glass-bg: rgba(255, 255, 255, 0.86);
+  --wg-glass-solid: #ffffff;
+  --wg-glass-line: rgba(255, 255, 255, 0.65);
+  --wg-glass-highlight: rgba(255, 255, 255, 0.55);
+  --wg-glass-shadow: 0 1px 0 rgba(15, 23, 42, 0.04), 0 10px 30px -12px rgba(15, 23, 42, 0.14);
+  --wg-card-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.02);
+
+  /* Motion tokens. Motion acknowledges state or preserves continuity — nothing ambient. */
+  --wg-dur-press: 110ms;
+  --wg-dur-hover: 140ms;
+  --wg-dur-update: 200ms;
+  --wg-dur-disclosure: 220ms;
+  --wg-dur-drawer: 280ms;
+  --wg-dur-pulse: 380ms;
+  --wg-ease: cubic-bezier(0.2, 0, 0, 1);
+  --wg-ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+:root.dark {
+  --wg-wash-a: rgba(59, 111, 255, 0.16);
+  --wg-wash-b: rgba(20, 184, 166, 0.07);
+  --wg-wash-c: rgba(15, 25, 48, 0.6);
+  --wg-grain-opacity: 0.07;
+  --wg-hero-base: #1A36B0;
+  --wg-hero-base2: #122878;
+  --wg-hero-light: #2F5FE8;
+  --wg-hero-deep: #07163F;
+  --wg-hero-shadow: rgba(0, 0, 0, 0.6);
+  --viz-track: #1E293B;
+  --viz-bar-top: #6FA3F0;
+  --viz-bar-side: #1E4F9C;
+  --viz-1: #3987e5; --viz-2: #d95926; --viz-3: #199e70; --viz-4: #c98500;
+  --viz-recede: #2b3a55; --viz-grid: #1f2937; --viz-axis: #475569;
+  --viz-muted: #cbd5e1; --viz-ink: #f8fafc; --viz-gap: rgba(148, 163, 184, 0.08); --viz-hover: rgba(255, 255, 255, 0.04);
+  --viz-ord-1: #86b6ef; --viz-ord-2: #5598e7; --viz-ord-3: #2a78d6; --viz-ord-4: #1c5cab;
+  --viz-critical: #e66767; --viz-warning: #fab219;
+  --wg-canvas: #0a0f1a;
+  --wg-surface: #111827;
+  --wg-surface-2: #151e2e;
+  --wg-line: rgba(255, 255, 255, 0.07);
+  --wg-line-strong: rgba(255, 255, 255, 0.12);
+  --wg-glass-bg: rgba(17, 24, 39, 0.86);
+  --wg-glass-solid: #111827;
+  --wg-glass-line: rgba(255, 255, 255, 0.08);
+  --wg-glass-highlight: rgba(255, 255, 255, 0.05);
+  --wg-glass-shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  --wg-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+@layer components {
+/* The page backdrop. Authored, not generated: two low-chroma washes in the brand's own hues
+ * (KynexOne blue top-start, a cool slate-teal top-end) that fade out within the first ~560 px,
+ * so they frame the page header and never sit behind dense data. A faint grain layer
+ * (below) breaks up gradient banding, which is what makes smooth gradients look synthetic. */
+.wg-canvas {
+  background-color: var(--wg-canvas);
+  background-image:
+    radial-gradient(1100px 520px at 12% -120px, var(--wg-wash-a), transparent 70%),
+    radial-gradient(900px 480px at 92% -160px, var(--wg-wash-b), transparent 72%),
+    linear-gradient(180deg, var(--wg-wash-c) 0, transparent 560px);
+  background-repeat: no-repeat;
+  background-attachment: scroll;
+  position: relative;
+  isolation: isolate;
+}
+.wg-canvas::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: var(--wg-grain-opacity);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.35  0 0 0 0 0.4  0 0 0 0 0.5  0 0 0 0.55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+@media (forced-colors: active), (prefers-reduced-transparency: reduce) {
+  .wg-canvas { background-image: none; }
+  .wg-canvas::before { display: none; }
+}
+
+/* The payroll hero band: the one deliberately saturated surface on the page. */
+.wg-hero {
+  background-color: var(--wg-hero-base);
+  background-image:
+    radial-gradient(760px 340px at 100% 0%, var(--wg-hero-light), transparent 62%),
+    radial-gradient(640px 360px at 100% 130%, var(--wg-hero-deep), transparent 60%),
+    linear-gradient(135deg, var(--wg-hero-base), var(--wg-hero-base2));
+  box-shadow: 0 24px 48px -28px var(--wg-hero-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+/* High-contrast mode: drop the gradient and let every piece of text on the band take the
+ * system colours, so nothing depends on the brand blue being painted. */
+@media (forced-colors: active) {
+  .wg-hero { background: Canvas; border: 1px solid CanvasText; box-shadow: none; }
+  .wg-hero, .wg-hero * { color: CanvasText !important; background-image: none !important; }
+  .wg-hero a { color: LinkText !important; }
+}
+
+.wg-card {
+  background-color: var(--wg-surface);
+  border: 1px solid var(--wg-line);
+  border-radius: 14px;
+  box-shadow: var(--wg-card-shadow);
+}
+
+.wg-glass {
+  background-color: var(--wg-glass-bg);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  backdrop-filter: saturate(180%) blur(24px);
+  border-color: var(--wg-glass-line);
+  box-shadow: inset 0 1px 0 var(--wg-glass-highlight), var(--wg-glass-shadow);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .wg-glass { background-color: var(--wg-glass-solid); }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .wg-glass {
+    background-color: var(--wg-glass-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .wg-glass, .wg-card { border: 1px solid CanvasText; }
+}
+
+/* Interactive rows/tiles on solid surfaces: border + tint on hover, never a lift. */
+.wg-press {
+  transition:
+    background-color var(--wg-dur-hover) var(--wg-ease),
+    border-color var(--wg-dur-hover) var(--wg-ease),
+    color var(--wg-dur-hover) var(--wg-ease),
+    transform var(--wg-dur-press) var(--wg-ease);
+}
+.wg-press:active { transform: scale(0.985); }
+
+/* A state change (value or status) crossfades once. */
+@keyframes wg-settle {
+  from { opacity: 0.35; }
+  to   { opacity: 1; }
+}
+.wg-settle { animation: wg-settle var(--wg-dur-update) var(--wg-ease) both; }
+
+/* Horizontal snap rails (mobile views, KPI carousel). Scrollbar hidden; position is
+ * conveyed by visible tabs / indicators, never by the scrollbar. */
+.wg-snap-x {
+  display: flex;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.wg-snap-x::-webkit-scrollbar { display: none; }
+.wg-snap-x > * { scroll-snap-align: start; scroll-snap-stop: always; }
+
+.wg-pulse-unknown {
+  background-image: repeating-linear-gradient(90deg, rgb(148 163 184 / 0.7) 0 6px, transparent 6px 10px);
+}
+
+/* A scrolling list inside a fixed-height card fades at the bottom edge, so it reads as
+ * "more below" without a visible scrollbar. */
+@media (min-width: 1024px) and (min-height: 860px) {
+  .wg-scroll-fade {
+    -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to bottom, black calc(100% - 28px), transparent);
+  }
+}
+
+.wg-safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+
+@media (prefers-reduced-motion: reduce) {
+  .wg-press, .wg-press:active { transition: none; transform: none; }
+  .wg-settle { animation: none; }
+  .wg-snap-x { scroll-behavior: auto; }
+}
+}
+
+
+/* ── Chart marks ───────────────────────────────────────────────────────── */
+@keyframes wg-draw { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
+.wg-arc { stroke-dashoffset: 0; animation: wg-draw 900ms cubic-bezier(0.2, 0, 0, 1) both; }
+.wg-arc[stroke-dasharray="3 5"] { animation: none; }
+@keyframes wg-bar-rise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes wg-hbar-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.wg-hbar { transform-origin: left center; animation: wg-hbar-grow 520ms cubic-bezier(0.2, 0, 0, 1) both; }
+[dir='rtl'] .wg-hbar { transform-origin: right center; }
+.wg-bar { transform-box: fill-box; transform-origin: bottom; animation: wg-bar-rise 520ms cubic-bezier(0.2, 0, 0, 1) both; }
+
+
+@media (prefers-reduced-motion: reduce) {
+  .wg-arc, .wg-bar, .wg-hbar { animation: none; }
+}
+
+@keyframes wg-pulse-once { from { transform: scale(1); opacity: 0.55; } to { transform: scale(2.6); opacity: 0; } }
+.wg-pulse-once { animation: wg-pulse-once 380ms cubic-bezier(0.2, 0, 0, 1) both; }
+@media (prefers-reduced-motion: reduce) { .wg-pulse-once { animation: none; opacity: 0; } }
+
+/* Switching Operations ⇄ Insights: a short rise + fade so the swap reads as continuity. */
+@keyframes wg-view-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.wg-view-in { animation: wg-view-in 240ms cubic-bezier(0.2, 0, 0, 1) both; }
+@media (prefers-reduced-motion: reduce) { .wg-view-in { animation: none; } }
+
 /* ── Animations ─────────────────────────────────────────────────────────── */
 @keyframes kx-fade-in-up {
   /* Opacity-only — transform would create a CSS stacking context on <main>,
@@ -195,6 +433,7 @@ textarea:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-in-up, .animate-fade-in, .animate-slide-in { animation: none; }
+  .animate-ping, .animate-pulse { animation: none; }
   .nav-item-idle:hover, .btn-primary:hover { transform: none; }
 }
 

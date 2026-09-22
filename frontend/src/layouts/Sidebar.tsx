@@ -93,7 +93,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
         across the viewport instead of off-screen.
       */}
       <aside
-        className={`fixed inset-y-0 start-0 z-40 flex flex-col border-e border-slate-200/70 bg-white/[0.93] backdrop-blur-xl transition-all duration-300 dark:border-white/[0.06] dark:bg-[#0c1120]/[0.90] lg:static lg:translate-x-0 ${
+        className={`wg-glass fixed inset-y-0 start-0 z-40 flex flex-col border-e transition-all duration-300 lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 ${
           isOpen ? 'translate-x-0' : '-translate-x-full max-lg:rtl:translate-x-full'
         } ${isCollapsed ? 'lg:w-[60px]' : 'lg:w-[240px]'} w-[240px]`}
       >
