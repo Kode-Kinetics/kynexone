@@ -2,10 +2,12 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers;
@@ -515,6 +517,50 @@ public sealed class AuthWorkspaceBindingPostgresTests : PlatformTestBase
             x.Action == "SupportAccessEnded" && x.EntityId == session.Id.ToString()).ToListAsync());
     }
 
+    [Fact]
+    public async Task SupportEnd_TransientRetry_DiscardsAbandonedAuditAndWritesOneAudit()
+    {
+        var session = new PlatformSupportSession
+        {
+            TenantId = Guid.NewGuid(),
+            TargetUserId = Guid.NewGuid(),
+            TargetUserEmail = $"retry-{Guid.NewGuid():N}@example.test",
+            Reason = "retry containment proof",
+            StartedByEmail = "support@example.test",
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(30),
+            TokenHash = $"contained-{Guid.NewGuid():N}"
+        };
+        await using (var seedDb = _fixture.CreateRetryingDb())
+        {
+            seedDb.PlatformSupportSessions.Add(session);
+            await seedDb.SaveChangesAsync();
+        }
+
+        var fault = new ThrowOnceWhenSupportEndAuditIsPending();
+        var options = new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fixture.ConnectionString, provider => provider.EnableRetryOnFailure(
+                maxRetryCount: 5,
+                maxRetryDelay: TimeSpan.FromSeconds(5),
+                errorCodesToAdd: null))
+            .AddInterceptors(
+                Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance,
+                fault)
+            .Options;
+        await using (var actionDb = new ZayraDbContext(options))
+        {
+            var result = await CreateController(actionDb).EndSupportAccess(
+                new EndSupportAccessRequest(session.Id.ToString()), CancellationToken.None);
+            Assert.IsType<OkObjectResult>(result);
+        }
+        Assert.Equal(1, fault.Injections);
+
+        await using var verify = _fixture.CreateRetryingDb();
+        Assert.NotNull((await verify.PlatformSupportSessions.AsNoTracking()
+            .SingleAsync(x => x.Id == session.Id)).EndedAtUtc);
+        Assert.Single(await verify.AdminAuditLogs.AsNoTracking().Where(x =>
+            x.Action == "SupportAccessEnded" && x.EntityId == session.Id.ToString()).ToListAsync());
+    }
+
     private async Task<DuplicateSeed> SeedDuplicateEmailUsersAsync(bool insertTenantBFirst)
     {
         await using var db = _fixture.CreateRetryingDb();
@@ -723,6 +769,29 @@ public sealed class AuthWorkspaceBindingPostgresTests : PlatformTestBase
 
         public Task<bool> IsConfiguredAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(_configured);
+    }
+
+    private sealed class ThrowOnceWhenSupportEndAuditIsPending : SaveChangesInterceptor
+    {
+        private int _remaining = 1;
+        public int Injections { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Exchange(ref _remaining, 0) == 1
+                && eventData.Context!.ChangeTracker.Entries<AdminAuditLog>().Any(entry =>
+                    entry.State == EntityState.Added
+                    && entry.Entity.Action == "SupportAccessEnded"))
+            {
+                Injections++;
+                throw new TimeoutException("Injected transient failure before the support-end audit save.");
+            }
+
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
     }
 
     private sealed class NullPostgresMfaService : IMfaService

@@ -2389,8 +2389,15 @@ public class PlatformController : ControllerBase
         if (_db.Database.IsRelational())
         {
             var strategy = _db.Database.CreateExecutionStrategy();
+            var attempt = 0;
             return await strategy.ExecuteAsync(async () =>
             {
+                // A transient failure can leave an Added audit entry in the scoped context even
+                // though the transaction was rolled back. Discard attempt-local tracked state
+                // before reloading the authoritative row, otherwise the retry could persist both
+                // the abandoned audit and the new one.
+                if (attempt++ > 0) _db.ChangeTracker.Clear();
+
                 await using var transaction = await _db.Database.BeginTransactionAsync(ct);
                 var session = await _db.PlatformSupportSessions
                     .AsNoTracking()
